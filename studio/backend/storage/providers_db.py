@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for external LLM provider configurations.
+"""SQLite storage for external LLM provider configurations.
 
-Follows the same pattern as studio_db.py — module-level functions,
-raw sqlite3, WAL mode, per-function connections.
-
-NOTE: API keys are NOT stored here. They live only in the browser
-(localStorage) and are sent encrypted per-request.
+Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
+per-function connections). API keys are NOT stored here: they live only in
+the browser (localStorage) and are sent encrypted per-request.
 """
 
 import logging
@@ -26,7 +23,7 @@ _schema_ready = False
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the llm_providers table if it doesn't exist. Called once per process."""
+    """Create the llm_providers table if absent. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """

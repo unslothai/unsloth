@@ -23,10 +23,7 @@ from tests.utils.ocr_eval import OCRModelEvaluator
 from datasets import load_dataset
 
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
-# To select the first 2000 examples
 train_dataset = dataset.select(range(2000))
-
-# To select the next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
 
@@ -60,8 +57,7 @@ def format_data(sample):
 
 
 system_message = "You are an expert french ocr system."
-# Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .map convert image to bytes
+# List comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
@@ -73,12 +69,10 @@ import pandas as pd
 from jiwer import wer, cer
 from qwen_vl_utils import process_vision_info
 
-#
 ocr_evaluator = OCRModelEvaluator()
 model_comparison_results = {}
 
 ## Finetuning Setup and Run
-# Load Base Model
 
 model, tokenizer = FastVisionModel.from_pretrained(
     model_name = "unsloth/Qwen2.5-VL-32B-Instruct-bnb-4bit",
@@ -88,7 +82,7 @@ model, tokenizer = FastVisionModel.from_pretrained(
     full_finetuning = False,  # [NEW!] We have full finetuning now!
 )
 
-# benchmark base model performance
+# Benchmark base model
 model_name = "Unsloth Base model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
@@ -119,7 +113,7 @@ model = FastVisionModel.get_peft_model(
 from unsloth import is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
 
-FastVisionModel.for_training(model)  # Enable for training!
+FastVisionModel.for_training(model)
 model.config.use_cache = False
 
 
@@ -159,7 +153,6 @@ trainer = SFTTrainer(
     ),
 )
 
-# run training
 trainer_stats = trainer.train()
 
 model.save_pretrained("unsloth-qwen2.5-vl-32b-french-ocr-adapter", tokenizer)
@@ -167,7 +160,6 @@ tokenizer.save_pretrained("unsloth-qwen2.5-vl-32b-french-ocr-adapter")
 
 ## Measure Adapter Performance
 
-# benchmark lora model performance
 model_name = "Unsloth lora adapter model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
@@ -191,7 +183,7 @@ base = find_lora_base_model(model)
 
 print((base.__class__.__name__))
 
-# merge default 16 bits
+# Merge to 16-bit (default)
 model.save_pretrained_merged(
     save_directory = "qwen2.5-ocr-merged-finetune-merge-16bit", tokenizer = tokenizer
 )
@@ -205,7 +197,6 @@ model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2.5-ocr-merged-finetune-merge-16bit", load_in_4bit = False, load_in_8bit = False
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-16bits"
 model.config.use_cache = True
 
@@ -217,12 +208,11 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-# load 16bits-merged model in 4 bits
+# Load 16bits-merged model in 4 bits
 model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2.5-ocr-merged-finetune-merge-16bit", load_in_4bit = True, load_in_8bit = False
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-4bits"
 model.config.use_cache = True
 
@@ -234,12 +224,11 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-# load model in 8 bits
+# Load 16bits-merged model in 8 bits
 model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2.5-ocr-merged-finetune-merge-16bit", load_in_4bit = False, load_in_8bit = True
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-8bits"
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
     model,
@@ -270,7 +259,6 @@ ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 # ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
 # Model comparison report
-# print model comparison
 ocr_evaluator.print_model_comparison()
 
 

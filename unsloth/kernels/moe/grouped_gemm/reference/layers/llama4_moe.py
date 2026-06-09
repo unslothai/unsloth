@@ -189,13 +189,13 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states_after_weight_merge = hidden_states.view(-1, hidden_dim)
 
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
+        # Token counts per expert + gather indices (token->expert order).
+        # Auxiliary structs; not recorded in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # 2. Permute tokens from token order to expert order
+        # Permute tokens into expert order
         hidden_states = permute(hidden_states_after_weight_merge, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
@@ -365,13 +365,13 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
+        # Token counts per expert + gather indices (token->expert order).
+        # Auxiliary structs; not recorded in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # 2. Permute tokens from token order to expert order
+        # Permute tokens into expert order
         hidden_states = permute(hidden_states, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
@@ -410,8 +410,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             dX_only = self.dX_only,
         )
 
-        # Post-processing
-        # 1. Unpermute from expert order to token order
+        # Unpermute from expert order back to token order
         if not self.permute_y:
             hidden_states = unpermute(hidden_states, gather_indices)
         hidden_states += shared_expert_out

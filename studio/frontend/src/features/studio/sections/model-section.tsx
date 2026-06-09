@@ -233,12 +233,8 @@ export function ModelSection() {
     });
   }, [localMetaById, localModelInput, localResultIds]);
 
-  // Pre-compute VRAM fit status for every model in the current result set.
-  // Keyed by model id so the render callback is a simple O(1) lookup.
-  //
-  // Pre-compute VRAM fit status for every model in the current result set.
-  // Keyed by model id so the render callback is a simple O(1) lookup.
-  // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
+  // VRAM fit status per model, keyed by id for O(1) render lookups.
+  // Recomputes on training-method change (QLoRA=4-bit vs LoRA/Full=fp16).
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,

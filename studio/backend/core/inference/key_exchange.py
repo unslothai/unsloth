@@ -4,13 +4,13 @@
 """
 RSA key pair for encrypting API keys in transit.
 
-The frontend encrypts API keys with the server's public key before
-including them in requests. The backend decrypts with its private key
-before forwarding to external providers.
+The frontend encrypts API keys with the server's public key before sending
+them; the backend decrypts with its private key before forwarding to external
+providers.
 
-The key pair is generated at server startup and lives only in memory —
-it is regenerated on each restart. The frontend fetches the public key
-via GET /api/providers/public-key on load.
+The key pair is generated at server startup, lives only in memory, and is
+regenerated on each restart. The frontend fetches the public key via
+GET /api/providers/public-key on load.
 """
 
 import base64
@@ -36,9 +36,7 @@ def init_key_pair() -> None:
     """Generate an RSA-2048 key pair. Called once at server startup."""
     global _private_key, _public_key_pem, _public_key_fingerprint
     if _private_key is not None:
-        # Re-entry is suspicious — every fresh keypair invalidates all
-        # in-flight ciphertext encrypted against the previous public key.
-        # Log loudly so a regression that calls init twice is visible.
+        # Re-entry invalidates in-flight ciphertext from the old public key; log loudly.
         logger.warning(
             "init_key_pair called again — replacing existing RSA keypair "
             "(previous fingerprint=%s). Any frontend that cached the old "
@@ -111,9 +109,8 @@ def decrypt_api_key(encrypted_b64: str) -> str:
             ),
         )
     except Exception as exc:
-        # Surface enough state to distinguish key mismatch (wrong public key
-        # used on encrypt) from a padding/algo mismatch or corrupted bytes.
-        # Expected ciphertext length for RSA-2048 is exactly 256 bytes.
+        # Log state to distinguish key mismatch from padding/algo mismatch or
+        # corrupted bytes. RSA-2048 ciphertext is exactly 256 bytes.
         logger.warning(
             "decrypt_api_key: RSA decrypt failed (ciphertext_len=%d, expected=256, "
             "fingerprint=%s, exc=%s): %s",

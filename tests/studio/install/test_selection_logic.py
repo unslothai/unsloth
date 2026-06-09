@@ -114,9 +114,7 @@ def load_studio_run_module(monkeypatch):
     return module
 
 
-# ---------------------------------------------------------------------------
 # Helper factories
-# ---------------------------------------------------------------------------
 
 
 def make_host(**overrides):
@@ -274,9 +272,7 @@ def mock_windows_runtime(monkeypatch, lines):
     )
 
 
-# ===========================================================================
 # Studio run.py localhost warning
-# ===========================================================================
 
 
 class TestStudioLocalhostIpv6Warning:
@@ -457,9 +453,7 @@ class TestStudioLocalhostIpv6Warning:
         assert calls["stop_hint"] == 1
 
 
-# ===========================================================================
 # A. normalize_compute_cap
-# ===========================================================================
 
 
 class TestNormalizeComputeCap:
@@ -491,9 +485,7 @@ class TestNormalizeComputeCap:
         assert normalize_compute_cap("9.0") == "90"
 
 
-# ===========================================================================
 # B. normalize_compute_caps
-# ===========================================================================
 
 
 class TestNormalizeComputeCaps:
@@ -510,9 +502,7 @@ class TestNormalizeComputeCaps:
         assert normalize_compute_caps([]) == []
 
 
-# ===========================================================================
 # C. parse_cuda_visible_devices
-# ===========================================================================
 
 
 class TestParseCudaVisibleDevices:
@@ -535,9 +525,7 @@ class TestParseCudaVisibleDevices:
         assert parse_cuda_visible_devices(" 0 , 1 ") == ["0", "1"]
 
 
-# ===========================================================================
 # D. supports_explicit_visible_device_matching
-# ===========================================================================
 
 
 class TestSupportsExplicitVisibleDeviceMatching:
@@ -557,9 +545,7 @@ class TestSupportsExplicitVisibleDeviceMatching:
         assert supports_explicit_visible_device_matching(["0", "MIG-device"]) is False
 
 
-# ===========================================================================
 # E. select_visible_gpu_rows
-# ===========================================================================
 
 
 class TestSelectVisibleGpuRows:
@@ -592,9 +578,7 @@ class TestSelectVisibleGpuRows:
         assert result == []
 
 
-# ===========================================================================
 # F. compatible_linux_runtime_lines
-# ===========================================================================
 
 
 class TestCompatibleLinuxRuntimeLines:
@@ -651,9 +635,7 @@ class TestParseDirectLinuxReleaseBundle:
         assert art.max_sm == 120  # inherited from cuda13-newer
 
 
-# ===========================================================================
 # G. pick_windows_cuda_runtime + compatible_windows_runtime_lines
-# ===========================================================================
 
 
 class TestPickWindowsCudaRuntime:
@@ -700,9 +682,7 @@ class TestCompatibleWindowsRuntimeLines:
         assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
 
 
-# ===========================================================================
 # H. runtime_line_from_cuda_version
-# ===========================================================================
 
 
 class TestRuntimeLineFromCudaVersion:
@@ -722,9 +702,7 @@ class TestRuntimeLineFromCudaVersion:
         assert runtime_line_from_cuda_version("") is None
 
 
-# ===========================================================================
 # I. apply_approved_hashes
-# ===========================================================================
 
 
 class TestApplyApprovedHashes:
@@ -838,9 +816,7 @@ class TestApplyApprovedHashes:
             apply_approved_hashes([], checksums)
 
 
-# ===========================================================================
 # J. published release resolution
-# ===========================================================================
 
 
 class TestPublishedReleaseResolution:
@@ -1174,9 +1150,7 @@ class TestValidatedChecksumsForBundle:
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
 
-# ===========================================================================
 # K. linux_cuda_choice_from_release -- core selection
-# ===========================================================================
 
 
 class TestLinuxCudaChoiceFromRelease:
@@ -1503,9 +1477,7 @@ class TestBlackwellUltraSm103Coverage:
         assert result is None
 
 
-# ===========================================================================
 # L. resolve_install_attempts
-# ===========================================================================
 
 
 class TestResolveInstallAttempts:
@@ -2026,9 +1998,7 @@ class TestResolveInstallReleasePlans:
             sys.modules.pop(spec.name, None)
 
 
-# ===========================================================================
 # N. windows_cuda_attempts
-# ===========================================================================
 
 
 class TestWindowsCudaAttempts:
@@ -2246,9 +2216,7 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
 
-# ===========================================================================
 # N.1b. _pinned_windows_cuda_fallback -- pinned b9360 cuda-13.1 Blackwell fallback
-# ===========================================================================
 
 
 class TestPinnedBlackwellCudaFallback:
@@ -2390,9 +2358,7 @@ class TestPinnedBlackwellCudaFallback:
         assert _windows_cuda_attempt_covers_blackwell(cpu) is False
 
 
-# ===========================================================================
 # N.1c. direct_upstream_release_plan -- pinned Blackwell fallback ordering
-# ===========================================================================
 
 
 class TestDirectUpstreamBlackwellPin:
@@ -2456,9 +2422,7 @@ class TestDirectUpstreamBlackwellPin:
         assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
 
-# ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
-# ===========================================================================
 
 
 class TestPublishedWindowsCudaAttemptsDynamicMajor:
@@ -2524,9 +2488,7 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].runtime_line == "cuda12"
 
 
-# ===========================================================================
 # N.1e. resolve_release_asset_choice -- pin on the published install path
-# ===========================================================================
 
 
 class TestResolveReleaseAssetChoicePin:
@@ -2619,9 +2581,7 @@ class TestResolveReleaseAssetChoicePin:
         assert "b9360" not in [a.tag for a in result]
 
 
-# ===========================================================================
 # N.1. apply_approved_hashes -- runtime archive checksum threading
-# ===========================================================================
 
 
 class TestApplyApprovedHashesRuntimePair:
@@ -2693,9 +2653,7 @@ class TestApplyApprovedHashesRuntimePair:
         assert result[0].runtime_sha256 is None
 
 
-# ===========================================================================
 # O. resolve_upstream_asset_choice -- platform routing
-# ===========================================================================
 
 
 class TestResolveUpstreamAssetChoice:
@@ -2838,9 +2796,7 @@ class TestResolveUpstreamAssetChoice:
         assert result.name == cuda_name
 
 
-# ===========================================================================
 # N.2. Deterministic macOS prebuilt pin (b9415)
-# ===========================================================================
 
 
 def _macos_host(machine = "arm64", version = (15, 5)):
@@ -2963,9 +2919,7 @@ class TestResolveSimpleMacosPin:
         assert calls[0][2] == "latest"
 
 
-# ===========================================================================
 # Linux arm64 + GPU must not install the x64-only fork bundle
-# ===========================================================================
 
 
 class TestLinuxArm64ForkFallsBackToSource:
@@ -3019,9 +2973,7 @@ class TestLinuxArm64ForkFallsBackToSource:
         assert "linux-x64 prebuilts" not in str(exc.value)
 
 
-# ===========================================================================
 # arm64 Linux GPU: CPU prebuilt fallback after a failed source build (--cpu-fallback)
-# ===========================================================================
 
 
 class TestCpuFallback:
