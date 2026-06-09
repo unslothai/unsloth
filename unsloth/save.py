@@ -160,10 +160,8 @@ def _quantize_q2_k_l(
     n_threads: int,
     print_output: bool = True,
 ):
-    # "Q2_K_L" is a Unsloth-side preset, not a native llama.cpp ftype. It
-    # maps to the `q2_k` ftype with `--output-tensor-type q8_0` and
-    # `--token-embedding-type q8_0` so the output/embedding tensors retain
-    # higher precision than a plain Q2_K quant.
+    # "Q2_K_L" is an Unsloth preset, not a native llama.cpp ftype: q2_k with
+    # output/token-embedding tensors kept at q8_0 for higher precision.
     command = [
         str(quantizer_location),
         "--output-tensor-type",
@@ -455,6 +453,36 @@ def _preserve_tokenizer_eos_token(
         logger.warning_once(
             f"Unsloth: Could not preserve tokenizer eos_token in {tokenizer_config}: {error}"
         )
+
+
+def _is_qwen3_5_vlm(model):
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "vision_config"):
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return any(
+        architecture
+        in (
+            "Qwen3_5ForConditionalGeneration",
+            "Qwen3_5MoeForConditionalGeneration",
+        )
+        for architecture in architectures
+    ) or getattr(config, "model_type", None) in ("qwen3_5", "qwen3_5_moe")
+
+
+def _qwen3_5_vlm_state_dict_for_save(state_dict):
+    remapped_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith("language_model.model."):
+            new_key = "model.language_model." + key[len("language_model.model.") :]
+        elif key.startswith("visual."):
+            new_key = "model.visual." + key[len("visual.") :]
+        elif key.startswith("language_model.lm_head."):
+            new_key = "lm_head." + key[len("language_model.lm_head.") :]
+        else:
+            new_key = key
+        remapped_state_dict[new_key] = value
+    return remapped_state_dict
 
 
 @torch.inference_mode
@@ -1015,9 +1043,8 @@ def unsloth_save_model(
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to organization!
-        # Sadly .save_pretrained doesn't work :(
-        # We first save it via .save_pretrained, then upload manually!
+        # Pushing to organization: .save_pretrained doesn't work, so save
+        # locally first then upload manually.
         save_pretrained_settings["save_directory"] = new_save_directory
         save_pretrained_settings["push_to_hub"] = False
         internal_model.save_pretrained(**save_pretrained_settings)
@@ -2196,9 +2223,8 @@ def unsloth_save_pretrained_gguf(
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}")
     else:
-        # Non-PEFT model — checkpoint files already exist on disk.
-        # Point save_to_gguf at the original checkpoint path instead of
-        # re-saving to a temporary "model" subdirectory.
+        # Non-PEFT model: checkpoint files already exist; point save_to_gguf
+        # at the original path instead of re-saving to a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
         if original_path and os.path.isdir(original_path):
             print(
@@ -2974,27 +3000,31 @@ def unsloth_generic_save(
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
-    # Full-finetuned models (no LoRA) cannot use merge_and_overwrite_lora
-    # since there are no adapters to merge. Fall back to save_pretrained.
-    # This mirrors the non-PeftModel handling in save_pretrained_torchao
-    # and the GGUF save path.
+    # Full-finetuned models (no LoRA) have no adapters to merge, so fall back
+    # to save_pretrained, mirroring the torchao and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
         if not is_main_process:
             return
 
-        # Honor merged_16bit by casting to the target dtype if needed
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
             max_shard_size = max_shard_size,
             variant = variant,
         )
+        is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
+        if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
+            state_dict = model.state_dict()
         if "16bit" in save_method:
             _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            _save_kwargs["state_dict"] = {
+            state_dict = {
                 k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
-                for k, v in model.state_dict().items()
+                for k, v in state_dict.items()
             }
+        if is_qwen3_5_vlm:
+            state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
+        if state_dict is not None:
+            _save_kwargs["state_dict"] = state_dict
 
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")

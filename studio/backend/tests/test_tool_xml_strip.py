@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for `_TOOL_XML_RE` (routes/inference.py) -- strips tool-call
-XML that leaks past the speculative buffer in core/inference/llama_cpp.py
-when the open/close pair is split across the visible/DRAIN boundary.
+"""Tests for `_TOOL_XML_RE` (routes/inference.py) -- strips tool-call XML that
+leaks past the speculative buffer in core/inference/llama_cpp.py when the
+open/close pair is split across the visible/DRAIN boundary.
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ def test_strips_tail_only_parameter_orphan_no_trailing_ws():
 
 
 def test_preserves_mid_string_parameter_in_code_sample():
-    # Tail-anchor on `</parameter>` is required so doc/example prose survives.
+    # Tail-anchor on `</parameter>` so doc/example prose survives.
     text = (
         "Here is the Qwen tool-call format:\n"
         "```xml\n"
@@ -221,8 +221,8 @@ def test_real_world_sweep_leaks_get_stripped(leak):
 # ── Real-world tail-only </parameter> from gdpval sweep ──────────
 
 
-# All end-anchored: outer </function></tool_call> truncated by EOS,
-# inner <parameter=...> open DRAINED, leaving bare </parameter> tail.
+# All end-anchored: outer </function></tool_call> truncated by EOS, inner
+# <parameter=...> open DRAINED, leaving bare </parameter> tail.
 GDPVAL_PARAMETER_LEAKS = [
     # Qwen3.5-27B Q8_0 / worldbank s00
     "the page contains image data and the text is not readable.\n</parameter>\n\n",

@@ -50,14 +50,12 @@ def load_and_compute_8bit_ppl(
     from unsloth.chat_templates import get_chat_template
     from tests.utils.perplexity_eval import ppl_model
 
-    # Load model
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_llama_text_model",
         max_seq_length = 2048,
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,
     )
-    # Set up tokenizer
     merged_tokenizer = get_chat_template(
         merged_tokenizer,
         chat_template = "llama-3.1",
@@ -66,7 +64,6 @@ def load_and_compute_8bit_ppl(
     # Load dataset fresh in subprocess
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
-    # Format the dataset
     def formatting_prompts_func(examples):
         convos = examples["messages"]
         texts = [
@@ -77,21 +74,18 @@ def load_and_compute_8bit_ppl(
 
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
 
-    # Compute perplexity using the passed dataset
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # IMPORTANT: Convert to Python float if it's a tensor
+    # Convert to a Python float (tensor / numpy / other)
     if torch.is_tensor(ppl_value):
-        ppl_value = ppl_value.cpu().item()  # Move to CPU and convert to Python scalar
+        ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):
-        ppl_value = ppl_value.item()  # Convert numpy or other array types
+        ppl_value = ppl_value.item()
     else:
-        ppl_value = float(ppl_value)  # Ensure it's a float
+        ppl_value = float(ppl_value)
 
-    # Return only the perplexity value
     result_queue.put(ppl_value)
 
-    # Clean up
     del merged_model
     del merged_tokenizer
     del dataset_ppl
@@ -99,7 +93,6 @@ def load_and_compute_8bit_ppl(
     gc.collect()
 
 
-# Main execution code should be wrapped in this guard
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
@@ -197,12 +190,11 @@ if __name__ == "__main__":
 
     tokenizer.decode(trainer.train_dataset[0]["input_ids"])
 
-    # run training
     trainer_stats = trainer.train()
 
     add_to_comparison("Qlora model", ppl_model(model, tokenizer, dataset_ppl))
 
-    # saving and merging the model to local disk
+    # save and merge the model to local disk
     print("merge and save to local disk")
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_llama_text_model", tokenizer = tokenizer
@@ -214,7 +206,6 @@ if __name__ == "__main__":
     # torch.cuda.empty_cache()
     # gc.collect()
 
-    # load model from local disk and test
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_llama_text_model",
@@ -251,7 +242,6 @@ if __name__ == "__main__":
 
     print_model_comparison()
 
-    # final cleanup
     safe_remove_directory("./outputs")
     safe_remove_directory("./unsloth_compiled_cache")
     safe_remove_directory("./unsloth_out")

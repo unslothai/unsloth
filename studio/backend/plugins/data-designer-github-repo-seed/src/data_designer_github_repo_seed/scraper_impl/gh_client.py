@@ -110,12 +110,10 @@ class GitHubClient:
         )
 
     def _is_auth_failure(self, r: "requests.Response") -> bool:
-        """Distinguish auth failures from rate limiting on 401/403 responses.
+        """Tell auth failures apart from rate limiting on 401/403.
 
-        - 401: always an auth failure (invalid / expired / wrong-scope token).
-        - 403: an auth failure UNLESS the response carries a clear rate-limit signal
-          (Retry-After header, X-RateLimit-Remaining: 0, or GitHub's secondary /
-          abuse rate-limit response text).
+        401 is always auth; 403 is auth unless it carries a rate-limit signal
+        (Retry-After, X-RateLimit-Remaining: 0, or abuse/secondary text).
         """
         if r.status_code == 401:
             return True
@@ -169,7 +167,6 @@ class GitHubClient:
                     timeout = 120,
                 )
                 self.calls_graphql += 1
-                # Update rate info from response headers
                 rem = r.headers.get("X-RateLimit-Remaining")
                 rst = r.headers.get("X-RateLimit-Reset")
                 if rem is not None:
@@ -190,7 +187,7 @@ class GitHubClient:
                 if self._is_auth_failure(r):
                     self._raise_auth_error(r, "GraphQL")
                 if r.status_code == 403 or r.status_code == 429:
-                    # Check for secondary/abuse
+                    # Secondary/abuse rate limit
                     retry_after = _retry_after_seconds(r.headers.get("Retry-After"))
                     if retry_after is not None:
                         log.warning("Secondary rate limit. Sleep %ds.", retry_after)
@@ -204,15 +201,14 @@ class GitHubClient:
                 r.raise_for_status()
                 data = r.json()
                 if "errors" in data and data["errors"]:
-                    # Surface errors but allow partial data
+                    # Allow partial data; retry on RATE_LIMITED
                     errs = data["errors"]
-                    # Retry on RATE_LIMITED
                     for e in errs:
                         if e.get("type") == "RATE_LIMITED":
                             self._sleep_until((self.graphql_reset or int(time.time()) + 60))
                             break
                     else:
-                        # No rate-limit error, log and return partial
+                        # No rate-limit error: log and return partial
                         log.warning("GraphQL errors: %s", json.dumps(errs)[:400])
                         return data
                     continue
@@ -268,7 +264,7 @@ class GitHubClient:
                         log.warning("Secondary rate limit on REST. Sleep %ds.", retry_after)
                         time.sleep(retry_after + 2)
                         continue
-                    # Check if primary rate
+                    # Primary rate limit
                     if self.rest_remaining == 0 and self.rest_reset:
                         self._sleep_until(self.rest_reset)
                         continue
@@ -299,11 +295,10 @@ class GitHubClient:
                 return
             items = r.json()
             if isinstance(items, dict):
-                # Some endpoints return dict with list field
+                # Some endpoints wrap the list in an "items" field
                 items = items.get("items", [])
             for it in items:
                 yield it
-            # Follow link header
             link = r.headers.get("Link", "")
             nxt = None
             for part in link.split(","):

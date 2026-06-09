@@ -4,17 +4,14 @@
 """
 Safetensors/transformers agentic tool loop.
 
-Wraps a single-turn cumulative-text generator (the existing
-``InferenceOrchestrator.generate_chat_response`` pipeline that streams
-from a worker subprocess) with the tool-calling, thinking-block,
-status, and metadata event protocol used by the GGUF path. Keeps the
-front-end SSE shape identical across backends so the chat UI does not
-care which engine actually ran the model.
+Wraps a single-turn cumulative-text generator with the same tool-calling,
+thinking-block, status, and metadata event protocol the GGUF path uses, so
+the front-end SSE shape is identical across backends.
 
-The GGUF path lives in ``llama_cpp.py`` and talks to llama-server's
-structured ``delta.tool_calls`` directly. Native transformers has no
-such structured channel, so this loop parses tool calls from the
-cumulative text and dispatches them via ``core.inference.tools``.
+Unlike the GGUF path (``llama_cpp.py``), which uses llama-server's structured
+``delta.tool_calls``, native transformers has no such channel, so this loop
+parses tool calls from the cumulative text and dispatches via
+``core.inference.tools``.
 """
 
 import re
@@ -41,7 +38,7 @@ from core.inference.tool_loop_controller import (
 logger = get_logger(__name__)
 
 
-# Buffer cap while waiting to disambiguate a possible tool-call prefix.
+# Buffer cap while disambiguating a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
 
@@ -121,6 +118,7 @@ def _coerce_arguments(
     return arguments
 
 
+
 def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
@@ -149,28 +147,23 @@ def run_safetensors_tool_loop(
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
-    ``single_turn(messages)`` must yield cumulative assistant text
-    (each yield is a snapshot including all previously emitted tokens).
-    The loop:
+    ``single_turn(messages)`` must yield cumulative assistant text (each
+    yield is a snapshot of all tokens so far). The loop:
 
-    * Buffers the leading characters of every turn so it can decide
-      whether the model is about to emit a tool call. Plain content
-      starts streaming as soon as the buffer rules it out.
-    * On detecting ``<tool_call>`` or ``<function=`` in the cumulative
-      text, drains the rest of the turn silently and parses tool calls
-      out of the full content.
+    * Buffers each turn's leading chars to decide whether a tool call is
+      coming. Plain content streams once the buffer rules it out.
+    * On ``<tool_call>`` or ``<function=`` in the cumulative text, drains
+      the rest of the turn silently and parses tool calls from the content.
     * Executes each tool via ``execute_tool``, appends the assistant
-      tool-call message and the tool result to the conversation, and
-      re-enters ``single_turn`` for the next iteration.
-    * After ``max_tool_iterations`` turns without a final answer, asks
-      the model once more to produce a final answer with no tools.
+      tool-call message and tool result, and re-enters ``single_turn``.
+    * After ``max_tool_iterations`` turns without a final answer, asks once
+      more for a final answer with no tools.
 
     Yields event dicts matching the GGUF path:
 
     * ``{"type": "status", "text": ...}`` -- empty string clears the badge.
     * ``{"type": "content", "text": ...}`` -- cumulative cleaned text for
-      the current assistant turn (the consumer should diff against its
-      own ``prev_text`` cursor).
+      the current turn (consumer diffs against its own ``prev_text`` cursor).
     * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
@@ -230,7 +223,7 @@ def run_safetensors_tool_loop(
                 return
 
             if not isinstance(cumulative, str):
-                continue  # defensive: pipeline only yields strings
+                continue  # defensive: pipeline yields only strings
 
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
@@ -371,7 +364,7 @@ def run_safetensors_tool_loop(
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved -- tool XML or plain content.
+            # Buffer never resolved -- tool XML or plain content?
             stripped = content_buffer.lstrip()
             if (
                 stripped

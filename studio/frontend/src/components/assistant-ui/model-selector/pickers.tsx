@@ -62,7 +62,7 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-/** Normalize a string for fuzzy search: lowercase, strip separators. */
+/** Lowercase and strip separators for fuzzy search. */
 function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s\-_\.]/g, "");
 }
@@ -296,14 +296,14 @@ function GgufVariantExpander({
     [gpuGb, gpuBudgetGb, totalBudgetGb],
   );
 
-  // If the backend-recommended variant is OOM, pick the largest fitting
-  // variant instead; if all are OOM, recommend the smallest one.
+  // If the recommended variant is OOM, pick the largest fitting one;
+  // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
     if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
     const defaultV = variants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
-    // Default is OOM -- pick largest non-OOM variant (best quality that fits)
+    // Largest non-OOM variant (best quality that fits)
     const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
@@ -460,8 +460,8 @@ function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
 
 /** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
 function extractParamLabel(id: string): string | undefined {
-  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
   const name = id.split("/").pop() ?? id;
+  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
   const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
   return match ? `${match[1]}B` : undefined;
 }
@@ -504,11 +504,10 @@ export function HubModelPicker({
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
 
-  // Sets of lowercased repo ids that the store or HF search have
-  // confirmed are GGUF. Absence means "no hint" and lets hasGgufSuffix
-  // take over as fallback, rather than conflating unknown with known-
-  // not-GGUF. Keys are lowercased so that store IDs and HF search IDs
-  // that differ only by casing still match the same hint.
+  // Lowercased repo ids confirmed GGUF by the store or HF search.
+  // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
+  // conflate unknown with known-not-GGUF). Lowercased so store and HF
+  // IDs differing only by casing match the same hint.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const model of models) {
@@ -538,8 +537,8 @@ export function HubModelPicker({
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [recommendedCollapsed, setRecommendedCollapsed] = useState(false);
 
-  // Cached (already downloaded) repos -- use module-level cache so
-  // re-mounting the popover does not flash an empty "Downloaded" section.
+  // Cached (downloaded) repos -- module-level cache avoids flashing an
+  // empty "Downloaded" section when the popover re-mounts.
   const [cachedGguf, setCachedGguf] =
     useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] =
@@ -548,8 +547,7 @@ export function HubModelPicker({
     _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
 
-  // LM Studio local models -- module-level cache so re-mounting the
-  // popover does not flash an empty section (same pattern as GGUF/models).
+  // LM Studio local models -- module-level cache, same pattern as above.
   const [lmStudioModels, setLmStudioModels] =
     useState<LocalModelInfo[]>(_lmStudioCache);
   const [customFolderModels, setCustomFolderModels] =
@@ -589,24 +587,20 @@ export function HubModelPicker({
   }, []);
 
   const handleAddFolder = useCallback(async (overridePath?: string) => {
-    // Accept an explicit path so the folder browser can submit the
-    // chosen path in the same tick it calls `setFolderInput`; reading
-    // `folderInput` alone would race the state update.
+    // Explicit path lets the folder browser submit in the same tick it
+    // calls `setFolderInput`; reading `folderInput` would race the update.
     const raw = overridePath !== undefined ? overridePath : folderInput;
     const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
-    // True when the request originated from the folder browser's
-    // ``onSelect`` (one-click "Use this folder"). In that flow the
-    // typed-input panel is closed, so the inline ``folderError``
-    // paragraph is invisible. Surface failures via toast instead so
-    // the action doesn't appear to silently no-op when the backend
-    // rejects (denylisted path, sandbox 403, etc.).
+    // From the folder browser's one-click "Use this folder": the typed-
+    // input panel is closed, so the inline folderError is invisible.
+    // Surface failures (denylisted path, sandbox 403, etc.) via toast.
     const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
-      // Backend returns existing row for duplicates, so deduplicate
+      // Backend returns the existing row for duplicates, so dedupe.
       const next = _scanFoldersCache.some((f) => f.id === created.id || f.path === created.path)
         ? _scanFoldersCache
         : [..._scanFoldersCache, created];
@@ -632,7 +626,7 @@ export function HubModelPicker({
   const handleRemoveFolder = useCallback(async (id: number) => {
     try {
       await removeScanFolder(id);
-      // Optimistic update so the folder disappears immediately
+      // Optimistic: drop it immediately.
       const next = _scanFoldersCache.filter((f) => f.id !== id);
       _scanFoldersCache = next;
       setScanFolders(next);
@@ -662,18 +656,17 @@ export function HubModelPicker({
   }, [refreshLocalModelsList]);
 
   useEffect(() => {
-    // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
+    // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
     refreshLocalModelsList();
     refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
 
-    // Always refetch cached GGUF/model lists. The module-level caches give
-    // an instant render with stale data (no spinner flash), but newly
-    // downloaded repos won't appear unless we re-hit the backend on every
-    // mount.  Initial state already has cachedReady=alreadyCached, so the
-    // background refresh is invisible when we already had data.
+    // Always refetch cached GGUF/model lists. The module-level caches render
+    // instantly with stale data (no spinner flash), but newly downloaded
+    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
+    // so the background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -694,8 +687,8 @@ export function HubModelPicker({
       .finally(check);
   }, [refreshLocalModelsList, refreshScanFolders]);
 
-  // Deduplicate: don't show downloaded models in the recommended list.
-  // Compare case-insensitively since HF cache lowercases repo IDs.
+  // Hide downloaded models from the recommended list. Case-insensitive
+  // since the HF cache lowercases repo IDs.
   const downloadedSet = useMemo(() => {
     const s = new Set<string>();
     for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
@@ -756,10 +749,9 @@ export function HubModelPicker({
     return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
 
-  // Fetch VRAM info for visible models, plus any models surfaced by a search
-  // query so that filtered recommended models also show VRAM badges.
-  // Skip GGUF repos: they have no safetensors metadata and the render layer
-  // already shows a static "GGUF" badge instead of VRAM data.
+  // VRAM info for visible models plus any surfaced by a search query, so
+  // filtered recommended models also show VRAM badges. Skip GGUF repos:
+  // no safetensors metadata, and the render layer shows a "GGUF" badge.
   const idsForVram = useMemo(() => {
     const ids = showHfSection
       ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
@@ -851,9 +843,8 @@ export function HubModelPicker({
   );
 
   // Sentinel + IntersectionObserver for recommended infinite scroll.
-  // We disconnect after each fire so the observer doesn't loop while
-  // React re-renders; the effect re-creates it on the next page.
-  // Uses a callback ref for the sentinel so we detect mount/unmount reliably.
+  // Disconnect after each fire so it doesn't loop during re-render; the
+  // effect re-creates it next page. Callback ref detects mount/unmount.
   const [recommendedSentinel, setRecommendedSentinel] =
     useState<HTMLDivElement | null>(null);
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
@@ -872,7 +863,7 @@ export function HubModelPicker({
       },
       { threshold: 0, root },
     );
-    // Small delay so the browser finishes layout after the previous page render
+    // Small delay so layout settles after the previous page render.
     const timer = setTimeout(() => obs.observe(recommendedSentinel), 100);
     return () => {
       clearTimeout(timer);
@@ -1184,9 +1175,8 @@ export function HubModelPicker({
                 onSelect={(picked) => {
                   setFolderInput(picked);
                   setFolderError(null);
-                  // One-click UX: the "Use this folder" button submits
-                  // the scan folder directly. Pass the path explicitly
-                  // because `folderInput` state hasn't flushed yet.
+                  // Pass the path explicitly: `folderInput` state hasn't
+                  // flushed yet when "Use this folder" submits.
                   void handleAddFolder(picked);
                 }}
               />
