@@ -283,18 +283,20 @@ def _openai_stream_usage_chunk(
         return None
     if not (stream_usage or stream_timings):
         return None
+    _usage = stream_usage or {}
+    _prompt_tokens = _usage.get("prompt_tokens") or 0
+    _completion_tokens = _usage.get("completion_tokens") or 0
+    _total_tokens = _usage.get("total_tokens") or (_prompt_tokens + _completion_tokens)
     usage_chunk = ChatCompletionChunk(
         id = completion_id,
         created = created,
         model = model_name,
         choices = [],
         usage = CompletionUsage(
-            prompt_tokens = (stream_usage or {}).get("prompt_tokens", 0),
-            completion_tokens = (stream_usage or {}).get("completion_tokens", 0),
-            total_tokens = (stream_usage or {}).get("total_tokens", 0),
-            prompt_tokens_details = _prompt_tokens_details(
-                (stream_usage or {}).get("prompt_tokens_details")
-            ),
+            prompt_tokens = _prompt_tokens,
+            completion_tokens = _completion_tokens,
+            total_tokens = _total_tokens,
+            prompt_tokens_details = _prompt_tokens_details(_usage.get("prompt_tokens_details")),
         ),
         timings = stream_timings,
     )

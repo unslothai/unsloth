@@ -676,6 +676,24 @@ class TestOpenAICompatibilityHelpers:
         assert '"choices":[]' in line
         assert '"usage"' in line
 
+    def test_stream_usage_chunk_coerces_nullable_counts(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        line = _openai_stream_usage_chunk(
+            payload,
+            "chatcmpl-test",
+            123,
+            "model",
+            {"prompt_tokens": None, "completion_tokens": 7, "total_tokens": None},
+            None,
+        )
+
+        assert line is not None
+        parsed = json.loads(line.removeprefix("data: "))
+        usage = parsed["usage"]
+        assert usage["prompt_tokens"] == 0
+        assert usage["completion_tokens"] == 7
+        assert usage["total_tokens"] == 7
+
 
 # =====================================================================
 # _friendly_error — httpx transport failures
