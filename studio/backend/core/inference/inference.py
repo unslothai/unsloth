@@ -427,8 +427,7 @@ class InferenceBackend:
             # Uses gcnArchName from already-initialized torch device properties
             # (no subprocess, no extra HIP context initialization).
             _is_rocm = (
-                bool(getattr(torch.version, "hip", None))
-                or "rocm" in torch.__version__.lower()
+                bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
             )
             _is_rdna2 = False
             if _is_rocm:

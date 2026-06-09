@@ -682,9 +682,7 @@ def _ensure_rocm_torch() -> None:
     _rdna2_cap_tag: "str | None" = None
     if ver >= (7, 0):
         gfx_codes = _detect_amd_gfx_codes()
-        _runtime_gfx = (
-            gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
-        )
+        _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
         if _runtime_gfx in _RDNA2_GFX:
             # rocm6.2 only has wheels up to Python 3.12 (cp312). For Python 3.13+
             # use rocm6.4 which ships torch 2.7.x with cp313 wheels and is also a
@@ -791,7 +789,9 @@ def _ensure_rocm_torch() -> None:
         else:
             index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
             if _rdna2_cap_tag is not None:
-                print(f"   RDNA2 cap (system ROCm {ver[0]}.{ver[1]}) -- installing torch from {index_url}")
+                print(
+                    f"   RDNA2 cap (system ROCm {ver[0]}.{ver[1]}) -- installing torch from {index_url}"
+                )
             else:
                 print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
             _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
