@@ -1184,13 +1184,9 @@ class TestValidatedChecksumsForBundle:
             lambda repo, release_tag: checksums,
         )
 
-        assert (
-            validated_checksums_for_bundle("unslothai/llama.cpp", bundle) is checksums
-        )
+        assert validated_checksums_for_bundle("unslothai/llama.cpp", bundle) is checksums
         plan = INSTALL_LLAMA_PREBUILT.source_build_plan_for_release(
-            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle = bundle, checksums = checksums
-            )
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
         )
         assert plan.source_url == "https://github.com/ggml-org/llama.cpp"
         assert plan.source_ref_kind == "commit"
