@@ -92,6 +92,11 @@ def is_mtp_drafter_path(path: str) -> bool:
     Repos that bake the head into the main GGUF (Qwen) have no such file, so
     this is False for them. Must be excluded from main-model selection
     everywhere mmproj is.
+
+    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
+    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
+    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
+    avoids hub imports; bundles the mmproj check).
     """
     p = path.lower()
     if not p.endswith(".gguf"):

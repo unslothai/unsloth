@@ -896,35 +896,42 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
 logger = get_logger(__name__)
 
 
-def _validate_native_mmproj_companion(mmproj_path: str | None, gguf_path: str | None) -> None:
-    if not mmproj_path or not gguf_path:
+def _validate_native_gguf_companion(
+    companion_path: str | None, gguf_path: str | None, label: str
+) -> None:
+    """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
+    would otherwise hand to llama-server: must be a regular file (no symlink
+    escaping the leased directory) living next to the selected GGUF."""
+    if not companion_path or not gguf_path:
         return
     import stat as _stat_module
 
-    mm = Path(mmproj_path)
+    companion = Path(companion_path)
     gguf = Path(gguf_path)
     try:
-        mm_lstat = os.lstat(mm)
+        companion_lstat = os.lstat(companion)
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
-    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+    if _stat_module.S_ISLNK(companion_lstat.st_mode) or not _stat_module.S_ISREG(
+        companion_lstat.st_mode
+    ):
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion must be a regular file.",
+            detail = f"Native {label} must be a regular file.",
         )
     try:
-        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
             raise HTTPException(
                 status_code = 400,
-                detail = "Native vision companion must live next to the selected GGUF.",
+                detail = f"Native {label} must live next to the selected GGUF.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
 
 
@@ -1280,8 +1287,23 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                if native_grant_backed and config.gguf_mmproj_file:
-                    _validate_native_mmproj_companion(config.gguf_mmproj_file, config.gguf_file)
+                if native_grant_backed:
+                    if config.gguf_mmproj_file:
+                        _validate_native_gguf_companion(
+                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                        )
+                    if config.gguf_mtp_file:
+                        # The drafter is optional (unlike mmproj for a vision
+                        # model): drop it rather than fail the load.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning(
+                                "Dropping MTP drafter for native load: %s", exc.detail
+                            )
+                            config.gguf_mtp_file = None
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,

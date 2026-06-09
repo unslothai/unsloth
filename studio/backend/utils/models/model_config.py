@@ -1199,7 +1199,10 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
     # Case 1: direct .gguf file
     if p.suffix.lower() == ".gguf":
-        if _is_mmproj(p.name):
+        # Companions are not models: rejecting a drafter here also keeps
+        # detect_mtp_file from pairing the same file with itself
+        # (-m drafter --model-draft drafter).
+        if _is_mmproj(p.name) or _is_mtp_drafter(p.name):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.

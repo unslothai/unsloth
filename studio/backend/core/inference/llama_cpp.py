@@ -500,6 +500,17 @@ def _is_companion_gguf_path(path: str) -> bool:
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
 
+# Context-fit VRAM budget: tighter than _GPU_PIN_VRAM_FRACTION (0.95) on
+# purpose -- over-promising context OOMs at runtime (#5106).
+_CTX_FIT_VRAM_FRACTION = 0.90
+
+# Extra VRAM fraction reserved when MTP will engage: the draft model's
+# weights, KV cache, and compute buffers live outside the main model's
+# estimate. Applied to BOTH the ctx-fit budget and the GPU pin thresholds --
+# tightening only the fit lets a load whose weights land between the two
+# fractions pin without any room for the drafter.
+_MTP_VRAM_RESERVE_FRAC = 0.05
+
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
@@ -1504,13 +1515,16 @@ class LlamaCppBackend:
 
     @staticmethod
     def _select_gpus(
-        model_size_bytes: int, gpus: list[tuple[int, int]]
+        model_size_bytes: int,
+        gpus: list[tuple[int, int]],
+        usable_fraction: Optional[float] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
         ``model_size_bytes`` should include weights and estimated KV cache.
-        ``_GPU_PIN_VRAM_FRACTION`` provides headroom for compute buffers,
-        CUDA context, and other runtime overhead.
+        ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
+        headroom for compute buffers, CUDA context, and other runtime
+        overhead; callers lower it when MTP reserves VRAM for a draft model.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -1521,7 +1535,8 @@ class LlamaCppBackend:
             return None, True
 
         model_size_mib = model_size_bytes / (1024 * 1024)
-        usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        if usable_fraction is None:
+            usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1769,8 +1784,8 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP needs a tighter budget; drop from 0.90 to 0.85.
-        budget_frac = 0.85 if mtp_engaged else 0.90
+        # MTP engaged: carve the drafter's reserve out of the fit budget.
+        budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
@@ -2890,6 +2905,11 @@ class LlamaCppBackend:
                     #     context, since multi-GPU is slower.
                     gpu_indices, use_fit = None, True
                     explicit_ctx = requested_ctx > 0
+                    # MTP draft model lives outside the main estimates; carve
+                    # its reserve out of every fit budget and pin threshold so
+                    # a load can't pin into the drafter's headroom.
+                    _mtp_reserve = _MTP_VRAM_RESERVE_FRAC if _mtp_will_engage else 0.0
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _mtp_reserve
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Largest hardware-aware cap from the native context
@@ -2914,7 +2934,9 @@ class LlamaCppBackend:
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
+                                if total_mib <= pool_mib * (
+                                    _CTX_FIT_VRAM_FRACTION - _mtp_reserve
+                                ):
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
@@ -2931,13 +2953,15 @@ class LlamaCppBackend:
                             requested_total = model_size + self._estimate_kv_cache_bytes(
                                 effective_ctx, cache_type_kv, n_parallel = n_parallel
                             )
-                            gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
+                            gpu_indices, use_fit = self._select_gpus(
+                                requested_total, gpus, usable_fraction = _pin_fraction
+                            )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
                             # headroom threshold as _select_gpus (#5106).
                             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            pin_fraction = self._GPU_PIN_VRAM_FRACTION
+                            pin_fraction = _pin_fraction
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_mib = sum(free for _, free in subset)
@@ -2985,7 +3009,9 @@ class LlamaCppBackend:
                             "Falling back to file-size-only GPU selection",
                             model_size_gb = round(model_size / (1024**3), 2),
                         )
-                        gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                        gpu_indices, use_fit = self._select_gpus(
+                            model_size, gpus, usable_fraction = _pin_fraction
+                        )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
@@ -3351,48 +3377,11 @@ class LlamaCppBackend:
                     self._stdout_thread.start()
                     return self._wait_for_health(timeout = 600.0)
 
-                healthy = _spawn_and_wait(cmd)
-                # A separate MTP drafter (e.g. Gemma's gemma4-assistant head)
-                # can fail to load on a llama-server that advertises the
-                # --spec-type draft-mtp flag but predates the drafter's
-                # architecture -- and that aborts the whole server. Retry once
-                # with the whole spec block replaced by --spec-default so the
-                # main model still loads (without speculation). Replacing the
-                # slice -- rather than re-resolving with mtp_draft_path=None --
-                # is what guarantees MTP is off even for a forced mtp / mtp+ngram
-                # request (which would otherwise re-emit --spec-type draft-mtp).
-                # _requested_spec_mode (the user's choice) is left intact so a
-                # duplicate /load doesn't thrash a reload.
-                # Gate on the flag actually being in the command, not on the
-                # drafter merely existing on disk: local loads pass the path
-                # even in off/ngram modes (and auto drops MTP sub-3B), where a
-                # retry would blame the drafter for an unrelated failure and
-                # override the user's spec choice. The cancel check keeps an
-                # /unload that killed the first attempt from respawning.
-                if (
-                    not healthy
-                    and "--model-draft" in spec_flags
-                    and not self._cancel_event.is_set()
-                ):
-                    logger.warning(
-                        "llama-server failed to start with MTP drafter %s; the "
-                        "prebuilt may predate its architecture. Retrying without "
-                        "speculative decoding -- run `unsloth studio update` for MTP.",
-                        Path(launch_mtp_draft_path).name,
-                    )
-                    self._kill_process()
-                    fallback_cmd = (
-                        cmd[:_spec_start]
-                        + ["--spec-default"]
-                        + cmd[_spec_start + len(spec_flags) :]
-                    )
-                    healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
-                    if healthy:
-                        self._speculative_type = "default"
-
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
-                # llama-server mmap's, which downstream consumers need.
+                # llama-server mmap's, which downstream consumers need. Must be
+                # set BEFORE the spawn: load_progress() reads _gguf_path for
+                # the mmap progress total while the health wait runs.
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
                 # For local GGUF files, extract variant from filename if absent
@@ -3417,6 +3406,66 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
+
+                healthy = _spawn_and_wait(cmd)
+                # A separate MTP drafter (e.g. Gemma's gemma4-assistant head)
+                # can fail to load on a llama-server that advertises the
+                # --spec-type draft-mtp flag but predates the drafter's
+                # architecture -- and that aborts the whole server. Retry once
+                # with the whole spec block replaced by --spec-default so the
+                # main model still loads (without speculation). Replacing the
+                # slice -- rather than re-resolving with mtp_draft_path=None --
+                # is what guarantees MTP is off even for a forced mtp / mtp+ngram
+                # request (which would otherwise re-emit --spec-type draft-mtp).
+                # _requested_spec_mode (the user's choice) is left intact so a
+                # duplicate /load doesn't thrash a reload.
+                # Gate on the flag actually being in the command, not on the
+                # drafter merely existing on disk: local loads pass the path
+                # even in off/ngram modes (and auto drops MTP sub-3B), where a
+                # retry would blame the drafter for an unrelated failure and
+                # override the user's spec choice. The cancel check keeps an
+                # /unload that killed the first attempt from respawning.
+                if (
+                    not healthy
+                    and "--model-draft" in spec_flags
+                    and not self._cancel_event.is_set()
+                ):
+                    # Only blame the binary's age when the output shows the
+                    # drafter actually failing (unknown arch / draft load);
+                    # an unrelated crash (e.g. OOM) gets a neutral message.
+                    # Substrings are upstream llama.cpp messages
+                    # (llama_model_load / srv load_model [spec]); if they
+                    # drift, only the wording degrades -- the retry fires
+                    # either way.
+                    _attempt_output = "\n".join(self._stdout_lines)
+                    if (
+                        "unknown model architecture" in _attempt_output
+                        or "failed to measure draft model memory" in _attempt_output
+                    ):
+                        _retry_reason = (
+                            "the prebuilt may predate its architecture; retrying "
+                            "without speculative decoding -- run "
+                            "`unsloth studio update` for MTP"
+                        )
+                    else:
+                        _retry_reason = (
+                            "retrying without speculative decoding in case the "
+                            "drafter is the cause"
+                        )
+                    logger.warning(
+                        "llama-server failed to start with MTP drafter %s; %s.",
+                        Path(launch_mtp_draft_path).name,
+                        _retry_reason,
+                    )
+                    self._kill_process()
+                    fallback_cmd = (
+                        cmd[:_spec_start]
+                        + ["--spec-default"]
+                        + cmd[_spec_start + len(spec_flags) :]
+                    )
+                    healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
+                    if healthy:
+                        self._speculative_type = "default"
 
                 if not healthy:
                     self._kill_process()
