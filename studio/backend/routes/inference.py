@@ -5193,9 +5193,7 @@ def _set_or_prepend_system_message(
 
     # Drop existing system/developer turns so the backend never sees duplicate
     # or conflicting system instructions, then prepend the resolved prompt.
-    others = [
-        dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")
-    ]
+    others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
     return [{"role": "system", "content": system_prompt}, *others]
 
 
