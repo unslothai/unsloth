@@ -2912,9 +2912,7 @@ class LlamaCppBackend:
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
-                    logger.info(
-                        f"User --cache-type-k/-v {cache_override} honored for KV estimate"
-                    )
+                    logger.info(f"User --cache-type-k/-v {cache_override} honored for KV estimate")
                 if split_mode_override is not None:
                     logger.info(
                         f"User --split-mode {split_mode_override} honored; "
