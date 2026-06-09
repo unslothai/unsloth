@@ -28,17 +28,11 @@ class TestNoTorchBackendAutoInInstallSh:
         for i, line in enumerate(lines):
             if fallback_start is None and "GPU detection failed" in line:
                 fallback_start = i
-            elif (
-                fallback_start is not None
-                and fallback_end is None
-                and line.strip() == "fi"
-            ):
+            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
                 fallback_end = i
                 break
         fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1)
-            if fallback_start
-            else range(0)
+            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
         )
 
         matches = [

@@ -30,7 +30,7 @@ from .mapper import (
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
-from unsloth_zoo.utils import Version
+from unsloth_zoo.utils import Version, get_quant_type
 import gc
 
 transformers_version = Version(transformers_version)
@@ -51,7 +51,6 @@ BAD_MAPPINGS = {
 def _get_torchao_fp8_config(fp8_mode):
     # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
-
     return _impl(fp8_mode)
 
 
@@ -133,7 +132,6 @@ def __get_model_name(
         # fall through to offline quantization via _offline_quantize_to_fp8.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
-
             if Version(vllm.__version__) >= Version("0.12.0"):
                 return model_name
         return None
@@ -181,7 +179,9 @@ def _get_new_mapper():
     try:
         import requests
 
-        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+        new_mapper = (
+            "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+        )
         with requests.get(new_mapper, timeout = 3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
@@ -202,12 +202,7 @@ def _get_new_mapper():
 
 
 def _resolve_with_mappers(
-    model_name,
-    load_in_4bit,
-    load_in_fp8,
-    int_to_float,
-    float_to_int,
-    map_to_unsloth_16bit,
+    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
 ):
     return __get_model_name(
         model_name = model_name,
@@ -246,11 +241,7 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
-    if (
-        new_model_name is None
-        and model_name.count("/") == 1
-        and model_name[0].isalnum()
-    ):
+    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
@@ -292,9 +283,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
     temp_dir = tempfile.gettempdir()
     new_model_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     new_model_name = os.path.join(temp_dir, new_model_name)
-    print(
-        f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
-    )
+    print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
 
     if not os.path.isdir(new_model_name):
         from transformers import (
@@ -346,6 +335,47 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         pass
 
 
+def check_and_disable_bitsandbytes_loading(
+    model_config,
+    load_in_4bit = True,
+    load_in_8bit = False,
+    verbose = True,
+):
+    """
+    Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
+    because the model already has a non-bitsandbytes quantization config.
+    If so, disable BOTH 4bit and 8bit loading and print a warning message.
+
+    Args:
+        model_config: The AutoConfig object from the model
+        load_in_4bit: Whether load_in_4bit is currently enabled
+        load_in_8bit: Whether load_in_8bit is currently enabled
+        verbose: Whether to print warning messages
+
+    Returns:
+        tuple: (load_in_4bit, load_in_8bit, quant_method)
+            load_in_4bit/load_in_8bit will be False if they were disabled
+            quant_method is the detected quantization method or None
+    """
+    quant_method = get_quant_type(model_config)
+
+    if quant_method is None or quant_method == "bitsandbytes":
+        return load_in_4bit, load_in_8bit, quant_method
+
+    # Model has a non-bitsandbytes quantization config (e.g., compressed-tensors, gptq, awq)
+    # We should disable BOTH bitsandbytes loading to avoid config conflicts
+    if load_in_4bit or load_in_8bit:
+        if verbose:
+            print(
+                f"Unsloth: Model already quantized with {quant_method}. "
+                f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
+            )
+        load_in_4bit = False
+        load_in_8bit = False
+
+    return load_in_4bit, load_in_8bit, quant_method
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
@@ -373,13 +403,9 @@ def _get_fp8_mode_and_check_settings(
 
     # Check user settings
     if fp8_mode not in ["row", "block"]:
-        raise ValueError(
-            f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
-        )
+        raise ValueError(f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'")
     if full_finetuning:
-        raise ValueError(
-            "Unsloth: `load_in_fp8` is not compatible with full finetuning"
-        )
+        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
     if load_in_4bit or load_in_8bit or load_in_16bit:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
@@ -423,12 +449,10 @@ def _get_fp8_mode_and_check_settings(
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
-
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
             # Old FBGEMM version - disable and use Triton kernels instead
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
-
             logger.info(
                 f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
                 f"Using Triton kernels instead."

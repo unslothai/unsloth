@@ -51,9 +51,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-IS_ROCM: bool = (
-    False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
-)
+IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 
 def _backend_label(device: DeviceType) -> str:
@@ -85,7 +83,6 @@ def _has_torch() -> bool:
     """Check if PyTorch is importable."""
     try:
         import torch
-
         return True
     except ImportError:
         return False
@@ -95,7 +92,6 @@ def _has_mlx() -> bool:
     """Check if MLX is importable."""
     try:
         import mlx.core
-
         return True
     except ImportError:
         return False
@@ -120,7 +116,6 @@ def detect_hardware() -> DeviceType:
     # --- CUDA / ROCm: try PyTorch ---
     if _has_torch():
         import torch
-
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
@@ -142,7 +137,6 @@ def detect_hardware() -> DeviceType:
     # --- XPU: Intel GPU ---
     if _has_torch():
         import torch
-
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             DEVICE = DeviceType.XPU
             CHAT_ONLY = False
@@ -198,7 +192,6 @@ def clear_gpu_cache():
         torch.cuda.ipc_collect()
     elif device == DeviceType.XPU:
         import torch
-
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
     elif device == DeviceType.MLX:
@@ -379,7 +372,6 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     # GPU runtime version bundled with torch
     try:
         import torch
-
         versions["cuda"] = getattr(torch.version, "cuda", None)
         versions["rocm"] = getattr(torch.version, "hip", None)
     except Exception:
@@ -646,9 +638,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
             result["backend"] = _backend_label(device)
             if IS_ROCM:
                 # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
-                _reconcile_primary_rocm_unified_memory(
-                    result, _get_parent_visible_gpu_spec()
-                )
+                _reconcile_primary_rocm_unified_memory(result, _get_parent_visible_gpu_spec())
             return result
         # SMI tool unavailable or returned no usable data. On Windows, query
         # the Performance Counter API (same source as Task Manager) for
@@ -709,9 +699,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 "temperature_c": None,
                 "vram_used_gb": _used,
                 "vram_total_gb": _total,
-                "vram_utilization_pct": round((_used / _total) * 100, 1)
-                if _total > 0
-                else None,
+                "vram_utilization_pct": round((_used / _total) * 100, 1) if _total > 0 else None,
                 "power_draw_w": None,
                 "power_limit_w": None,
                 "power_utilization_pct": None,
@@ -722,7 +710,6 @@ def get_gpu_utilization() -> Dict[str, Any]:
     if device == DeviceType.MLX:
         try:
             import psutil
-
             agx = _read_apple_gpu_stats()
             total_bytes = psutil.virtual_memory().total
         except Exception as e:
@@ -795,9 +782,7 @@ def _apply_unified_memory_correction(
         device_metrics["vram_total_gb"] = torch_total_gb
         device_metrics["vram_used_gb"] = torch_used_gb
         device_metrics["vram_utilization_pct"] = (
-            round((torch_used_gb / torch_total_gb) * 100, 1)
-            if torch_total_gb > 0
-            else None
+            round((torch_used_gb / torch_total_gb) * 100, 1) if torch_total_gb > 0 else None
         )
         logger.debug(
             "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
@@ -808,9 +793,7 @@ def _apply_unified_memory_correction(
         )
 
 
-def _reconcile_rocm_unified_memory(
-    utilization: Dict[str, Any], device_indices: list[int]
-) -> None:
+def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: list[int]) -> None:
     """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
 
     amd-smi reports only the dedicated slice (~512 MB); torch sees the full
@@ -969,9 +952,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # stale HIP_VISIBLE_DEVICES on an NVIDIA host can't override CUDA_VISIBLE_DEVICES.
     _is_rocm_spec = IS_ROCM or (
         "CUDA_VISIBLE_DEVICES" not in os.environ
-        and (
-            "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
-        )
+        and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
@@ -1064,9 +1045,7 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
         max_parent_id = max(parent_visible_ids)
         if physical_gpu_count > max_parent_id:
             # Count is plausibly physical (not just visible), so enforce it
-            out_of_range = [
-                gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count
-            ]
+            out_of_range = [gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count]
             if out_of_range:
                 raise ValueError(
                     f"Invalid gpu_ids {requested_ids}: IDs must be physical GPU IDs "
@@ -1074,9 +1053,7 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
                     f"Rejected IDs: {out_of_range}. Parent-visible GPUs: {parent_visible_ids}"
                 )
 
-    disallowed_ids = [
-        gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids
-    ]
+    disallowed_ids = [gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids]
     if disallowed_ids:
         raise ValueError(
             f"Invalid gpu_ids {requested_ids}: requested GPUs {disallowed_ids} are "
@@ -1097,9 +1074,7 @@ def _resolve_model_identifier_for_gpu_estimate(
             return config.base_model
         return config.identifier if config else model_name
     except Exception as e:
-        logger.debug(
-            "Could not resolve base model for GPU estimate '%s': %s", model_name, e
-        )
+        logger.debug("Could not resolve base model for GPU estimate '%s': %s", model_name, e)
         return model_name
 
 
@@ -1136,7 +1111,6 @@ def _get_hf_safetensors_total_params(
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
     try:
         from transformers import AutoConfig
-
         trust_remote_code = model_name.lower().startswith("unsloth/")
         return AutoConfig.from_pretrained(
             model_name,
@@ -1188,7 +1162,6 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
     try:
         import torch.distributed as _td
-
         for _attr, _stub in (
             ("is_initialized", lambda: False),
             ("is_available", lambda: False),
@@ -1251,17 +1224,15 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
                 synthetic_total_bytes,
                 synthetic_total_bytes,
             )
-            _, _, _, memory_left_for_kv_cache_gb = (
-                _vllm_utils.approximate_vllm_memory_usage(
-                    config,
-                    load_in_4bit = False,
-                    load_in_8bit = False,
-                    max_seq_length = 1,
-                    gpu_memory_utilization = 1.0,
-                    enable_lora = False,
-                    account_for_gradients = False,
-                    cuda_graph_overhead = False,
-                )
+            _, _, _, memory_left_for_kv_cache_gb = _vllm_utils.approximate_vllm_memory_usage(
+                config,
+                load_in_4bit = False,
+                load_in_8bit = False,
+                max_seq_length = 1,
+                gpu_memory_utilization = 1.0,
+                enable_lora = False,
+                account_for_gradients = False,
+                cuda_graph_overhead = False,
             )
         finally:
             _vllm_utils.get_mem_info = original_get_mem_info
@@ -1283,15 +1254,11 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
 def estimate_fp16_model_size_bytes(
     model_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[int], str]:
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(
-        model_name, hf_token = hf_token
-    )
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
 
     total_params = None
     if "/" in estimate_model and not Path(estimate_model).exists():
-        total_params = _get_hf_safetensors_total_params(
-            estimate_model, hf_token = hf_token
-        )
+        total_params = _get_hf_safetensors_total_params(estimate_model, hf_token = hf_token)
     if total_params:
         return int(total_params * 2), "safetensors"
 
@@ -1346,9 +1313,7 @@ def estimate_required_model_memory_gb(
         DEFAULT_TARGET_MODULES,
     )
 
-    model_size_bytes, source = estimate_fp16_model_size_bytes(
-        model_name, hf_token = hf_token
-    )
+    model_size_bytes, source = estimate_fp16_model_size_bytes(model_name, hf_token = hf_token)
     metadata: Dict[str, Any] = {
         "mode": "inference" if training_type is None else "training",
         "model_size_source": source,
@@ -1371,9 +1336,7 @@ def estimate_required_model_memory_gb(
         return required_gb, metadata
 
     training_method = (
-        "full"
-        if training_type == "Full Finetuning"
-        else ("qlora" if load_in_4bit else "lora")
+        "full" if training_type == "Full Finetuning" else ("qlora" if load_in_4bit else "lora")
     )
     vram_config = TrainingVramConfig(
         training_method = training_method,
@@ -1386,14 +1349,12 @@ def estimate_required_model_memory_gb(
         load_in_4bit = load_in_4bit,
     )
 
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(
-        model_name, hf_token = hf_token
-    )
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     if config is not None:
         try:
-            vram_config.attention_implementation = (
-                _determine_attention_impl_for_gpu_estimate(config)
+            vram_config.attention_implementation = _determine_attention_impl_for_gpu_estimate(
+                config
             )
         except Exception as e:
             # Log at debug: on Windows ROCm the torch.distributed stub does
@@ -1587,9 +1548,7 @@ def auto_select_gpu_ids(
             return selected, metadata
 
     # Use only GPUs with verified VRAM data (from gpu_candidates, not raw devices)
-    fallback_all = (
-        [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
-    )
+    fallback_all = [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
     metadata["selection_mode"] = "fallback_all"
     if ranked:
         fallback_usable = ranked[0]["free_gb"] + sum(
@@ -1853,7 +1812,6 @@ def get_visible_gpu_count() -> int:
     # No visibility env var set -- try torch, fall back to physical count
     try:
         import torch
-
         if get_device() == DeviceType.XPU and hasattr(torch, "xpu"):
             _visible_gpu_count = torch.xpu.device_count()
         else:
@@ -1902,7 +1860,6 @@ def apply_gpu_ids(gpu_ids) -> None:
         # Broad except: a probe failure must never crash a training worker.
         try:
             import torch as _torch
-
             _is_rocm = (
                 getattr(_torch.version, "hip", None) is not None
                 or "rocm" in getattr(_torch, "__version__", "").lower()
@@ -1923,9 +1880,7 @@ def apply_gpu_ids(gpu_ids) -> None:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map(
-    gpu_ids: Optional[list[int]] = None,
-) -> str:
+def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
     Returns ``"balanced"`` (shard evenly across GPUs) when:
@@ -1949,10 +1904,7 @@ def get_device_map(
             # UUID/MIG masks cannot be split into numeric IDs, so if multiple
             # GPUs are visible we assume multi-GPU sharding is intended.
             parent_visible_spec = _get_parent_visible_gpu_spec()
-            if (
-                parent_visible_spec["numeric_ids"] is None
-                and get_visible_gpu_count() > 1
-            ):
+            if parent_visible_spec["numeric_ids"] is None and get_visible_gpu_count() > 1:
                 multi_gpu = True
 
         if multi_gpu:
@@ -1972,14 +1924,16 @@ def get_offloaded_device_map_entries(model) -> dict[str, str]:
     }
 
 
-def raise_if_offloaded(model, device_map: str, context: str = "Loading") -> None:
+def raise_if_offloaded(
+    model,
+    device_map: str,
+    context: str = "Loading",
+) -> None:
     """Raise ``ValueError`` if *model* has modules offloaded to CPU or disk."""
     offloaded = get_offloaded_device_map_entries(model)
     if not offloaded:
         return
-    example = ", ".join(
-        f"{name}={placement}" for name, placement in list(offloaded.items())[:5]
-    )
+    example = ", ".join(f"{name}={placement}" for name, placement in list(offloaded.items())[:5])
     raise ValueError(
         f"{context} does not support models loaded with CPU or disk offload. "
         f"device_map='{device_map}' produced offloaded modules: {example}"

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "@/lib/toast";
 import {
   Dialog,
@@ -15,9 +16,10 @@ import {
   clearAllChats,
   countAllChats,
   downloadChatExport,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
-import { Delete02Icon, Download02Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -29,10 +31,26 @@ export function ChatTab() {
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const collapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.collapseHtmlArtifacts,
+  );
+  const setCollapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.setCollapseHtmlArtifacts,
+  );
+  const allowArtifactNetworkAccess = useChatRuntimeStore(
+    (state) => state.allowArtifactNetworkAccess,
+  );
+  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
+    (state) => state.setAllowArtifactNetworkAccess,
+  );
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (state) => state.hydratePersistedSettings,
+  );
 
   useEffect(() => {
     void countAllChats().then(setCount);
-  }, []);
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -111,6 +129,31 @@ export function ChatTab() {
         </p>
       </header>
 
+      <SettingsSection title={t("settings.chat.artifacts.title")}>
+        <SettingsRow
+          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+          description={t(
+            "settings.chat.artifacts.collapseHtmlBlocksDescription",
+          )}
+        >
+          <Switch
+            checked={collapseHtmlArtifacts}
+            onCheckedChange={setCollapseHtmlArtifacts}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.artifacts.allowNetworkAccess")}
+          description={t(
+            "settings.chat.artifacts.allowNetworkAccessDescription",
+          )}
+        >
+          <Switch
+            checked={allowArtifactNetworkAccess}
+            onCheckedChange={setAllowArtifactNetworkAccess}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.chat.data")}>
         <SettingsRow
           label={t("settings.chat.exportHistory")}
@@ -122,7 +165,7 @@ export function ChatTab() {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download02Icon} className="size-3.5 mr-1.5" />
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}

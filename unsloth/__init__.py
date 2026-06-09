@@ -16,6 +16,26 @@ import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# ── Windows console UTF-8 safety ─────────────────────────────────────────────
+# Legacy Windows consoles use a non-UTF-8 code page (e.g. cp1252) that cannot
+# encode the emoji / box-drawing glyphs Unsloth prints, so a bare
+# print("\U0001f9a5 ...") raises UnicodeEncodeError and aborts (observed at
+# SFTTrainer init, unsloth/trainer.py). Reconfigure stdout/stderr to UTF-8 ONLY
+# on Windows and ONLY when they are not already UTF-8 -- this is a no-op when
+# PYTHONUTF8 / PYTHONIOENCODING is set (Unsloth Studio worker, modern terminals)
+# and is never touched on Linux/macOS, so it cannot change their behaviour.
+# errors="replace" guarantees we can never crash on an unencodable glyph.
+if platform.system() == "Windows":
+    import sys as _sys
+    for _name in ("stdout", "stderr"):
+        _s = getattr(_sys, _name, None)
+        try:
+            _enc = (getattr(_s, "encoding", None) or "").lower()
+            if _s is not None and hasattr(_s, "reconfigure") and "utf" not in _enc:
+                _s.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
 
 def _is_mlx_available():
     # Transitional import barrier: while the paired unsloth-zoo MLX runtime
@@ -68,9 +88,7 @@ if _IS_MLX:
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
-    _raw_text_spec = importlib.util.spec_from_file_location(
-        "unsloth._mlx_raw_text", _raw_text_path
-    )
+    _raw_text_spec = importlib.util.spec_from_file_location("unsloth._mlx_raw_text", _raw_text_path)
     if _raw_text_spec is None or _raw_text_spec.loader is None:
         raise ImportError("Unsloth: could not load MLX raw_text dataprep helpers.")
     _raw_text = importlib.util.module_from_spec(_raw_text_spec)
@@ -124,7 +142,6 @@ if _IS_MLX:
     def is_bfloat16_supported():
         try:
             import mlx.core as mx
-
             name = mx.device_info().get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:

@@ -26,10 +26,18 @@ from models.mcp_servers import (
     McpServerUpdate,
 )
 from storage import mcp_servers_db
+from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+def _looks_like_command(value: str) -> bool:
+    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a
+    value with whitespace is definitely a command. No whitespace proves nothing
+    (a lone token may be a single-arg command or a scheme-less URL)."""
+    return any(ch.isspace() for ch in value)
 
 
 def _validate_url(url: str) -> str:
@@ -38,13 +46,19 @@ def _validate_url(url: str) -> str:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
     # When stdio is enabled on this host, a non-HTTP value is a local command.
     # Reuse this field so stdio servers ride the existing CRUD/storage with no
-    # schema change. When stdio is disabled the value falls through to the
-    # http-only validation below, so non-HTTP input is just a bad URL (400).
+    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so we
+    # keep the existing behaviour and treat any non-HTTP value as a command here.
     if stdio_mcp_enabled() and is_stdio(trimmed):
         try:
             parts = parse_stdio_command(trimmed)
         except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = f"Invalid command: {exc}")
+            raise log_and_http_error(
+                exc,
+                400,
+                "Invalid command. Check quoting and try again.",
+                event = "mcp_servers.invalid_command",
+                log = logger,
+            )
         if not parts or not parts[0].strip():
             raise HTTPException(status_code = 400, detail = "command must not be empty")
         if "://" in parts[0]:
@@ -58,10 +72,15 @@ def _validate_url(url: str) -> str:
         return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code = 400,
-            detail = "url must start with http:// or https://",
+        detail = (
+            "MCP server address must start with http:// or https:// "
+            "(for example https://example.com/mcp)."
         )
+        # Host-scoped wording ("this server"), not "desktop only": self-hosted
+        # hosts can opt in via the env var.
+        if _looks_like_command(trimmed):
+            detail += " Running a local command is not enabled on this server."
+        raise HTTPException(status_code = 400, detail = detail)
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")
     return trimmed
@@ -93,16 +112,13 @@ def _row_to_response(row: dict) -> McpServerResponse:
 
 
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_mcp_servers(current_subject: str = Depends(get_current_subject)):
     return [_row_to_response(row) for row in mcp_servers_db.list_servers()]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
 async def create_mcp_server(
-    payload: McpServerCreate,
-    current_subject: str = Depends(get_current_subject),
+    payload: McpServerCreate, current_subject: str = Depends(get_current_subject)
 ):
     display_name = (payload.display_name or "").strip()
     if not display_name:
@@ -132,9 +148,7 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "display_name" in sent:
         name = (payload.display_name or "").strip()
         if not name:
-            raise HTTPException(
-                status_code = 400, detail = "display_name must not be empty"
-            )
+            raise HTTPException(status_code = 400, detail = "display_name must not be empty")
         changes["display_name"] = name
     if "url" in sent:
         changes["url"] = _validate_url(payload.url or "")
@@ -143,15 +157,11 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         changes["headers_json"] = json.dumps(headers) if headers else None
     if "is_enabled" in sent:
         if payload.is_enabled is None:
-            raise HTTPException(
-                status_code = 400, detail = "is_enabled must be true or false"
-            )
+            raise HTTPException(status_code = 400, detail = "is_enabled must be true or false")
         changes["is_enabled"] = payload.is_enabled
     if "use_oauth" in sent:
         if payload.use_oauth is None:
-            raise HTTPException(
-                status_code = 400, detail = "use_oauth must be true or false"
-            )
+            raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
@@ -184,8 +194,7 @@ async def update_mcp_server(
     # disabled; fastmcp keys tokens by URL and would otherwise let a
     # re-pointed server silently inherit the old account's credentials.
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"])
-        or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
@@ -193,10 +202,7 @@ async def update_mcp_server(
 
 
 @router.delete("/{server_id}", status_code = 204)
-async def delete_mcp_server(
-    server_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -207,8 +213,7 @@ async def delete_mcp_server(
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
 async def refresh_mcp_server_tools(
-    server_id: str,
-    current_subject: str = Depends(get_current_subject),
+    server_id: str, current_subject: str = Depends(get_current_subject)
 ):
     server = mcp_servers_db.get_server(server_id)
     if not server:
@@ -216,9 +221,7 @@ async def refresh_mcp_server_tools(
     # Refresh uses the stored address, so re-check the stdio gate here too: a
     # stdio row from a desktop DB must not spawn on a hosted/network host.
     if is_stdio(server["url"]) and not stdio_mcp_enabled():
-        raise HTTPException(
-            status_code = 400, detail = "stdio MCP servers are disabled on this host"
-        )
+        raise HTTPException(status_code = 400, detail = "stdio MCP servers are disabled on this host")
 
     use_oauth = bool(server.get("use_oauth"))
     try:
@@ -229,16 +232,20 @@ async def refresh_mcp_server_tools(
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
-        logger.warning("MCP refresh failed", server_id = server_id, error = str(exc))
-        return McpServerProbeResult(ok = False, error = str(exc))
+        logger.error(
+            "mcp_servers.refresh_failed",
+            server_id = server_id,
+            error = str(exc),
+            exc_info = True,
+        )
+        return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
 @router.post("/test", response_model = McpServerProbeResult)
 async def test_mcp_server(
-    payload: McpServerTestRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: McpServerTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     # URL/header validation must surface as 400 like create/update so the
     # frontend's create-form pre-flight gets the same error semantics as
@@ -253,6 +260,11 @@ async def test_mcp_server(
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001
-        return McpServerProbeResult(ok = False, error = str(exc))
+        logger.error(
+            "mcp_servers.test_failed",
+            error = str(exc),
+            exc_info = True,
+        )
+        return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))

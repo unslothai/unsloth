@@ -214,6 +214,9 @@ export function ChatMcpServersDialog({
   useEffect(() => {
     if (!open) return;
     refresh();
+    // Reset to the list on each open, else a stale create/edit view persists.
+    setView({ kind: "list" });
+    setForm(EMPTY_FORM);
   }, [open, refresh]);
 
   function startCreate() {
