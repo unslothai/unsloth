@@ -48,9 +48,7 @@ def _igpu_flags(base, lib, count: int) -> list[bool]:
         for i in range(min(count, dev_count)):
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
-                flags[i] = (
-                    base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                )
+                flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
     except Exception:
         # iGPU detection is best-effort: any failure (missing symbol,
         # registry call error) degrades to "discrete" so the memory
@@ -96,9 +94,7 @@ def main() -> int:
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
         # total is a required out-param of the C call but unused: the reader
         # leaves a flat per-device margin, not a fraction of total.
-        lib.ggml_backend_vk_get_device_memory(
-            i, ctypes.byref(free), ctypes.byref(total)
-        )
+        lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
         rows.append("%d\t%d\t%d" % (i, free.value, int(igpu[i])))
     sys.stdout.write("\n".join(rows))
     return 0

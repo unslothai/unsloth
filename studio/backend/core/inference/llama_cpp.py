@@ -1431,9 +1431,7 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(
-        binary: Optional[str] = None,
-    ) -> list[tuple[int, int]]:
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int]]:
         """Query free VRAM per device via the bundled ggml Vulkan backend.
 
         Loads ``libggml-vulkan`` in a short-lived subprocess and calls
@@ -3446,7 +3444,6 @@ class LlamaCppBackend:
                         env["CUDA_VISIBLE_DEVICES"] = pinned
                         try:
                             import torch as _torch
-
                             if getattr(_torch.version, "hip", None) is not None:
                                 env["HIP_VISIBLE_DEVICES"] = pinned
                                 env["ROCR_VISIBLE_DEVICES"] = pinned
