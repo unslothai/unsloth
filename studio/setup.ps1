@@ -413,24 +413,32 @@ function Find-VsBuildTools {
 
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
-    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
     # VS 2026+ uses internal version number as directory name; prior versions use year.
     $dirs = @('18', '2022', '2019', '2017')
 
     foreach ($d in $dirs) {
+        $gen = $dirToGenerator[$d]
+        if (-not $gen) { continue }
         foreach ($r in $roots) {
-            foreach ($ed in $editions) {
-                $candidate = Join-Path $r "Microsoft Visual Studio\$d\$ed"
-                if (Test-Path $candidate) {
-                    $vcDir = Join-Path $candidate "VC\Tools\MSVC"
-                    if (Test-Path $vcDir) {
-                        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($cl) {
-                            $gen = $dirToGenerator[$d]
-                            if ($gen) {
-                                return @{ Generator = $gen; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
-                            }
-                        }
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
+            if (-not (Test-Path $vsBase)) { continue }
+            # VS 2026 (dir '18') may use non-standard edition names (e.g. Preview);
+            # scan all subdirs. Older versions use stable edition names only.
+            if ($d -eq '18') {
+                $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.FullName }
+            } else {
+                $editionCandidates = $knownEditions | ForEach-Object { Join-Path $vsBase $_ }
+            }
+            foreach ($candidate in $editionCandidates) {
+                if (-not (Test-Path $candidate)) { continue }
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (Test-Path $vcDir) {
+                    $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cl) {
+                        $ed = Split-Path $candidate -Leaf
+                        return @{ Generator = $gen; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                     }
                 }
             }
