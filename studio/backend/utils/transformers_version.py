@@ -361,17 +361,35 @@ def get_transformers_tier(model_name: str) -> str:
     lowered = model_name.lower()
 
     # --- Fast substring checks (no I/O) ------------------------------------
-    if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 550 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "550"
-    if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 530 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "530"
 
     # --- Slow config fallbacks (local file first, then network) -----------
     if _check_config_needs_550(model_name):
+        logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_tokenizer_config_needs_v5(model_name):
+        logger.info(
+            "Transformers tier 530 selected for %s (tokenizer_config.json check)",
+            model_name,
+        )
         return "530"
 
+    logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
 
 

@@ -4,6 +4,7 @@
 """Tests for transformers version detection with local checkpoint fallbacks."""
 
 import json
+import logging
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -314,6 +315,42 @@ class TestGetTransformersTier:
         """Ensure 5.5.0 is checked first — a model matching both should get 550."""
         # This shouldn't happen in practice, but verifies priority
         assert get_transformers_tier("gemma-4-model") == "550"
+
+    # ---- issue #6103: the tier decision must be traceable in the logs ----
+
+    def test_tier_550_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "550" in text, f"tier selection not logged: {text!r}"
+        assert "gemma-4-e2b-it" in text, f"tier log omits the model: {text!r}"
+
+    def test_tier_530_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        with patch(
+            "utils.transformers_version._check_config_needs_550",
+            return_value = False,
+        ):
+            assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "530" in text, f"tier selection not logged: {text!r}"
+        assert "qwen3.5-9b" in text, f"tier log omits the model: {text!r}"
+
+    def test_tier_default_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_tokenizer_config_needs_v5",
+                return_value = False,
+            ),
+        ):
+            assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "default" in text, f"tier selection not logged: {text!r}"
 
     def test_needs_transformers_5_compat(self):
         """needs_transformers_5 should return True for both 530 and 550 models."""
