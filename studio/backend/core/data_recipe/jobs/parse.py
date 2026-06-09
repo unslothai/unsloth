@@ -46,7 +46,7 @@ class ParsedUpdate:
     source_progress: SourceProgress | None = None
 
 
-# kinda of a bummber but currently only option, Best effort parser from data-designer logs -> structured status for UI.
+# Best-effort parser from data-designer logs -> structured status for UI.
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
@@ -327,7 +327,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         _apply_source_progress(job, update.source_progress)
 
     if update.stage in USAGE_RESET_STAGES:
-        # usage summary is a short block so we reset once we move into the next stage.
+        # Usage summary is a short block; reset on the next stage.
         job._in_usage_summary = False
 
     if update.usage_section_start is not None:

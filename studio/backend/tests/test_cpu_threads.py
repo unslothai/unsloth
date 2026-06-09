@@ -116,8 +116,8 @@ def _ast_line_of_platform_compat_import(source: str) -> int:
     raise AssertionError("_platform_compat import not found")
 
 
-# AST-based ordering: configure_cpu_threads() must precede _platform_compat
-# in both run.py and main.py. Robust to formatting / line shifts.
+# AST ordering: configure_cpu_threads() must precede _platform_compat in both
+# run.py and main.py. Robust to formatting / line shifts.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
     source = entry_point.read_text()

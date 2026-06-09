@@ -1,4 +1,3 @@
-# train_and_merge.py
 from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
@@ -21,7 +20,7 @@ def safe_remove_directory(path):
         return False
 
 
-# This tokenizer will be used by the mapping function
+# Used by the mapping function below.
 tokenizer = None
 
 

@@ -3,18 +3,10 @@
 """
 🦥 Starter Script for Fine-Tuning FastLanguageModel with Unsloth
 
-This script is designed as a starting point for fine-tuning your models using unsloth.
-It includes configurable options for model loading, PEFT parameters, training arguments, 
-and model saving/pushing functionalities.
+Configurable options for model loading, PEFT, training, and saving/pushing.
+Customize the dataset loading/preprocessing and the save/push config for your case.
 
-You will likely want to customize this script to suit your specific use case 
-and requirements.
-
-Here are a few suggestions for customization:
-    - Modify the dataset loading and preprocessing steps to match your data.
-    - Customize the model saving and pushing configurations.
-
-Usage: (most of the options have valid default values this is an extended example for demonstration purposes)
+Usage (most options have sensible defaults; this is an extended example):
     python unsloth-cli.py --model_name "unsloth/llama-3-8b" --max_seq_length 8192 --dtype None --load_in_4bit \
     --r 64 --lora_alpha 32 --lora_dropout 0.1 --bias "none" --use_gradient_checkpointing "unsloth" \
     --random_state 3407 --use_rslora --per_device_train_batch_size 4 --gradient_accumulation_steps 8 \
@@ -23,10 +15,7 @@ Usage: (most of the options have valid default values this is an extended exampl
     --report_to "tensorboard" --save_model --save_path "model" --quantization_method "f16" \
     --push_model --hub_path "hf/model" --hub_token "your_hf_token"
 
-To see a full list of configurable options, use:
-    python unsloth-cli.py --help
-
-Happy fine-tuning!
+Run `python unsloth-cli.py --help` for the full list of options.
 """
 
 import argparse
@@ -103,7 +92,6 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            # Use raw text loader
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
@@ -111,16 +99,14 @@ def run(args):
             loader = RawTextDataLoader(tokenizer)
             dataset = loader.load_from_file(args.dataset)
         else:
-            # Check for modelscope usage
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:
                 from modelscope import MsDataset
                 dataset = MsDataset.load(args.dataset, split = "train")
             else:
-                # Existing HuggingFace dataset logic
                 dataset = load_dataset(args.dataset, split = "train")
 
-            # Apply formatting for structured datasets
+            # Format structured datasets
             dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
 
@@ -163,7 +149,7 @@ def run(args):
 
     # Save model
     if args.save_model:
-        # if args.quantization_method is a list, we will save the model for each quantization method
+        # If args.quantization is a list, save once per quantization method
         if args.save_gguf:
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:

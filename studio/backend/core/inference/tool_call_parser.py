@@ -11,11 +11,9 @@ import json
 import re
 
 
-# _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing
-# unclosed runs so truncated tails don't leak markup.
-# Function-name char set tracks OpenAI's ^[a-zA-Z0-9_-]{1,64}$ so MCP
-# tool names that contain a hyphen (e.g. mcp__srv__list-issues) parse
-# the same as the built-in web_search/python/terminal names.
+# _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing unclosed
+# runs so truncated tails don't leak markup. The [\w-] name set matches OpenAI's
+# so hyphenated MCP tool names (mcp__srv__list-issues) parse like built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
@@ -72,8 +70,7 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Parameter names can carry hyphens too (e.g. MCP tool schemas with
-# `issue-number`, `repo-name`); using `\w+` here dropped those keys.
+# [\w-] so hyphenated MCP param names (issue-number) aren't dropped.
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _PARAM_CLOSE_TAG = "</parameter>"
@@ -105,7 +102,12 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     return text.strip() if final else text
 
 
-def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
+def parse_tool_calls_from_text(
+    content: str,
+    *,
+    id_offset: int = 0,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Parse OpenAI-format ``tool_calls`` from model text.
 
     Returns a list of ``{"id", "type", "function": {"name", "arguments"}}``
@@ -119,15 +121,17 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     - XML-style function blocks:
       ``<function=name><parameter=k>v</parameter></function>``
 
-    Closing tags (``</tool_call>``, ``</function>``, ``</parameter>``)
-    are all optional since models frequently omit them.
+    ``allow_incomplete=True`` keeps the historical healing behavior for
+    missing closing tags. ``allow_incomplete=False`` accepts only
+    well-formed wrappers so disabled Auto-Heal can still parse valid
+    local tool protocol without repairing truncated output.
     """
     tool_calls: list[dict] = []
 
-    # Pattern 1: <tool_call>{json}. Balanced-brace scan that skips
-    # braces inside JSON strings.
+    # Pattern 1: <tool_call>{json}. Balanced-brace scan, skipping braces in
+    # JSON strings.
     for m in _TC_JSON_START_RE.finditer(content):
-        brace_start = m.end() - 1  # position of the opening {
+        brace_start = m.end() - 1  # opening {
         depth, i = 0, brace_start
         in_string = False
         while i < len(content):
@@ -147,27 +151,31 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 if depth == 0:
                     break
             i += 1
-        if depth == 0:
-            json_str = content[brace_start : i + 1]
-            try:
-                obj = json.loads(json_str)
-                tc = {
-                    "id": f"call_{id_offset + len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": obj.get("name", ""),
-                        "arguments": obj.get("arguments", {}),
-                    },
-                }
-                if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
-                tool_calls.append(tc)
-            except (json.JSONDecodeError, ValueError):
-                pass
+        if depth != 0:
+            continue
+        if not allow_incomplete:
+            tail_after_json = content[i + 1 :].lstrip()
+            if _TC_END_TAG_RE.match(tail_after_json) is None:
+                continue
+        json_str = content[brace_start : i + 1]
+        try:
+            obj = json.loads(json_str)
+            tc = {
+                "id": f"call_{id_offset + len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": obj.get("name", ""),
+                    "arguments": obj.get("arguments", {}),
+                },
+            }
+            if isinstance(tc["function"]["arguments"], dict):
+                tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
+            tool_calls.append(tc)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    # Pattern 2: <function=name><parameter=k>v... -- closing tags
-    # optional; don't use </function> as body boundary because code
-    # values can contain that literal.
+    # Pattern 2: <function=name><parameter=k>v... -- closing tags optional;
+    # </function> isn't a body boundary since code values can contain it.
     if not tool_calls:
         func_starts = [
             fm
@@ -185,18 +193,37 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            body = _TC_FUNC_CLOSE_RE.sub("", body)
+            if not allow_incomplete:
+                # Bound the body at the closing </function> tag rather than
+                # the end of the response, so a complete call followed by
+                # trailing prose is still accepted (matching the JSON-style
+                # <tool_call> path, which already tolerates trailing text).
+                # rfind picks the last </function>, so a literal </function>
+                # inside a code parameter value stays in the body.
+                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                if close_idx < 0:
+                    continue
+                body = body[:close_idx]
+            else:
+                body = _TC_FUNC_CLOSE_RE.sub("", body)
 
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
             if len(param_starts) == 1:
-                # Single param: take everything to body end so
-                # embedded </parameter> in code strings is preserved.
+                # Single param: take everything to body end so an embedded
+                # </parameter> in code strings is preserved.
                 pm = param_starts[0]
                 val = body[pm.end() :]
-                val = _TC_PARAM_CLOSE_RE.sub("", val)
+                if not allow_incomplete:
+                    stripped_val = val.rstrip()
+                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                        continue
+                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                else:
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
                 arguments[pm.group(1)] = val.strip()
             else:
+                valid_params = True
                 for pidx, pm in enumerate(param_starts):
                     param_name = pm.group(1)
                     val_start = pm.end()
@@ -206,8 +233,17 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                         else len(body)
                     )
                     val = body[val_start:next_param]
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
+                    if not allow_incomplete:
+                        stripped_val = val.rstrip()
+                        if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                            valid_params = False
+                            break
+                        val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                    else:
+                        val = _TC_PARAM_CLOSE_RE.sub("", val)
                     arguments[param_name] = val.strip()
+                if not valid_params:
+                    continue
 
             tc = {
                 "id": f"call_{id_offset + len(tool_calls)}",

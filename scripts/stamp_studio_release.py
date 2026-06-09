@@ -22,11 +22,8 @@ def _atomic_write_text(
     data: str,
     encoding: str = "utf-8",
 ) -> None:
-    """Atomic version of ``Path.write_text``.
-
-    A crash or signal mid-write leaves the prior file intact; the
-    Studio build never reads a partial ``_studio_release_build.py``.
-    """
+    """Atomic ``Path.write_text``: a crash mid-write leaves the prior file
+    intact, so the build never reads a partial ``_studio_release_build.py``."""
     dirpath = str(path.parent) or "."
     path.parent.mkdir(parents = True, exist_ok = True)
     fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)

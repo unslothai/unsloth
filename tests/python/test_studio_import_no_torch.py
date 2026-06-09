@@ -61,7 +61,6 @@ def no_torch_venv(request, tmp_path_factory):
     if venv_python is None:
         pytest.skip(f"Could not create Python {py_version} venv")
 
-    # Verify torch is NOT importable
     check = subprocess.run(
         [str(venv_python), "-c", "import torch"],
         capture_output = True,

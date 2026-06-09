@@ -33,9 +33,7 @@ from pathlib import Path
 import pytest
 
 
-# ---------------------------------------------------------------------------
 # Repo discovery
-# ---------------------------------------------------------------------------
 
 
 def _find_repo_root() -> Path | None:
@@ -79,9 +77,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from llama_server_shim import FakeLlamaServer  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_backend(port: int, *, loaded: bool = True) -> LlamaCppBackend:
@@ -208,9 +204,7 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
-# ---------------------------------------------------------------------------
 # (1) Behavioural canary
-# ---------------------------------------------------------------------------
 
 
 def test_buggy_route_blocks_event_loop():
@@ -239,9 +233,7 @@ def test_fixed_route_keeps_event_loop_responsive():
     assert max_lat < 0.25, f"expected <0.25s; got {max_lat:.3f}s (all: {lats})"
 
 
-# ---------------------------------------------------------------------------
 # (2) Functional equivalence -- sync == to_thread for each codec branch
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -366,9 +358,7 @@ def test_functional_equivalence_bicodec_match():
     assert sync_result == threaded
 
 
-# ---------------------------------------------------------------------------
 # (3) Failure modes
-# ---------------------------------------------------------------------------
 
 
 def test_shim_returns_500_on_tokenize_returns_none():
@@ -432,9 +422,7 @@ def test_backend_not_loaded_short_circuits():
     assert threaded_t < 0.05
 
 
-# ---------------------------------------------------------------------------
 # (4) Stress / concurrency
-# ---------------------------------------------------------------------------
 
 
 def test_50_concurrent_probes_complete_without_deadlock():
@@ -499,9 +487,7 @@ def test_100_concurrent_healths_during_slow_probe_all_responsive():
     assert max_lat < 0.35, f"100-burst max latency {max_lat:.3f}s exceeds 350 ms"
 
 
-# ---------------------------------------------------------------------------
 # (5) Drift / regression guards on the production source
-# ---------------------------------------------------------------------------
 
 
 def test_load_model_caches_audio_type_inside_serial_load_lock():
@@ -588,9 +574,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     )
 
 
-# ---------------------------------------------------------------------------
 # (6) Timing budgets
-# ---------------------------------------------------------------------------
 
 
 def test_load_response_under_2s_with_fast_shim():
@@ -624,9 +608,7 @@ def test_repeated_loads_bounded_total_time():
     assert elapsed < 10.0
 
 
-# ---------------------------------------------------------------------------
 # (7) Browser-compatibility surface
-# ---------------------------------------------------------------------------
 
 
 def test_response_is_valid_browser_parseable_json():
@@ -692,9 +674,7 @@ def test_response_shape_matches_pre_fix_for_no_match():
             assert body == {"audio_type": None}
 
 
-# ---------------------------------------------------------------------------
 # (8) Cancellation
-# ---------------------------------------------------------------------------
 
 
 def test_client_disconnect_during_probe_does_not_crash_server():

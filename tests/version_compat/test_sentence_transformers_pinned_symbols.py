@@ -15,9 +15,8 @@ unsloth/models/sentence_transformer.py that:
     sentence_transformers.models.transformer.Transformer; lines
     1169-1171) — at least ONE must resolve.
 
-Strategy: GitHub raw fetch + symbol grep (no pip install, runs CPU-only
-on every PR + daily cron). Versioning policy: ST is unpinned in
-unsloth/pyproject.toml; cover the most recent minors (5.x line) plus
+Strategy: GitHub raw fetch + symbol grep (no pip install, CPU-only).
+ST is unpinned in unsloth/pyproject.toml; cover recent 5.x minors plus
 `main`.
 """
 
@@ -42,10 +41,8 @@ ST_TAGS = [
 ]
 
 
-# -------------------------------------------------------------------------
 # Top-level public surface: SentenceTransformer + SentenceTransformerTrainer
 # must be importable as `from sentence_transformers import X`.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", ST_TAGS)
@@ -60,22 +57,17 @@ def test_st_top_level_exports(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # Sub-modules: Transformer / Pooling / Normalize. unsloth walks
 # `sentence_transformers.models` to introspect these (line 1016, 1206).
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_models_re_exports(tag: str):
     """Transformer / Pooling / Normalize must be reachable through
-    `sentence_transformers.models`. ST 5.4 reorganised the package
-    (no more top-level `models/` dir; modules live under
-    `sentence_transformer/` and `base/modules/`), but the public
-    re-export at `sentence_transformers/__init__.py` still has to
-    surface these three so user code (and unsloth/models/sentence_transformer.py:1016,1206,1467)
-    can `from sentence_transformers.models import Transformer` (or
-    equivalently `from sentence_transformers import models`)."""
+    `sentence_transformers.models`. ST 5.4 reorganised the package, but
+    the top-level re-export must still surface these three so user code
+    (and unsloth/models/sentence_transformer.py:1016,1206,1467) can
+    `from sentence_transformers.models import Transformer`."""
     # Layout 1 (legacy &lt; 5.4): sentence_transformers/models[.py|/__init__.py].
     # Layout 2 (&gt;= 5.4): top-level __init__.py re-exports the symbols
     # plus the modules live under base/modules and sentence_transformer/.
@@ -95,14 +87,10 @@ def test_st_models_re_exports(tag: str):
         )
         return
 
-    # ST 5.4+ modular layout: classes moved under
-    #   - sentence_transformers/base/modules/transformer.py             (Transformer)
-    #   - sentence_transformers/sentence_transformer/modules/pooling.py (Pooling)
-    #   - sentence_transformers/sentence_transformer/modules/normalize.py (Normalize)
-    # Backward compatibility for `from sentence_transformers.models
-    # import X` is set up at import time via
-    # `sentence_transformers.util.deprecated_import.setup_deprecated_module_imports`
-    # called from sentence_transformers/__init__.py.
+    # ST 5.4+ modular layout: classes moved under base/modules and
+    # sentence_transformer/modules. Backward compat for
+    # `from sentence_transformers.models import X` is wired at import via
+    # setup_deprecated_module_imports in sentence_transformers/__init__.py.
     expected_paths = {
         "Transformer": [
             "sentence_transformers/base/modules/transformer.py",
@@ -142,10 +130,8 @@ def test_st_models_re_exports(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # Transformer base class: unsloth checks two alternate paths at
 # sentence_transformer.py:1169-1171. At least ONE must resolve.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", ST_TAGS)
@@ -167,20 +153,16 @@ def test_st_transformer_base_class_either_path(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # sentence_transformers.util: import_from_string + load_dir_path are the
 # two helpers unsloth.models.sentence_transformer:1177,1205 calls.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_util_helpers(tag: str):
     """`sentence_transformers.util.{import_from_string, load_dir_path}` —
     used by unsloth.models.sentence_transformer:1177,1205. ST 5.4+ moved
-    util into a package; we accept either layout. We also accept the
-    function being defined in any submodule of the util package, since
-    `from sentence_transformers.util import import_from_string` works
-    when util/__init__.py re-exports."""
+    util into a package; accept either layout, or a re-export from any
+    util submodule."""
     candidates = [
         "sentence_transformers/util.py",
         "sentence_transformers/util/__init__.py",
