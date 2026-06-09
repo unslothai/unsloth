@@ -57,13 +57,9 @@ def _env_offline() -> bool:
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
-_MODEL_SIZE_RE = _re.compile(
-    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
-)
+_MODEL_SIZE_RE = _re.compile(r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
 # MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
-_ACTIVE_SIZE_RE = _re.compile(
-    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
-)
+_ACTIVE_SIZE_RE = _re.compile(r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
 
 
 def extract_model_size_b(model_id: str) -> float | None:
@@ -511,7 +507,12 @@ _VLM_MODEL_TYPES = {
     "internvl_chat",
     "cogvlm2",
     "minicpmv",
+    "gemma4",
 }
+
+# Audio-only models that share the ForConditionalGeneration suffix
+# (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration).
+_AUDIO_ONLY_MODEL_TYPES = {"csm", "whisper"}
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses 5.5.0 (newest, recognizes all architectures).
@@ -520,9 +521,77 @@ from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 _VENV_T5_DIR = str(_studio_root() / ".venv_t5_550")
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
+
+def _is_vlm(config) -> bool:
+    architectures = getattr(config, "architectures", None) or []
+    model_type = getattr(config, "model_type", None)
+    if model_type in _AUDIO_ONLY_MODEL_TYPES:
+        return False
+    return (
+        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+        or hasattr(config, "vision_config")
+        or hasattr(config, "img_processor")
+        or hasattr(config, "image_token_index")
+        or model_type in _VLM_MODEL_TYPES
+    )
+
+
+def _raw_config_has_vision_config(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
+    try:
+        if is_local_path(model_name):
+            config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = Path(
+                hf_hub_download(
+                    repo_id = model_name,
+                    filename = "config.json",
+                    token = hf_token,
+                )
+            )
+        config = json.loads(config_path.read_text())
+        architectures = config.get("architectures") or []
+        model_type = config.get("model_type")
+        if model_type in _AUDIO_ONLY_MODEL_TYPES:
+            return False
+        return (
+            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+            or "vision_config" in config
+            or "img_processor" in config
+            or "image_token_index" in config
+            or model_type in _VLM_MODEL_TYPES
+        )
+    except Exception as exc:
+        logger.warning("Could not read config.json for '%s': %s", model_name, exc)
+        return None
+
+
+# why: inline _is_vlm and constants are prepended so the subprocess stays
+# self-contained and does not import the parent backend module graph.
+_VISION_CHECK_INLINE_HELPERS = (
+    "_VLM_ARCH_SUFFIXES = " + repr(_VLM_ARCH_SUFFIXES) + "\n"
+    "_VLM_MODEL_TYPES = " + repr(_VLM_MODEL_TYPES) + "\n"
+    "_AUDIO_ONLY_MODEL_TYPES = " + repr(_AUDIO_ONLY_MODEL_TYPES) + "\n"
+    "def _is_vlm(config):\n"
+    "    architectures = getattr(config, 'architectures', None) or []\n"
+    "    model_type = getattr(config, 'model_type', None)\n"
+    "    if model_type in _AUDIO_ONLY_MODEL_TYPES:\n"
+    "        return False\n"
+    "    return (\n"
+    "        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
+    "        or hasattr(config, 'vision_config')\n"
+    "        or hasattr(config, 'img_processor')\n"
+    "        or hasattr(config, 'image_token_index')\n"
+    "        or model_type in _VLM_MODEL_TYPES\n"
+    "    )\n"
+)
+
 # Inline script executed in a subprocess with transformers 5.x activated.
 # Receives model_name and token via argv, prints JSON result to stdout.
-_VISION_CHECK_SCRIPT = r"""
+_VISION_CHECK_SCRIPT = (
+    r"""
 import sys, os, json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -536,32 +605,20 @@ sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
+"""
+    + _VISION_CHECK_INLINE_HELPERS
+    + r"""
 try:
     from transformers import AutoConfig
+
     kwargs = {"trust_remote_code": True}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
 
-    is_vlm = False
-    if hasattr(config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in config.architectures
-        )
-    if not is_vlm and hasattr(config, "vision_config"):
-        is_vlm = True
-    if not is_vlm and hasattr(config, "img_processor"):
-        is_vlm = True
-    if not is_vlm and hasattr(config, "image_token_index"):
-        is_vlm = True
-    if not is_vlm and hasattr(config, "model_type"):
-        vlm_types = {"phi3_v","llava","llava_next","llava_onevision",
-                      "internvl_chat","cogvlm2","minicpmv"}
-        if config.model_type in vlm_types:
-            is_vlm = True
+    is_vlm = _is_vlm(config)
 
-    model_type = getattr(config, "model_type", "unknown")
+    model_type = getattr(config, "model_type", None)
     archs = getattr(config, "architectures", [])
     print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
@@ -569,11 +626,10 @@ except Exception as exc:
     print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
+)
 
 
-def _is_vision_model_subprocess(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[bool]:
+def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
     Same pattern as training/inference workers: spawn a clean subprocess
@@ -715,9 +771,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     return False
 
 
-def _is_vision_model_uncached(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[bool]:
+def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
     """Uncached vision model detection -- called by is_vision_model().
 
     Returns True/False for definitive results, or None when detection failed
@@ -736,49 +790,29 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        result = _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        if result is not None:
+            return result
+        return _raw_config_has_vision_config(model_name, hf_token = hf_token)
 
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
-        _audio_only_model_types = {"csm", "whisper"}
         model_type = getattr(config, "model_type", None)
-        if model_type in _audio_only_model_types:
+        if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
 
-        # Check 1: Architecture class name patterns
-        if hasattr(config, "architectures"):
-            is_vlm = any(x.endswith(_VLM_ARCH_SUFFIXES) for x in config.architectures)
-            if is_vlm:
-                logger.info(
-                    f"Model {model_name} detected as VLM: architecture {config.architectures}"
-                )
-                return True
-
-        # Check 2: Has vision_config (most VLMs: LLaVA, Gemma-3, Qwen2-VL, etc.)
-        if hasattr(config, "vision_config"):
-            logger.info(f"Model {model_name} detected as VLM: has vision_config")
+        if _is_vlm(config):
+            archs = getattr(config, "architectures", None) or []
+            logger.info(
+                "Model %s detected as VLM (model_type=%s, architectures=%s)",
+                model_name,
+                model_type,
+                archs,
+            )
             return True
-
-        # Check 3: Has img_processor (Phi-3.5 Vision uses this instead of vision_config)
-        if hasattr(config, "img_processor"):
-            logger.info(f"Model {model_name} detected as VLM: has img_processor")
-            return True
-
-        # Check 4: Has image_token_index (common in VLMs for image placeholder tokens)
-        if hasattr(config, "image_token_index"):
-            logger.info(f"Model {model_name} detected as VLM: has image_token_index")
-            return True
-
-        # Check 5: Known VLM model_type values that may not match above checks
-        if hasattr(config, "model_type"):
-            if config.model_type in _VLM_MODEL_TYPES:
-                logger.info(
-                    f"Model {model_name} detected as VLM: model_type={config.model_type}"
-                )
-                return True
 
         return False
 
@@ -823,9 +857,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (
-        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
-    ),
+    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
 }
 
 
@@ -849,9 +881,7 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     return result
 
 
-def _detect_audio_from_tokenizer(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[str]:
+def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Detect audio type from tokenizer special tokens (for LLM-based audio models).
 
     First checks local HF cache, then fetches tokenizer_config.json from HuggingFace.
@@ -913,9 +943,7 @@ def _detect_audio_from_tokenizer(
 
         return None
     except Exception as e:
-        logger.debug(
-            f"Could not detect audio type from tokenizer for {model_name}: {e}"
-        )
+        logger.debug(f"Could not detect audio type from tokenizer for {model_name}: {e}")
         return None
 
 
@@ -1346,9 +1374,7 @@ def _iter_hf_cache_snapshots(repo_id: str):
     yield from snap_dirs
 
 
-def _list_gguf_variants_from_hf_cache(
-    repo_id: str,
-) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached."""
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
@@ -1358,8 +1384,7 @@ def _list_gguf_variants_from_hf_cache(
 
 
 def list_gguf_variants(
-    repo_id: str,
-    hf_token: Optional[str] = None,
+    repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
     """
     List all GGUF quantization variants in a HuggingFace repo.
@@ -1462,9 +1487,7 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(
-    directory: str,
-) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quantization variants in a local directory.
 
     Mirrors :func:`list_gguf_variants` but reads from the filesystem
@@ -1533,8 +1556,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     matches = sorted(
         f
         for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name)
-        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
+        if not _is_mmproj(f.name) and _extract_quant_label(f.relative_to(p).as_posix()) == variant
     )
     if matches:
         return str(matches[0].resolve())
@@ -1558,10 +1580,7 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     return None
 
 
-def detect_gguf_model_remote(
-    repo_id: str,
-    hf_token: Optional[str] = None,
-) -> Optional[str]:
+def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """
     Check if a HuggingFace repo contains GGUF files.
 
@@ -1617,9 +1636,7 @@ def detect_gguf_model_remote(
         )
         return cached
 
-    logger.warning(
-        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
-    )
+    logger.warning(f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}")
     return None
 
 
@@ -1752,9 +1769,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(
-    outputs_dir: str = str(outputs_root()),
-) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
     """
     Scan outputs folder for trained Studio models.
 
@@ -1823,9 +1838,7 @@ def scan_exported_models(
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
             # Filter out mmproj (vision projection) files — they aren't loadable as main models
-            gguf_files = [
-                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
-            ]
+            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -1900,9 +1913,7 @@ def scan_exported_models(
                 # Fallback: read base model from the original training run's
                 # adapter_config.json in ./outputs/{run_name}/
                 if not base_model:
-                    outputs_adapter_cfg = (
-                        resolve_output_dir(run_dir.name) / "adapter_config.json"
-                    )
+                    outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
                         if outputs_adapter_cfg.exists():
                             cfg = json.loads(outputs_adapter_cfg.read_text())
@@ -1935,9 +1946,7 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info(
-                        "Detected base model from adapter_config.json: %s", base_model
-                    )
+                    logger.info("Detected base model from adapter_config.json: %s", base_model)
                     return base_model
 
         config_path = checkpoint_path_obj / "config.json"
@@ -2010,9 +2019,7 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info(
-                        f"Detected base model from adapter_config.json: {base_model}"
-                    )
+                    logger.info(f"Detected base model from adapter_config.json: {base_model}")
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
@@ -2084,9 +2091,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
-                        logger.info(
-                            f"Loaded model defaults from {config_path} (via mapping)"
-                        )
+                        logger.info(f"Loaded model defaults from {config_path} (via mapping)")
                         return config
 
         # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
@@ -2156,14 +2161,10 @@ class ModelConfig:
     is_lora: bool  # Is this a lora adapter?
     is_gguf: bool = False  # Is this a GGUF model?
     is_audio: bool = False  # Is this a TTS audio model?
-    audio_type: Optional[str] = (
-        None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
-    )
+    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
-    gguf_mmproj_file: Optional[str] = (
-        None  # Full path to the mmproj .gguf file (vision projection)
-    )
+    gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -2172,7 +2173,9 @@ class ModelConfig:
 
     @classmethod
     def from_lora_path(
-        cls, lora_path: str, hf_token: Optional[str] = None
+        cls,
+        lora_path: str,
+        hf_token: Optional[str] = None,
     ) -> Optional["ModelConfig"]:
         """
         Create ModelConfig from a local LoRA adapter path.
@@ -2321,9 +2324,7 @@ class ModelConfig:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
-                    logger.warning(
-                        f"Base model is vision but no mmproj file found in {gguf_dir}"
-                    )
+                    logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 return cls(
                     identifier = identifier,
@@ -2385,15 +2386,11 @@ class ModelConfig:
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
             detected_base = (
-                get_base_model_from_lora(path)
-                if _looks_like_lora_adapter(Path(path))
-                else None
+                get_base_model_from_lora(path) if _looks_like_lora_adapter(Path(path)) else None
             )
             if detected_base:
                 is_lora = True
-                logger.info(
-                    f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
-                )
+                logger.info(f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})")
 
         # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
         # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
@@ -2407,18 +2404,14 @@ class ModelConfig:
                     is_lora = True
                     logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
             except Exception as e:
-                logger.debug(
-                    f"Could not check remote LoRA status for '{identifier}': {e}"
-                )
+                logger.debug(f"Could not check remote LoRA status for '{identifier}': {e}")
 
             # API may have failed; adapter_config.json may still be cached.
             if not is_lora:
                 for snap in _iter_hf_cache_snapshots(identifier):
                     if (snap / "adapter_config.json").is_file():
                         is_lora = True
-                        logger.info(
-                            f"Auto-detected cached LoRA adapter: '{identifier}'"
-                        )
+                        logger.info(f"Auto-detected cached LoRA adapter: '{identifier}'")
                         break
 
         # Handle LoRA adapters
@@ -2432,9 +2425,7 @@ class ModelConfig:
                 try:
                     from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(
-                        identifier, "adapter_config.json", token = hf_token
-                    )
+                    config_path = hf_hub_download(identifier, "adapter_config.json", token = hf_token)
                     with open(config_path, "r") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")
@@ -2498,9 +2489,7 @@ class ModelConfig:
 
         #  Use the correct 'local_models' parameter to resolve display names
         if " (Active)" in selected or " (Ready)" in selected:
-            clean_display_name = selected.replace(" (Active)", "").replace(
-                " (Ready)", ""
-            )
+            clean_display_name = selected.replace(" (Active)", "").replace(" (Ready)", "")
             if local_models:
                 for local_display, local_path in local_models:
                     if local_display == clean_display_name:

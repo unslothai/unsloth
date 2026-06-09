@@ -35,13 +35,17 @@ SUPPORTED_FORMATS = {
 
 
 class RawTextDataLoader:
-    def __init__(self, tokenizer, chunk_size = 2048, stride = 512, return_tokenized = True):
+    def __init__(
+        self,
+        tokenizer,
+        chunk_size = 2048,
+        stride = 512,
+        return_tokenized = True,
+    ):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride >= chunk_size:
-            raise ValueError(
-                f"stride ({stride}) must be smaller than chunk_size ({chunk_size})"
-            )
+            raise ValueError(f"stride ({stride}) must be smaller than chunk_size ({chunk_size})")
         self.tokenizer = tokenizer
         self.chunk_size = chunk_size
         self.stride = stride
@@ -52,7 +56,11 @@ class RawTextDataLoader:
         extension = Path(file_path).suffix.lower()
         return SUPPORTED_FORMATS.get(extension, "plain_text")
 
-    def load_from_file(self, file_path, return_tokenized = None):
+    def load_from_file(
+        self,
+        file_path,
+        return_tokenized = None,
+    ):
         """Load raw text and convert to dataset"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -60,12 +68,14 @@ class RawTextDataLoader:
         text_content = self._read_file_by_format(file_path, file_format)
         if not text_content or not text_content.strip():
             raise ValueError(f"File '{file_path}' is empty or contains only whitespace")
-        chunks = self.smart_chunk_text(
-            text_content, self.chunk_size, self.stride, return_tokenized
-        )
+        chunks = self.smart_chunk_text(text_content, self.chunk_size, self.stride, return_tokenized)
         return self.create_causal_dataset(chunks)
 
-    def load_from_files(self, file_paths, return_tokenized = None):
+    def load_from_files(
+        self,
+        file_paths,
+        return_tokenized = None,
+    ):
         """Load multiple text files"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -79,13 +89,15 @@ class RawTextDataLoader:
             all_chunks.extend(chunks)
         return self.create_causal_dataset(all_chunks)
 
-    def chunk_text(self, text, return_tokenized = None):
+    def chunk_text(
+        self,
+        text,
+        return_tokenized = None,
+    ):
         """Split text into overlapping chunks"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
-        return self.smart_chunk_text(
-            text, self.chunk_size, self.stride, return_tokenized
-        )
+        return self.smart_chunk_text(text, self.chunk_size, self.stride, return_tokenized)
 
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
@@ -107,7 +119,13 @@ class RawTextDataLoader:
             # If chunks are text strings (backward compatibility)
             return Dataset.from_dict({"text": chunks})
 
-    def smart_chunk_text(self, text, chunk_size, stride, return_tokenized = True):
+    def smart_chunk_text(
+        self,
+        text,
+        chunk_size,
+        stride,
+        return_tokenized = True,
+    ):
         """
         Intelligent chunking that:
         1. Respects sentence/paragraph boundaries
@@ -134,9 +152,7 @@ class RawTextDataLoader:
                 # Add EOS token to the tokens if available
                 eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
-                    tokens = (
-                        tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-                    )
+                    tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                     tokens.append(eos_token_id)
 
                 # Create attention mask
@@ -159,9 +175,7 @@ class RawTextDataLoader:
             if return_tokenized:
                 # Convert to list if it's a tensor
                 chunk_tokens_list = (
-                    chunk_tokens.tolist()
-                    if hasattr(chunk_tokens, "tolist")
-                    else list(chunk_tokens)
+                    chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
 
                 # Add EOS token if it's the last chunk or chunk is complete
@@ -173,20 +187,14 @@ class RawTextDataLoader:
                 # Create attention mask (all tokens are attended to)
                 attention_mask = [1] * len(chunk_tokens_list)
 
-                chunks.append(
-                    {"input_ids": chunk_tokens_list, "attention_mask": attention_mask}
-                )
+                chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 # Decode back to text (backward compatibility)
-                chunk_text = self.tokenizer.decode(
-                    chunk_tokens, skip_special_tokens = True
-                )
+                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
                 # Add EOS token if it's the last chunk or chunk is complete
                 if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
-                    eos_token = (
-                        self.tokenizer.eos_token if self.tokenizer.eos_token else ""
-                    )
+                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
@@ -262,18 +270,10 @@ class TextPreprocessor:
 
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
-        text = re.sub(
-            r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags = re.MULTILINE
-        )
-        text = re.sub(
-            r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags = re.MULTILINE
-        )
-        text = re.sub(
-            r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags = re.MULTILINE
-        )
-        text = re.sub(
-            r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags = re.DOTALL
-        )
+        text = re.sub(r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags = re.MULTILINE)
+        text = re.sub(r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags = re.MULTILINE)
+        text = re.sub(r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags = re.MULTILINE)
+        text = re.sub(r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags = re.DOTALL)
         return text
 
     def validate_dataset(self, dataset):
@@ -326,23 +326,17 @@ class TextPreprocessor:
         # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = (
-                stats["min_length"] if stats["min_length"] != float("inf") else 0
-            )
+            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
 
         # Generate warnings
         if stats["empty_samples"] > 0:
             stats["warnings"].append(f"Found {stats['empty_samples']} empty samples")
 
         if stats["repeated_content"] > 0:
-            stats["warnings"].append(
-                f"Found {stats['repeated_content']} repeated samples"
-            )
+            stats["warnings"].append(f"Found {stats['repeated_content']} repeated samples")
 
         if stats["encoding_issues"] > 0:
-            stats["warnings"].append(
-                f"Found {stats['encoding_issues']} encoding issues"
-            )
+            stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
         if stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
