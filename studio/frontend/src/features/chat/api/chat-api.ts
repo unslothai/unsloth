@@ -3,7 +3,12 @@
 
 import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
-import type { MessageRecord, ModelType, ThreadRecord } from "../types";
+import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -312,19 +317,23 @@ export async function listChatThreads(
   args: {
     modelType?: ModelType;
     pairId?: string;
+    projectId?: string | null;
     includeArchived?: boolean;
   } = {},
 ): Promise<ThreadRecord[]> {
   const params = new URLSearchParams();
   if (args.modelType) params.set("model_type", args.modelType);
   if (args.pairId) params.set("pair_id", args.pairId);
+  if (args.projectId) params.set("project_id", args.projectId);
   if (args.includeArchived !== undefined) {
     params.set("include_archived", String(args.includeArchived));
   }
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  return data.threads;
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.threads) ? data.threads : [];
 }
 
 export async function getChatThread(
@@ -375,6 +384,76 @@ export async function deleteChatThreads(threadIds: string[]): Promise<void> {
     body: JSON.stringify({ ids: threadIds }),
   });
   await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  const params = new URLSearchParams();
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.projects) ? data.projects : [];
+}
+
+export async function getChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function saveChatProject(
+  project: ProjectRecord,
+): Promise<ProjectRecord> {
+  const response = await authFetch("/api/chat/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  const saved = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return saved;
+}
+
+export async function updateChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return project;
+}
+
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (args.deleteFiles) params.set("delete_files", "true");
+  const qs = params.toString();
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatHistoryUpdated();
 }
 
@@ -489,6 +568,7 @@ export async function buildBackendChatExport(): Promise<{
   exportedAt: string;
   version: number;
   threadCount: number;
+  projects?: ProjectRecord[];
   threads: ThreadRecord[];
   messages: MessageRecord[];
 }> {

@@ -10,7 +10,7 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/collapsible";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 
 const ANIMATION_DURATION = 200;
 
@@ -28,7 +29,7 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
-      ghost: "rounded-lg bg-muted/10 py-2",
+      ghost: "py-2",
       muted:
         "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
@@ -114,7 +115,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        "aui-tool-group-trigger group/trigger flex w-full items-center gap-2 text-sm transition-colors",
+        "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
         "group-data-[variant=ghost]/tool-group-root:px-0",
@@ -123,10 +124,7 @@ function ToolGroupTrigger({
       {...props}
     >
       {active ? (
-        <LoaderIcon
-          data-slot="tool-group-trigger-loader"
-          className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin"
-        />
+        <ToolCallSpinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
           icon={Wrench01Icon}
@@ -138,7 +136,7 @@ function ToolGroupTrigger({
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
-          "aui-tool-group-trigger-label-wrapper relative inline-block grow text-left font-medium leading-none",
+          "aui-tool-group-trigger-label-wrapper relative inline-block text-left font-medium leading-none",
         )}
       >
         <span>{label}</span>
@@ -155,7 +153,7 @@ function ToolGroupTrigger({
       <ChevronDownIcon
         data-slot="tool-group-trigger-chevron"
         className={cn(
-          "aui-tool-group-trigger-chevron size-4 shrink-0",
+          "aui-tool-group-trigger-chevron size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",

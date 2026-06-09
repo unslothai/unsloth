@@ -93,9 +93,7 @@ def _detect_render_html_tool_start(content: str) -> bool:
     if not function_match and tool_call_index < 0:
         return False
 
-    if function_match and (
-        tool_call_index < 0 or function_match.start() < tool_call_index
-    ):
+    if function_match and (tool_call_index < 0 or function_match.start() < tool_call_index):
         return function_match.group(1) == "render_html"
 
     if tool_call_index >= 0:
@@ -105,7 +103,12 @@ def _detect_render_html_tool_start(content: str) -> bool:
     return False
 
 
-def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
+def _coerce_arguments(
+    raw_args,
+    *,
+    heal: bool,
+    tool_name: str = "",
+) -> dict:
     """Normalise tool ``arguments`` to a dict.
 
     Some templates emit a JSON string, others a bare query string. With
@@ -449,9 +452,7 @@ def run_safetensors_tool_loop(
                 if denied:
                     result = TOOL_REJECTED_MESSAGE
                 else:
-                    eff_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
+                    eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     try:
                         result = execute_tool(
                             tool_name,

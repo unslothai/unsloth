@@ -75,7 +75,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_backend(pid: int, gguf_path: str, healthy: bool = False):
+def _make_backend(
+    pid: int,
+    gguf_path: str,
+    healthy: bool = False,
+):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._process = type("P", (), {"pid": pid})()
     inst._gguf_path = gguf_path
