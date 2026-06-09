@@ -43,12 +43,8 @@ from .common import (
 SEED = 0
 
 
-# Only certain combinations of permute_x, permute_y, use_W1 are valid.
-# use_W1 => first grouped GEMM in a fused MoE MLP
-# use_W2 => second grouped GEMM in a fused MoE MLP
-# permute_x => permute the input to the grouped GEMM, only done for the first grouped GEMM
-# permute_y => permute the output of the grouped GEMM, only done for the second grouped GEMM
-# fuse_mul_post => fuse the multiplication of topk weights in the epilogue of the second grouped GEMM; only used for inference, not currently tested
+# Only certain (permute_x, permute_y, use_W1) combinations are valid; see the
+# module string below for the full rationale.
 def check_valid_config(
     permute_x,
     permute_y,

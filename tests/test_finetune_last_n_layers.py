@@ -1,16 +1,9 @@
 # Unsloth - 2x faster, 70% less memory LLM finetuning
 # Tests for the `finetune_last_n_layers` parity knob (CUDA side).
 #
-# Mirrors unsloth-zoo's `FastMLXModel.get_peft_model` parameter.
-# mlx-lm CLI's CONFIG_DEFAULTS['num_layers']=16 applies LoRA to the
-# last 16 transformer blocks only. On the CUDA path, PEFT exposes
-# `layers_to_transform` to do the same. This convenience knob fills
-# `layers_to_transform` for the user when set, matching mlx-lm CLI
-# AND unsloth-zoo's MLX path with a single config value.
-#
-# The tests intentionally avoid pulling in CUDA / a real model
-# checkpoint — they exercise only the helper that translates
-# `finetune_last_n_layers` into `layers_to_transform`.
+# Mirrors unsloth-zoo's MLX path: fills PEFT's `layers_to_transform` so LoRA
+# applies to the last N transformer blocks, matching mlx-lm CLI's num_layers.
+# Exercises only the translation helper, no CUDA / real checkpoint.
 
 from __future__ import annotations
 

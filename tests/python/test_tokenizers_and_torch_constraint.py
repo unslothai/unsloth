@@ -1,7 +1,6 @@
-"""
-Tests for two install fixes:
-  1. tokenizers added to no-torch-runtime.txt  (prevents AutoConfig crash)
-  2. TORCH_CONSTRAINT variable in install.sh    (arm64 macOS + py313+ -> torch>=2.6)
+"""Tests for two install fixes:
+1. tokenizers in no-torch-runtime.txt (prevents AutoConfig crash)
+2. TORCH_CONSTRAINT in install.sh (arm64 macOS + py313+ -> torch>=2.6)
 """
 
 from __future__ import annotations

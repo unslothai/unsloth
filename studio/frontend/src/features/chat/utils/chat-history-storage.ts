@@ -43,11 +43,10 @@ type ThreadListArgs = {
 };
 
 // localStorage perf-hint that the Dexie -> studio.db import already
-// finished in a previous session. NOT consulted by the import gate
-// itself -- the server-side ledger (chat_legacy_imports) is the source
-// of truth so a studio.db wipe stays recoverable. The hint only short-
-// circuits the listing paths' "should I also surface Dexie threads?"
-// branches once the ledger has covered everything.
+// finished. NOT the import gate -- the server-side ledger
+// (chat_legacy_imports) is the source of truth so a studio.db wipe stays
+// recoverable. The hint only short-circuits the listing paths' "also
+// surface Dexie threads?" branches once the ledger has covered everything.
 const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
 
 let legacyChatImportPromise: Promise<void> | null = null;
@@ -265,9 +264,9 @@ async function backfillLegacyThreadFields(
   }
 }
 
-// Fast-path: ask IndexedDB whether the "unsloth-chat" database exists
-// without opening it. Modern Chromium / Firefox / Safari support this;
-// older browsers return undefined and we fall through to the next probe.
+// Fast-path: check whether the "unsloth-chat" DB exists without opening
+// it. Supported on modern Chromium/Firefox/Safari; older browsers return
+// undefined and we fall through to the next probe.
 async function dexieDbAbsent(): Promise<boolean> {
   if (typeof indexedDB === "undefined") return true;
   const dbs = (indexedDB as IDBFactory).databases;
@@ -291,24 +290,22 @@ async function dexieIsEmpty(): Promise<boolean> {
     ]);
     return threadCount === 0 && messageCount === 0;
   } catch {
-    // Dexie threw (corrupted DB / version mismatch / quota). Returning
-    // false forces the slow path, which uses the same Dexie under the
-    // hood; that path will throw too and the import promise gets reset
-    // so the next caller can retry rather than silently doing nothing.
+    // Dexie threw (corrupt DB / version mismatch / quota). Returning
+    // false forces the slow path (same Dexie underneath); it'll throw
+    // too and reset the import promise so the next caller can retry.
     return false;
   }
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
-  // Session-level cache: same tab, repeated sidebar mounts share one
-  // import. localStorage is NOT consulted here -- the server-side ledger
-  // is the source of truth so a studio.db wipe still re-triggers the
-  // import even if the browser kept its old hint.
+  // Session-level cache: repeated sidebar mounts in the same tab share
+  // one import. localStorage is NOT consulted -- the server-side ledger
+  // is the source of truth, so a studio.db wipe re-triggers the import
+  // even if the browser kept its old hint.
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // Fast-path: no Dexie database at all. New user, never had the
-    // browser-only Studio. ~0.1 ms, zero network.
+    // Fast-path: no Dexie DB -- new user, never had browser-only Studio.
     if (await dexieDbAbsent()) {
       markLegacyChatImportDone();
       return;
@@ -336,10 +333,9 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     const unimportedIds: string[] = [];
     const unimportedThreads: ThreadRecord[] = [];
 
-    // "Unimported" = missing from the ledger. We also include threads
-    // already present in the backend (without a ledger row) so the ledger
-    // gets backfilled for old-FE-then-new-FE users -- otherwise the next
-    // launch would redo the diff for the same threads forever.
+    // "Unimported" = missing from the ledger. Include threads already in
+    // the backend (without a ledger row) so the ledger gets backfilled
+    // for old-FE-then-new-FE users; else the next launch re-diffs forever.
     for (const thread of legacyThreads) {
       if (isChatThreadDeleted(thread.id)) continue;
       if (importedThreadIds.has(thread.id)) continue;
@@ -406,14 +402,12 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       result = await recordChatImportLedger(newlyImportedIds);
     } catch {
       // Network error: leave the perf hint alone so the next launch
-      // retries. The import itself is idempotent via UPSERT, no
-      // duplicates.
+      // retries. Import is idempotent via UPSERT, so no duplicates.
       return;
     }
-    // Only flip the localStorage hint when the backend actually has the
-    // ledger. On older deployments (404/405/501) the hint would lie:
-    // "import done" while the ledger stays empty, defeating recovery
-    // when studio.db gets wiped later.
+    // Only flip the hint when the backend actually has the ledger. On
+    // older deployments (404/405/501) it would lie ("import done" with an
+    // empty ledger), defeating recovery after a studio.db wipe.
     if (result.supported) {
       markLegacyChatImportDone();
     }
@@ -576,8 +570,8 @@ export async function listStoredChatThreadsWithMessages(
 ): Promise<ThreadRecord[]> {
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
-  // One batched HTTP call instead of N. Per-thread legacy Dexie
-  // fallback only fires when the batch result is empty.
+  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
+  // only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
   let backendByThread: Map<string, MessageRecord[]>;
   try {
@@ -728,8 +722,8 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
-  // Clear both sides independently and report each outcome so the
-  // toast can distinguish full vs partial success.
+  // Clear both sides independently and report each outcome so the toast
+  // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
     listChatThreads()
       .then((threads) => ({ ok: true as const, threads }))
@@ -752,8 +746,8 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     failedThreadIds: [],
   };
   try {
-    // Defer the history refresh until Dexie clear and tombstone state are
-    // finalized, so listeners never observe the composite clear mid-flight.
+    // Defer the history refresh until Dexie clear and tombstones finalize,
+    // so listeners never observe the composite clear mid-flight.
     await clearBackendChats({ notify: false });
     result.backend = "cleared";
   } catch (error) {

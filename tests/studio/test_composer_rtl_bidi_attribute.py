@@ -133,10 +133,9 @@ def _extract_block(
     opener: str = "(",
     closer: str = ")",
 ) -> str:
-    """Return the source between the first balanced opener/closer that
-    starts at or after `anchor`. Used to scope assertions to a specific
-    handler so a re-arm call in some other function does not satisfy
-    the gate test."""
+    """Return the source within the first balanced opener/closer at or
+    after `anchor`. Scopes assertions to one handler so a re-arm call
+    elsewhere does not satisfy the gate test."""
     start = src.find(anchor)
     assert start != -1, f"anchor {anchor!r} not found"
     open_idx = src.find(opener, start)

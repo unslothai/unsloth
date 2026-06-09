@@ -109,7 +109,7 @@ export function ModelSelectionStep() {
     return applyPriorityOrdering(ids);
   }, [hfResults]);
 
-  // Match Studio behavior: only show exception signals (OOM/TIGHT) in training flows.
+  // Match Studio: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,

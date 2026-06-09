@@ -113,7 +113,7 @@ export interface CompareHandle {
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
-// Inlined to avoid a new icon dependency. Kept in sync with the main composer.
+// Inlined to avoid a new icon dep. Kept in sync with the main composer.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}
@@ -160,9 +160,9 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Mirrors the threshold in thread.tsx — see the comment there. Chrome on
-// Windows-over-WSL (issue #5546) never fires `compositionend` after the
-// IME commit, so the compose flag would otherwise stay true forever.
+// Mirrors the threshold in thread.tsx. Chrome on Windows-over-WSL (#5546)
+// never fires `compositionend` after IME commit, so the compose flag would
+// otherwise stay true forever.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function fileToBase64DataURL(file: File): Promise<string> {
@@ -198,8 +198,8 @@ function formatReasoningDisabledLabel(
   modelId?: string,
 ): string {
   const normalized = modelId?.trim().toLowerCase() ?? "";
-  // Magistral keeps the "none" wire value, but UX should present this floor
-  // as "Medium" rather than a disabled state label.
+  // Magistral keeps the "none" wire value, but UX presents this floor as
+  // "Medium" rather than a disabled-state label.
   if (normalized.includes("magistral-medium-latest")) return "Medium";
   return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
@@ -385,7 +385,7 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
-// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+// Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
   return (
     <span className="composer-pill-glyph">
@@ -411,8 +411,7 @@ export function SharedComposer({
   model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
-  // Exit compare. Uses the parent's restore handler, or a fresh chat when
-  // compare was opened by direct URL.
+  // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
       onExitCompare();
@@ -507,7 +506,7 @@ export function SharedComposer({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
-  // Three most recently updated projects for the quick-access submenu.
+  // Three most recently updated projects for the quick-access submenu
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -549,11 +548,10 @@ export function SharedComposer({
     modelLoaded,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
-  // Attach-time gate. Compare mode defers to send: the catalog can lag
-  // behind a model's real capabilities (e.g., a GGUF whose mmproj
-  // arrives after the catalog snapshot), and we only sync the models[]
-  // entry after ensureModelLoaded runs at send time. Single mode uses
-  // the loaded model's runtime capability.
+  // Attach-time gate. Compare mode defers to send: the catalog can lag a
+  // model's real capabilities (e.g. a GGUF whose mmproj arrives after the
+  // snapshot), and models[] only syncs after ensureModelLoaded at send time.
+  // Single mode uses the loaded model's runtime capability.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
@@ -589,11 +587,10 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  // Kimi's $web_search builtin mandates thinking=disabled per the docs at
-  // https://platform.kimi.ai/docs/guide/use-web-search. Both pills stay
-  // clickable for Kimi, but turning one on flips the other off — the
-  // click handlers below enforce this mutual exclusion so the visible
-  // state always matches what the backend actually sends.
+  // Kimi's $web_search builtin mandates thinking=disabled
+  // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay
+  // clickable, but turning one on flips the other off; the click handlers
+  // below enforce this so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
@@ -605,15 +602,13 @@ export function SharedComposer({
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Two-pill gating: Search pill lights up when the runtime has either
-  // a local tool runtime (supportsTools, gives us our Code/python + local
-  // web_search) OR a server-side web_search the provider runs for us
-  // (supportsBuiltinWebSearch, currently OpenAI / Anthropic / OpenRouter
-  // / Kimi). Code pill lights up on the local runtime OR when Anthropic
-  // is selected with a model that accepts the server-side
-  // code_execution_20250825 tool — see
-  // providerSupportsBuiltinCodeExecution. Anthropic is the only external
-  // provider that ships a code-execution tool today.
+  // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
+  // Code/python + local web_search) OR a provider-run server-side web_search
+  // (supportsBuiltinWebSearch: OpenAI/Anthropic/OpenRouter/Kimi). Code lights
+  // up on the local runtime OR Anthropic with a model accepting the
+  // server-side code_execution_20250825 tool (see
+  // providerSupportsBuiltinCodeExecution). Anthropic is the only external
+  // provider shipping a code-execution tool today.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
@@ -628,24 +623,22 @@ export function SharedComposer({
     selectedExternalProvider?.providerType,
   );
   // Gemini rejects codeExecution alongside image modalities. Search is
-  // blocked on older Gemini image ids but allowed on Gemini 3 image
-  // models -- supportsBuiltinWebSearch already encodes the per-model
-  // allowance, so we only disable Code unconditionally in Gemini
-  // image mode.
+  // blocked on older Gemini image ids but allowed on Gemini 3 image models
+  // (supportsBuiltinWebSearch encodes the per-model allowance), so we only
+  // disable Code unconditionally in Gemini image mode.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
   const imageModeDisablesCode =
     isExternalGemini && imageToolsEnabled && !imageDisabled;
   // Image-tier Gemini models always reject codeExecution and reject
-  // web_search on older ids (Gemini 3.x Pro/Flash allow it -- encoded
-  // in supportsBuiltinWebSearch). Don't let the local `supportsTools`
-  // runtime flag re-enable a pill the Gemini backend will silently
-  // drop. Detect "external provider is Gemini AND model is image-tier"
-  // and gate strictly on the provider builtin support.
+  // web_search on older ids (Gemini 3.x Pro/Flash allow it, encoded in
+  // supportsBuiltinWebSearch). Don't let local `supportsTools` re-enable a
+  // pill the Gemini backend silently drops: detect image-tier Gemini and
+  // gate strictly on provider builtin support.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const searchDisabled =
     modelLoaded &&
     (isGeminiImageTier
@@ -657,8 +650,8 @@ export function SharedComposer({
         ? true
         : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
-  // Images pill is only ever lit on OpenAI cloud's Responses-API models
-  // and Gemini Nano Banana family. No local tool runtime fallback.
+  // Images pill lights only on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
@@ -666,7 +659,8 @@ export function SharedComposer({
   // Docs (RAG) pill is local-only: search_knowledge_base needs the local runtime.
   const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   const showRagPill = !isExternalModel;
-  // With more than 4 pills showing, collapse them to icons only to cut clutter.
+  // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
+  // Code always show; the rest are conditional.
   const pillsCompact =
     3 +
       (showImagePill ? 1 : 0) +
@@ -675,8 +669,8 @@ export function SharedComposer({
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
     4;
-  // Backwards-compatible alias for any other call site that may still
-  // reference `toolsDisabled` (rare; both pills used it before).
+  // Backwards-compatible alias for call sites still referencing
+  // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore(
@@ -847,11 +841,11 @@ export function SharedComposer({
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id && model2?.id);
 
-    // Generalized compare requires both panes to have a model. A
-    // half-selected send either races to an empty bubble with bogus
-    // tok/s (#5569) or leaves the empty pane with a dangling prompt.
-    // hasCompareHandles is true only in GeneralCompareContent, so
-    // LoraCompare and single-pane chats are unaffected.
+    // Generalized compare requires both panes to have a model. A half-
+    // selected send either races to an empty bubble with bogus tok/s (#5569)
+    // or leaves the empty pane with a dangling prompt. hasCompareHandles is
+    // true only in GeneralCompareContent, so LoraCompare and single-pane
+    // chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
         description:
@@ -865,10 +859,10 @@ export function SharedComposer({
       !isGeneralizedCompare &&
       imageUnavailableReason
     ) {
-      // Single mode: the loaded model's runtime capability is known
-      // here. Compare mode defers — each ensureModelLoaded below sets
-      // loadedIsMultimodal for its side, and the chat-adapter's
-      // pre-stream gate runs per-side against that fresh state.
+      // Single mode: the loaded model's runtime capability is known here.
+      // Compare mode defers: each ensureModelLoaded sets loadedIsMultimodal
+      // for its side, and the chat-adapter's pre-stream gate runs per-side
+      // against that fresh state.
       toast.error(imageUnavailableReason);
       return;
     }
@@ -963,10 +957,9 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
         });
-        // Sync the models[] entry with the load response so the
-        // attach/send gates read fresh capabilities. /api/models/list
-        // can lag behind a model's actual state (e.g., a GGUF whose
-        // mmproj was downloaded after the catalog snapshot).
+        // Sync the models[] entry with the load response so attach/send gates
+        // read fresh capabilities. /api/models/list can lag a model's actual
+        // state (e.g. a GGUF whose mmproj arrived after the snapshot).
         const currentModels = useChatRuntimeStore.getState().models;
         const idx = currentModels.findIndex((m) => m.id === sel.id);
         const synced = {
@@ -1079,13 +1072,12 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
-    // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
-    // Don't hijack it. See issue #5318. Re-pin composingRef in case the stuck
-    // watchdog (#5546) cleared it during a long candidate-window pause; this
-    // keeps a follow-up click-Send from submitting preedit text. Re-arm the
-    // watchdog on the same path — without it the WSL+Chrome no-compositionend
-    // case would leave composingRef pinned forever after an IME keypress and
-    // re-lock Send.
+    // IME composition (JP/CN/KR): Enter commits the candidate, don't hijack it
+    // (#5318). Re-pin composingRef in case the stuck watchdog (#5546) cleared
+    // it during a long candidate-window pause, so a follow-up click-Send won't
+    // submit preedit text. Re-arm the watchdog on the same path; without it the
+    // WSL+Chrome no-compositionend case pins composingRef forever after an IME
+    // keypress and re-locks Send.
     if (e.nativeEvent.isComposing || e.keyCode === 229) {
       composingRef.current = true;
       refreshStuckImeTimer();
@@ -1116,8 +1108,8 @@ export function SharedComposer({
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        // Phase 1 native model drops own Tauri local-path drops. Restore
+        // browser attachment drops in Tauri once Phase 1d adds token bridging.
         if (isTauri) return;
         e.preventDefault();
         setDragging(false);
@@ -1203,11 +1195,11 @@ export function SharedComposer({
         value={text}
         onChange={(e) => {
           // ALWAYS mirror the DOM value into React state, even during IME
-          // composition. The controlled `value` prop must match the DOM at
-          // all times, otherwise any unrelated parent re-render reconciles
-          // the textarea back to the stored value mid-composition — wiping
-          // the IME preedit AND prior committed text (e.g. Tab cycling
-          // candidates erases earlier words). Issue #5318.
+          // composition: the controlled `value` must match the DOM at all
+          // times, else an unrelated parent re-render reconciles the textarea
+          // back to the stored value mid-composition, wiping the IME preedit
+          // AND prior committed text (e.g. Tab-cycling candidates erases
+          // earlier words). #5318.
           setCompositionState(isNativeComposing(e.nativeEvent));
           setText(e.target.value);
         }}
@@ -1225,8 +1217,8 @@ export function SharedComposer({
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
-        // dir="auto" auto-detects RTL (Arabic / Hebrew / Persian / Urdu)
-        // from the first strong character; no effect on LTR scripts.
+        // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
+        // strong character; no effect on LTR scripts.
         dir="auto"
       />
       <div className="composer-action-wrapper">
@@ -1259,8 +1251,8 @@ export function SharedComposer({
             open={newProjectOpen}
             onOpenChange={setNewProjectOpen}
           />
-          {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
-              wired to the compare composer's own file/audio inputs and tools. */}
+          {/* Same + menu as single-chat (ComposerToolsMenu), wired to the
+              compare composer's own file/audio inputs and tools. */}
           <DropdownMenu
             onOpenChange={(open) => {
               if (open) void refreshRecentPrompts();
@@ -1402,6 +1394,21 @@ export function SharedComposer({
                     className="ml-auto"
                   />
                 ) : null}
+              </DropdownMenuItem>
+              {/* RAG hidden temporarily */}
+              {/* Always active: this menu only renders in compare mode. Ticked
+                  like Web search/Code; click toggles it off. */}
+              <DropdownMenuItem
+                className="text-primary font-medium"
+                onSelect={handleExitCompare}
+              >
+                <Columns2Icon />
+                Compare chat
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
               </DropdownMenuItem>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
@@ -1554,7 +1561,7 @@ export function SharedComposer({
               const next = !toolsEnabled;
               setToolsEnabled(next);
               // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+              // (https://platform.kimi.ai/docs/guide/use-web-search): toggle
               // the Think pill off when Search is on, mirroring the backend.
               if (isKimiExternal) {
                 setReasoningEnabled(!next, { persist: false });
@@ -1824,9 +1831,8 @@ export function SharedComposer({
                   const next = !reasoningEnabled;
                   setReasoningEnabled(next);
                   applyQwenThinkingParams(next);
-                  // Mutual exclusion: Kimi's $web_search builtin
-                  // requires thinking off, so turning thinking on flips
-                  // the Search pill off (and vice versa).
+                  // Mutual exclusion: Kimi's $web_search builtin requires
+                  // thinking off, so turning thinking on flips Search off.
                   if (isKimiExternal && next && toolsEnabled) {
                     setToolsEnabled(false, { persist: false });
                   }
