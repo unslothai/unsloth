@@ -38,6 +38,7 @@ from hub.utils.paths import (
 )
 from hub.services.models.common import (
     _is_mmproj_filename,
+    _is_mtp_drafter_path,
     _iter_gguf_paths,
 )
 from hub.utils.gguf_plan import (
@@ -479,7 +480,7 @@ async def get_gguf_variants_response(
                         continue
                     key = rel.lower()
                     by_filename[key] = max(by_filename.get(key, 0), size)
-                    if _is_mmproj_filename(f.name):
+                    if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
                     q = extract_quant_label(rel).lower()
                     by_quant[q] = by_quant.get(q, 0) + size
@@ -593,7 +594,12 @@ async def get_gguf_variants_response(
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None:
                     continue
-                if requirement.mmproj_hashes & incomplete_hashes and _filenames_cached(
+                # companion_hashes adds the MTP drafter (mmproj_hashes covers
+                # every mmproj precision in the repo, not just the planned one).
+                if (
+                    (requirement.mmproj_hashes | requirement.companion_hashes)
+                    & incomplete_hashes
+                ) and _filenames_cached(
                     requirement.main_filenames,
                     requirement.main_size_bytes,
                 ):

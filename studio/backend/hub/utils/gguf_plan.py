@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
-from hub.utils.gguf import extract_quant_label, is_gguf_filename, is_mmproj_filename
+from hub.utils.gguf import (
+    extract_quant_label,
+    is_gguf_filename,
+    is_mmproj_filename,
+    is_mtp_drafter_path,
+)
 
 
 @dataclass(frozen = True)
@@ -53,23 +58,31 @@ def expected_file_from_sibling(sibling) -> Optional[ExpectedFile]:
 
 
 def is_companion_gguf_path(path: str) -> bool:
-    return is_gguf_filename(path) and is_mmproj_filename(path)
+    """Companion (non-main) GGUF downloaded alongside a variant: the vision
+    mmproj or the separate MTP drafter (Gemma 4)."""
+    return is_gguf_filename(path) and (is_mmproj_filename(path) or is_mtp_drafter_path(path))
 
 
 def is_main_gguf_variant_path(path: str, variant: str) -> bool:
     return (
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
+        and not is_mtp_drafter_path(path)
         and extract_quant_label(path).lower() == variant.lower()
     )
 
 
+def _gguf_rfilename(sibling) -> Optional[str]:
+    """The sibling's rfilename when it is a GGUF, else None."""
+    name = getattr(sibling, "rfilename", None)
+    if isinstance(name, str) and is_gguf_filename(name):
+        return name
+    return None
+
+
 def mmproj_siblings(siblings: Sequence) -> list:
     return [
-        s
-        for s in siblings
-        if isinstance(getattr(s, "rfilename", None), str)
-        and is_companion_gguf_path(getattr(s, "rfilename"))
+        s for s in siblings if (name := _gguf_rfilename(s)) and is_mmproj_filename(name)
     ]
 
 
@@ -83,6 +96,26 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     )
 
 
+def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
+    """The separate MTP drafter to fetch with every variant: the repo-root
+    ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery
+    (Gemma 4). Same pick as the loader's drafter resolution (``mtp-`` basename
+    prefix, first in sort order) so download and load resolve the same file;
+    the higher-precision ``MTP/`` subdir copies are for explicit selection and
+    are not auto-fetched. None for repos with the head baked into the main
+    GGUF (Qwen)."""
+    candidates = sorted(
+        (
+            s
+            for s in siblings
+            if (name := _gguf_rfilename(s))
+            and name.lower().rsplit("/", 1)[-1].startswith("mtp-")
+        ),
+        key = lambda s: getattr(s, "rfilename"),
+    )
+    return candidates[0] if candidates else None
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
@@ -94,12 +127,20 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
     companion = preferred_mmproj_sibling(siblings)
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
+    mtp_sibling = preferred_mtp_sibling(siblings)
+    mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    companions_expected = tuple(
+        file for file in (companion_expected, mtp_expected) if file is not None
+    )
 
     for sibling in siblings:
-        name = getattr(sibling, "rfilename", None)
-        if not isinstance(name, str) or not is_gguf_filename(name):
+        name = _gguf_rfilename(sibling)
+        if name is None:
             continue
-        if is_mmproj_filename(name):
+        # Companions are folded into every plan below; keep them out of the
+        # quant grouping so a drafter never lands in a variant's main files
+        # (the root mtp-*.gguf carries a quant label, e.g. Q8_0).
+        if is_mmproj_filename(name) or is_mtp_drafter_path(name):
             continue
         quant = extract_quant_label(name).lower()
         main.setdefault(quant, []).append(sibling)
@@ -111,11 +152,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        expected_files = (
-            (*main_expected, companion_expected)
-            if companion_expected is not None
-            else main_expected
-        )
+        expected_files = (*main_expected, *companions_expected)
         plans[quant] = plan_from_expected_files(
             quant,
             expected_files,
@@ -135,6 +172,9 @@ def plan_from_expected_files(
     expected = tuple(expected_files)
     main_files = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
+    # Manifest-resume fallback for the mmproj fields below: companion_files
+    # also holds the MTP drafter, so keep an mmproj-only view.
+    mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))
     main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)
@@ -149,9 +189,13 @@ def plan_from_expected_files(
         mmproj_filenames = (
             all_mmproj_filenames
             if all_mmproj_filenames is not None
-            else frozenset(file.path for file in companion_files)
+            else frozenset(file.path for file in mmproj_files)
         ),
-        mmproj_hashes = (all_mmproj_hashes if all_mmproj_hashes is not None else companion_hashes),
+        mmproj_hashes = (
+            all_mmproj_hashes
+            if all_mmproj_hashes is not None
+            else frozenset(file.sha256 for file in mmproj_files if file.sha256)
+        ),
         expected_files = expected,
         main_size_bytes = main_size,
         download_size_bytes = download_size,

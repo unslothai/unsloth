@@ -83,6 +83,23 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+def is_mtp_drafter_path(path: str) -> bool:
+    """True for a separate-file MTP drafter (speculative head), a companion to
+    the main model rather than a selectable quant.
+
+    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
+    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
+    Repos that bake the head into the main GGUF (Qwen) have no such file, so
+    this is False for them. Must be excluded from main-model selection
+    everywhere mmproj is.
+    """
+    p = path.lower()
+    if not p.endswith(".gguf"):
+        return False
+    name = p.rsplit("/", 1)[-1]
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+
+
 def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
@@ -119,7 +136,11 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
 
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
-        name for name in filenames if is_gguf_filename(name) and not is_mmproj_filename(name)
+        name
+        for name in filenames
+        if is_gguf_filename(name)
+        and not is_mmproj_filename(name)
+        and not is_mtp_drafter_path(name)
     ]
     if not gguf_files:
         return None
@@ -270,6 +291,12 @@ def list_partial_gguf_variants_from_state(
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
                     continue
+                if is_mtp_drafter_path(expected.path):
+                    # Downloaded with every variant (like mmproj) but not a
+                    # selectable quant; count it so the shown download size
+                    # matches what is fetched.
+                    companion_bytes += max(0, int(expected.size or 0))
+                    continue
                 if is_mmproj_filename(expected.path):
                     has_vision = True
                     companion_bytes += max(0, int(expected.size or 0))
@@ -336,6 +363,8 @@ def list_gguf_variants(
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
+        if is_mtp_drafter_path(filename):
+            continue
         if is_mmproj_filename(filename):
             has_vision = True
             continue
@@ -389,6 +418,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         except OSError:
             size = 0
         rel = file.relative_to(root).as_posix()
+        if is_mtp_drafter_path(rel):
+            continue
         quant = extract_quant_label(rel)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)

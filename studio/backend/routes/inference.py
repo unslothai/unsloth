@@ -949,13 +949,11 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         llama_backend.cache_type_kv
     ):
         return False
-    # Vision loads silently drop speculative decoding (llama_cpp.py gates spec
-    # on ``not is_vision``), so treat the request as ``off`` against the
-    # backend's ``None`` to avoid a redundant reload.
-    if llama_backend.is_vision:
-        req_mode = "off"
-    else:
-        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    # Spec decoding works on vision models too (MTP is mmproj-compatible,
+    # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
+    # the real requested mode -- coercing vision to ``off`` here used to
+    # swallow every spec-mode change on a vision model as already_loaded.
+    req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
@@ -1288,6 +1286,7 @@ async def load_model(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    mtp_draft_path = config.gguf_mtp_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
