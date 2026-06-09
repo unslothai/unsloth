@@ -40,7 +40,6 @@ _name: str | None = None
 
 # Studio device -> torch device string. Apple has no torch device -> CPU.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
-_GPU_DEVICES = frozenset({"cuda", "xpu"})
 
 
 def _device() -> str:
@@ -48,8 +47,8 @@ def _device() -> str:
 
 
 def _get(model_name: str | None = None):
-    """Cached SentenceTransformer, (re)loading on a name change. fp16 on GPU for a
-    ~1.5x speedup at negligible accuracy loss; CPU stays fp32."""
+    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
+    for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
@@ -58,9 +57,9 @@ def _get(model_name: str | None = None):
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
-            _model = SentenceTransformer(name, device = device)
-            if device in _GPU_DEVICES:
-                _model = _model.half()
+            _model = SentenceTransformer(
+                name, device = device, model_kwargs = {"torch_dtype": "float16"}
+            )
             _name = name
         return _model
 
