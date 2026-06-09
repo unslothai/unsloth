@@ -151,7 +151,7 @@ export function ThreadDocumentsBar({
         onClick={handleAddDocs}
         disabled={uploading}
         className={cn(
-          "composer-pill-btn shrink-0 -translate-y-px !text-muted-foreground/90",
+          "composer-pill-btn shrink-0 -translate-y-px !text-foreground/80",
           // Square button so the rounded-full hover reads as a circle.
           documents.length > 0 && "size-8 justify-center px-0",
         )}
