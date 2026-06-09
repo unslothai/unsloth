@@ -17,7 +17,11 @@ import { useTrainingActions, useTrainingConfigStore } from "@/features/training"
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
-import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle02Icon,
+  Database02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils";
@@ -97,6 +101,16 @@ export function DatasetPreviewDialog({
   const mappingOk = isRawFormat || isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
+  const readyForTraining =
+    !(isRawFormat || mappingEnabled) &&
+    !data?.requires_manual_mapping &&
+    !!data?.detected_format &&
+    data.detected_format !== "unknown";
+  const readyDetail = data?.chat_column && data.detected_format === "chatml"
+    ? `Detected ChatML conversation column: ${data.chat_column}`
+    : data?.detected_format
+      ? `Detected ${data.detected_format} format. No manual column mapping needed.`
+      : null;
 
   // ── AI Assist ──────────────────────────────────────────────────────
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -437,6 +451,16 @@ export function DatasetPreviewDialog({
                   }
                 />
               </div>
+
+              {readyForTraining && (
+                <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                  <HugeiconsIcon icon={CheckmarkCircle02Icon} className="mt-0.5 size-4 shrink-0" />
+                  <div className="space-y-0.5">
+                    <p className="font-medium">Ready for training</p>
+                    {readyDetail && <p>{readyDetail}</p>}
+                  </div>
+                </div>
+              )}
 
               {data.warning && !isRawFormat && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
