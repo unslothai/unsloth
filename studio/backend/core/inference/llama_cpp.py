@@ -3425,9 +3425,7 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
-                self._launch_context_length = (
-                    effective_ctx if effective_ctx > 0 else None
-                )
+                self._launch_context_length = effective_ctx if effective_ctx > 0 else None
                 self._launch_use_fit = use_fit
                 self._launch_n_parallel = max(1, n_parallel)
 

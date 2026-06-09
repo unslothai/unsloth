@@ -201,9 +201,7 @@ def _load_run_module():
 
     run_py = _find_run_py()
     if run_py is None:
-        raise ImportError(
-            "Could not find studio/backend/run.py. Re-run: unsloth studio setup"
-        )
+        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
 
     loaded = sys.modules.get("studio.backend.run")
     loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
