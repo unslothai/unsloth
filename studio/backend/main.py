@@ -280,6 +280,29 @@ def _desktop_owner() -> dict[str, str] | None:
     return _DESKTOP_OWNER
 
 
+def _start_helper_precache_if_enabled() -> None:
+    """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
+    try:
+        from utils.helper_precache_settings import should_preload_helper_on_startup
+
+        if not should_preload_helper_on_startup():
+            return
+    except Exception:
+        return
+
+    import threading
+
+    def _precache():
+        try:
+            from utils.datasets.llm_assist import precache_helper_gguf
+
+            precache_helper_gguf()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -335,18 +358,7 @@ async def lifespan(app: FastAPI):
         import structlog
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
-    # Pre-cache the helper GGUF model for LLM-assisted dataset detection,
-    # in a background thread so it doesn't block server startup.
-    import threading
-
-    def _precache():
-        try:
-            from utils.datasets.llm_assist import precache_helper_gguf
-            precache_helper_gguf()
-        except Exception:
-            pass  # non-critical
-
-    threading.Thread(target = _precache, daemon = True).start()
+    _start_helper_precache_if_enabled()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
