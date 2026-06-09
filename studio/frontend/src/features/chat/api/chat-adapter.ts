@@ -1317,8 +1317,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       };
 
-      const checkpointEmpty = !runtime.params.checkpoint;
-      if (runtime.modelLoading || checkpointEmpty) {
+      if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
           await waitForModelReady(abortSignal);

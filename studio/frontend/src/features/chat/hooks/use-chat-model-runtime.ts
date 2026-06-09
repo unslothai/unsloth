@@ -40,6 +40,7 @@ import {
 } from "../lib/apply-inference-status-to-store";
 import {
   isMultimodalResponse,
+  type InferenceStatusResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import type {
@@ -249,39 +250,39 @@ export function useChatModelRuntime() {
         !selectedCheckpoint &&
         !isExternalSelectionActive;
 
-      let statusRes = shouldPollForCliLoad
-        ? await getInferenceStatus().catch(() => ({ active_model: undefined }))
+      // Populate the model/lora lists immediately so the selector is not
+      // blocked by the CLI-load poll below.
+      const [listRes, lorasRes] = await Promise.all([listModels(), listLoras()]);
+      if (signal?.aborted) return;
+      setModels(listRes.models.map(toChatModelSummary));
+      setLoras(lorasRes.loras.map(toLoraSummary));
+
+      let polledStatus: InferenceStatusResponse | null = shouldPollForCliLoad
+        ? await getInferenceStatus().catch(() => null)
         : null;
 
       if (shouldPollForCliLoad) {
         const deadline = Date.now() + 60_000;
         while (
           Date.now() < deadline &&
-          !(statusRes && statusRes.active_model)
+          !polledStatus?.active_model
         ) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           try {
-            statusRes = await getInferenceStatus();
+            polledStatus = await getInferenceStatus();
           } catch {
             // Keep polling through transient status errors.
           }
         }
       }
 
-      const [listRes, lorasRes, fetchedStatus] = await Promise.all([
-        listModels(),
-        listLoras(),
-        statusRes ? Promise.resolve(statusRes) : getInferenceStatus(),
-      ]);
-      statusRes = fetchedStatus;
+      const statusRes: InferenceStatusResponse =
+        polledStatus ?? (await getInferenceStatus());
 
       // Cancellation can land while the requests above are in flight (e.g. the
       // user cancels a load during this refresh). Bail before writing any
       // backend state back into the store -- cancelLoading already cleared it.
       if (signal?.aborted) return;
-
-      setModels(listRes.models.map(toChatModelSummary));
-      setLoras(lorasRes.loras.map(toLoraSummary));
 
       const checkpointAfterPoll =
         useChatRuntimeStore.getState().params.checkpoint;
