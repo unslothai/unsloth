@@ -186,9 +186,7 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
                 cmd_lines.append(lines[i].strip())
             full_cmd = "\n".join(cmd_lines)
 
-            result.extend(
-                _emit_shell_command(indent, full_cmd, allow_shell = allow_shell)
-            )
+            result.extend(_emit_shell_command(indent, full_cmd, allow_shell = allow_shell))
 
         # %cd path -> os.chdir(path)
         elif stripped.startswith("%cd "):
@@ -313,9 +311,7 @@ def convert_notebook_to_script(
     # Generate output filename
     output_filename = filename.replace(".ipynb", ".py")
     # Clean up filename
-    output_filename = (
-        output_filename.replace("(", "").replace(")", "").replace("-", "_")
-    )
+    output_filename = output_filename.replace("(", "").replace(")", "").replace("-", "_")
 
     # Add output directory if specified
     if output_dir:
@@ -337,9 +333,7 @@ def convert_notebook_to_script(
 def main():
     import argparse
 
-    class Formatter(
-        argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter
-    ):
+    class Formatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
         pass
 
     parser = argparse.ArgumentParser(
@@ -353,12 +347,8 @@ Examples:
   python notebook_to_python.py https://github.com/unslothai/notebooks/blob/main/nb/Oute_TTS_(1B).ipynb
 """,
     )
-    parser.add_argument(
-        "notebooks", nargs = "+", help = "Notebook files or URLs to convert."
-    )
-    parser.add_argument(
-        "-o", "--output", dest = "output_dir", default = ".", help = "Output directory."
-    )
+    parser.add_argument("notebooks", nargs = "+", help = "Notebook files or URLs to convert.")
+    parser.add_argument("-o", "--output", dest = "output_dir", default = ".", help = "Output directory.")
     # Default True for backwards compatibility: existing Colab notebooks
     # routinely use pipes / redirection / interpolation in `!cmd` lines
     # and the converted script needs to keep working. Operators who

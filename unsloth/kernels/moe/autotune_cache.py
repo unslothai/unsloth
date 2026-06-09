@@ -105,9 +105,7 @@ def save_cached_config(
     cache_data = {
         "timestamp": time.time(),
         "device_capability": torch.cuda.get_device_capability(),
-        "config_fwd": config_fwd.__dict__
-        if hasattr(config_fwd, "__dict__")
-        else str(config_fwd),
+        "config_fwd": config_fwd.__dict__ if hasattr(config_fwd, "__dict__") else str(config_fwd),
         "config_bwd_dx": config_bwd_dx.__dict__
         if hasattr(config_bwd_dx, "__dict__")
         else str(config_bwd_dx),
@@ -230,9 +228,7 @@ def get_or_autotune_moe_kernels(
 
     except Exception as e:
         logger.error(f"MoE kernel auto-tuning failed: {e}")
-        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(
-            e
-        ):
+        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(e):
             logger.warning(
                 "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
             )
@@ -270,9 +266,7 @@ def _run_moe_autotuning(
     )
 
     # Create dummy routing data
-    m_sizes = torch.randint(
-        1, total_tokens // num_experts + 1, (num_experts,), device = device
-    )
+    m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
     # Adjust to ensure exact total
     diff = total_tokens - m_sizes.sum().item()
@@ -328,9 +322,7 @@ def _run_moe_autotuning(
 
     # Autotune backward dX kernel
     logger.info("Autotuning backward dX kernel...")
-    dummy_grad = torch.randn(
-        total_tokens, 2 * intermediate_dim, device = device, dtype = dtype
-    )
+    dummy_grad = torch.randn(total_tokens, 2 * intermediate_dim, device = device, dtype = dtype)
     _ = grouped_gemm_dX(
         dY = dummy_grad,
         W = gate_up_weights,

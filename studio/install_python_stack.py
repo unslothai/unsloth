@@ -176,7 +176,6 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             )
             if result.returncode == 0:
                 import re
-
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
                     return int(m.group(1)), int(m.group(2))
@@ -196,11 +195,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
-                if (
-                    len(parts) >= 2
-                    and parts[0].isdigit()
-                    and parts[1].split("-")[0].isdigit()
-                ):
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
                     return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
@@ -309,8 +304,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 # findall picks every gcnArchName line so multi-GPU hosts
                 # are enumerable and HIP_VISIBLE_DEVICES selects correctly.
                 _tokens = [
-                    t.strip().lower()
-                    for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                    t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
                 ]
                 _pick = _dedup_pick(_tokens)
                 if _pick:
@@ -612,9 +606,7 @@ def _ensure_rocm_torch() -> None:
         if not _torch_already_rocm:
             index_url = _windows_rocm_index_url(gfx_arch)
             if index_url is None:
-                print(
-                    f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping"
-                )
+                print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
             print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
             pip_install(
@@ -688,9 +680,7 @@ def _ensure_rocm_torch() -> None:
     except (OSError, subprocess.TimeoutExpired):
         probe = None
     has_hip_torch = (
-        probe is not None
-        and probe.returncode == 0
-        and probe.stdout.decode().strip() != ""
+        probe is not None and probe.returncode == 0 and probe.stdout.decode().strip() != ""
     )
 
     rocm_torch_ready = has_hip_torch
@@ -714,14 +704,11 @@ def _ensure_rocm_torch() -> None:
             # specific index into gfx_codes, use that gfx; else default to the
             # first listed GPU. Skip the override unless the resolved GPU is
             # Strix.
-            _runtime_gfx = (
-                gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
-            )
+            _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
                 _amd_mirror = (
-                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR")
-                    or "https://repo.amd.com/rocm/whl"
+                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
                 ).rstrip("/")
                 _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
                 _strix_override_pkgs = (
@@ -782,10 +769,7 @@ def _ensure_rocm_torch() -> None:
             None,
         )
         if tag is None:
-            print(
-                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
-                f"skipping torch reinstall"
-            )
+            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
         else:
             index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
             print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
@@ -922,9 +906,7 @@ CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
-LOCAL_DD_GITHUB_PLUGIN = (
-    SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
-)
+LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides file).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
@@ -1026,7 +1008,11 @@ def _title(msg: str) -> str:
 _RULE = "\u2500" * 52
 
 
-def _step(label: str, value: str, color_fn = None) -> None:
+def _step(
+    label: str,
+    value: str,
+    color_fn = None,
+) -> None:
     """Print a single step line in the column format."""
     if color_fn is None:
         color_fn = _green
@@ -1046,16 +1032,17 @@ def _progress(label: str) -> None:
     pad = " " * (_COL - len(_LABEL))
     end = "\n" if _STEP >= _TOTAL else ""
     try:
-        sys.stdout.write(
-            f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
-        )
+        sys.stdout.write(f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}")
         sys.stdout.flush()
     except OSError:
         pass
 
 
 def run(
-    label: str, cmd: list[str], *, quiet: bool = True
+    label: str,
+    cmd: list[str],
+    *,
+    quiet: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
     if VERBOSE:
@@ -1107,9 +1094,7 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
     return flash_attn_wheel_url(env)
 
 
-def _print_optional_install_failure(
-    label: str, result: subprocess.CompletedProcess[str]
-) -> None:
+def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
     _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
     if result.stdout:
         print(result.stdout.strip())
@@ -1204,9 +1189,7 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy of a requirements file with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
-        line
-        for line in lines
-        if not any(line.strip().lower().startswith(pkg) for pkg in skip)
+        line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     tmp = tempfile.NamedTemporaryFile(
         mode = "w",
@@ -1416,9 +1399,7 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (line 1526) -- all non-macOS platforms
         if not IS_WINDOWS:
-            base_total += (
-                2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
-            )
+            base_total += 2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade

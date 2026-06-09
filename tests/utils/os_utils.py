@@ -34,22 +34,16 @@ def check_package_installed(package_name, package_manager = None):
     try:
         if package_manager == "apt":
             # Check with dpkg
-            result = subprocess.run(
-                ["dpkg", "-l", package_name], capture_output = True, text = True
-            )
+            result = subprocess.run(["dpkg", "-l", package_name], capture_output = True, text = True)
             return result.returncode == 0
 
         elif package_manager in ["yum", "dnf"]:
             # Check with rpm
-            result = subprocess.run(
-                ["rpm", "-q", package_name], capture_output = True, text = True
-            )
+            result = subprocess.run(["rpm", "-q", package_name], capture_output = True, text = True)
             return result.returncode == 0
 
         elif package_manager == "pacman":
-            result = subprocess.run(
-                ["pacman", "-Q", package_name], capture_output = True, text = True
-            )
+            result = subprocess.run(["pacman", "-Q", package_name], capture_output = True, text = True)
             return result.returncode == 0
 
         elif package_manager == "zypper":
@@ -109,7 +103,11 @@ def require_package(package_name, executable_name = None):
 # require_package("ffmpeg", "ffmpeg")
 
 
-def require_python_package(package_name, import_name = None, pip_name = None):
+def require_python_package(
+    package_name,
+    import_name = None,
+    pip_name = None,
+):
     """Require a Python package to be installed, exit if not found"""
     if import_name is None:
         import_name = package_name

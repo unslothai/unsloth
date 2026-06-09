@@ -115,11 +115,7 @@ def _should_pack(config) -> bool:
 
 
 def _should_auto_padding_free(config) -> bool:
-    if (
-        config is None
-        or _AUTO_PADDING_FREE_ENV_DISABLED
-        or getattr(config, "packing", False)
-    ):
+    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
     return getattr(config, "padding_free", None) is None
 
@@ -272,9 +268,7 @@ class UnslothTrainer(SFTTrainer):
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(
-                self.args
-            )
+            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 self.model,
                 optimizer_cls,
@@ -283,7 +277,11 @@ class UnslothTrainer(SFTTrainer):
             )
         return self.optimizer
 
-    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
+    def _create_q_galore_optimizer(
+        self,
+        config: "QGaloreConfig",
+        embedding_lr = None,
+    ):
         """Build the Q-GaLore optimizer from a QGaloreConfig."""
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
@@ -396,8 +394,7 @@ def _resolve_trainer_params(trainer_class, init_fn):
     named = {
         k
         for k, v in params.items()
-        if v.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if v.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and k != "self"
     }
     if named:
@@ -449,9 +446,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
             # Get fields that should be passed to Config init
             config_fields = {
-                field.name: field
-                for field in dataclasses.fields(config_class)
-                if field.init
+                field.name: field for field in dataclasses.fields(config_class) if field.init
             }
 
             # Create config dict with valid fields from training_args
@@ -527,17 +522,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 # Blocklist: models that don't work correctly with padding_free
-                is_unsupported_model = any(
-                    x in PADDING_FREE_BLOCKLIST for x in model_types
-                )
+                is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
 
                 # Check if VLM
                 architectures = getattr(model_config, "architectures", None)
                 if architectures is None:
                     architectures = []
-                is_vlm = any(
-                    x.endswith("ForConditionalGeneration") for x in architectures
-                )
+                is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
                 is_vlm = is_vlm or hasattr(model_config, "vision_config")
 
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
@@ -568,7 +559,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            message = f"Unsloth: Sample packing skipped ({reason} detected)."
             print(message)
 
         packing_active = False
@@ -586,9 +577,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
-                logger.info(
-                    "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
-                )
+                logger.info("Unsloth: Padding-free batching auto-enabled for SFTTrainer instance.")
 
         try:
             original_init(self, *args, **kwargs)
@@ -606,24 +595,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
-        trainer_padding_free = bool(
-            trainer_args and getattr(trainer_args, "padding_free", False)
-        )
+        trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
 
         if blocked and trainer_args is not None:
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
 
-        if (
-            not blocked
-            and trainer_packing
-            and (packing_active or _should_pack(trainer_args))
-        ):
+        if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            print(
-                "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
-            )
+            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
@@ -648,9 +629,7 @@ def _patch_trl_trainer():
     import trl.trainer
 
     trl_classes = dir(trl.trainer)
-    trl_trainers = set(
-        x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
-    )
+    trl_trainers = set(x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer"))
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 

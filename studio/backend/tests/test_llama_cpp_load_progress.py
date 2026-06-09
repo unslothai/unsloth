@@ -150,7 +150,6 @@ class TestLoadProgressSingleShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
-
                 return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)  # fall through
 
@@ -175,7 +174,6 @@ class TestLoadProgressSingleShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
-
                 return io.StringIO(f"VmRSS:\t{8 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -210,7 +208,6 @@ class TestLoadProgressMultiShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
-
                 return io.StringIO("VmRSS:\t0\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -233,7 +230,6 @@ class TestLoadProgressDegradation:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
-
                 return io.StringIO("VmRSS:\t1024\tkB\n")
             return open(path, *args, **kwargs)
 

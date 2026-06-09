@@ -103,10 +103,7 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
 
 
 def _test_fake_quantizers_are_called(
-    model: torch.nn.Module,
-    example_inputs: Dict,
-    full_finetuning: bool,
-    qat_scheme: str,
+    model: torch.nn.Module, example_inputs: Dict, full_finetuning: bool, qat_scheme: str
 ):
     """
     Verify that the fake quantizers are actually called when the model is called.
