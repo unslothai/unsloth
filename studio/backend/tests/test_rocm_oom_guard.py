@@ -45,14 +45,14 @@ class TestCanonicalGcnArchName:
         ],
     )
     def test_canonical_attr(self, arch: str, expected_unified: bool) -> None:
-        props = _props(gcnArchName = arch, name = "irrelevant")
+        props = _props(gcnArchName=arch, name="irrelevant")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == arch
         assert is_unified is expected_unified
 
     def test_arch_with_colon_suffix_stripped(self) -> None:
         """gcnArchName can carry xnack/sramecc suffix; only the base is kept."""
-        props = _props(gcnArchName = "gfx1151:xnack-", name = "irrelevant")
+        props = _props(gcnArchName="gfx1151:xnack-", name="irrelevant")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
@@ -60,7 +60,7 @@ class TestCanonicalGcnArchName:
     def test_canonical_attr_wins_over_name(self) -> None:
         """Arch attr takes priority; device name is ignored."""
         # Discrete arch, but name looks like a unified SKU — arch must win.
-        props = _props(gcnArchName = "gfx1100", name = "Radeon 890M")
+        props = _props(gcnArchName="gfx1100", name="Radeon 890M")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1100"
         assert is_unified is False
@@ -77,7 +77,7 @@ class TestAlternateSpellingFallback:
         ["gcn_arch_name", "arch_name", "gfx_arch_name"],
     )
     def test_alternate_attr_unified(self, attr_name: str) -> None:
-        props = _props(**{attr_name: "gfx1151"}, name = "Radeon 8060S Graphics")
+        props = _props(**{attr_name: "gfx1151"}, name="Radeon 8060S Graphics")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
@@ -87,14 +87,14 @@ class TestAlternateSpellingFallback:
         ["gcn_arch_name", "arch_name", "gfx_arch_name"],
     )
     def test_alternate_attr_discrete(self, attr_name: str) -> None:
-        props = _props(**{attr_name: "gfx1201"}, name = "Radeon RX 9070 XT")
+        props = _props(**{attr_name: "gfx1201"}, name="Radeon RX 9070 XT")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1201"
         assert is_unified is False
 
     def test_first_non_empty_attr_wins(self) -> None:
         """With multiple alternate attrs, the first non-empty one wins."""
-        props = _props(gcn_arch_name = "gfx1151", arch_name = "gfx1100", name = "irrelevant")
+        props = _props(gcn_arch_name="gfx1151", arch_name="gfx1100", name="irrelevant")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
@@ -128,7 +128,7 @@ class TestDeviceNameFallback:
         ],
     )
     def test_unified_memory_detected(self, device_name: str) -> None:
-        props = _props(name = device_name)
+        props = _props(name=device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "", f"expected empty gcn_arch, got {gcn!r}"
         assert is_unified is True, f"device {device_name!r} should be classified as unified-memory"
@@ -149,7 +149,7 @@ class TestDeviceNameFallback:
         ],
     )
     def test_discrete_not_misclassified(self, device_name: str) -> None:
-        props = _props(name = device_name)
+        props = _props(name=device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert (
@@ -164,7 +164,7 @@ class TestDeviceNameFallback:
         assert is_unified is False
 
     def test_none_name_returns_false(self) -> None:
-        props = _props(name = None)
+        props = _props(name=None)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is False

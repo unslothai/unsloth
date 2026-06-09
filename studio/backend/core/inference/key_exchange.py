@@ -44,8 +44,8 @@ def init_key_pair() -> None:
             _public_key_fingerprint,
         )
     _private_key = rsa.generate_private_key(
-        public_exponent = 65537,
-        key_size = 2048,
+        public_exponent=65537,
+        key_size=2048,
     )
     _public_key_pem = (
         _private_key.public_key()
@@ -103,9 +103,9 @@ def decrypt_api_key(encrypted_b64: str) -> str:
         plaintext = _private_key.decrypt(
             ciphertext,
             padding.OAEP(
-                mgf = padding.MGF1(algorithm = hashes.SHA256()),
-                algorithm = hashes.SHA256(),
-                label = None,
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
             ),
         )
     except Exception as exc:

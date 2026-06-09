@@ -64,7 +64,7 @@ def _strip_tool_markup_final(
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    return strip_tool_markup(text, final = True)
+    return strip_tool_markup(text, final=True)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -100,7 +100,7 @@ def _coerce_arguments_with_provenance(
     tool_name: str = "",
 ):
     """Normalise tool ``arguments`` and report whether healing was applied."""
-    coerced = coerce_tool_arguments(raw_args, heal = heal, tool_name = tool_name)
+    coerced = coerce_tool_arguments(raw_args, heal=heal, tool_name=tool_name)
     return coerced.arguments, coerced.healed
 
 
@@ -112,8 +112,8 @@ def _coerce_arguments(
 ) -> dict:
     arguments, _ = _coerce_arguments_with_provenance(
         raw_args,
-        heal = heal,
-        tool_name = tool_name,
+        heal=heal,
+        tool_name=tool_name,
     )
     return arguments
 
@@ -125,7 +125,7 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
     """Call a single-turn generator with active tool schemas when supported."""
     try:
-        return single_turn(conversation, active_tools = active_tools)
+        return single_turn(conversation, active_tools=active_tools)
     except TypeError as exc:
         if "active_tools" not in str(exc):
             raise
@@ -169,8 +169,8 @@ def run_safetensors_tool_loop(
     conversation = list(messages)
     unrestricted_tools = not tools
     tool_controller = ToolLoopController(
-        tools = None if unrestricted_tools else tools,
-        auto_heal_tool_calls = auto_heal_tool_calls,
+        tools=None if unrestricted_tools else tools,
+        auto_heal_tool_calls=auto_heal_tool_calls,
     )
     final_attempt_done = False
     next_call_id = 0
@@ -246,7 +246,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 continue
 
@@ -261,8 +261,8 @@ def run_safetensors_tool_loop(
                     before_tool = candidate[:signal_pos]
                     cleaned_before = strip_tool_markup_streaming(
                         before_tool,
-                        auto_heal_tool_calls = auto_heal_tool_calls,
-                        tool_protocol_active = tool_protocol_active,
+                        auto_heal_tool_calls=auto_heal_tool_calls,
+                        tool_protocol_active=tool_protocol_active,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -284,14 +284,14 @@ def run_safetensors_tool_loop(
                             "tool_name": "render_html",
                             "tool_call_id": provisional_render_html_id,
                             "arguments": {},
-                            "provenance": _tool_event_provenance(provisional = True),
+                            "provenance": _tool_event_provenance(provisional=True),
                         }
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
+                    auto_heal_tool_calls=auto_heal_tool_calls,
+                    tool_protocol_active=tool_protocol_active,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -320,8 +320,8 @@ def run_safetensors_tool_loop(
                 cumulative_display += content_buffer
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
+                    auto_heal_tool_calls=auto_heal_tool_calls,
+                    tool_protocol_active=tool_protocol_active,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -342,7 +342,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
             elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
                 continue
@@ -351,8 +351,8 @@ def run_safetensors_tool_loop(
                 cumulative_display += content_buffer
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
+                    auto_heal_tool_calls=auto_heal_tool_calls,
+                    tool_protocol_active=tool_protocol_active,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -378,8 +378,8 @@ def run_safetensors_tool_loop(
                         "type": "content",
                         "text": _strip_tool_markup_final(
                             cumulative_display,
-                            auto_heal_tool_calls = auto_heal_tool_calls,
-                            tool_protocol_active = False,
+                            auto_heal_tool_calls=auto_heal_tool_calls,
+                            tool_protocol_active=False,
                         ),
                     }
                 yield {"type": "status", "text": ""}
@@ -394,8 +394,8 @@ def run_safetensors_tool_loop(
             if saw_tool_signal:
                 safety_tc = parse_tool_calls_from_text(
                     content_accum,
-                    id_offset = next_call_id,
-                    allow_incomplete = auto_heal_tool_calls,
+                    id_offset=next_call_id,
+                    allow_incomplete=auto_heal_tool_calls,
                 )
             if not safety_tc:
                 # Final answer: if a literal tool marker in prose was stripped
@@ -409,8 +409,8 @@ def run_safetensors_tool_loop(
             tool_calls = safety_tc
             content_text = _strip_tool_markup_final(
                 content_accum,
-                auto_heal_tool_calls = auto_heal_tool_calls,
-                tool_protocol_active = True,
+                auto_heal_tool_calls=auto_heal_tool_calls,
+                tool_protocol_active=True,
             )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
@@ -420,8 +420,8 @@ def run_safetensors_tool_loop(
             # DRAINING: parse tool calls out of full content.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
-                id_offset = next_call_id,
-                allow_incomplete = auto_heal_tool_calls,
+                id_offset=next_call_id,
+                allow_incomplete=auto_heal_tool_calls,
             )
             if not tool_calls:
                 # Parser found nothing. Auto-Heal-enabled display cleanup
@@ -432,8 +432,8 @@ def run_safetensors_tool_loop(
                         "type": "content",
                         "text": _strip_tool_markup_final(
                             content_accum,
-                            auto_heal_tool_calls = auto_heal_tool_calls,
-                            tool_protocol_active = False,
+                            auto_heal_tool_calls=auto_heal_tool_calls,
+                            tool_protocol_active=False,
                         ),
                     }
                 if provisional_render_html_started:
@@ -442,14 +442,14 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: render_html tool call could not be parsed.",
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 yield {"type": "status", "text": ""}
                 return
             content_text = _strip_tool_markup_final(
                 content_accum,
-                auto_heal_tool_calls = auto_heal_tool_calls,
-                tool_protocol_active = True,
+                auto_heal_tool_calls=auto_heal_tool_calls,
+                tool_protocol_active=True,
             )
 
         if tool_calls:
@@ -473,7 +473,7 @@ def run_safetensors_tool_loop(
                 and tool_name == "render_html"
                 and tc.get("id", "") == provisional_render_html_id
             )
-            decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            decision = tool_controller.prepare_call(tc, provisional=provisional_match)
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -502,9 +502,9 @@ def run_safetensors_tool_loop(
                 result = execute_tool(
                     decision.tool_name,
                     decision.arguments,
-                    cancel_event = cancel_event,
-                    timeout = eff_timeout,
-                    session_id = session_id,
+                    cancel_event=cancel_event,
+                    timeout=eff_timeout,
+                    session_id=session_id,
                 )
             except Exception as exc:
                 logger.exception("Tool %s raised: %s", decision.tool_name, exc)

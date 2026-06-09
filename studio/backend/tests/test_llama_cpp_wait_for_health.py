@@ -63,9 +63,9 @@ class TestWaitForHealthResilience:
     def test_returns_true_on_first_200(self, monkeypatch):
         b = _make_backend()
         b._process.poll.return_value = None
-        ok_resp = mock.Mock(status_code = 200)
+        ok_resp = mock.Mock(status_code=200)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: ok_resp)
-        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
+        assert b._wait_for_health(timeout=1.0, interval=0.01) is True
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
@@ -79,7 +79,7 @@ class TestWaitForHealthResilience:
             raise httpx.ReadError("WinError 10054")
 
         monkeypatch.setattr(httpx, "get", raise_read_error)
-        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
         # Both loop iterations ran -- the ReadError did not bubble.
         assert b._process.poll.call_count >= 2
 
@@ -94,7 +94,7 @@ class TestWaitForHealthResilience:
             raise httpx.RemoteProtocolError("partial response")
 
         monkeypatch.setattr(httpx, "get", raise_rpe)
-        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
         assert b._process.poll.call_count >= 2
 
     def test_write_error_also_swallowed(self, monkeypatch):
@@ -108,7 +108,7 @@ class TestWaitForHealthResilience:
             raise httpx.WriteError("connection broken on write")
 
         monkeypatch.setattr(httpx, "get", raise_we)
-        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
         assert b._process.poll.call_count >= 2
 
     def test_connect_error_swallowed_until_success(self, monkeypatch):
@@ -117,7 +117,7 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._process.poll.return_value = None
         calls = {"n": 0}
-        ok_resp = mock.Mock(status_code = 200)
+        ok_resp = mock.Mock(status_code=200)
 
         def cycling(*a, **kw):
             calls["n"] += 1
@@ -126,7 +126,7 @@ class TestWaitForHealthResilience:
             return ok_resp
 
         monkeypatch.setattr(httpx, "get", cycling)
-        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is True
+        assert b._wait_for_health(timeout=5.0, interval=0.01) is True
         assert calls["n"] >= 3
 
     def test_dead_process_before_probe_returns_false(self, monkeypatch):
@@ -143,5 +143,5 @@ class TestWaitForHealthResilience:
             raise AssertionError("httpx.get must not run when subprocess is dead")
 
         monkeypatch.setattr(httpx, "get", should_not_be_called)
-        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
         assert called["n"] == 0

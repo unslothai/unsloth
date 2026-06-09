@@ -54,9 +54,9 @@ from state.tool_policy import reset_tool_policy
 class TestChatMessageToolRoles:
     def test_tool_role_with_tool_call_id(self):
         msg = ChatMessage(
-            role = "tool",
-            tool_call_id = "call_abc123",
-            content = '{"temperature": 72}',
+            role="tool",
+            tool_call_id="call_abc123",
+            content='{"temperature": 72}',
         )
         assert msg.role == "tool"
         assert msg.tool_call_id == "call_abc123"
@@ -64,18 +64,18 @@ class TestChatMessageToolRoles:
 
     def test_tool_role_with_name(self):
         msg = ChatMessage(
-            role = "tool",
-            tool_call_id = "call_abc123",
-            name = "get_weather",
-            content = '{"temperature": 72}',
+            role="tool",
+            tool_call_id="call_abc123",
+            name="get_weather",
+            content='{"temperature": 72}',
         )
         assert msg.name == "get_weather"
 
     def test_assistant_with_tool_calls_no_content(self):
         msg = ChatMessage(
-            role = "assistant",
-            content = None,
-            tool_calls = [
+            role="assistant",
+            content=None,
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -94,9 +94,9 @@ class TestChatMessageToolRoles:
 
     def test_assistant_with_content_and_tool_calls(self):
         msg = ChatMessage(
-            role = "assistant",
-            content = "Let me check the weather.",
-            tool_calls = [
+            role="assistant",
+            content="Let me check the weather.",
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -108,7 +108,7 @@ class TestChatMessageToolRoles:
         assert msg.tool_calls[0]["id"] == "call_1"
 
     def test_plain_user_message_still_works(self):
-        msg = ChatMessage(role = "user", content = "Hello")
+        msg = ChatMessage(role="user", content="Hello")
         assert msg.role == "user"
         assert msg.tool_call_id is None
         assert msg.tool_calls is None
@@ -116,14 +116,14 @@ class TestChatMessageToolRoles:
 
     def test_invalid_role_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "function", content = "x")
+            ChatMessage(role="function", content="x")
 
     def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
         # Assistant messages carrying only tool_calls are the one documented
         # case where `content=None` is permitted.
         msg = ChatMessage(
-            role = "assistant",
-            tool_calls = [
+            role="assistant",
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -138,15 +138,15 @@ class TestChatMessageToolRoles:
         # ChatCompletionRequest's walkback fills it from the prior assistant
         # tool_calls; see test_inference_model_validation.py for resolution
         # coverage.
-        msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
+        msg = ChatMessage(role="tool", content='{"temperature": 72}')
         assert msg.tool_call_id is None
         assert msg.content == '{"temperature": 72}'
 
     def test_tool_role_empty_tool_call_id_left_for_request_validator(self):
         msg = ChatMessage(
-            role = "tool",
-            tool_call_id = "",
-            content = '{"temperature": 72}',
+            role="tool",
+            tool_call_id="",
+            content='{"temperature": 72}',
         )
         # Empty-string is treated the same as missing by the walkback.
         assert msg.tool_call_id in (None, "")
@@ -155,34 +155,34 @@ class TestChatMessageToolRoles:
 
     @pytest.mark.parametrize("role", ["user", "system"])
     def test_empty_string_content_allowed(self, role):
-        msg = ChatMessage(role = role, content = "")
+        msg = ChatMessage(role=role, content="")
         assert msg.content == ""
 
     def test_user_missing_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "user")
+            ChatMessage(role="user")
 
     def test_user_empty_list_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "user", content = [])
+            ChatMessage(role="user", content=[])
 
     def test_tool_empty_content_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
+            ChatMessage(role="tool", tool_call_id="call_1", content="")
         assert "content" in str(exc_info.value)
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
         # Stop-button leaves an empty assistant turn; tolerate for replay.
-        msg = ChatMessage(role = "assistant")
+        msg = ChatMessage(role="assistant")
         assert msg.content is None
         assert msg.tool_calls is None
 
     def test_assistant_empty_string_content_normalised_to_none(self):
-        msg = ChatMessage(role = "assistant", content = "")
+        msg = ChatMessage(role="assistant", content="")
         assert msg.content is None
 
     def test_assistant_empty_list_content_normalised_to_none(self):
-        msg = ChatMessage(role = "assistant", content = [])
+        msg = ChatMessage(role="assistant", content=[])
         assert msg.content is None
 
     # ── Role-constrained tool-call metadata ────────────────────────
@@ -190,9 +190,9 @@ class TestChatMessageToolRoles:
     def test_tool_calls_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage(
-                role = "user",
-                content = "Hi",
-                tool_calls = [
+                role="user",
+                content="Hi",
+                tool_calls=[
                     {
                         "id": "c1",
                         "type": "function",
@@ -204,12 +204,12 @@ class TestChatMessageToolRoles:
 
     def test_tool_call_id_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
+            ChatMessage(role="user", content="Hi", tool_call_id="call_1")
         assert "tool_call_id" in str(exc_info.value)
 
     def test_name_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
+            ChatMessage(role="user", content="Hi", name="get_weather")
         assert "name" in str(exc_info.value)
 
 
@@ -226,7 +226,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_tools_parses(self):
         req = self._make(
-            tools = [
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -247,30 +247,30 @@ class TestChatCompletionRequestToolFields:
 
     def test_image_base64_allows_empty_user_text(self):
         req = ChatCompletionRequest(
-            messages = [{"role": "user", "content": ""}],
-            image_base64 = "aW1hZ2U=",
+            messages=[{"role": "user", "content": ""}],
+            image_base64="aW1hZ2U=",
         )
         assert req.messages[0].content == ""
         assert req.image_base64 == "aW1hZ2U="
 
     def test_tool_choice_string_auto(self):
-        assert self._make(tool_choice = "auto").tool_choice == "auto"
+        assert self._make(tool_choice="auto").tool_choice == "auto"
 
     def test_tool_choice_string_required(self):
-        assert self._make(tool_choice = "required").tool_choice == "required"
+        assert self._make(tool_choice="required").tool_choice == "required"
 
     def test_tool_choice_string_none(self):
-        assert self._make(tool_choice = "none").tool_choice == "none"
+        assert self._make(tool_choice="none").tool_choice == "none"
 
     def test_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "get_weather"}}
-        assert self._make(tool_choice = tc).tool_choice == tc
+        assert self._make(tool_choice=tc).tool_choice == tc
 
     def test_stop_string(self):
-        assert self._make(stop = "\nUser:").stop == "\nUser:"
+        assert self._make(stop="\nUser:").stop == "\nUser:"
 
     def test_stop_list(self):
-        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == ["\nUser:", "\nAssistant:"]
+        assert self._make(stop=["\nUser:", "\nAssistant:"]).stop == ["\nUser:", "\nAssistant:"]
 
     def test_tools_default_none(self):
         req = self._make()
@@ -283,9 +283,9 @@ class TestChatCompletionRequestToolFields:
         # declared but must survive Pydantic parsing now that extra="allow" is
         # set. `seed` is declared and should land on the typed field instead.
         req = self._make(
-            frequency_penalty = 0.5,
-            seed = 42,
-            response_format = {"type": "json_object"},
+            frequency_penalty=0.5,
+            seed=42,
+            response_format={"type": "json_object"},
         )
         assert req.seed == 42
         # Extras land in model_extra
@@ -296,9 +296,9 @@ class TestChatCompletionRequestToolFields:
 
     def test_unsloth_extensions_still_work(self):
         req = self._make(
-            enable_tools = True,
-            enabled_tools = ["web_search", "python"],
-            session_id = "abc",
+            enable_tools=True,
+            enabled_tools=["web_search", "python"],
+            session_id="abc",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -337,7 +337,7 @@ class TestChatCompletionRequestToolFields:
         client = TestClient(app)
         resp = client.post(
             "/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
             },
@@ -351,7 +351,7 @@ class TestChatCompletionRequestToolFields:
         self,
         monkeypatch,
         llama_backend,
-        inference_backend = None,
+        inference_backend=None,
     ):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -365,7 +365,7 @@ class TestChatCompletionRequestToolFields:
             monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
 
         app = FastAPI()
-        app.include_router(inference_route.router, prefix = "/v1")
+        app.include_router(inference_route.router, prefix="/v1")
         install_api_error_handlers(app)
         app.dependency_overrides[get_current_subject] = lambda: "test-user"
         return TestClient(app)
@@ -380,10 +380,10 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_param(response, "n")
 
     def test_n_allows_openai_chat_completion_range(self):
-        req = self._make(n = 128)
+        req = self._make(n=128)
         assert req.n == 128
         with pytest.raises(ValidationError):
-            self._make(n = 129)
+            self._make(n=129)
 
     def test_n_rejected_for_external_provider_path(self, monkeypatch):
         class _UnusedBackend:
@@ -392,7 +392,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "n": 2,
@@ -407,7 +407,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "logprobs": True,
@@ -422,7 +422,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "top_logprobs": 3,
@@ -441,7 +441,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
                 "n": 2,
@@ -460,7 +460,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "tools": [
                     {
@@ -487,7 +487,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "n": 2,
             },
@@ -496,7 +496,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
-            messages = [
+            messages=[
                 {"role": "user", "content": "What's the weather in Paris?"},
                 {
                     "role": "assistant",
@@ -518,7 +518,7 @@ class TestChatCompletionRequestToolFields:
                     "content": '{"temperature": 14, "unit": "celsius"}',
                 },
             ],
-            tools = [
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -575,18 +575,18 @@ class TestAnthropicToolChoiceToOpenAI:
 class TestBuildPassthroughPayloadToolChoice:
     def _args(self):
         return dict(
-            openai_messages = [{"role": "user", "content": "Hi"}],
-            openai_tools = [
+            openai_messages=[{"role": "user", "content": "Hi"}],
+            openai_tools=[
                 {
                     "type": "function",
                     "function": {"name": "f", "parameters": {"type": "object"}},
                 }
             ],
-            temperature = 0.6,
-            top_p = 0.95,
-            top_k = 20,
-            max_tokens = 128,
-            stream = False,
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            max_tokens=128,
+            stream=False,
         )
 
     def test_default_tool_choice_is_auto(self):
@@ -594,16 +594,16 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body["tool_choice"] == "auto"
 
     def test_override_tool_choice_required(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice = "required")
+        body = _build_passthrough_payload(**self._args(), tool_choice="required")
         assert body["tool_choice"] == "required"
 
     def test_override_tool_choice_none(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice = "none")
+        body = _build_passthrough_payload(**self._args(), tool_choice="none")
         assert body["tool_choice"] == "none"
 
     def test_override_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "f"}}
-        body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        body = _build_passthrough_payload(**self._args(), tool_choice=tc)
         assert body["tool_choice"] == tc
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
@@ -617,7 +617,7 @@ class TestBuildPassthroughPayloadToolChoice:
         args["stream"] = True
         body = _build_passthrough_payload(
             **args,
-            stream_options = {"include_usage": True},
+            stream_options={"include_usage": True},
         )
         assert body.get("stream_options") == {"include_usage": True}
 
@@ -626,27 +626,27 @@ class TestBuildPassthroughPayloadToolChoice:
         args["stream"] = True
         body = _build_passthrough_payload(
             **args,
-            stream_options = {"include_usage": False},
+            stream_options={"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
 
     def test_repetition_penalty_renamed(self):
-        body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
+        body = _build_passthrough_payload(**self._args(), repetition_penalty=1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
 
     def test_passthrough_body_merges_system_and_developer_messages(self):
         payload = ChatCompletionRequest(
-            model = "default",
-            messages = [
+            model="default",
+            messages=[
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
             ],
-            tools = self._args()["openai_tools"],
+            tools=self._args()["openai_tools"],
         )
 
-        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+        body = _build_openai_passthrough_body(payload, backend_ctx=4096)
 
         assert body["messages"] == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
@@ -661,7 +661,7 @@ class TestBuildPassthroughPayloadToolChoice:
 
 class TestOpenAICompatibilityHelpers:
     def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
-        payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
+        payload = SimpleNamespace(max_tokens=128, max_completion_tokens=64)
         assert _effective_max_tokens(payload) == 64
 
     @pytest.mark.parametrize(
@@ -677,15 +677,15 @@ class TestOpenAICompatibilityHelpers:
 
     def test_non_streaming_completion_choice_accepts_tool_calls_finish_reason(self):
         choice = CompletionChoice(
-            index = 0,
-            message = CompletionMessage(content = ""),
-            finish_reason = "tool_calls",
+            index=0,
+            message=CompletionMessage(content=""),
+            finish_reason="tool_calls",
         )
         assert choice.finish_reason == "tool_calls"
 
     def test_stream_usage_chunk_requires_include_usage(self):
         usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
-        payload = SimpleNamespace(stream_options = None)
+        payload = SimpleNamespace(stream_options=None)
         assert (
             _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
         )
@@ -697,7 +697,7 @@ class TestOpenAICompatibilityHelpers:
         assert '"usage"' in line
 
     def test_stream_usage_chunk_coerces_nullable_counts(self):
-        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        payload = SimpleNamespace(stream_options={"include_usage": True})
         line = _openai_stream_usage_chunk(
             payload,
             "chatcmpl-test",
@@ -716,7 +716,7 @@ class TestOpenAICompatibilityHelpers:
 
     def test_developer_message_preserves_existing_system_prompt(self):
         payload = ChatCompletionRequest(
-            messages = [
+            messages=[
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -749,19 +749,19 @@ class TestFriendlyErrorHttpx:
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
     def test_connect_error_mapped(self):
-        exc = httpx.ConnectError("All connection attempts failed", request = self._req())
+        exc = httpx.ConnectError("All connection attempts failed", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_error_mapped(self):
-        exc = httpx.ReadError("EOF", request = self._req())
+        exc = httpx.ReadError("EOF", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_remote_protocol_error_mapped(self):
-        exc = httpx.RemoteProtocolError("peer closed", request = self._req())
+        exc = httpx.RemoteProtocolError("peer closed", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_timeout_mapped(self):
-        exc = httpx.ReadTimeout("timed out", request = self._req())
+        exc = httpx.ReadTimeout("timed out", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
@@ -843,11 +843,11 @@ class TestDropEmptyAssistantSentinels:
     def test_openai_messages_for_passthrough_drops_sentinel(self):
         """End-to-end: Stop-sentinel must not reach the wire."""
         req = ChatCompletionRequest(
-            model = "default",
-            messages = [
-                ChatMessage(role = "user", content = "hi"),
-                ChatMessage(role = "assistant", content = ""),
-                ChatMessage(role = "user", content = "again"),
+            model="default",
+            messages=[
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content=""),
+                ChatMessage(role="user", content="again"),
             ],
         )
         out = _openai_messages_for_passthrough(req)
@@ -865,9 +865,9 @@ class TestGgufVisionMessages:
 
     def test_preserves_multiturn_image_parts_on_original_turns(self):
         req = ChatCompletionRequest(
-            model = "default",
-            image_base64 = self._PNG_B64,
-            messages = [
+            model="default",
+            image_base64=self._PNG_B64,
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -896,7 +896,7 @@ class TestGgufVisionMessages:
             ],
         )
 
-        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision=True)
 
         assert has_image is True
         assert messages[0]["content"][0] == {"type": "text", "text": "describe image one"}
@@ -917,12 +917,12 @@ class TestGgufVisionMessages:
 
     def test_legacy_image_base64_is_injected_when_messages_are_text_only(self):
         req = ChatCompletionRequest(
-            model = "default",
-            image_base64 = self._PNG_B64,
-            messages = [{"role": "user", "content": "describe this image"}],
+            model="default",
+            image_base64=self._PNG_B64,
+            messages=[{"role": "user", "content": "describe this image"}],
         )
 
-        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision=True)
 
         assert has_image is True
         assert messages[0]["content"][0] == {"type": "text", "text": "describe this image"}
@@ -931,8 +931,8 @@ class TestGgufVisionMessages:
 
     def test_rejects_image_parts_for_text_only_gguf(self):
         req = ChatCompletionRequest(
-            model = "default",
-            messages = [
+            model="default",
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -949,7 +949,7 @@ class TestGgufVisionMessages:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            _openai_messages_for_gguf_chat(req, is_vision = False)
+            _openai_messages_for_gguf_chat(req, is_vision=False)
         assert "does not support vision" in str(exc_info.value)
 
     def test_tool_nudge_system_update_preserves_image_parts(self):
@@ -1032,20 +1032,20 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = True,
-            supports_tools = True,
-            model_identifier = "gemma-4-12b-it-GGUF",
-            generate_chat_completion = _plain,
-            generate_chat_completion_with_tools = _tools,
+            is_loaded=True,
+            is_vision=True,
+            supports_tools=True,
+            model_identifier="gemma-4-12b-it-GGUF",
+            generate_chat_completion=_plain,
+            generate_chat_completion_with_tools=_tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model = "default",
-            enable_tools = True,
-            enabled_tools = ["web_search"],
-            messages = [
+            model="default",
+            enable_tools=True,
+            enabled_tools=["web_search"],
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -1062,7 +1062,7 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(payload, request=self._Request(), current_subject="test")
         )
         self._consume_response(response)
 
@@ -1087,25 +1087,25 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = True,
-            model_identifier = "test-gguf",
-            generate_chat_completion = _plain,
-            generate_chat_completion_with_tools = _tools,
+            is_loaded=True,
+            is_vision=False,
+            supports_tools=True,
+            model_identifier="test-gguf",
+            generate_chat_completion=_plain,
+            generate_chat_completion_with_tools=_tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model = "default",
-            enable_tools = True,
-            enabled_tools = ["web_search"],
-            parallel_tool_calls = False,
-            messages = [{"role": "user", "content": "search once"}],
+            model="default",
+            enable_tools=True,
+            enabled_tools=["web_search"],
+            parallel_tool_calls=False,
+            messages=[{"role": "user", "content": "search once"}],
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(payload, request=self._Request(), current_subject="test")
         )
         self._consume_response(response)
 
@@ -1126,17 +1126,17 @@ class TestGgufVisionToolRouting:
             }
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            model_identifier = "test-gguf",
-            generate_chat_completion = _generate,
+            is_loaded=True,
+            is_vision=False,
+            supports_tools=False,
+            model_identifier="test-gguf",
+            generate_chat_completion=_generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model = "default",
-            messages = [
+            model="default",
+            messages=[
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -1144,7 +1144,7 @@ class TestGgufVisionToolRouting:
         )
 
         self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(payload, request=self._Request(), current_subject="test")
         )
 
         assert captured["messages"] == [
@@ -1178,23 +1178,23 @@ class TestGgufVisionToolRouting:
             }
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            model_identifier = "test-gguf",
-            generate_chat_completion = _generate,
+            is_loaded=True,
+            is_vision=False,
+            supports_tools=False,
+            model_identifier="test-gguf",
+            generate_chat_completion=_generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model = "default",
-            messages = [{"role": "user", "content": "hi"}],
-            n = 3,
-            seed = seed,
+            model="default",
+            messages=[{"role": "user", "content": "hi"}],
+            n=3,
+            seed=seed,
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(payload, request=self._Request(), current_subject="test")
         )
         body = json.loads(response.body)
 

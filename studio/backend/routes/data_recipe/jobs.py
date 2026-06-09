@@ -307,12 +307,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         # Mint an internal sk-unsloth-* key scoped to this run via the unified
         # API-key path. Marked internal so it's hidden from the user's key list;
         # the caller revokes it when the job terminates.
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
-            name = "data-recipe workflow",
-            expires_at = expires_at,
-            internal = True,
+            username="unsloth",
+            name="data-recipe workflow",
+            expires_at=expires_at,
+            internal=True,
         )
         internal_key_id = int(row["id"])
 
@@ -367,18 +367,18 @@ def _normalize_run_name(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise HTTPException(status_code = 400, detail = "invalid run_name: must be a string")
+        raise HTTPException(status_code=400, detail="invalid run_name: must be a string")
     trimmed = value.strip()
     if not trimmed:
         return None
     return trimmed[:120]
 
 
-@router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
+@router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)
 def create_job(payload: RecipePayload, request: Request):
     recipe = payload.recipe
     if not recipe.get("columns"):
-        raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+        raise HTTPException(status_code=400, detail="Recipe must include columns.")
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -386,8 +386,8 @@ def create_job(payload: RecipePayload, request: Request):
     execution_type = str(run.get("execution_type") or "full").strip().lower()
     if execution_type not in {"preview", "full"}:
         raise HTTPException(
-            status_code = 400,
-            detail = "invalid execution_type: must be 'preview' or 'full'",
+            status_code=400,
+            detail="invalid execution_type: must be 'preview' or 'full'",
         )
     run["execution_type"] = execution_type
     run["run_name"] = _normalize_run_name(run.get("run_name"))
@@ -395,14 +395,15 @@ def create_job(payload: RecipePayload, request: Request):
     if run_config_raw is not None:
         try:
             from data_designer.config.run_config import RunConfig
+
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
             raise log_and_http_error(
                 exc,
                 400,
                 "invalid run_config",
-                event = "data_recipe.jobs.run_config_invalid",
-                log = logger,
+                event="data_recipe.jobs.run_config_invalid",
+                log=logger,
             ) from exc
 
     try:
@@ -412,8 +413,8 @@ def create_job(payload: RecipePayload, request: Request):
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.inject_local_providers_failed",
-            log = logger,
+            event="data_recipe.jobs.inject_local_providers_failed",
+            log=logger,
         ) from exc
 
     # Single try over get_job_manager() AND mgr.start() so a minted key never
@@ -422,9 +423,9 @@ def create_job(payload: RecipePayload, request: Request):
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
-            recipe = recipe,
-            run = run,
-            internal_api_key_id = internal_api_key_id,
+            recipe=recipe,
+            run=run,
+            internal_api_key_id=internal_api_key_id,
         )
     except RuntimeError as exc:
         if internal_api_key_id is not None:
@@ -433,8 +434,8 @@ def create_job(payload: RecipePayload, request: Request):
             exc,
             409,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.start_conflict",
-            log = logger,
+            event="data_recipe.jobs.start_conflict",
+            log=logger,
         ) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
@@ -443,8 +444,8 @@ def create_job(payload: RecipePayload, request: Request):
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.start_failed",
-            log = logger,
+            event="data_recipe.jobs.start_failed",
+            log=logger,
         ) from exc
     except Exception:
         if internal_api_key_id is not None:
@@ -458,6 +459,7 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
     """Best-effort revoke of a workflow-minted key; never mask the caller's error."""
     try:
         from auth import storage  # deferred: avoids circular import
+
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
@@ -468,7 +470,7 @@ def job_status(job_id: str):
     mgr = get_job_manager()
     state = mgr.get_status(job_id)
     if state is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return state
 
 
@@ -477,7 +479,7 @@ def current_job():
     mgr = get_job_manager()
     state = mgr.get_current_status()
     if state is None:
-        raise HTTPException(status_code = 404, detail = "no job")
+        raise HTTPException(status_code=404, detail="no job")
     return state
 
 
@@ -486,7 +488,7 @@ def cancel_job(job_id: str):
     mgr = get_job_manager()
     ok = mgr.cancel(job_id)
     if not ok:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return mgr.get_status(job_id)
 
 
@@ -495,22 +497,22 @@ def job_analysis(job_id: str):
     mgr = get_job_manager()
     analysis = mgr.get_analysis(job_id)
     if analysis is None:
-        raise HTTPException(status_code = 404, detail = "analysis not ready")
+        raise HTTPException(status_code=404, detail="analysis not ready")
     return analysis
 
 
 @router.get("/jobs/{job_id}/dataset")
 def job_dataset(
     job_id: str,
-    limit: int = Query(default = 20, ge = 1, le = 500),
-    offset: int = Query(default = 0, ge = 0),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     mgr = get_job_manager()
-    result = mgr.get_dataset(job_id, limit = limit, offset = offset)
+    result = mgr.get_dataset(job_id, limit=limit, offset=offset)
     if result is None:
-        raise HTTPException(status_code = 404, detail = "dataset not ready")
+        raise HTTPException(status_code=404, detail="dataset not ready")
     if "error" in result:
-        raise HTTPException(status_code = 422, detail = result["error"])
+        raise HTTPException(status_code=422, detail=result["error"])
     return {
         "dataset": result["dataset"],
         "total": result["total"],
@@ -521,8 +523,8 @@ def job_dataset(
 
 @router.post(
     "/jobs/{job_id}/publish",
-    response_class = JSONResponse,
-    response_model = PublishDatasetResponse,
+    response_class=JSONResponse,
+    response_model=PublishDatasetResponse,
 )
 def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     repo_id = payload.repo_id.strip()
@@ -533,17 +535,17 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     )
 
     if not repo_id:
-        raise HTTPException(status_code = 400, detail = "repo_id is required")
+        raise HTTPException(status_code=400, detail="repo_id is required")
     if not description:
-        raise HTTPException(status_code = 400, detail = "description is required")
+        raise HTTPException(status_code=400, detail="description is required")
 
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:
         if status.get("status") != "completed" or status.get("execution_type") != "full":
             raise HTTPException(
-                status_code = 409,
-                detail = "Only completed full runs can be published.",
+                status_code=409,
+                detail="Only completed full runs can be published.",
             )
         status_artifact = status.get("artifact_path")
         if isinstance(status_artifact, str) and status_artifact.strip():
@@ -551,33 +553,33 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
 
     if not artifact_path:
         raise HTTPException(
-            status_code = 400,
-            detail = "This execution does not have publishable dataset artifacts.",
+            status_code=400,
+            detail="This execution does not have publishable dataset artifacts.",
         )
 
     try:
         url = publish_recipe_dataset(
-            artifact_path = artifact_path,
-            repo_id = repo_id,
-            description = description,
-            hf_token = hf_token or None,
-            private = payload.private,
+            artifact_path=artifact_path,
+            repo_id=repo_id,
+            description=description,
+            hf_token=hf_token or None,
+            private=payload.private,
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.publish_failed",
-            log = logger,
+            event="data_recipe.jobs.publish_failed",
+            log=logger,
         ) from exc
     except Exception as exc:
         raise log_and_http_error(
             exc,
             500,
             safe_error_detail(exc),
-            event = "data_recipe.jobs.publish_error",
-            log = logger,
+            event="data_recipe.jobs.publish_error",
+            log=logger,
         ) from exc
 
     return {
@@ -605,9 +607,9 @@ async def job_events(request: Request, job_id: str):
         except (TypeError, ValueError):
             pass
 
-    sub = mgr.subscribe(job_id, after_seq = after_seq)
+    sub = mgr.subscribe(job_id, after_seq=after_seq)
     if sub is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
 
     async def gen():
         try:
@@ -617,11 +619,11 @@ async def job_events(request: Request, job_id: str):
             while True:
                 if await request.is_disconnected():
                     break
-                event = await sub.next_event(timeout_sec = 1.0)
+                event = await sub.next_event(timeout_sec=1.0)
                 if event is None:
                     continue
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream")
