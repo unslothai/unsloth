@@ -2352,7 +2352,20 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
+        from .loader_utils import check_and_disable_bitsandbytes_loading
+        from unsloth_zoo.utils import get_quant_type
+
+        # Extract load_in_8bit from kwargs if provided
+        load_in_8bit = kwargs.get("load_in_8bit", False)
+
+        # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
+        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+        )
+
         bnb_config = None
+        _ckpt_qcfg = getattr(model_config, "quantization_config", None)
+
         if load_in_4bit:
             llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy()
             if IS_FALCON_H1:
@@ -2371,8 +2384,7 @@ class FastLlamaModel:
             # we pass via kwargs. Merge our skip list into that bundled config
             # so task heads like `score` (for *ForSequenceClassification) stay
             # in the compute dtype. See unslothai/unsloth#5027.
-            _ckpt_qcfg = getattr(model_config, "quantization_config", None)
-            if _ckpt_qcfg is not None:
+            if _ckpt_quant_method == "bitsandbytes" and _ckpt_qcfg is not None:
                 if isinstance(_ckpt_qcfg, dict):
                     _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
                     for _m in llm_int8_skip_modules:
