@@ -39,10 +39,7 @@ function formatLR(value: number): string {
   return `${rounded}e${exp}`;
 }
 
-/**
- * Step learning rate up in a scientific-notation-friendly sequence:
- * 1e-4 -> 2e-4 -> 3e-4 -> ... -> 9e-4 -> 1e-3 -> 2e-3 -> ...
- */
+/** Step the LR in a scientific sequence: 1e-4 -> 2e-4 -> ... -> 9e-4 -> 1e-3 -> ... */
 function stepLR(value: number, direction: 1 | -1): number {
   if (value <= 0) return 1e-5;
   const exp = Math.floor(Math.log10(value) + 1e-9);
@@ -116,8 +113,7 @@ export function HyperparametersStep() {
   const maxStepsSliderMax = Math.max(500, maxSteps, 30);
   const epochsSliderMax = Math.max(10, epochs, 1);
 
-  // Use model's max_position_embeddings to cap context length options.
-  // Fall back to 65536 (64K) if not available.
+  // Cap context length by model's max_position_embeddings; fall back to 64K.
   const maxCtx = maxPositionEmbeddings ?? 65536;
   const contextLengthOptions = useMemo(
     () => CONTEXT_LENGTHS.filter((len) => len <= maxCtx),

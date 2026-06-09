@@ -4,10 +4,10 @@
 """Tests for LlamaCppBackend._classify_llama_start_failure.
 
 When llama-server exits before becoming healthy, load_model turns its
-captured stdout/stderr into a user-facing reason. A diffusion / image
-GGUF (FLUX, Qwen-Image, ...) is a valid file with plenty of memory, so
-the generic "invalid file or out of memory" message is actively
-misleading (issue #5842). These tests pin the classification.
+captured stdout/stderr into a user-facing reason. A diffusion/image GGUF
+(FLUX, Qwen-Image, ...) is a valid file with plenty of memory, so the
+generic "invalid file or out of memory" message is misleading (issue
+#5842). These tests pin the classification.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match the stubbing pattern in sibling tests so the module imports in a
-# lightweight env without fastapi.
+# Match sibling tests' stubbing so the module imports in a lightweight
+# env without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)

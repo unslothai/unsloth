@@ -40,9 +40,8 @@ def run_bash(
     timeout: int = 60,
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a bash script fragment and return the CompletedProcess.
-    60s default tolerates slow shell startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second."""
+    """Run a bash script fragment. 60s default tolerates slow CI shell
+    startup; the scripts themselves run in well under a second."""
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
@@ -61,10 +60,8 @@ def run_pwsh(
     timeout: int = 60,
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a PowerShell script fragment and return the CompletedProcess.
-    60s default tolerates slow pwsh startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second.
-    A 10s budget previously surfaced as a flaky TimeoutExpired."""
+    """Run a PowerShell script fragment. 60s default tolerates slow CI pwsh
+    startup (a 10s budget was flaky); the scripts run in under a second."""
     run_env = os.environ.copy()
     run_env["NO_COLOR"] = "1"
     if env:

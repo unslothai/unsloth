@@ -10,12 +10,11 @@ from unittest import mock
 
 import pytest
 
-# Add the studio directory so we can import install_python_stack
+# Add the studio directory so we can import install_python_stack.
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
-# _build_uv_cmd lives at module level; import after path setup.
-# We need to mock parts of the module that do work at import time.
+# Import after path setup.
 import install_python_stack as ips
 
 

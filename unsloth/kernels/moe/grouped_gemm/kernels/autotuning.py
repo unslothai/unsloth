@@ -59,9 +59,8 @@ def _triton_supports_tma():
     )
 
 
-# Precompute at module import
-# NOTE: TMA is disabled for now due to compatibility issues with permute_x/permute_y settings
-# in the MoE grouped GEMM forward/backward passes. Re-enable once these are resolved.
+# TMA disabled for now: incompatible with permute_x/permute_y in the MoE
+# grouped GEMM passes. Re-enable once resolved.
 _TRITON_HAS_TMA = False  # _triton_supports_tma()
 
 

@@ -124,20 +124,18 @@ import {
   useState,
 } from "react";
 
-// True while a file is dragged anywhere over the chat page (not just the
-// composer), so the composer can show its "Drop files here" affordance.
+// True while a file is dragged anywhere over the chat page, so the composer
+// can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
 
-// Gap (px) between the last message and the floating composer. The bottom
-// spacer tracks composer height plus this gap so the chat can always be
-// scrolled fully above the composer.
+// Gap (px) between last message and floating composer; bottom spacer tracks
+// composer height plus this gap so chat can scroll fully above the composer.
 const COMPOSER_SCROLL_GAP_PX = 24;
 // The scroll-to-bottom footer sits 10px below the spacer top.
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// Composer shrinks this soon after a run start (send clears the chips)
-// apply immediately: the run-start pin owns the bottom, so the clamp is
-// the intended glide. Covers instant responses where isRunning is
-// already false by the time the dock resize is observed.
+// Window after a run start during which composer shrinks apply immediately:
+// the run-start pin owns the bottom, so the clamp is the intended glide.
+// Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
 export const Thread: FC<{
@@ -145,10 +143,9 @@ export const Thread: FC<{
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = ({ hideComposer, hideWelcome, targetThreadId }) => {
-  // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
-  // to prevent the streaming-mutation race that makes the viewport snap
-  // back to the bottom while the user is scrolling up (see the hook for
-  // the full explanation).
+  // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
+  // prevent the streaming-mutation race that snaps the viewport back to the
+  // bottom while the user scrolls up (see the hook for the full explanation).
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
@@ -167,10 +164,9 @@ export const Thread: FC<{
       ? null
       : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
 
-  // The viewport element is owned by the autoscroll hook; mirror it
-  // locally for the spacer clamp math below. State, not a ref: the keyed
-  // provider below remounts the viewport on thread switches, and the
-  // scroll listener effect must re-attach to the new element.
+  // Viewport element is owned by the autoscroll hook; mirror it locally for
+  // the spacer clamp math. State, not a ref: the keyed provider remounts the
+  // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -180,13 +176,13 @@ export const Thread: FC<{
     [viewportRef],
   );
 
-  // Bottom spacer sizing. Invariant: the chat never moves on its own when
-  // the composer resizes.
-  // - Grow (attachment added, multiline input): grow the spacer at once.
-  //   Growth below the scroll position is invisible and only adds room.
+  // Bottom spacer sizing. Invariant: chat never moves on its own on composer
+  // resize.
+  // - Grow (attachment added, multiline): grow at once; growth below the
+  //   scroll position is invisible and only adds room.
   // - Shrink (attachment removed): shrinking scrollHeight near the bottom
-  //   would clamp scrollTop and yank the chat down. Defer the shrink until
-  //   it is invisible (user scrolled up) or a bottom-pinning moment.
+  //   clamps scrollTop and yanks the chat down. Defer until invisible (user
+  //   scrolled up) or a bottom-pinning moment.
   // Applied imperatively so a remounted spacer can be sized from refs even
   // when composerHeight did not change (e.g. thread switch).
   const spacerElRef = useRef<HTMLDivElement | null>(null);
@@ -214,8 +210,8 @@ export const Thread: FC<{
   const spacerRef = useCallback(
     (node: HTMLDivElement | null) => {
       spacerElRef.current = node;
-      // Fresh mounts (thread switch, first message) start at the desired
-      // size; deferral state from a previous mount is moot.
+      // Fresh mounts (thread switch, first message) start at desired size;
+      // deferral state from a previous mount is moot.
       const desired = desiredSpacerPxRef.current;
       if (node && desired != null) {
         applySpacerPx(desired);
@@ -249,7 +245,7 @@ export const Thread: FC<{
         aui.thread().getState().isRunning ||
         performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
       // At the bottom the shrink only drops blank spacer, so apply it now
-      // instead of stranding dead space until the next pin.
+      // rather than strand dead space until the next pin.
       if (
         runOwnsBottom ||
         distance >= applied - desired ||
@@ -260,20 +256,20 @@ export const Thread: FC<{
       // else: deferred; released on scroll or a bottom-pinning event.
     }
     if (prev != null && composerHeight > prev) {
-      // The chat is now above the new bottom. Detach as if the user had
-      // scrolled up so no later signal re-pins and shoves the chat up.
-      // Scrolling back down re-attaches; explicit pins still work.
-      // Mid-run growth comes from tool-status rows, not the user, and
-      // detaching then would break streaming autoscroll, so skip it.
+      // Chat is now above the new bottom. Detach as if the user scrolled up
+      // so no later signal re-pins and shoves the chat up (scrolling back
+      // down re-attaches; explicit pins still work). Skip mid-run: that
+      // growth is tool-status rows, not the user, and detaching would break
+      // streaming autoscroll.
       if (!aui.thread().getState().isRunning) {
         autoScrollContext.detachFromBottom();
       }
     }
   }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
-  // Drop deferred spacer excess as soon as the user has scrolled far
-  // enough above the bottom that the shrink cannot clamp scrollTop.
-  // Keyed on viewportEl so the listener follows viewport remounts.
+  // Drop deferred spacer excess once the user has scrolled far enough above
+  // the bottom that the shrink cannot clamp scrollTop. Keyed on viewportEl
+  // so the listener follows viewport remounts.
   useEffect(() => {
     const el = viewportEl;
     if (!el) {
@@ -303,10 +299,10 @@ export const Thread: FC<{
   useAuiEvent("thread.initialize", releaseSpacerExcess);
   useAuiEvent("threadListItem.switchedTo", releaseSpacerExcess);
 
-  // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
-  // just on the composer) attaches it and shows the composer drop affordance.
-  // The composer's own dropzone still handles drops on the box itself; its
-  // handler calls preventDefault, so the page handler skips them (no double-add).
+  // Page-wide drag-and-drop: dropping a file anywhere on the chat page
+  // attaches it and shows the composer drop affordance. The composer's own
+  // dropzone handles drops on the box and calls preventDefault, so the page
+  // handler skips them (no double-add).
   const [pageDragging, setPageDragging] = useState(false);
   const dragDepth = useRef(0);
   const hasFiles = (e: ReactDragEvent) =>
@@ -332,8 +328,8 @@ export const Thread: FC<{
     // Compare panes hide this composer and use the shared composer's own
     // dropzone, so don't capture drops into a hidden composer here.
     if (hideComposer) return;
-    // Drops on the composer box are handled by its own dropzone, which calls
-    // preventDefault; skip those here so the file isn't added twice.
+    // Drops on the composer box are handled by its dropzone (preventDefault);
+    // skip those here so the file isn't added twice.
     if (e.defaultPrevented) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
@@ -391,10 +387,9 @@ export const Thread: FC<{
               }}
             />
 
-            {/* Bottom slack so the last message has breathing room above the
-            sticky scroll-to-bottom button (and the floating composer in
-            single mode). Without this, content would butt against the
-            sticky footer and feel cramped. */}
+            {/* Bottom slack so the last message has room above the sticky
+            scroll-to-bottom button (and floating composer in single mode),
+            instead of butting against the footer. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
                 ref={spacerRef}
@@ -562,8 +557,8 @@ const ThreadComposerDock: FC<{
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
 
-  // Report the dock's rendered height so the viewport can reserve matching
-  // scroll space when attachments or multiline input grow the composer.
+  // Report dock height so the viewport reserves matching scroll space when
+  // attachments or multiline input grow the composer.
   const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = dockRef.current;
@@ -608,12 +603,12 @@ const ThreadComposerDock: FC<{
 };
 
 const ThreadScrollToBottom: FC = () => {
-  // State and action both come from our IntentAwareScrollProvider (scoped
-  // per Thread, so compare panes are independent). We deliberately
-  // avoid `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to
-  // stay off assistant-ui's internal autoscroll path — see the hook
-  // for why. The button stays mounted and toggles via CSS; unmounting
-  // would trip the hook's MutationObserver as a content change.
+  // State and action both come from our IntentAwareScrollProvider (per-Thread
+  // scope, so compare panes are independent). We avoid
+  // `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to stay off
+  // assistant-ui's internal autoscroll path (see the hook). The button stays
+  // mounted and toggles via CSS; unmounting would trip the hook's
+  // MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
   return (
@@ -634,9 +629,9 @@ const ThreadScrollToBottom: FC = () => {
 const pickRandom = <T,>(arr: T[]): T =>
   arr[Math.floor(Math.random() * arr.length)];
 
-// Each greeting carries the sloth picture that best fits it, so a given line
-// always shows the same mascot. Greeting varies by local time; name-bearing
-// lines drop the name when none is set.
+// Each greeting carries its matching sloth picture so a line always shows the
+// same mascot. Greeting varies by local time; name-bearing lines drop the
+// name when none is set.
 type Welcome = { text: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
   text: "What’s on your mind today?",
@@ -645,9 +640,8 @@ const DEFAULT_WELCOME: Welcome = {
 
 function buildWelcome(hour: number, name: string): Welcome {
   const g = (text: string, sloth: string): Welcome => ({ text, sloth });
-  // Use the name on roughly a third of the lines per time of day: only the
-  // direct salutations where it reads most naturally. Everything else stays
-  // name-free so the greeting doesn't feel repetitive.
+  // Use the name on ~a third of lines (only direct salutations where it reads
+  // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
     g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
     g("Ready when you are.", "large sloth thumbs.png"),
@@ -696,7 +690,7 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
-          {/* Center the whole greeting (sloth + title) over the composer. */}
+          {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
             <img
               src={currentEmojiSrc}
@@ -784,8 +778,8 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Search and Code always show; Images, Canvas and MCP are conditional.
+  // More than 4 pills: collapse to icons only. Search and Code always show;
+  // Images, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
       (supportsBuiltinImageGeneration ? 1 : 0) +
@@ -802,7 +796,7 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Cache line metrics so getComputedStyle runs once, not on every keystroke.
+  // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
   );
@@ -844,8 +838,8 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  // Two-row layout shows once the input wraps or a tool is on. Tools pre-select
-  // before a model loads, so an active toggle expands the composer either way.
+  // Two-row layout shows once the input wraps or a tool is on. Tools can
+  // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -857,7 +851,7 @@ const Composer: FC<{
     mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
-  // leaves a stray blank row. Nudge a resize whenever the input width changes.
+  // leaves a stray blank row. Nudge a resize whenever input width changes.
   useEffect(() => {
     const el = inputRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
@@ -872,8 +866,8 @@ const Composer: FC<{
         return;
       }
       lastWidth = width;
-      // Re-measure after layout settles. An immediate dispatch races autosize's
-      // own measurement (stale pre-expand width); 0ms + 64ms wins it, no flash.
+      // Re-measure after layout settles. An immediate dispatch races
+      // autosize's own measurement (stale pre-expand width); 0ms + 64ms wins.
       while (pending.length) {
         clearTimeout(pending.pop());
       }
@@ -893,8 +887,8 @@ const Composer: FC<{
       observer.disconnect();
     };
   }, []);
-  // Docked composer opens upward; the centered welcome composer opens downward
-  // by default and only flips up via collision detection when it would not fit.
+  // Docked composer opens upward; the welcome composer opens downward by
+  // default and only flips up via collision detection when it won't fit.
   const effectiveMenuSide = menuSide ?? "bottom";
   const shouldBlockSend = useCallback(
     () =>
@@ -1027,17 +1021,17 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       {isTauri ? (
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        // Phase 1 native model owns Tauri local-path drops. Restore browser
+        // attachment drops in Tauri once Phase 1d adds token bridging.
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface">
           {composerContent}
         </div>
       ) : (
         <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative">
           {composerContent}
-          {/* Gemini-style drop affordance: shown only while a file is dragged
-              over the composer. Absolutely positioned + pointer-events-none so
-              the dashed outline adds no layout shift and the drop still lands. */}
+          {/* Gemini-style drop affordance, shown while a file is dragged over
+              the composer. Absolute + pointer-events-none so the outline adds
+              no layout shift and the drop still lands. */}
           <div
             className={cn(
               "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
@@ -1063,13 +1057,12 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Fallback timeout for stuck IME composition. When Chrome on Windows talks
-// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
-// the candidate is committed, so `composingRef` stays true and Send stays
-// disabled. Every compositionupdate / non-composing input resets the timer;
-// only a true gap-after-commit lets it fire. 2500ms is well above a normal
-// candidate-window pause but short enough to recover before the user
-// notices the Send button is stuck.
+// Fallback timeout for stuck IME composition. With Chrome on Windows against
+// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// candidate commits, so `composingRef` stays true and Send stays disabled.
+// Every compositionupdate / non-composing input resets the timer; only a true
+// gap-after-commit lets it fire. 2500ms is above a normal candidate-window
+// pause but short enough to recover before the user notices Send is stuck.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers() {
@@ -1153,13 +1146,12 @@ function useImeComposerInputHandlers() {
   );
 
   // If the watchdog cleared the composing flags during a long candidate-window
-  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
-  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
-  // and submit the preedit text. Re-arm composingRef synchronously from the
-  // native event so the form-submit gate keeps blocking until compositionend.
-  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
-  // this PR targets (no compositionend, no follow-up input event) would
-  // leave composingRef pinned true indefinitely and Send blocked again.
+  // pause, a later IME keypress (isComposing=true / keyCode 229) would reach
+  // handleSubmit with composingRef=false and submit the preedit text. Re-arm
+  // composingRef synchronously from the native event so the submit gate keeps
+  // blocking until compositionend. Re-arm the watchdog too, or the WSL+Chrome
+  // path (no compositionend, no follow-up input) would pin composingRef true
+  // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
@@ -1207,8 +1199,8 @@ const ComposerAudioMenuItem: FC = () => {
   );
 
   // Build the input on document.body, not in the menu: selecting the item
-  // closes the dropdown, which would unmount a menu-rendered input before the
-  // OS picker returns and drop the file.
+  // closes the dropdown, unmounting a menu-rendered input before the OS picker
+  // returns and dropping the file.
   const pickAudio = useCallback(() => {
     const input = document.createElement("input");
     input.type = "file";
@@ -1573,9 +1565,8 @@ const WebSearchToggle: FC = () => {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   // External providers (OpenAI today) expose a server-side web_search tool
-  // even when the local tool runtime is unavailable — gate the Search pill
-  // on either source so it lights up on external models too. Mirror of
-  // shared-composer's searchDisabled.
+  // even without the local tool runtime; gate the pill on either source so it
+  // lights up on external models too. Mirror of shared-composer's searchDisabled.
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -1594,7 +1585,7 @@ const WebSearchToggle: FC = () => {
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
@@ -1605,9 +1596,8 @@ const WebSearchToggle: FC = () => {
         const next = !toolsEnabled;
         setToolsEnabled(next);
         // Kimi's $web_search builtin requires thinking=disabled (see
-        // https://platform.kimi.ai/docs/guide/use-web-search). Keep
-        // the two pills mutually exclusive so the visible state always
-        // matches what the backend ends up sending.
+        // https://platform.kimi.ai/docs/guide/use-web-search). Keep the two
+        // pills mutually exclusive so visible state matches what's sent.
         if (isKimiExternal) {
           setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
@@ -1630,18 +1620,17 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // External providers have no local tool runtime, but Anthropic's
-  // Claude 4.x dispatches code_execution_20250825 server-side. The
-  // chat-page resolver stashes that capability in the runtime store
-  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
-  // codeDisabled so this pill lights up in active threads too.
+  // External providers have no local tool runtime, but Anthropic's Claude 4.x
+  // dispatches code_execution_20250825 server-side; the chat-page resolver
+  // stashes that capability in the runtime store (next to
+  // supportsBuiltinWebSearch). Mirror of shared-composer's codeDisabled.
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
@@ -1672,9 +1661,8 @@ const ImagesToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback exists. Mirror of
-  // shared-composer's imageDisabled / showImagePill so the in-thread
-  // composer surfaces the same control as the empty-state composer.
+  // server-side tool; no local runtime fallback. Mirror of shared-composer's
+  // imageDisabled / showImagePill so this composer matches the empty state.
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -1755,10 +1743,9 @@ const ToolStatusDisplay: FC = () => {
 
     setElapsed(0);
 
-    // Debounce badge visibility by 300ms when the badge is not
-    // already on screen. Once visible from a prior tool, consecutive
-    // tools show immediately so the badge does not flicker. Fast
-    // tool calls that all complete under 300ms never show the badge.
+    // Debounce visibility by 300ms when the badge isn't already on screen.
+    // Once visible from a prior tool, later tools show immediately so it
+    // doesn't flicker; tool calls under 300ms never show the badge.
     let showTimer: ReturnType<typeof setTimeout> | undefined;
     if (!visibleRef.current) {
       showTimer = setTimeout(() => setVisible(true), 300);
@@ -1790,8 +1777,8 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
-// Plus menu: attachment and workflow actions. Opens downward in the centered
-// welcome composer; the docked composer passes side="top" to open upward.
+// Plus menu: attachment and workflow actions. Opens downward in the welcome
+// composer; the docked composer passes side="top" to open upward.
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
@@ -1806,7 +1793,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
-  // Capability gating, mirroring the visible pills so menu and pills agree on
+  // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -1889,8 +1876,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         sideOffset={2}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
-        // Don't refocus the + on close; the restored focus showed a stray
-        // focus-visible ring.
+        // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
         <ComposerPrimitive.AddAttachment asChild={true}>

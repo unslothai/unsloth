@@ -45,9 +45,8 @@ export { db };
 /**
  * Wraps Dexie liveQuery for React state updates.
  *
- * Important: include every semantic query input in `deps` (filters, sort keys,
- * IDs, etc). `querier` identity is intentionally ignored to avoid re-subscribing
- * on every render when callers pass inline functions.
+ * Include every semantic query input in `deps` (filters, sort keys, IDs). `querier`
+ * identity is ignored to avoid re-subscribing every render on inline functions.
  */
 export function useLiveQuery<T>(
   querier: () => Promise<T>,

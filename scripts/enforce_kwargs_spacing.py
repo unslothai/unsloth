@@ -20,13 +20,8 @@ from pathlib import Path
 
 
 def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
-    """Write ``data`` to ``path`` atomically.
-
-    Stages a tmp file in the same directory (so it's on the same
-    filesystem as the destination), fsyncs, then `os.replace`s into
-    place. A crash mid-write therefore leaves either the previous
-    content or the fully new content -- never a truncated source file.
-    """
+    """Write ``data`` to ``path`` atomically via same-dir tmp + fsync + os.replace,
+    so a crash mid-write leaves either the old or full new content, never a truncation."""
     dirpath = str(path.parent) or "."
     fd, tmp_path = tempfile.mkstemp(prefix=".kwargs_fix.", dir=dirpath)
     try:
@@ -142,7 +137,7 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
             lines[start] = segment if segment.strip() else ""
             continue
 
-        # Defensive fall-back for unexpected multi-line 'pass'.
+        # Fall-back for unexpected multi-line 'pass'.
         prefix = lines[start][: node.col_offset]
         lines[start] = prefix if prefix.strip() else ""
         for idx in range(start + 1, end):
@@ -164,15 +159,12 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
 
 
 def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
-    """Drop blank line(s) after an import block in a *small* nested suite.
+    """Drop blank line(s) after an import block in a small nested suite.
 
-    Inside an indented suite of <= 3 statements (function/try/if/with/etc., never
-    module level), when a run of consecutive ``import`` / ``from ... import``
-    statements is directly followed -- across one or more blank lines and nothing
-    else -- by another statement in the same suite, remove those blank lines so
-    the import sits next to the code that uses it. A comment in the gap blocks the
-    rule. Removing blank lines never changes the AST, so this is always
-    semantics-preserving.
+    In an indented suite of <= 3 statements (never module level), when consecutive
+    imports are followed across blank lines (nothing else) by another statement,
+    remove those blanks. A comment in the gap blocks the rule. Removing blank lines
+    never changes the AST.
     """
     try:
         tree = ast.parse(text)
@@ -226,12 +218,11 @@ _DEF_MIN_PARAMS_FOR_MULTILINE = 3  # signatures with < this many params stay one
 
 
 def _def_specs_by_line(tree: ast.AST) -> dict[int, tuple[int, bool]]:
-    """Map the line of each def keyword to (param count, has-any-default).
+    """Map each def keyword line to (param count, has-any-default).
 
-    One def per line, so the line is a stable key. ``*`` / ``/`` markers are not
-    parameters and are not counted. A default exists if any positional default
-    is present or any keyword-only default is not ``None`` (a ``None`` entry in
-    ``kw_defaults`` means a required keyword-only arg).
+    ``*`` / ``/`` markers aren't counted. A default exists if any positional default
+    is present or any keyword-only default is not ``None`` (``None`` in ``kw_defaults``
+    means a required keyword-only arg).
     """
     out: dict[int, tuple[int, bool]] = {}
     for node in ast.walk(tree):
@@ -250,20 +241,12 @@ def _def_specs_by_line(tree: ast.AST) -> dict[int, tuple[int, bool]]:
 
 
 def normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
-    """Force a def / async-def signature one-per-line iff it has >= 3 parameters
-    AND at least one default value; otherwise keep it collapsible.
+    """Force a def signature one-per-line iff >= 3 params AND a default; else collapsible.
 
-    Rationale: signatures with defaults read better one parameter per line, but
-    only once they are non-trivial (< 3 params always stay on one line). A
-    signature with >= 3 params and a default gets a magic trailing comma added
-    (ruff then wraps it one-per-line regardless of length); every other
-    signature has its trailing comma stripped so ruff collapses it onto one line
-    when it fits (and wraps a genuinely long one by length alone).
-
-    Function-definition parameter lists only, never call sites or collection
-    literals. Parameter counts and defaults come from the AST. Run BEFORE ruff
-    format. Adding or removing a def trailing comma never changes the AST, which
-    is re-checked before returning.
+    A qualifying signature gets a magic trailing comma added (ruff wraps it
+    one-per-line); every other signature has its trailing comma stripped so ruff
+    collapses it when it fits. Def parameter lists only, never call sites or
+    collection literals. Run BEFORE ruff format. Never changes the AST (re-checked).
     """
     try:
         tree = ast.parse(text)
@@ -332,12 +315,10 @@ def normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
 
 
 def _split_string_token(s: str) -> tuple[str, str, str] | None:
-    """Split a string literal's source into (prefix, quote, body).
+    """Split a string literal source into (prefix, quote, body).
 
-    ``prefix`` is the letters before the opening quote (``r``/``f``/``b``/``u``
-    in any case/order), ``quote`` is the opening delimiter (``'``, ``"``,
-    ``'''`` or ``\"\"\"``) and ``body`` is everything between the delimiters.
-    Returns ``None`` if ``s`` is not a recognizable string literal.
+    ``prefix`` is the letters before the opening quote, ``quote`` the delimiter,
+    ``body`` everything between. ``None`` if not a recognizable string literal.
     """
     i = 0
     while i < len(s) and s[i] not in ("'", '"'):
@@ -393,15 +374,12 @@ def _string_pieces(
 def _merge_string_run(pieces: list[tuple[str, str]]) -> str | None:
     """Merge a run of adjacent string pieces into one literal's source text.
 
-    ``pieces`` is a list of ``(kind, raw_source)`` where kind is ``"str"`` or
-    ``"f"``. Rules: bytes are left side-by-side (return ``None``); a run with no
-    f-string merges plain/raw/unicode pieces sharing one prefix+quote by simple
-    body concatenation; a run mixing an f-string with at least one plain string
-    (and no bytes, no raw) folds into a single f-string -- f pieces keep their
-    bodies verbatim and plain pieces have their braces escaped (``{`` -> ``{{``).
-    Runs of only f-strings are left side-by-side. The caller re-checks the file
-    AST and drops the change if it differs, so any subtle case (e.g. ``\\N{...}``)
-    that this would mis-handle is caught and skipped.
+    ``pieces`` is ``(kind, raw_source)`` with kind ``"str"`` or ``"f"``. Bytes are
+    left side-by-side (``None``); a run with no f-string merges plain/raw/unicode
+    sharing one prefix+quote by body concatenation; a run mixing an f-string with a
+    plain string (no bytes, no raw) folds into one f-string with plain braces escaped.
+    Runs of only f-strings are left alone. Caller re-checks the AST and drops a
+    differing change, so subtle cases are caught.
     """
     parsed = []
     for kind, raw in pieces:
@@ -455,13 +433,10 @@ def _fold_collapses(
 ) -> bool:
     """Whether an f-string fold at ``row[c0:c1]`` -> ``merged`` is safe to apply.
 
-    Only ``assert`` statements wrap awkwardly when a message is folded: ruff
-    parenthesizes the *condition* once ``assert cond, msg`` no longer fits on one
-    line. For every other construct (call argument, ``raise``, assignment, ...) a
-    folded long message wraps acceptably, so the fold is always allowed. For an
-    ``assert`` the fold is allowed only when the statement is already one physical
-    line, or its estimated one-line length after folding fits the line length;
-    otherwise the message is left side-by-side.
+    Only ``assert`` wraps awkwardly when a message folds (ruff parenthesizes the
+    condition once it no longer fits one line); every other construct wraps
+    acceptably so is always allowed. An ``assert`` fold is allowed only if already
+    one line, or its estimated folded one-line length fits the line length.
     """
     stmt = _enclosing_stmt(tree, row)
     if not isinstance(stmt, ast.Assert):
@@ -483,15 +458,12 @@ def _fold_collapses(
 
 
 def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
-    """Merge a run of adjacent string literals on ONE physical line into a single
-    literal (the ``"a" "b"`` form ruff emits when it collapses an implicit
-    concatenation). Plain/raw/unicode runs merge by concatenation; a run mixing
-    an f-string with a plain string folds into one f-string (plain parts' braces
-    escaped) -- but only when the statement still fits on one line, so a long
-    message is left side-by-side rather than forcing the statement to re-wrap.
-    Runs of only f-strings, and bytes, are left side-by-side. The whole file's AST
-    is re-checked and the change is dropped if it would differ, so the transform
-    can never change meaning.
+    """Merge adjacent string literals on ONE physical line into a single literal.
+
+    Plain/raw/unicode runs merge by concatenation; an f-string + plain string folds
+    into one f-string (plain braces escaped) only while the statement still fits one
+    line. Runs of only f-strings, and bytes, are left side-by-side. The file AST is
+    re-checked and a differing change dropped, so meaning never changes.
     """
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
@@ -552,17 +524,11 @@ def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
 def collapse_short_asserts(text: str) -> tuple[str, bool]:
     """Collapse a multi-line ``assert`` onto one line when it would fit.
 
-    An ``assert`` is often kept multi-line only by a magic trailing comma inside
-    a collection / call / tuple-message (``assert x == {\"a\": 1,}`` written
-    across lines). When the whole statement's estimated one-line length fits the
-    line length, strip those trailing commas (the comma before a ``)`` / ``]`` /
-    ``}``) so ruff joins it back onto one line on the following format pass.
-
-    Run BEFORE ruff format. Skips any assert that contains a comment (a comment
-    forces ruff to keep it multi-line, which would oscillate). Stripping a
-    trailing comma is non-semantic except for a one-element tuple ``(x,)``; the
-    file AST is re-checked and any assert whose strip would change it is left
-    alone.
+    When the statement's estimated one-line length fits, strip the magic trailing
+    commas (comma before a closer) holding it open so ruff rejoins it. Run BEFORE
+    ruff format. Skips asserts with a comment (would oscillate). Stripping is
+    non-semantic except for a one-element tuple; AST is re-checked and changing
+    asserts left alone.
     """
     try:
         tree = ast.parse(text)
