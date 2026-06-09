@@ -2006,12 +2006,12 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# ── RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900): cap to rocm6.2 ────
+# ── RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900): cap to stable ROCm ──
 # ROCm 7.x PyTorch wheels for gfx103x are dev/nightly builds (version string
 # contains a git hash like 2.10.0+rocm7.2.0.gitXXXXXXXX) that segfault during
-# unsloth import on RDNA2.  The last stable, tested wheel is rocm6.2 (torch
-# 2.7.x).  When the system has ROCm 7.x but the runtime GPU is RDNA2, override
-# TORCH_INDEX_URL to the rocm6.2 index so users get a stable install.
+# unsloth import on RDNA2.  When the runtime GPU is RDNA2, override
+# TORCH_INDEX_URL: rocm6.2 for Python <=3.12, rocm6.4 for Python 3.13+
+# (rocm6.2 wheels top out at cp312; rocm6.4 ships stable cp313 wheels).
 case "$TORCH_INDEX_URL" in
     */rocm7.*)
         _rdna2_gfx_all=""
