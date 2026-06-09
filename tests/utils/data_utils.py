@@ -36,10 +36,10 @@ def create_dataset(
     dataset = create_instruction_dataset(messages)
 
     def _apply_chat_template(example):
-        chat = tokenizer.apply_chat_template(example["messages"], tokenize = False)
+        chat = tokenizer.apply_chat_template(example["messages"], tokenize=False)
         return {"text": chat}
 
-    dataset = dataset.map(_apply_chat_template, remove_columns = "messages")
+    dataset = dataset.map(_apply_chat_template, remove_columns="messages")
     if num_examples is not None:
         if len(dataset) < num_examples:
             num_repeats = num_examples // len(dataset) + 1
@@ -111,7 +111,7 @@ def get_peft_weights(model):
 
 def describe_peft_weights(model):
     for name, param in get_peft_weights(model).items():
-        yield name, describe_param(param, as_str = True)
+        yield name, describe_param(param, as_str=True)
 
 
 def check_responses(
@@ -119,7 +119,7 @@ def check_responses(
     answer: str,
     prompt: str = None,
 ) -> bool:
-    for i, response in enumerate(responses, start = 1):
+    for i, response in enumerate(responses, start=1):
         if answer in response:
             print(f"\u2713 response {i} contains answer")
         else:

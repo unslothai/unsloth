@@ -111,7 +111,7 @@ def test_is_mlx_gate_true_on_apple_silicon_with_mlx_present(monkeypatch):
 
     # Inject a fake mlx package so find_spec returns a non-None ModuleSpec.
     fake_mlx = types.ModuleType("mlx")
-    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
+    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None)
     fake_mlx.__path__ = []
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
 
@@ -128,7 +128,7 @@ def test_is_mlx_gate_false_when_mlx_missing(monkeypatch):
     import importlib.util
 
     # Apple Silicon platform but no mlx package -> gate must be False.
-    monkeypatch.delitem(sys.modules, "mlx", raising = False)
+    monkeypatch.delitem(sys.modules, "mlx", raising=False)
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
 
@@ -154,6 +154,7 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         # On a Mac CI runner this assertion would not apply; skip there.
         import pytest
+
         pytest.skip("Test host is Apple Silicon; CUDA-side canary doesn't apply.")
 
     import os
@@ -214,6 +215,7 @@ def test_detect_hardware_picks_cuda_on_real_host():
 
     if not torch.cuda.is_available():
         import pytest
+
         pytest.skip("No CUDA available on this host; canary not applicable.")
 
     hw = _import_studio_hardware()

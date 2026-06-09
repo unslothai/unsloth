@@ -33,7 +33,7 @@ from dataset_none_detect import (
 )
 
 LOG_DIR = REPO_ROOT / "tests" / "logs"
-LOG_DIR.mkdir(parents = True, exist_ok = True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
 # Helpers
@@ -69,7 +69,7 @@ def run_scan(
 ) -> dict | None:
     print(f"\n--- Scanning: {label} (fmt={fmt}) ---")
     try:
-        stats = scan_dataset(dataset, fmt = fmt)
+        stats = scan_dataset(dataset, fmt=fmt)
         print_report(stats, stats["format"])
         return stats
     except Exception as exc:
@@ -95,7 +95,7 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
     print(
         f"  [{status}] {label}: exact recall — "
         f"{caught_count}/{len(expected_bad)} injected bad rows caught",
-        end = "",
+        end="",
     )
     if missed:
         print(f"  (missed rows: {sorted(missed)})")
@@ -139,7 +139,7 @@ def test_p1_fix():
     mock_ds = _MockDataset(p1_rows, ["messages"])
 
     print(f"  Rows under test: {p1_rows}")
-    stats = find_none_chatml(mock_ds, col = "messages")
+    stats = find_none_chatml(mock_ds, col="messages")
     print_report(stats, "chatml")
 
     expected_bad = set(range(len(p1_rows)))
@@ -169,7 +169,7 @@ def test_probe_p1_fix():
 
     print(f"  Rows under test: {len(all_corrupt_rows)} rows all with messages=None")
     try:
-        stats = scan_dataset(mock_ds, fmt = "auto")
+        stats = scan_dataset(mock_ds, fmt="auto")
         print_report(stats, stats.get("format", "?"))
         bad = len(stats.get("bad_row_indices", []))
         status = "PASS" if bad == len(all_corrupt_rows) else "FAIL"
@@ -194,7 +194,7 @@ def test_probe_string_corrupt():
 
     print(f"  Rows under test: {len(string_rows)} rows all with messages='string'")
     try:
-        stats = scan_dataset(mock_ds, fmt = "auto")
+        stats = scan_dataset(mock_ds, fmt="auto")
         fmt = stats.get("format", "?")
         # Plain strings must NOT be classified as chatml.
         not_chatml = fmt != "chatml"
@@ -223,7 +223,7 @@ def test_explicit_fmt_corrupt():
 
     print(f"  Rows under test: {len(all_corrupt_rows)} rows (4×None, 3×string)")
     try:
-        stats = scan_dataset(mock_ds, fmt = "chatml")
+        stats = scan_dataset(mock_ds, fmt="chatml")
         print_report(stats, stats.get("format", "?"))
         bad = len(stats.get("bad_row_indices", []))
         status = "PASS" if bad == len(all_corrupt_rows) else "FAIL"
@@ -263,7 +263,7 @@ def test_p2_probe_skips_corrupt_prefers_valid():
 
     print(f"  Rows: {len(rows)} — messages=None, conversations=valid ShareGPT (2 bad value='')")
     try:
-        stats = scan_dataset(mock_ds, fmt = "auto")
+        stats = scan_dataset(mock_ds, fmt="auto")
         fmt = stats.get("format", "?")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
@@ -304,7 +304,7 @@ def test_p2_explicit_fmt_col_priority():
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
     print(f"  Rows: {len(rows)} — messages=clean chatml, conversations=bad sharegpt (value=None)")
-    stats = scan_dataset(mock_ds, fmt = "sharegpt")
+    stats = scan_dataset(mock_ds, fmt="sharegpt")
     col = stats.get("column", "?")
     bad = len(stats.get("bad_row_indices", []))
     # fmt='sharegpt' should scan 'conversations', find 5 bad rows.
@@ -338,7 +338,7 @@ def test_p2_gptoss_col_priority():
 
     print(f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt")
     try:
-        stats = scan_dataset(mock_ds, fmt = "gptoss")
+        stats = scan_dataset(mock_ds, fmt="gptoss")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
         correct_col = col == "messages"
@@ -370,7 +370,7 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
 
     print(f"  Rows: {len(rows)} — messages=None, conversations=None (both all-corrupt)")
     try:
-        stats = scan_dataset(mock_ds, fmt = "sharegpt")
+        stats = scan_dataset(mock_ds, fmt="sharegpt")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
         # MUST scan 'conversations', not 'messages'.
@@ -400,7 +400,7 @@ def test_new_p2_plain_string_messages_not_chatml():
 
     print(f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)")
     try:
-        stats = scan_dataset(mock_ds, fmt = "auto")
+        stats = scan_dataset(mock_ds, fmt="auto")
         fmt = stats.get("format", "?")
         # Classifying as chatml is wrong; 'unknown' or another non-chatml result expected.
         not_chatml = fmt != "chatml"
@@ -551,8 +551,8 @@ def test_dataclaw():
         print("  Loading dataset (streaming first 500 rows for speed)...")
         ds = load_dataset(
             "peteromallet/dataclaw-peteromallet",
-            split = "train",
-            streaming = False,
+            split="train",
+            streaming=False,
         )
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "dataclaw-peteromallet")
@@ -580,10 +580,10 @@ def test_codex_data():
         path = hf_hub_download(
             "peteromallet/my-personal-codex-data",
             "conversations.jsonl",
-            repo_type = "dataset",
+            repo_type="dataset",
         )
         rows = []
-        with open(path, encoding = "utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -606,7 +606,7 @@ def test_codex_data():
 def main():
     started = datetime.now().isoformat()
 
-    with open(LOG_PATH, "w", encoding = "utf-8") as log_file:
+    with open(LOG_PATH, "w", encoding="utf-8") as log_file:
         sys.stdout = Tee(log_file)
 
         print(f"dataset_none_detect.py — Test Run")
@@ -697,7 +697,7 @@ def main():
                         "bad_turn_count": val.get("total_none_turns", len(val.get("findings", []))),
                     }
 
-        json_path.write_text(json.dumps(summary, indent = 2), encoding = "utf-8")
+        json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
         finished = datetime.now().isoformat()
         print(f"\nFinished: {finished}")

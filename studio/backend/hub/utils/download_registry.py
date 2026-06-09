@@ -71,13 +71,13 @@ from hub.utils.hf_cache_state import (
 )
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class DownloadTransportCapability:
     available: bool
     reason: Optional[str] = None
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class DownloadTransportCapabilities:
     http: DownloadTransportCapability
     xet: DownloadTransportCapability
@@ -86,10 +86,10 @@ class DownloadTransportCapabilities:
 def get_download_transport_capabilities() -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
     return DownloadTransportCapabilities(
-        http = DownloadTransportCapability(available = True),
-        xet = DownloadTransportCapability(
-            available = xet_available,
-            reason = None
+        http=DownloadTransportCapability(available=True),
+        xet=DownloadTransportCapability(
+            available=xet_available,
+            reason=None
             if xet_available
             else "Xet transport is unavailable because hf_xet is not installed.",
         ),
@@ -129,12 +129,12 @@ def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMeta
     }
     tmp = path.with_name(f".{path.name}.tmp-{pid}")
     try:
-        tmp.write_text(json.dumps(payload), encoding = "utf-8")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, path)
     except OSError as exc:
         logger.debug("Could not write worker breadcrumb %s: %s", path, exc)
         try:
-            tmp.unlink(missing_ok = True)
+            tmp.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -148,7 +148,7 @@ def remove_worker_breadcrumb(key: str) -> None:
 
 def _safe_unlink(path: Path) -> None:
     try:
-        path.unlink(missing_ok = True)
+        path.unlink(missing_ok=True)
     except OSError as exc:
         logger.debug("Could not remove %s: %s", path, exc)
 
@@ -160,7 +160,7 @@ def _process_alive(pid: int) -> bool:
 
         SYNCHRONIZE = 0x00100000
         ERROR_INVALID_PARAMETER = 87
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -190,6 +190,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         pass
     try:
         import psutil
+
         return " ".join(psutil.Process(pid).cmdline())
     except Exception:
         return None
@@ -259,7 +260,7 @@ def _settle_orphaned_download(
             return
         if not _manifest_has_active_incomplete_blobs(repo_type, repo_id, manifest):
             return
-    persist_cancel_marker(repo_type, repo_id, variant, transport, logger = logger)
+    persist_cancel_marker(repo_type, repo_id, variant, transport, logger=logger)
 
 
 def reap_orphan_workers() -> None:
@@ -283,7 +284,7 @@ def reap_orphan_workers() -> None:
         if not entry.is_file() or not entry.name.endswith(".json"):
             continue
         try:
-            data = json.loads(entry.read_text(encoding = "utf-8"))
+            data = json.loads(entry.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             _safe_unlink(entry)
             continue
@@ -368,6 +369,7 @@ def _iter_active_snapshot_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
 
 def _manifest_verifies_against_active_cache(repo_type: str, repo_id: str, manifest) -> bool:
     from hub.utils import download_manifest
+
     for snapshot_dir in _iter_active_snapshot_dirs(repo_type, repo_id):
         if download_manifest.verify_against_disk(manifest, snapshot_dir).ok:
             return True
@@ -383,7 +385,7 @@ def _manifest_has_active_incomplete_blobs(repo_type: str, repo_id: str, manifest
     if not expected_hashes:
         return has_active_incomplete_blobs(repo_type, repo_id)
     return bool(
-        incomplete_blob_hashes(repo_type, repo_id, active_only = True).intersection(expected_hashes)
+        incomplete_blob_hashes(repo_type, repo_id, active_only=True).intersection(expected_hashes)
     )
 
 
@@ -489,7 +491,7 @@ def prepare_cache_for_transport(
     """
     if mode not in VALID_TRANSPORTS:
         raise ValueError(f"Invalid transport mode: {mode!r}")
-    root = hf_cache_root(create = True)
+    root = hf_cache_root(create=True)
     if root is None:
         return 0
     target = target_dir_name(repo_type, repo_id)
@@ -504,7 +506,7 @@ def prepare_cache_for_transport(
         canonical = repo_cache_dir_name(repo_type, repo_id)
         new_entry = root / canonical
         try:
-            new_entry.mkdir(exist_ok = True)
+            new_entry.mkdir(exist_ok=True)
         except OSError:
             return 0
         entries = [new_entry]
@@ -687,13 +689,13 @@ TERMINAL_STATES = frozenset({"complete", "cancelled", "error"})
 _ACTIVE_STATES = frozenset({"running", "cancelling"})
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class DownloadState:
     state: JobState
     error: Optional[str] = None
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class DownloadMetadata:
     repo_type: RepoType
     repo_id: str
@@ -701,16 +703,16 @@ class DownloadMetadata:
     transport: Optional[str]
     # GGUF variant main/writable hashes, identifying the variant-specific shards
     # for concurrency decisions.
-    blob_hashes: frozenset[str] = field(default_factory = frozenset)
+    blob_hashes: frozenset[str] = field(default_factory=frozenset)
     # Full required hash set for progress/completion (includes the shared mmproj
     # companion for vision GGUF repos).
-    progress_blob_hashes: frozenset[str] = field(default_factory = frozenset)
+    progress_blob_hashes: frozenset[str] = field(default_factory=frozenset)
     # Bytes already complete before this job started; not counted as this run's
     # progress.
     completed_baseline_bytes: int = 0
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ActiveDownloadRef:
     key: str
     state: str
@@ -748,17 +750,18 @@ def persist_cancel_marker(
     variant: Optional[str],
     transport: Optional[str],
     *,
-    logger = logger,
+    logger=logger,
 ) -> None:
     if not repo_type or not repo_id:
         return
     try:
         from hub.utils.download_manifest import write_cancel_marker
+
         if not write_cancel_marker(
             repo_type,
             repo_id,
             variant,
-            transport = transport,
+            transport=transport,
         ):
             logger.debug("write_cancel_marker returned False for %s", repo_id)
     except Exception as exc:
@@ -1015,13 +1018,13 @@ class DownloadRegistry:
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
                 self._metadata[key] = DownloadMetadata(
-                    repo_type = repo_type,
-                    repo_id = repo_id,
-                    variant = variant,
-                    transport = transport,
-                    blob_hashes = requested_hashes,
-                    progress_blob_hashes = requested_progress_hashes,
-                    completed_baseline_bytes = max(
+                    repo_type=repo_type,
+                    repo_id=repo_id,
+                    variant=variant,
+                    transport=transport,
+                    blob_hashes=requested_hashes,
+                    progress_blob_hashes=requested_progress_hashes,
+                    completed_baseline_bytes=max(
                         0,
                         int(completed_baseline_bytes or 0),
                     ),
@@ -1115,10 +1118,10 @@ class DownloadRegistry:
                     continue
                 refs.append(
                     ActiveDownloadRef(
-                        key = key,
-                        state = job.state,
-                        metadata = self._metadata.get(key),
-                        generation = self._generations.get(key, 0),
+                        key=key,
+                        state=job.state,
+                        metadata=self._metadata.get(key),
+                        generation=self._generations.get(key, 0),
                     )
                 )
             return refs
@@ -1229,7 +1232,7 @@ class DownloadRegistry:
         deadline = time.monotonic() + 10.0
         for key, proc, metadata in reaped:
             try:
-                proc.wait(timeout = max(0.0, deadline - time.monotonic()))
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 logger.warning(f"shutdown: {kind} worker for {key} did not exit after kill")
             except Exception:

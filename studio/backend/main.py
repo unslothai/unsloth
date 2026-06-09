@@ -46,7 +46,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
+                for _ver in sorted(os.listdir(_default_root), key=_ver_key, reverse=True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -77,6 +77,7 @@ if sys.platform == "win32":
         _found_rocm_bnb = False
         try:
             import importlib.util as _ilu
+
             _bnb_spec = _ilu.find_spec("bitsandbytes")
             # submodule_search_locations (not spec.origin) handles editable installs
             if _bnb_spec and _bnb_spec.submodule_search_locations:
@@ -92,7 +93,7 @@ if sys.platform == "win32":
                         if _km:
                             _all_vers_main.append(_km.group(1))
                 if _all_vers_main:
-                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
+                    _bnb_rocm_ver = max(_all_vers_main, key=lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
@@ -258,7 +259,7 @@ def get_unsloth_version() -> str:
 
     version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
     try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
+        for line in version_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
@@ -297,6 +298,7 @@ def _start_helper_precache_if_enabled() -> None:
     """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
     try:
         from utils.helper_precache_settings import should_preload_helper_on_startup
+
         if not should_preload_helper_on_startup():
             return
     except Exception:
@@ -307,11 +309,12 @@ def _start_helper_precache_if_enabled() -> None:
     def _precache():
         try:
             from utils.datasets.llm_assist import precache_helper_gguf
+
             precache_helper_gguf()
         except Exception:
             pass  # non-critical
 
-    threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+    threading.Thread(target=_precache, daemon=True, name="helper-gguf-precache").start()
 
 
 @asynccontextmanager
@@ -322,7 +325,7 @@ async def lifespan(app: FastAPI):
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
-        shutil.rmtree(overlay_dir, ignore_errors = True)
+        shutil.rmtree(overlay_dir, ignore_errors=True)
 
     # Detect hardware first — sets the DEVICE global used everywhere.
     detect_hardware()
@@ -355,13 +358,14 @@ async def lifespan(app: FastAPI):
                 "MTP GGUFs will load without speculative decoding."
             )
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush = True)
+            print(f"WARNING: {_msg}", flush=True)
         if _freshness.get("stale"):
             _msg = format_stale_warning(_freshness)
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush = True)
+            print(f"WARNING: {_msg}", flush=True)
     except Exception as _probe_exc:
         import structlog as _structlog
+
         _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
 
     from storage.studio_db import cleanup_orphaned_runs
@@ -370,6 +374,7 @@ async def lifespan(app: FastAPI):
         cleanup_orphaned_runs()
     except Exception as exc:
         import structlog
+
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
@@ -399,18 +404,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title = "Unsloth UI Backend",
-    version = UNSLOTH_VERSION,
-    description = "Backend API for Unsloth UI - Training and Model Management",
-    lifespan = lifespan,
+    title="Unsloth UI Backend",
+    version=UNSLOTH_VERSION,
+    description="Backend API for Unsloth UI - Training and Model Management",
+    lifespan=lifespan,
 )
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
 
 logger = LogConfig.setup_logging(
-    service_name = "unsloth-studio-backend",
-    env = os.getenv("ENVIRONMENT_TYPE", "production"),
+    service_name="unsloth-studio-backend",
+    env=os.getenv("ENVIRONMENT_TYPE", "production"),
 )
 
 app.add_middleware(LoggingMiddleware)
@@ -584,7 +589,7 @@ class MaxBodyMiddleware:
         max_bytes_getter,
         protected_prefixes: tuple,
         upload_passthrough_prefixes: tuple = (),
-        upload_passthrough_max_bytes_getter = None,
+        upload_passthrough_max_bytes_getter=None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -680,21 +685,21 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes_getter = default_request_body_limit_bytes,
-    protected_prefixes = _BODY_PROTECTED_PREFIXES,
-    upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
-    upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
+    max_bytes_getter=default_request_body_limit_bytes,
+    protected_prefixes=_BODY_PROTECTED_PREFIXES,
+    upload_passthrough_prefixes=_BODY_UPLOAD_PASSTHROUGH_PREFIXES,
+    upload_passthrough_max_bytes_getter=_get_upload_passthrough_request_max_bytes,
 )
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
 
-@app.get("/recipes", include_in_schema = False)
-@app.get("/recipes/{rest:path}", include_in_schema = False)
+@app.get("/recipes", include_in_schema=False)
+@app.get("/recipes/{rest:path}", include_in_schema=False)
 async def _recipes_redirect(rest: str = ""):
     target = "/data-recipes" + (("/" + rest) if rest else "")
-    return _RedirectResponse(url = target, status_code = 308)
+    return _RedirectResponse(url=target, status_code=308)
 
 
 _api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
@@ -713,37 +718,37 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = _cors_origins,
-    allow_origin_regex = _cors_origin_regex,
-    allow_credentials = True,
-    allow_methods = ["*"],
-    allow_headers = ["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
 # ============ Register API Routes ============
 
 # Register routers
-app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
-app.include_router(training_router, prefix = "/api/train", tags = ["training"])
-app.include_router(models_router, prefix = "/api/models", tags = ["models"])
-app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
-app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(training_router, prefix="/api/train", tags=["training"])
+app.include_router(models_router, prefix="/api/models", tags=["models"])
+app.include_router(chat_history_router, prefix="/api/chat", tags=["chat"])
+app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 # Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.
-app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(inference_studio_router, prefix="/api/inference", tags=["inference"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
-app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
-app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
-app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
-app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
-app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
-app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
-app.include_router(export_router, prefix = "/api/export", tags = ["export"])
-app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
-app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
-app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(inference_router, prefix="/v1", tags=["openai-compat"])
+app.include_router(providers_router, prefix="/api/providers", tags=["providers"])
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(mcp_servers_router, prefix="/api/mcp/servers", tags=["mcp"])
+app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
+app.include_router(export_router, prefix="/api/export", tags=["export"])
+app.include_router(training_history_router, prefix="/api/train", tags=["training-history"])
+app.include_router(hub_inventory_router, prefix="/api/hub", tags=["hub"])
+app.include_router(hub_datasets_router, prefix="/api/hub/datasets", tags=["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -783,7 +788,7 @@ async def health_check(request: Request):
         from auth.authentication import get_current_subject as _gcs
         from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth.split(" ", 1)[1])
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -817,7 +822,7 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
 
 @app.get(
     "/api/studio/download-transport-capabilities",
-    response_model = TransportCapabilities,
+    response_model=TransportCapabilities,
 )
 def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
     return asdict(get_download_transport_capabilities())
@@ -840,6 +845,7 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
             import os
+
             os.kill(os.getpid(), signal.SIGTERM)
 
     request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
@@ -897,6 +903,7 @@ async def get_hardware_info(current_subject: str = Depends(get_current_subject))
     /api/system/gpu-visibility is also auth-gated.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
+
     return {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
@@ -1033,7 +1040,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
@@ -1050,9 +1057,9 @@ def setup_frontend(app: FastAPI, build_path: Path):
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
-            content = content,
-            media_type = "text/html",
-            headers = headers,
+            content=content,
+            media_type="text/html",
+            headers=headers,
         )
 
     @app.get("/")
@@ -1066,13 +1073,13 @@ def setup_frontend(app: FastAPI, build_path: Path):
         # This handler only sees paths NOT matched by a real route. The full
         # request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
-            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+            raise HTTPException(status_code=404, detail="API endpoint not found")
 
         file_path = (build_path / full_path).resolve()
 
         # Block path traversal — resolved path must stay inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
-            return Response(status_code = 403)
+            return Response(status_code=403)
 
         if file_path.is_file():
             return FileResponse(file_path)

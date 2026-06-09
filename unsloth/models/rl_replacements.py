@@ -168,23 +168,23 @@ RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_data_collator)
 def dpo_trainer_vision_process_row(
     features,
     processing_class,
-    max_prompt_length = None,
-    max_completion_length = None,
-    add_special_tokens = True,
-    is_chat = False,
+    max_prompt_length=None,
+    max_completion_length=None,
+    add_special_tokens=True,
+    is_chat=False,
 ):
     text = features.get("prompt", "")
     images = features.get("images")
     processor, tokenizer = processing_class, processing_class.tokenizer
     processed_features = processor(
-        images = images,
-        text = text,
-        add_special_tokens = False,
+        images=images,
+        text=text,
+        add_special_tokens=False,
     )
 
     prompt_input_ids = processed_features["input_ids"][0]
-    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)["input_ids"]
-    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)["input_ids"]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens=False)["input_ids"]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens=False)["input_ids"]
 
     if add_special_tokens:
         if tokenizer.bos_token_id is not None:
@@ -417,7 +417,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         matched = re.match(
             r"[\s]{0,}def _prepare_dataset\(.*?" + params + r".*?\)",
             function,
-            flags = re.MULTILINE | re.DOTALL,
+            flags=re.MULTILINE | re.DOTALL,
         )
         if matched:
             # Use fast version!
@@ -464,7 +464,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     replacer = re.findall(
         r"def " + function_name + r"\(.*?\).*?\:\n",
         function,
-        flags = re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE | re.DOTALL,
     )
     if len(replacer) != 0:
         replacer = replacer[0]
@@ -493,14 +493,14 @@ def sft_trainer_compute_loss(function_name, function):
         self,
         model,
         inputs,
-        return_outputs = False,
-        num_items_in_batch = None,
+        return_outputs=False,
+        num_items_in_batch=None,
     ):
         outputs = super().compute_loss(
             model,
             inputs,
-            return_outputs = return_outputs,
-            num_items_in_batch = num_items_in_batch,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
         )
         return outputs
 
@@ -525,7 +525,7 @@ def orpo_trainer_text_tokenizer(function_name, function):
             r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]'
             "\n",
             function,
-            count = 1,
+            count=1,
         )
         return function
 
@@ -543,7 +543,7 @@ def orpo_trainer_text_tokenizer(function_name, function):
             r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
             "\n",
             function,
-            count = 1,
+            count=1,
         )
         if new_function == function:
             return function
@@ -786,7 +786,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     found = re.findall(
         r"\n(([ ]{8,})if self\.max_prompt_length is not None:.*?\2if self\.use_vllm:)",
         function,
-        flags = re.DOTALL | re.MULTILINE,
+        flags=re.DOTALL | re.MULTILINE,
     )
     if len(found) != 0:
         replace_part, spacing = found[0]
@@ -1069,7 +1069,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         input_ids,
         attention_mask,
         logits_to_keep,
-        compute_efficient = False,
+        compute_efficient=False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None  # Unsloth efficient GRPO
@@ -1084,12 +1084,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
                 self._autocast_dtype = torch.float16
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype):
+        with torch.amp.autocast(device_type=DEVICE_TYPE, dtype=self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
-                input_ids = input_ids,
-                attention_mask = attention_mask,
-                logits_to_keep = logits_to_keep + 1,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                logits_to_keep=logits_to_keep + 1,
             ).logits
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return logits
@@ -1128,9 +1128,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         input_ids,
         attention_mask,
         logits_to_keep,
-        batch_size = None,
-        compute_entropy = False,
-        compute_efficient = False,
+        batch_size=None,
+        compute_entropy=False,
+        compute_efficient=False,
         *args,
         **kwargs,
     ):
@@ -1166,7 +1166,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     self.processing_class, input_ids, mm_token_type_ids
                 )
 
-            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
 
             lm_head = self.model.get_output_embeddings().weight
 
@@ -1218,14 +1218,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if isinstance(num_images, torch.Tensor):
                 num_images = num_images.detach().cpu().reshape(-1).tolist()
             if image_grid_thw is not None and pixel_values is not None and num_images is not None:
-                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_image = image_grid_thw.prod(dim=-1)
                 rows_per_sample = torch.split(rows_per_image, num_images)
                 rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
                 # why: cum_rows is indexed via .item() inside the per-chunk loop;
                 # keeping it on CPU avoids per-iteration GPU->CPU sync.
                 cum_rows = torch.cat(
                     [
-                        torch.tensor([0], device = rows_per_sample.device),
+                        torch.tensor([0], device=rows_per_sample.device),
                         rows_per_sample.cumsum(0),
                     ]
                 ).cpu()
@@ -1269,7 +1269,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if image_grid_thw is not None and pixel_values is not None:
                     if num_images is None:
                         grid_slice = image_grid_thw[start:end]
-                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        batch_pixel_count = grid_slice.prod(dim=-1).sum().item()
                         start_pixel_idx = current_pixel_idx
                         end_pixel_idx = current_pixel_idx + batch_pixel_count
                         current_pixel_idx = end_pixel_idx
@@ -1356,15 +1356,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
-                    with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                    with torch.amp.autocast(device_type="cuda", dtype=self._autocast_dtype):
                         if pixel_values is None:
                             logits_chunk = unwrapped_model(
-                                input_ids = input_ids_chunk,
-                                attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
+                                input_ids=input_ids_chunk,
+                                attention_mask=attention_mask_chunk,
+                                pixel_values=pixel_values_chunk,
+                                image_grid_thw=image_grid_thw_chunk,
+                                pixel_attention_mask=pixel_attention_mask_chunk,
+                                image_sizes=image_sizes_chunk,
                                 **_extra_vision_kwargs,
                             ).logits
 
@@ -1379,23 +1379,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 logits_chunk,
                                 lm_head,
                                 completion_input_ids_chunk,
-                                chunks = input_ids_chunk.shape[0] * multiplier,
-                                logit_scale_multiply = logit_scale_multiply,
-                                logit_scale_divide = logit_scale_divide,
-                                logit_softcapping = logit_softcapping,
-                                temperature = temperature,
+                                chunks=input_ids_chunk.shape[0] * multiplier,
+                                logit_scale_multiply=logit_scale_multiply,
+                                logit_scale_divide=logit_scale_divide,
+                                logit_softcapping=logit_softcapping,
+                                temperature=temperature,
                             )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
                             logits_chunk = unwrapped_model(
-                                input_ids = input_ids_chunk,
-                                attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
-                                logits_to_keep = logits_to_keep + 1,
+                                input_ids=input_ids_chunk,
+                                attention_mask=attention_mask_chunk,
+                                pixel_values=pixel_values_chunk,
+                                image_grid_thw=image_grid_thw_chunk,
+                                pixel_attention_mask=pixel_attention_mask_chunk,
+                                image_sizes=image_sizes_chunk,
+                                logits_to_keep=logits_to_keep + 1,
                                 **_extra_vision_kwargs,
                             ).logits
 
@@ -1407,11 +1407,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     logits_chunk,
                                     lm_head,
                                     completion_input_ids_chunk,
-                                    chunks = input_ids_chunk.shape[0] * multiplier,
-                                    logit_scale_multiply = logit_scale_multiply,
-                                    logit_scale_divide = logit_scale_divide,
-                                    logit_softcapping = logit_softcapping,
-                                    temperature = temperature,
+                                    chunks=input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply=logit_scale_multiply,
+                                    logit_scale_divide=logit_scale_divide,
+                                    logit_softcapping=logit_softcapping,
+                                    temperature=temperature,
                                 )
                             else:
                                 # Model returned logits directly - scaling/softcapping already applied by model forward
@@ -1424,7 +1424,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
-                logprobs = torch.cat(all_logprobs_list, dim = 0)
+                logprobs = torch.cat(all_logprobs_list, dim=0)
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
@@ -1503,8 +1503,8 @@ def grpo_trainer_compute_loss(function_name, function):
         self,
         model,
         inputs,
-        return_outputs = False,
-        num_items_in_batch = None,
+        return_outputs=False,
+        num_items_in_batch=None,
     ):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
@@ -1533,15 +1533,15 @@ def grpo_trainer_compute_loss(function_name, function):
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
         num_processes = self.accelerator.num_processes
 
-        input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         if mm_token_type_ids is not None or image_grid_thw is not None:
             mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                 self.processing_class,
                 input_ids,
                 mm_token_type_ids,
-                completion_ids = completion_ids,
+                completion_ids=completion_ids,
             )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
@@ -1555,9 +1555,9 @@ def grpo_trainer_compute_loss(function_name, function):
             input_ids,
             attention_mask,
             logits_to_keep,
-            batch_size = None,
-            compute_entropy = False,
-            compute_efficient = False: self._get_per_token_logps(
+            batch_size=None,
+            compute_entropy=False,
+            compute_efficient=False: self._get_per_token_logps(
                 model, input_ids, attention_mask, logits_to_keep, compute_efficient
             )
             if hasattr(self, "_get_per_token_logps")
@@ -1573,7 +1573,7 @@ def grpo_trainer_compute_loss(function_name, function):
         )  # logps
 
         per_token_logps = get_logps_func(
-            model, input_ids, attention_mask, logits_to_keep, compute_efficient = True
+            model, input_ids, attention_mask, logits_to_keep, compute_efficient=True
         )
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
@@ -1612,8 +1612,8 @@ def grpo_trainer_compute_loss(function_name, function):
                         "tool_mask/env_mask must have the same shape as completion_mask"
                     )
                 loss_mask = completion_mask * tool_mask.to(
-                    device = completion_mask.device,
-                    dtype = completion_mask.dtype,
+                    device=completion_mask.device,
+                    dtype=completion_mask.dtype,
                 )
             (
                 loss,
@@ -1632,22 +1632,22 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss_mask,
                 self.beta,
                 advantages,
-                pixel_values = pixel_values,
-                image_grid_thw = image_grid_thw,
-                loss_type = self.args.loss_type,
-                importance_sampling_level = self.importance_sampling_level,
-                epsilon_low = self.epsilon_low,
-                epsilon_high = self.epsilon_high,
-                max_completion_length = self.args.max_completion_length,
-                delta = self.args.delta,
-                temperature = self.args.temperature,
-                max_left_pad = max_left_pad,
-                logit_softcapping = logit_softcapping,
-                logit_scale_multiply = logit_scale_multiply,
-                logit_scale_divide = logit_scale_divide,
-                num_items_in_batch = num_items_in_batch,
-                current_gradient_accumulation_steps = current_gradient_accumulation_steps,
-                num_processes = num_processes,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                loss_type=self.args.loss_type,
+                importance_sampling_level=self.importance_sampling_level,
+                epsilon_low=self.epsilon_low,
+                epsilon_high=self.epsilon_high,
+                max_completion_length=self.args.max_completion_length,
+                delta=self.args.delta,
+                temperature=self.args.temperature,
+                max_left_pad=max_left_pad,
+                logit_softcapping=logit_softcapping,
+                logit_scale_multiply=logit_scale_multiply,
+                logit_scale_divide=logit_scale_divide,
+                num_items_in_batch=num_items_in_batch,
+                current_gradient_accumulation_steps=current_gradient_accumulation_steps,
+                num_processes=num_processes,
             )
         else:
 
@@ -1711,62 +1711,62 @@ def grpo_trainer_compute_loss(function_name, function):
                     coef_1,
                     completion_mask,
                 ) = grpo_accumulated_loss(
-                    trainer = self,
-                    input_ids = _input_ids,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    num_images = num_images,
-                    logits_to_keep = logits_to_keep,
-                    completion_mask = completion_mask,
-                    advantages = advantages,
-                    old_logps = old_logps,
-                    ref_logps = ref_logps,
-                    n_chunks = self.args.unsloth_num_chunks,
-                    loss_type = self.args.loss_type,
-                    importance_sampling_level = self.importance_sampling_level,
-                    epsilon_low = self.epsilon_low,
-                    epsilon_high = self.epsilon_high,
-                    max_completion_length = self.args.max_completion_length,
-                    delta = self.args.delta,
-                    temperature = self.args.temperature,
-                    max_left_pad = max_left_pad,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    attention_mask = attention_mask,
-                    num_items_in_batch = num_items_in_batch,
-                    current_gradient_accumulation_steps = current_gradient_accumulation_steps,
-                    num_processes = num_processes,
-                    sampling_per_token_logps = sampling_per_token_logps,
-                    token_type_ids = token_type_ids,
-                    mm_token_type_ids = mm_token_type_ids,
+                    trainer=self,
+                    input_ids=_input_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    pixel_attention_mask=pixel_attention_mask,
+                    image_sizes=image_sizes,
+                    num_images=num_images,
+                    logits_to_keep=logits_to_keep,
+                    completion_mask=completion_mask,
+                    advantages=advantages,
+                    old_logps=old_logps,
+                    ref_logps=ref_logps,
+                    n_chunks=self.args.unsloth_num_chunks,
+                    loss_type=self.args.loss_type,
+                    importance_sampling_level=self.importance_sampling_level,
+                    epsilon_low=self.epsilon_low,
+                    epsilon_high=self.epsilon_high,
+                    max_completion_length=self.args.max_completion_length,
+                    delta=self.args.delta,
+                    temperature=self.args.temperature,
+                    max_left_pad=max_left_pad,
+                    logit_softcapping=logit_softcapping,
+                    logit_scale_multiply=logit_scale_multiply,
+                    logit_scale_divide=logit_scale_divide,
+                    attention_mask=attention_mask,
+                    num_items_in_batch=num_items_in_batch,
+                    current_gradient_accumulation_steps=current_gradient_accumulation_steps,
+                    num_processes=num_processes,
+                    sampling_per_token_logps=sampling_per_token_logps,
+                    token_type_ids=token_type_ids,
+                    mm_token_type_ids=mm_token_type_ids,
                     **_grpo_accumulated_loss_kwargs,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
                 loss, completion_length, mean_kl, coef_1, completion_mask = grpo_accumulated_loss(
-                    trainer = self,
-                    input_ids = _input_ids,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    num_images = num_images,
-                    logits_to_keep = logits_to_keep,
-                    completion_mask = completion_mask,
-                    advantages = advantages,
-                    old_logps = old_logps,
-                    ref_logps = ref_logps,
-                    n_chunks = self.args.unsloth_num_chunks,
-                    temperature = self.args.temperature,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    attention_mask = attention_mask,
-                    token_type_ids = token_type_ids,
-                    mm_token_type_ids = mm_token_type_ids,
+                    trainer=self,
+                    input_ids=_input_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    pixel_attention_mask=pixel_attention_mask,
+                    image_sizes=image_sizes,
+                    num_images=num_images,
+                    logits_to_keep=logits_to_keep,
+                    completion_mask=completion_mask,
+                    advantages=advantages,
+                    old_logps=old_logps,
+                    ref_logps=ref_logps,
+                    n_chunks=self.args.unsloth_num_chunks,
+                    temperature=self.args.temperature,
+                    logit_softcapping=logit_softcapping,
+                    logit_scale_multiply=logit_scale_multiply,
+                    logit_scale_divide=logit_scale_divide,
+                    attention_mask=attention_mask,
+                    token_type_ids=token_type_ids,
+                    mm_token_type_ids=mm_token_type_ids,
                     **_grpo_accumulated_loss_kwargs,
                 )
         if "train" in self._metrics:
@@ -1785,12 +1785,12 @@ def grpo_trainer_compute_loss(function_name, function):
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
-                else torch.tensor(0.0, device = self.model.device)
+                else torch.tensor(0.0, device=self.model.device)
             )
             max_delta = (
                 torch.max(delta)
                 if delta.numel() > 0
-                else torch.tensor(0.0, device = self.model.device)
+                else torch.tensor(0.0, device=self.model.device)
             )
             self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
                 self.accelerator.gather(mean_delta).mean().item()
@@ -1802,21 +1802,21 @@ def grpo_trainer_compute_loss(function_name, function):
             min_importance_sampling_ratio = (
                 torch.min(flat_is_ratio)
                 if flat_is_ratio.numel() > 0
-                else torch.tensor(0.0, device = self.model.device)
+                else torch.tensor(0.0, device=self.model.device)
             )
             mean_importance_sampling_ratio = (
                 torch.mean(flat_is_ratio)
                 if flat_is_ratio.numel() > 0
-                else torch.tensor(0.0, device = self.model.device)
+                else torch.tensor(0.0, device=self.model.device)
             )
             max_importance_sampling_ratio = (
                 torch.max(flat_is_ratio)
                 if flat_is_ratio.numel() > 0
-                else torch.tensor(0.0, device = self.model.device)
+                else torch.tensor(0.0, device=self.model.device)
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
                 self.accelerator.gather(min_importance_sampling_ratio)
-                .nan_to_num(nan = float("inf"))
+                .nan_to_num(nan=float("inf"))
                 .min()
                 .item()
             )
@@ -1825,12 +1825,12 @@ def grpo_trainer_compute_loss(function_name, function):
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
                 self.accelerator.gather(max_importance_sampling_ratio)
-                .nan_to_num(nan = float("-inf"))
+                .nan_to_num(nan=float("-inf"))
                 .max()
                 .item()
             )
 
-        completion_token_count = completion_mask.sum().clamp(min = 1.0)
+        completion_token_count = completion_mask.sum().clamp(min=1.0)
 
         def masked_batch_mean(x):
             if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
@@ -2179,7 +2179,7 @@ def vllm_generation_init_patch():
                 f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
 
-        patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
+        patched_src, num_replacements = pattern.subn(replace_llm_block, src, count=1)
         if num_replacements == 0:
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration._init_vllm patch may have failed"
@@ -2207,7 +2207,7 @@ def vllm_generation_init_patch():
             )
             return match.group("def_line") + guard + body
 
-        patched_src, num_replacements = pattern.subn(replace_sync_weights, src, count = 1)
+        patched_src, num_replacements = pattern.subn(replace_sync_weights, src, count=1)
         if num_replacements == 0:
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed"
@@ -2229,7 +2229,7 @@ def vllm_generation_init_patch():
                 f'{indent}    self.llm.collective_rpc("reload_weights")'
             )
 
-        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count = 1)
+        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count=1)
         if num_replacements == 0:
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
