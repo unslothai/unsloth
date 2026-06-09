@@ -138,11 +138,8 @@ function getTourId(pathname: string): string | null {
   return null;
 }
 
-// Hugeicons' TestTube01Icon ships with two interior bubbles (paths #4
-// and #5 of the 5-path definition). Slicing to the first three paths
-// keeps the test-tube outline + horizontal cap + liquid line, dropping
-// the bubbles. The original export stays untouched, and HugeiconsIcon
-// renders this trimmed array exactly the same way.
+// TestTube01Icon's last 2 paths are interior bubbles; slice to the first
+// 3 (outline + cap + liquid line) to drop them. Original export untouched.
 const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
@@ -261,11 +258,11 @@ export function AppSidebar() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Bottom fade hides at the very bottom (and for short, non-scrolling lists)
-  // so the last row isn't washed out - Gemini-style.
+  // Bottom fade hides at the very bottom / for short lists so the last row
+  // isn't washed out (Gemini-style).
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Driven only from onScroll + a content-change effect below. Deliberately NO
-  // ResizeObserver: its callback-driven setState created a render loop (React
+  // Driven only from onScroll + a content-change effect below. No
+  // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
   const syncScrollState = (el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
@@ -311,10 +308,9 @@ export function AppSidebar() {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
-  // Recompute the bottom-fade state on mount and whenever the list height can
-  // change (items load, sections collapse/expand, route switches the visible
-  // list) - onScroll never fires for short, non-scrolling lists. Guarded
-  // setState below means this can't loop even if a dep is a fresh reference.
+  // Recompute bottom-fade on mount and whenever list height can change
+  // (items load, sections toggle, route switch) - onScroll never fires for
+  // short, non-scrolling lists. Guarded setState below can't loop.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -761,9 +757,8 @@ export function AppSidebar() {
               label={t("shell.navigation.search")}
               active={false}
               onClick={() => {
-                // Search is read-only over chat history and never runs
-                // inference, so it stays available while training (unlike
-                // New chat, which is gated on `chatDisabled`).
+                // Search is read-only and never runs inference, so it stays
+                // available while training (unlike New chat, gated on chatDisabled).
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
               }}
@@ -796,8 +791,7 @@ export function AppSidebar() {
                   closeMobileIfOpen();
                 }}
               />
-              {/* Train has its own labelled section when expanded; surface it as
-                  a plain icon here only while the sidebar is collapsed. */}
+              {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
                 icon={TestTubeOutlineIcon}
                 label={t("shell.navigation.train")}
@@ -899,12 +893,10 @@ export function AppSidebar() {
               <SidebarGroupContent className="px-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
-                    // An explicit sidebar selection wins. Otherwise highlight
-                    // the active job only while the "Current Run" tab is the
-                    // view - that covers a live run (it auto-switches there) and
-                    // a just-finished/errored run you're still viewing, while
-                    // keeping the Configure tab unhighlighted even though
-                    // `activeJobId` stays pinned to the last job.
+                    // Explicit selection wins. Otherwise highlight the active
+                    // job only while the "Current Run" tab is the view, keeping
+                    // the Configure tab unhighlighted even though activeJobId
+                    // stays pinned to the last job.
                     const isActiveRun =
                       selectedHistoryRunId != null
                         ? run.id === selectedHistoryRunId
@@ -988,10 +980,9 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
-        {/* Fade above the profile box, shown only while there's more list below
-            the fold; at the very bottom (or for short lists) it fades out so the
-            last row shows fully (Gemini-style). `right-2` keeps it clear of the
-            8px scrollbar gutter so the scrollbar isn't faded out. */}
+        {/* Fade above the profile box, shown only when there's more list below
+            the fold; at the bottom (or short lists) it fades so the last row
+            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
         <div
           aria-hidden="true"
           className={cn(
@@ -1082,8 +1073,8 @@ export function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={async () => {
-                    // Best-effort server-side revocation; ignore network errors
-                    // so the local clear path still runs and the user lands on /login.
+                    // Best-effort server revocation; ignore network errors so
+                    // the local clear still runs and the user lands on /login.
                     try {
                       await logout();
                     } catch {
