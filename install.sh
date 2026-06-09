@@ -2016,12 +2016,12 @@ case "$TORCH_INDEX_URL" in
     */rocm7.*)
         _rdna2_gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _rdna2_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _rdna2_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_rdna2_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _rdna2_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _rdna2_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             if [ -z "$_rdna2_gfx_all" ]; then
-                _rdna2_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+                _rdna2_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         _rdna2_runtime_gfx=""
