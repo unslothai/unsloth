@@ -665,14 +665,12 @@ class TestOpenAICompatibilityHelpers:
     def test_stream_usage_chunk_requires_include_usage(self):
         usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
         payload = SimpleNamespace(stream_options = None)
-        assert _openai_stream_usage_chunk(
-            payload, "chatcmpl-test", 123, "model", usage, None
-        ) is None
+        assert (
+            _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
+        )
 
         payload.stream_options = {"include_usage": True}
-        line = _openai_stream_usage_chunk(
-            payload, "chatcmpl-test", 123, "model", usage, None
-        )
+        line = _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None)
         assert line is not None
         assert '"choices":[]' in line
         assert '"usage"' in line

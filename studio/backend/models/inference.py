@@ -963,9 +963,7 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
-OpenAIFinishReason = Literal[
-    "stop", "length", "tool_calls", "content_filter", "function_call"
-]
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
 
 
 class ChunkChoice(BaseModel):

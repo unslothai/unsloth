@@ -115,13 +115,18 @@ def _clamp_finish_reason(value) -> str:
     Unknown values (including ``None``) become ``"stop"`` so local upstream
     quirks do not leak into the public API shape.
     """
-    return value if value in (
-        "stop",
-        "length",
-        "tool_calls",
-        "content_filter",
-        "function_call",
-    ) else "stop"
+    return (
+        value
+        if value
+        in (
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "function_call",
+        )
+        else "stop"
+    )
 
 
 def _normalize_stop_sequences(raw):
@@ -143,7 +148,11 @@ def _effective_max_tokens(payload):
     either for compatibility, but let the replacement field win when both are
     supplied.
     """
-    return payload.max_completion_tokens if payload.max_completion_tokens is not None else payload.max_tokens
+    return (
+        payload.max_completion_tokens
+        if payload.max_completion_tokens is not None
+        else payload.max_tokens
+    )
 
 
 def _wants_multiple_choices(payload) -> bool:
