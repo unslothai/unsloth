@@ -27,12 +27,12 @@ def has_blackwell_gpu() -> bool:
     """Return True if any visible NVIDIA GPU has compute capability >= 10.0
     (Blackwell: sm_100, sm_120, sm_121, ...).
 
-    Dao-AILab does not publish prebuilt flash-attention wheels for these
-    architectures, and the older-arch wheels fail to load on Blackwell, so
-    callers use this gate to skip the flash-attn install/upgrade path.
+    Dao-AILab publishes no prebuilt flash-attention wheels for these archs,
+    and older-arch wheels fail to load on Blackwell, so callers use this gate
+    to skip the flash-attn install/upgrade path.
 
-    Result is cached for the process lifetime since GPU hardware does not
-    change. Tests that mock subprocess/nvidia-smi must call
+    Cached for the process lifetime since GPU hardware doesn't change. Tests
+    that mock subprocess/nvidia-smi must call
     ``has_blackwell_gpu.cache_clear()`` before each invocation.
     """
     exe = shutil.which("nvidia-smi")

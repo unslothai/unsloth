@@ -4,7 +4,7 @@
 """
 Tool definitions and executors for LLM tool calling.
 
-Supports web search (DuckDuckGo), Python code execution, and terminal commands.
+Web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
 import ast
@@ -42,9 +42,8 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Pre-import modules used in _sandbox_preexec at module level so that
-# the preexec_fn closure does not trigger the import machinery in the
-# forked child (which can deadlock in multi-threaded servers).
+# Pre-import _sandbox_preexec modules at module level so the preexec_fn closure
+# doesn't trigger imports in the forked child (can deadlock multi-threaded servers).
 _libc = None
 if sys.platform == "linux":
     try:
@@ -64,8 +63,8 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Strict raster-image allowlist for sandbox file serving.
-# No .svg (XSS risk via embedded scripts), no .html, no .pdf.
+# Raster-image allowlist for sandbox file serving.
+# No .svg (XSS via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BLOCKED_COMMANDS_COMMON = frozenset(
@@ -122,9 +121,9 @@ _BLOCKED_COMMANDS = (
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
-# Bash keywords that introduce a new command position (then $cmd, do $cmd, etc.).
+# Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
 _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
-# Wrappers whose next non-flag argument is itself the command Bash will exec.
+# Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
         "env",
@@ -152,21 +151,19 @@ _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
-    A token is at command position if it is the first token, or if the
-    preceding token is a shell separator / brace-group opener / keyword
-    that starts a new command (`then`, `do`, etc.), or a command-prefix
-    wrapper like `env` / `time` / `xargs` (the next token is the real
-    command). Tokens in argument position (`grep -r curl .`,
-    `echo source the data`, `ls /usr/bin/curl`) are passed through.
-    Also scans `find ... -exec CMD` and recurses into bash -c / cmd /c.
+    A token is at command position if it is the first token, or follows a
+    shell separator / brace-group opener / new-command keyword (`then`, `do`,
+    etc.), or a command-prefix wrapper like `env` / `time` / `xargs` (next
+    token is the real command). Tokens in argument position (`grep -r curl .`,
+    `echo source the data`, `ls /usr/bin/curl`) pass through. Also scans
+    `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
     blocked: set[str] = set()
 
     # shlex with punctuation_chars splits `;`, `&&`, `||`, `|`, `(`, `)`, `` ` ``
-    # off as their own tokens so we can detect command position even when a
-    # caller writes `echo done; rm -rf x` (no whitespace) or quote-splits the
-    # command name itself (`r''m` collapses to a single token `rm` at command
-    # position after the `;` separator).
+    # into their own tokens, so we detect command position even for
+    # `echo done; rm -rf x` (no whitespace) or quote-split command names
+    # (`r''m` collapses to `rm` at command position after `;`).
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -178,9 +175,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         tokens = command.split()
 
     def _token_basename(tok: str) -> str:
-        # shlex may glue trailing meta-chars onto a token (`rm;`); strip them
-        # so the basename match still hits `rm`. Leading shell-state chars
-        # likewise.
+        # shlex may glue meta-chars onto a token (`rm;`); strip leading and
+        # trailing ones so the basename still matches `rm`.
         tok = tok.strip(";&|()`{}")
         base = os.path.basename(tok).lower()
         stem, ext = os.path.splitext(base)
@@ -189,33 +185,32 @@ def _find_blocked_commands(command: str) -> set[str]:
         return base
 
     expect_command = True  # start of string is a command position
-    prefix_pending = False  # last command-position token was env/time/timeout/xargs/...
+    prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     for token in tokens:
         if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
             expect_command = True
             prefix_pending = False
             continue
         if token.startswith("-"):
-            # Flags belong to the active command. While a wrapper prefix is
-            # waiting for its command (`stdbuf -oL cmd`, `xargs -- cmd`),
-            # keep expect_command intact.
+            # Flags belong to the active command. While a wrapper prefix awaits
+            # its command (`stdbuf -oL cmd`, `xargs -- cmd`), keep expect_command.
             if not prefix_pending:
                 expect_command = False
             continue
         if not expect_command:
             continue
-        # FOO=bar prefix: assignment list, next non-assignment token is the command.
+        # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
-        # `timeout 1 cmd` / `nice -n 5 cmd` style numeric wrapper arg.
+        # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
         # Wrappers (`env` / `time` / `xargs` / `sudo`) consume one command; the
-        # next non-flag, non-numeric token is the real command. `sudo` is
-        # already in _BLOCKED_COMMANDS, so it's flagged AND we keep walking.
+        # next non-flag, non-numeric token is the real command. `sudo` is in
+        # _BLOCKED_COMMANDS, so it's flagged AND we keep walking.
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
             continue
@@ -229,10 +224,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             if base in _BLOCKED_COMMANDS:
                 blocked.add(base)
 
-    # Regex: blocked words at shell command boundaries that shlex won't see,
-    # e.g. inside an unquoted $(rm -rf), <(rm), backtick chain, or appended to
-    # a separator with no whitespace ("foo;rm"). Anchored to command-position
-    # delimiters; does not match in argument position.
+    # Regex: blocked words at command boundaries shlex won't see, e.g. inside
+    # unquoted $(rm -rf), <(rm), backtick chains, or after a separator with no
+    # whitespace ("foo;rm"). Anchored to command-position delimiters; no match
+    # in argument position.
     lowered = command.lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
@@ -243,11 +238,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
-    # Nested shell invocations (bash -c 'sudo whoami',
-    #    bash -lc '...', bash --login -c '...', cmd /c '...').
-    #    When a -c or /c flag is found, look backwards for a shell name
-    #    (skipping intermediate flags like --login, -l, -x) and recursively
-    #    scan the nested command string.
+    # Nested shell invocations (bash -c 'sudo whoami', bash -lc '...',
+    #    bash --login -c '...', cmd /c '...'). On a -c or /c flag, look
+    #    backwards for a shell name (skipping flags like --login, -l, -x)
+    #    and recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
@@ -259,10 +253,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
-        # Look backwards past any flags to find the shell binary.
-        # On Unix, flags start with - (skip those). On Windows, flags
-        # start with / but so do absolute paths, so only skip short
-        # single-char /X flags (not /bin/bash style paths).
+        # Look backwards past flags to find the shell binary. Unix flags
+        # start with - (skip). Windows flags start with / but so do absolute
+        # paths, so only skip short single-char /X flags (not /bin/bash).
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
@@ -282,17 +275,15 @@ def _find_blocked_commands(command: str) -> set[str]:
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
-    Whitelist-built from scratch -- the parent process env is NOT inherited.
-    Only PATH / HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV
-    or Windows SystemRoot when applicable) reach the child. HF_TOKEN,
-    WANDB_API_KEY, AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and
-    every other parent var are absent by construction. HOME points at the
-    sandbox workdir so HF / wandb / aws SDKs cannot read cached credentials
-    from the operator's real ~/.
+    Whitelist-built from scratch; parent env is NOT inherited. Only PATH /
+    HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV or Windows
+    SystemRoot when applicable) reach the child. HF_TOKEN, WANDB_API_KEY,
+    AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and all other parent
+    vars are absent. HOME points at the sandbox workdir so HF / wandb / aws
+    SDKs can't read cached credentials from the operator's real ~/.
     """
-    # Start with the directory containing the running Python interpreter
-    # so that subprocess calls to 'python', 'pip', etc. resolve to the
-    # same environment the Studio server is running in.
+    # Start with the running interpreter's directory so 'python', 'pip', etc.
+    # resolve to the same environment the Studio server runs in.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -354,9 +345,9 @@ def _sandbox_preexec():
         except (OSError, AttributeError):
             pass
 
-        # CLONE_NEWNET intentionally not applied: where userns is enabled it
-        # blocks all egress, including allowlisted hosts. Network policy is
-        # enforced by the AST host check and the bash blocklist.
+        # CLONE_NEWNET not applied: with userns enabled it blocks all egress,
+        # including allowlisted hosts. Network policy is enforced by the AST
+        # host check and the bash blocklist.
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
@@ -381,10 +372,9 @@ def _sandbox_preexec():
             pass
         try:
             # Default high enough for multi-shard safetensors mmaps + Python's
-            # own handle count; tunable via env for installs that hit the cap.
-            # Clamp to the inherited hard limit so setrlimit doesn't ValueError
-            # on machines where the parent's hard cap is below the requested
-            # value (would otherwise leave NOFILE at the parent's default).
+            # handle count; tunable via env. Clamp to the inherited hard limit
+            # so setrlimit doesn't ValueError where the parent's hard cap is
+            # below the request (else NOFILE stays at the parent's default).
             nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
             _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
             target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
@@ -401,8 +391,7 @@ def _get_shell_cmd(command: str) -> list[str]:
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
-# Falls back to a shared ~/studio_sandbox/_default for API callers without a
-# session_id.
+# Falls back to ~/studio_sandbox/_default for callers without a session_id.
 _workdirs: dict[str, str] = {}
 
 
@@ -681,10 +670,10 @@ def execute_tool(
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
 ) -> str:
-    """Execute a tool by name with the given arguments. Returns result as a string.
+    """Execute a tool by name with the given arguments. Returns a string.
 
-    ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
-    unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
+    ``timeout``: int = per-call limit in seconds, ``None`` = no limit,
+    unset (default) = ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
@@ -726,10 +715,10 @@ def execute_tool(
 
 
 _MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
-# Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
-# embed large <head> sections (CSS, JS, SVGs) that are stripped during
-# HTML-to-Markdown conversion.  512 KB is enough to reach article content
-# on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
+# Raw download cap. Larger than _MAX_PAGE_CHARS because SSR pages embed large
+# <head> sections (CSS, JS, SVGs) stripped during HTML-to-Markdown conversion.
+# 512 KB reaches article content on GitBook / Next.js / Docusaurus pages whose
+# <head> alone can be 200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
 
 _USER_AGENTS = (
@@ -750,14 +739,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS connection that connects to a pinned IP but uses a different
-    hostname for SNI and certificate verification.
+    """HTTPS connection to a pinned IP, using a different hostname for SNI
+    and certificate verification.
 
-    The SSRF IP-pinning rewrites URLs to raw IPs.  A normal HTTPSConnection
-    would then send no SNI and verify the cert against the IP, both of which
-    fail.  This subclass splits the two concerns: TCP connects to the pinned
-    IP (``host`` parameter) while TLS uses ``sni_hostname`` for the
-    ClientHello and cert check.
+    SSRF IP-pinning rewrites URLs to raw IPs. A normal HTTPSConnection would
+    then send no SNI and verify the cert against the IP, both of which fail.
+    This subclass splits the concerns: TCP connects to the pinned IP (``host``)
+    while TLS uses ``sni_hostname`` for the ClientHello and cert check.
     """
 
     def __init__(self, host: str, *, sni_hostname: str, **kwargs):
@@ -765,8 +753,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._sni_hostname = sni_hostname
 
     def connect(self):
-        # TCP connect to the pinned IP stored in self.host (+ tunnel if
-        # a proxy is configured via set_tunnel, though we do not use one).
+        # TCP connect to the pinned IP in self.host (+ tunnel if a proxy is set
+        # via set_tunnel, though we don't use one).
         http.client.HTTPConnection.connect(self)
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
@@ -778,8 +766,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """HTTPS handler that sends the correct SNI hostname during TLS handshake.
 
-    The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
-    verification.  This handler returns a ``_PinnedHTTPSConnection`` that
+    SSRF IP-pinning rewrites URLs to raw IPs, breaking SNI and cert
+    verification. This handler returns a ``_PinnedHTTPSConnection`` that
     connects to the pinned IP but verifies TLS against the original hostname.
     """
 
@@ -798,9 +786,9 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
-    Returns ``(ok, reason_or_empty, resolved_ip)``.  The caller should
-    connect to *resolved_ip* (with a ``Host`` header) to prevent DNS
-    rebinding between validation and the actual fetch.
+    Returns ``(ok, reason_or_empty, resolved_ip)``. The caller should connect
+    to *resolved_ip* (with a ``Host`` header) to prevent DNS rebinding between
+    validation and the actual fetch.
     """
     import ipaddress
     import socket
@@ -815,14 +803,14 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # `not ip.is_global` rejects every category the denylist below
-        # also rejects PLUS shared address space (100.64.0.0/10 carrier-
-        # grade NAT) and benchmarking/documentation/exchange ranges that
-        # Python classifies with `is_private=False` and `is_global=False`
+        # `not ip.is_global` rejects every category the denylist below rejects
+        # PLUS shared address space (100.64.0.0/10 carrier-grade NAT) and
+        # benchmarking/documentation/exchange ranges Python marks
+        # `is_private=False` and `is_global=False`
         # (see https://docs.python.org/3/library/ipaddress.html#ipaddress.IPv4Address.is_global).
-        # The explicit predicates after it give human-readable categories
-        # in the error message, but a single non-global check is the
-        # source of truth and prevents future ranges from leaking.
+        # The explicit predicates after it give human-readable categories in
+        # the error message; the non-global check is the source of truth and
+        # prevents future ranges from leaking.
         if (
             not ip.is_global
             or ip.is_private
@@ -872,8 +860,8 @@ def _fetch_page_text(
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
-            # Pin to the validated IP to prevent DNS rebinding.
-            # Rewrite the URL to use the IP and set the Host header.
+            # Pin to the validated IP (prevents DNS rebinding): rewrite the URL
+            # to the IP and set the Host header.
             cp = urlparse(current_url)
             # Bracket IPv6 addresses so the netloc is valid in a URL.
             ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
@@ -926,7 +914,7 @@ def _fetch_page_text(
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
-    # Convert HTML to Markdown using the builtin converter (no external deps)
+    # Convert HTML to Markdown with the builtin converter (no external deps)
     from ._html_to_md import html_to_markdown
 
     text = html_to_markdown(raw_html)
@@ -981,7 +969,7 @@ def _web_search(
 
 def _check_signal_escape_patterns(code: str):
     """
-    Check if code contains patterns that could escape signal-based timeouts.
+    Check for patterns that could escape signal-based timeouts.
 
     Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo
     (which requires GPU drivers and fails on Mac/Apple Silicon).
@@ -1071,8 +1059,8 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
-    # Keyword argument names that carry command content (as opposed to
-    # control flags like check=True, text=True, capture_output=True).
+    # Kwarg names that carry command content (not control flags like
+    # check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
     def _check_args_for_blocked(args_nodes):
@@ -1093,8 +1081,8 @@ def _check_signal_escape_patterns(code: str):
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
-            # Maps bare function names to their fully-qualified form
-            # for from-import tracking (e.g. "system" -> "os.system")
+            # Maps bare function names to fully-qualified form for
+            # from-import tracking (e.g. "system" -> "os.system")
             self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
@@ -1197,7 +1185,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # --- Shell escape detection ---
-            # Resolve the fully qualified function name for os.*/subprocess.*
+            # Resolve the FQ function name for os.*/subprocess.*
             shell_func = None
             if isinstance(func, ast.Attribute):
                 if isinstance(func.value, ast.Name):
@@ -1229,7 +1217,7 @@ def _check_signal_escape_patterns(code: str):
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
                 if has_opaque_kwargs:
-                    # Can't inspect dynamic **kwargs -- flag as unsafe
+                    # Can't inspect dynamic **kwargs; flag as unsafe
                     shell_escapes.append(
                         {
                             "type": "shell_escape_dynamic",
@@ -1251,8 +1239,8 @@ def _check_signal_escape_patterns(code: str):
                 else:
                     # Only flag dynamic args for functions that interpret
                     # strings as shell commands, or when shell= might be
-                    # enabled.  Treat any non-literal-False shell= value
-                    # as potentially True (conservative).
+                    # enabled. Treat any non-literal-False shell= value as
+                    # potentially True (conservative).
                     _STRING_SHELL_FUNCS = frozenset(
                         {
                             "os.system",
@@ -1268,7 +1256,7 @@ def _check_signal_escape_patterns(code: str):
                     shell_safe = shell_node is None or (
                         isinstance(shell_node, ast.Constant) and shell_node.value is False
                     )
-                    # Dynamic shell-exec args (chr/format/concat bypasses).
+                    # Dynamic shell-exec args (chr/format/concat bypasses)
                     if (
                         shell_func in _STRING_SHELL_FUNCS
                         or shell_func in _SHELL_EXEC_FUNCS
@@ -1311,10 +1299,9 @@ def _check_signal_escape_patterns(code: str):
                 )
             elif isinstance(node.type, ast.Name):
                 # Only flag BaseException and TimeoutError, NOT Exception.
-                # except Exception does not catch SystemExit or
-                # KeyboardInterrupt, so it cannot suppress timeout
-                # enforcement.  Flagging Exception causes false positives
-                # on normal error-handling patterns.
+                # except Exception doesn't catch SystemExit/KeyboardInterrupt,
+                # so it can't suppress timeout enforcement; flagging it would
+                # false-positive on normal error handling.
                 if node.type.id in ("TimeoutError", "BaseException"):
                     exception_catching.append(
                         {
@@ -1342,9 +1329,9 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside
-    # the trusted allowlist; uploads blocked regardless of host. Dynamic hosts
-    # are caught by the bash blocklist instead.
+    # Static host policy: block metadata hosts and any literal host outside the
+    # trusted allowlist; uploads blocked regardless of host. Dynamic hosts are
+    # caught by the bash blocklist instead.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
@@ -1591,9 +1578,9 @@ def _check_signal_escape_patterns(code: str):
         return False
 
     # Bare method-name fallback (`x.upload_file(...)`) is intentionally fuzzy,
-    # but should only fire when huggingface_hub / hf_api is actually imported
-    # somewhere in the snippet -- otherwise paramiko.upload_file, boto3
-    # create_commit, etc. hit a false positive. We pre-scan for the imports.
+    # but should only fire when huggingface_hub / hf_api is imported in the
+    # snippet; else paramiko.upload_file, boto3 create_commit, etc. would
+    # false-positive. We pre-scan for the imports.
     _HF_IMPORT_MODULES = (
         "huggingface_hub",
         "hf_api",
@@ -1611,8 +1598,8 @@ def _check_signal_escape_patterns(code: str):
                 if root in _HF_IMPORT_MODULES:
                     return True
             elif isinstance(n, ast.Call) and n.args:
-                # __import__('huggingface_hub'), importlib.import_module('huggingface_hub'),
-                # and bare import_module('huggingface_hub') (via `from importlib import ...`).
+                # __import__('huggingface_hub'), importlib.import_module(...),
+                # and bare import_module(...) (via `from importlib import ...`).
                 arg0 = n.args[0]
                 if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
                     continue
@@ -1635,8 +1622,8 @@ def _check_signal_escape_patterns(code: str):
 
         Catches `HfApi().upload_file(...)` (Attribute) and
         `from huggingface_hub import upload_file; upload_file(...)` (Name).
-        The bare-name branch fires only when an HF import is in scope, mirroring
-        the Attribute branch's gating so paramiko/boto3 do not false-positive.
+        The bare-name branch fires only when an HF import is in scope, so
+        paramiko/boto3 don't false-positive.
         """
         if not _hf_in_scope:
             return None
@@ -1649,7 +1636,7 @@ def _check_signal_escape_patterns(code: str):
 
     # Kwargs that ship a credential over the wire. Sandbox env strips HF_TOKEN
     # / WANDB_API_KEY / AWS_* up front, so any value here is hard-coded or
-    # lifted from the parent process.
+    # lifted from the parent.
     _HF_SENSITIVE_KWARGS = frozenset(
         {
             "token",
@@ -1674,14 +1661,14 @@ def _check_signal_escape_patterns(code: str):
     def _reads_env_or_secret(node: ast.AST | None) -> bool:
         """True if any node in the subtree resolves to an env / process read.
 
-        Walking the subtree (not just the root) means wrapper calls like
-        `str(os.environ)`, `json.dumps(os.environ)`, or
-        `'-'.join(os.environ.values())` are caught too.
+        Walking the subtree (not just the root) catches wrapper calls like
+        `str(os.environ)`, `json.dumps(os.environ)`,
+        `'-'.join(os.environ.values())`.
 
         Covers: `os.environ`, `os.environ[K]`, `os.environ.get(K)`, `os.getenv(K)`,
         bare `getenv(K)` (after `from os import getenv`), and
         `subprocess.{run,check_output,Popen,getoutput,getstatusoutput}` which
-        the LLM could use to lift parent env via `printenv` / `env` / `set`.
+        could lift parent env via `printenv` / `env` / `set`.
         """
         if node is None:
             return False
@@ -1729,7 +1716,7 @@ def _check_signal_escape_patterns(code: str):
         if node is None:
             return False
         if isinstance(node, ast.Constant) and isinstance(node.value, (bytes, bytearray)):
-            return True  # inline bytes, no file access
+            return True  # inline bytes; no file access
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return _is_safe_relative_path(node.value)
         if isinstance(node, ast.Call):
@@ -1751,10 +1738,10 @@ def _check_signal_escape_patterns(code: str):
 
         Policy: HF uploads are allowed only when (a) no sensitive kwarg is set,
         (b) no positional / keyword value reads `os.environ` or related env
-        readers, and (c) the path argument is a sandbox-local literal -- a
-        relative string with no `..`, an `open(<literal>)`, or inline bytes.
-        Dynamic / variable paths are rejected; the policy cannot prove safety
-        statically and the cost of a wrong-allow is a credential exfiltration.
+        readers, and (c) the path arg is a sandbox-local literal: a relative
+        string with no `..`, an `open(<literal>)`, or inline bytes. Dynamic /
+        variable paths are rejected since safety can't be proven statically and
+        a wrong-allow means credential exfiltration.
         """
         for kw in node.keywords or []:
             if kw.arg in _HF_SENSITIVE_KWARGS:
@@ -1813,7 +1800,7 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
             if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
                 a0 = node.args[0]
                 host_lit = None
@@ -1947,9 +1934,8 @@ def _check_code_safety(code: str) -> str | None:
     """
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
-        # SyntaxError from ast.parse -- let these through so the subprocess
-        # produces a normal Python traceback instead of a misleading
-        # "unsafe code detected" message.
+        # Let SyntaxError from ast.parse through so the subprocess produces a
+        # normal Python traceback instead of a misleading "unsafe code" message.
         if info.get("error"):
             return None
 
@@ -2032,7 +2018,7 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
-    # Snapshot image mtimes so we detect both new and overwritten files.
+    # Snapshot image mtimes to detect new and overwritten files.
     _before: dict[str, int] = {}
     if os.path.isdir(workdir):
         for _name in os.listdir(workdir):
@@ -2088,7 +2074,7 @@ def _python_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         result = _truncate(result) if result.strip() else "(no output)"
 
-        # Detect new or overwritten image files and append sentinel for frontend
+        # Detect new/overwritten images and append sentinel for the frontend
         if session_id and os.path.isdir(workdir):
             new_images = []
             for _name in os.listdir(workdir):

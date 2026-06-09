@@ -109,8 +109,8 @@ class TestMaxBodyMiddleware:
         assert "too large" in r.json()["detail"].lower()
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
-        # Regression: declared-Content-Length-only check could be bypassed
-        # by chunked transfer-encoding.
+        # Regression: declared-Content-Length-only check could be bypassed by
+        # chunked transfer-encoding.
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
 
@@ -282,13 +282,13 @@ class TestSecurityHeadersMiddleware:
 
     def test_img_src_allows_google_favicons(self, main_module):
         # sources.tsx fetches https://www.google.com/s2/favicons?... ; without
-        # this allowlist entry citation favicons fall back to gray initials.
+        # this allowlist entry, citation favicons fall back to gray initials.
         csp = main_module._build_csp()
         img_directive = next(
             chunk.strip() for chunk in csp.split(";") if chunk.strip().startswith("img-src ")
         )
-        # Tokenise and compare with `==` so CodeQL's URL-substring rule does
-        # not read directive-string `in` membership as URL sanitisation.
+        # Tokenise and compare with `==` so CodeQL's URL-substring rule
+        # doesn't read directive-string `in` membership as URL sanitisation.
         img_sources = img_directive.split()
         assert any(src == "https://www.google.com" for src in img_sources)
         # Pre-existing favicon CDNs stay allowed.
@@ -332,9 +332,9 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    # Launcher / frontend bootstrap fields are available unauth so the Tauri
-    # watchdog can re-adopt a sibling backend and the SPA can detect chat-only
-    # mode before any token exists. Version / device_type still require a bearer.
+    # Launcher / frontend bootstrap fields are unauth so the Tauri watchdog can
+    # re-adopt a sibling backend and the SPA can detect chat-only mode before
+    # any token exists. Version / device_type still require a bearer.
     LAUNCHER_BITS = (
         "service",
         "studio_root_id",
@@ -361,7 +361,7 @@ class TestHealthAuthGate:
             assert forbidden not in body
 
     def test_invalid_bearer_returns_launcher_bits_only(self, health_app):
-        # Regression: calling the async dep without await made any Bearer header pass.
+        # Regression: calling the async dep without await let any Bearer header pass.
         c = TestClient(health_app)
         r = c.get(
             "/api/health",

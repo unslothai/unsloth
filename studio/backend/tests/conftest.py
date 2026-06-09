@@ -7,19 +7,19 @@ Shared pytest configuration for the backend test suite.
 Responsibilities:
 1. Put the backend root on sys.path so `from models.inference import ...`
    (and similar flat imports) resolve in test modules — mirrors how the
-   app itself is launched.
+   app is launched.
 2. Provide a hybrid ``studio_server`` session fixture for end-to-end tests
-   (see ``test_studio_api.py``). The fixture supports two invocation modes:
+   (see ``test_studio_api.py``), supporting two invocation modes:
 
    a. **External server.** If ``UNSLOTH_E2E_BASE_URL`` is set, tests point
-      at an already-running Studio instance. ``UNSLOTH_E2E_API_KEY`` must
-      also be set. This is the fast-iteration mode: start the server once
-      with ``unsloth studio run ...``, then run pytest against it many
-      times with no per-run GGUF load cost.
+      at an already-running Studio instance (``UNSLOTH_E2E_API_KEY`` must
+      also be set). Fast-iteration mode: start the server once with
+      ``unsloth studio run ...``, then run pytest against it many times with
+      no per-run GGUF load cost.
 
-   b. **Fixture-managed server.** Otherwise, the fixture launches a fresh
-      server via ``_start_server`` and tears it down at session end. This
-      is the one-shot mode for CI or a clean-slate verification run.
+   b. **Fixture-managed server.** Otherwise the fixture launches a fresh
+      server via ``_start_server`` and tears it down at session end. One-shot
+      mode for CI or a clean-slate verification run.
 
    The model / variant for mode (b) come from ``--unsloth-model`` /
    ``--unsloth-gguf-variant`` pytest options, then ``UNSLOTH_E2E_MODEL`` /
@@ -80,16 +80,16 @@ def studio_server(request):
 
     Resolution order:
 
-    1. If ``UNSLOTH_E2E_BASE_URL`` is set → point at that server,
-       require ``UNSLOTH_E2E_API_KEY`` alongside (skip if missing).
-    2. Otherwise → start a fresh ``unsloth studio run`` subprocess via
-       the existing ``_start_server`` helper in ``test_studio_api.py``
-       and tear it down on session teardown.
+    1. If ``UNSLOTH_E2E_BASE_URL`` is set → point at that server, requiring
+       ``UNSLOTH_E2E_API_KEY`` alongside (skip if missing).
+    2. Otherwise → start a fresh ``unsloth studio run`` subprocess via the
+       ``_start_server`` helper in ``test_studio_api.py`` and tear it down on
+       session teardown.
 
-    Session-scoped so the expensive GGUF load happens at most once per
-    pytest invocation. Lazily instantiated — tests that don't request
-    the fixture (e.g. the unit tests in ``test_anthropic_messages.py``
-    or ``test_help_output``) do not trigger server startup.
+    Session-scoped so the expensive GGUF load happens at most once per pytest
+    invocation. Lazy — tests that don't request the fixture (e.g. the unit
+    tests in ``test_anthropic_messages.py`` or ``test_help_output``) don't
+    trigger server startup.
     """
     external_url = os.environ.get("UNSLOTH_E2E_BASE_URL")
     if external_url:
@@ -103,9 +103,9 @@ def studio_server(request):
         yield external_url, api_key
         return
 
-    # Lazy import: pytest has already loaded test_studio_api into
-    # sys.modules by the time any test requests this fixture, so this
-    # is a cache hit, not a re-execution.
+    # Lazy import: pytest has already loaded test_studio_api into sys.modules
+    # by the time any test requests this fixture, so this is a cache hit, not
+    # a re-execution.
     import test_studio_api as _e2e
 
     model = (

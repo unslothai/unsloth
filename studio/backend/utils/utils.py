@@ -77,14 +77,14 @@ def log_and_http_error(
 @contextmanager
 def without_hf_auth():
     """
-    Context manager to temporarily disable HuggingFace authentication.
+    Temporarily disable HuggingFace authentication.
 
     Usage:
         with without_hf_auth():
             # Code that should run without cached tokens
             model_info(model_name, token=None)
     """
-    # Save environment variables
+    # Save and clear env vars
     saved_env = {}
     env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:
@@ -92,11 +92,10 @@ def without_hf_auth():
             saved_env[var] = os.environ[var]
             del os.environ[var]
 
-    # Save disable flag
     saved_disable = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
-    # Move token files temporarily
+    # Move token files aside temporarily
     token_files = []
     token_locations = [
         Path.home() / ".cache" / "huggingface" / "token",
@@ -121,7 +120,7 @@ def without_hf_auth():
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")
 
-        # Restore environment
+        # Restore env
         for var, value in saved_env.items():
             os.environ[var] = value
 
@@ -133,14 +132,11 @@ def without_hf_auth():
 
 def format_error_message(error: Exception, model_name: str) -> str:
     """
-    Format user-friendly error messages for common issues.
+    Format a user-friendly error message for common load issues.
 
     Args:
         error: The exception that occurred
         model_name: Name of the model being loaded
-
-    Returns:
-        User-friendly error string
     """
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
@@ -171,5 +167,4 @@ def format_error_message(error: Exception, model_name: str) -> str:
         )
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
-    # Generic fallback
     return str(error)

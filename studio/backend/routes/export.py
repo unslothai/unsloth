@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Export API routes: checkpoint discovery and model export operations.
-"""
+"""Export API routes: checkpoint discovery and model export operations."""
 
 import asyncio
 import json
@@ -28,7 +26,7 @@ from auth.authentication import get_current_subject
 
 from utils.utils import safe_error_detail
 
-# Import backend functions
+# Backend functions
 try:
     from core.export import get_export_backend
 except ImportError:
@@ -37,7 +35,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.export import get_export_backend
 
-# Import Pydantic models
+# Pydantic models
 from models import (
     LoadCheckpointRequest,
     ExportStatusResponse,
@@ -56,16 +54,12 @@ logger = get_logger(__name__)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Load a checkpoint into the export backend.
-
-    Wraps ExportBackend.load_checkpoint.
-    """
+    """Load a checkpoint into the export backend (ExportBackend.load_checkpoint)."""
     try:
-        # Version switching is handled automatically by the subprocess-based
-        # export backend — no need for ensure_transformers_version() here.
+        # The subprocess-based export backend handles version switching
+        # automatically — no ensure_transformers_version() needed here.
 
-        # Free GPU memory: shut down any running inference/training subprocesses
+        # Free GPU memory: shut down running inference/training subprocesses
         # before loading the export checkpoint (they'd compete for VRAM).
         try:
             from core.inference import get_inference_backend
@@ -87,8 +81,8 @@ async def load_checkpoint(
             if trn.is_training_active():
                 logger.info("Stopping active training to free GPU memory for export")
                 trn.stop_training()
-                # Wait for training subprocess to actually exit before proceeding,
-                # otherwise it may still hold GPU memory when export tries to load.
+                # Wait for the training subprocess to exit; else it may still
+                # hold GPU memory when export tries to load.
                 for _ in range(60):  # up to 30s
                     if not trn.is_training_active():
                         break
@@ -101,8 +95,8 @@ async def load_checkpoint(
 
         backend = get_export_backend()
         # load_checkpoint spawns and waits on a subprocess and can take
-        # minutes. Run it in a worker thread so the event loop stays
-        # free to serve the live log SSE stream concurrently.
+        # minutes. Run it in a worker thread so the event loop stays free
+        # to serve the live log SSE stream concurrently.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -127,11 +121,7 @@ async def load_checkpoint(
 
 @router.post("/cleanup", response_model = ExportOperationResponse)
 async def cleanup_export_memory(current_subject: str = Depends(get_current_subject)):
-    """
-    Cleanup export-related models from memory (GPU/CPU).
-
-    Wraps ExportBackend.cleanup_memory.
-    """
+    """Cleanup export-related models from memory (ExportBackend.cleanup_memory)."""
     try:
         backend = get_export_backend()
         success = await asyncio.to_thread(backend.cleanup_memory)
@@ -158,9 +148,7 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
 
 @router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
-    """
-    Get current export backend status (loaded checkpoint, model type, PEFT flag).
-    """
+    """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
         backend = get_export_backend()
         return ExportStatusResponse(
@@ -177,7 +165,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
 
 
 def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Return the export path relative to exports_root so the install path is not leaked."""
+    """Return the export path relative to exports_root, hiding the install path."""
     if not output_path:
         return None
     try:
@@ -195,8 +183,7 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
 async def export_merged_model(
     request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Export a merged PEFT model (e.g., 16-bit or 4-bit) and optionally push to Hub.
+    """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
     Wraps ExportBackend.export_merged_model.
     """
@@ -234,8 +221,7 @@ async def export_merged_model(
 async def export_base_model(
     request: ExportBaseModelRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Export a non-PEFT base model and optionally push to Hub.
+    """Export a non-PEFT base model, optionally pushing to Hub.
 
     Wraps ExportBackend.export_base_model.
     """
@@ -273,8 +259,7 @@ async def export_base_model(
 async def export_gguf(
     request: ExportGGUFRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Export the current model to GGUF format and optionally push to Hub.
+    """Export the current model to GGUF format, optionally pushing to Hub.
 
     Wraps ExportBackend.export_gguf.
     """
@@ -311,8 +296,7 @@ async def export_gguf(
 async def export_lora_adapter(
     request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Export only the LoRA adapter (if the loaded model is PEFT).
+    """Export only the LoRA adapter (if the loaded model is PEFT).
 
     Wraps ExportBackend.export_lora_adapter.
     """
@@ -349,18 +333,18 @@ async def export_lora_adapter(
 # Live export log stream (Server-Sent Events)
 # ─────────────────────────────────────────────────────────────────────
 #
-# The export worker subprocess redirects its stdout/stderr into a pipe
-# that a reader thread forwards to the orchestrator as log entries (see
+# The export worker subprocess redirects its stdout/stderr into a pipe a
+# reader thread forwards to the orchestrator as log entries (see
 # core/export/worker.py::_setup_log_capture and
-# core/export/orchestrator.py::_append_log). This endpoint streams
-# those entries to the browser so the export dialog can show a live
-# terminal-style output panel while load_checkpoint / export_merged /
-# export_gguf / export_lora / export_base run.
+# core/export/orchestrator.py::_append_log). This endpoint streams those
+# entries to the browser so the export dialog shows a live terminal-style
+# panel while load_checkpoint / export_merged / export_gguf / export_lora /
+# export_base run.
 #
 # Shape follows the training progress SSE endpoint
-# (routes/training.py::stream_training_progress): each event carries
-# `id`, `event`, and `data` fields, the stream starts with a `retry:`
-# directive, and `Last-Event-ID` is honored on reconnect.
+# (routes/training.py::stream_training_progress): each event carries `id`,
+# `event`, `data` fields, the stream starts with a `retry:` directive, and
+# `Last-Event-ID` is honored on reconnect.
 
 
 def _format_sse(
@@ -389,28 +373,26 @@ async def stream_export_logs(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Stream live stdout/stderr output from the export worker subprocess
-    as Server-Sent Events.
+    Stream live stdout/stderr from the export worker subprocess as
+    Server-Sent Events.
 
     Events:
       - `log`      : a single log line (data: {"stream","line","ts"})
       - `heartbeat`: periodic keepalive when no new lines are available
-      - `complete` : emitted once the export worker is idle and no new
-                     lines arrived for ~1 second. Clients should close.
+      - `complete` : once the worker is idle and no new lines arrived for
+                     ~1 second. Clients should close.
       - `error`    : unrecoverable server-side error
 
-    The `id:` field on each event is the log entry's monotonic seq
-    number so the browser can resume via `Last-Event-ID` on reconnect.
+    Each event's `id:` field is the log entry's monotonic seq number so the
+    browser can resume via `Last-Event-ID` on reconnect.
     """
     backend = get_export_backend()
 
-    # Determine starting cursor. Explicit `since` wins, then
-    # Last-Event-ID header on reconnect, otherwise start from the
-    # run-start snapshot captured by clear_logs() so the client sees
-    # every line emitted since the current run began -- even if the
-    # SSE connection opened after the POST that kicked off the export.
-    # Using get_current_log_seq() here would lose the early bootstrap
-    # lines that arrive in the gap between POST and SSE connect.
+    # Starting cursor: explicit `since` wins, then Last-Event-ID header on
+    # reconnect, else the run-start snapshot from clear_logs() so the client
+    # sees every line since the run began -- even if the SSE connection
+    # opened after the POST that kicked off the export. get_current_log_seq()
+    # would lose the early bootstrap lines arriving between POST and connect.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -425,8 +407,7 @@ async def stream_export_logs(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         nonlocal cursor
-        # Tell the browser to reconnect after 3 seconds if the
-        # connection drops mid-export.
+        # Reconnect after 3 seconds if the connection drops mid-export.
         yield "retry: 3000\n\n"
 
         last_yield = time.monotonic()
@@ -460,9 +441,8 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
-                        # Give the reader thread a moment to drain any
-                        # trailing lines the worker process printed
-                        # just before signalling done.
+                        # Give the reader thread a moment to drain trailing
+                        # lines the worker printed just before signalling done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:
@@ -477,8 +457,8 @@ async def stream_export_logs(
 
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
-            # Client disconnected mid-yield. Don't re-raise, just end
-            # the generator cleanly so StreamingResponse finalizes.
+            # Client disconnected mid-yield. Don't re-raise; end the
+            # generator cleanly so StreamingResponse finalizes.
             return
         except Exception as exc:
             logger.error("Export log stream failed: %s", exc, exc_info = True)

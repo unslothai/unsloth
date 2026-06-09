@@ -61,8 +61,8 @@ def test_is_same_origin_request_port_mismatch_is_cross_origin():
 
 
 def test_is_same_origin_request_https_default_port_stripped_on_origin():
-    """RFC 6454 strips default ports on Origin; Starlette's netloc may still
-    carry ``:443``. Canonicalise both sides so this stays same-origin.
+    """RFC 6454 strips default ports on Origin; Starlette netloc may keep
+    ``:443``. Canonicalise both sides so this stays same-origin.
     """
     from main import _is_same_origin_request
 
@@ -109,7 +109,7 @@ def test_is_same_origin_request_null_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_unparseable_origin_is_cross_origin():
-    """Garbage values without a host fall to cross-origin; a malformed header
+    """Hostless garbage falls to cross-origin; a malformed header
     must not leak the bootstrap.
     """
     from main import _is_same_origin_request
@@ -120,8 +120,7 @@ def test_is_same_origin_request_unparseable_origin_is_cross_origin():
 
 def test_is_same_origin_request_userinfo_in_netloc_ignored():
     """``user:pass@host:port`` netlocs (RFC 3986) must compare equal to the
-    credentials-less Origin.
-    """
+    credentials-less Origin."""
     from main import _is_same_origin_request
 
     req = _build_request("user:pass@example.com:80", origin = "http://example.com")

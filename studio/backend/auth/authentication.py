@@ -58,7 +58,7 @@ def create_access_token(
     """
     Create a signed JWT for the given subject (e.g. username).
 
-    Tokens are valid across restarts because the signing secret is stored in SQLite.
+    Valid across restarts: the signing secret is stored in SQLite.
     """
     to_encode = {"sub": subject}
     if desktop:
@@ -100,7 +100,7 @@ def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
     """
     Create a random refresh token, store its hash in SQLite, and return it.
 
-    Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
+    Refresh tokens are opaque (not JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS.
     """
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
@@ -112,8 +112,8 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
     """
     Validate a refresh token and issue a new access token.
 
-    The refresh token itself is NOT consumed — it stays valid until expiry.
-    Returns a new access_token or None if the refresh token is invalid/expired.
+    The refresh token is NOT consumed; it stays valid until expiry.
+    Returns a new access_token, or None if the refresh token is invalid/expired.
     """
     verified = verify_refresh_token(refresh_token)
     if verified is None:
@@ -128,7 +128,7 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
 
 def reload_secret() -> None:
     """
-    Keep legacy API compatibility for callers expecting auth storage init.
+    Legacy API compat for callers expecting auth storage init.
 
     Auth now resolves the current signing secret directly from SQLite.
     """
@@ -157,9 +157,9 @@ async def _get_current_subject(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
     """
-    FastAPI dependency to validate the JWT and return the subject.
+    FastAPI dependency: validate the JWT and return the subject.
 
-    Use this as a dependency on routes that should be protected, e.g.:
+    Use as a dependency on protected routes, e.g.:
 
         @router.get("/secure")
         async def secure_endpoint(current_subject: str = Depends(get_current_subject)):

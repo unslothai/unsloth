@@ -34,9 +34,9 @@ router = APIRouter()
 
 
 def _looks_like_command(value: str) -> bool:
-    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a
-    value with whitespace is definitely a command. No whitespace proves nothing
-    (a lone token may be a single-arg command or a scheme-less URL)."""
+    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so
+    a value with whitespace is definitely a command. No whitespace proves
+    nothing (a lone token may be a single-arg command or a scheme-less URL)."""
     return any(ch.isspace() for ch in value)
 
 
@@ -46,8 +46,8 @@ def _validate_url(url: str) -> str:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
     # When stdio is enabled on this host, a non-HTTP value is a local command.
     # Reuse this field so stdio servers ride the existing CRUD/storage with no
-    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so we
-    # keep the existing behaviour and treat any non-HTTP value as a command here.
+    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so
+    # keep existing behaviour and treat any non-HTTP value as a command here.
     if stdio_mcp_enabled() and is_stdio(trimmed):
         try:
             parts = parse_stdio_command(trimmed)
@@ -63,7 +63,7 @@ def _validate_url(url: str) -> str:
             raise HTTPException(status_code = 400, detail = "command must not be empty")
         if "://" in parts[0]:
             # A URL-scheme first token is a mistyped URL, not a command. Reject
-            # it cleanly instead of exec-ing it (mirrors the frontend check).
+            # cleanly instead of exec-ing it (mirrors the frontend check).
             raise HTTPException(
                 status_code = 400,
                 detail = "Enter an http(s):// URL, or a local command whose "
@@ -87,7 +87,7 @@ def _validate_url(url: str) -> str:
 
 
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
-    """Trim header names, drop empties, coerce values to str. None if nothing left."""
+    """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
         return None
     out: dict[str, str] = {}
@@ -126,7 +126,7 @@ async def create_mcp_server(
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
-    # push the probe onto the 305s OAuth timeout. Backend is the enforcer.
+    # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
 
     server_id = uuid.uuid4().hex[:16]
@@ -182,7 +182,7 @@ async def update_mcp_server(
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
-    # switch with no new headers, drop the old ones so env secrets are not
+    # switch with no new headers, drop the old ones so env secrets aren't
     # re-sent as HTTP headers (or vice versa).
     if (
         "url" in changes
@@ -190,9 +190,9 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is
-    # disabled; fastmcp keys tokens by URL and would otherwise let a
-    # re-pointed server silently inherit the old account's credentials.
+    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
+    # fastmcp keys tokens by URL and would otherwise let a re-pointed server
+    # silently inherit the old account's credentials.
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
@@ -248,8 +248,8 @@ async def test_mcp_server(
     payload: McpServerTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     # URL/header validation must surface as 400 like create/update so the
-    # frontend's create-form pre-flight gets the same error semantics as
-    # the actual save call. Only catch transport/timeout errors below.
+    # frontend's create-form pre-flight gets the same error semantics as the
+    # save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
     try:

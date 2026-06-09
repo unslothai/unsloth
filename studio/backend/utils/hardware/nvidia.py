@@ -110,9 +110,9 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 def get_visible_gpu_utilization(
     parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices. Return empty
-    # instead of exposing all physical GPUs.
+    # parent_visible_ids None (UUID/MIG mask): can't safely map
+    # nvidia-smi rows to visible devices. Return empty rather than
+    # exposing all physical GPUs.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -196,8 +196,8 @@ def get_visible_gpu_utilization(
 def get_backend_visible_gpu_info(
     parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices.
+    # parent_visible_ids None (UUID/MIG mask): can't safely map
+    # nvidia-smi rows to visible devices.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -249,7 +249,7 @@ def get_backend_visible_gpu_info(
             continue
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
-        # Use split with limit to handle GPU names containing commas
+        # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
         try:
             mem_total_mb = int(parts[-1])

@@ -73,10 +73,7 @@ def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Pat
 
 
 def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any]) -> None:
-    """
-    Subprocess entrypoint.
-    Sends events to `event_queue`.
-    """
+    """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -115,8 +112,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner configures root logging in DataDesigner.__init__.
-        # Attach queue logger directly to `data_designer` so parser events survive root resets.
+        # DataDesigner configures root logging in __init__. Attach the queue
+        # logger to `data_designer` directly so parser events survive root resets.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (

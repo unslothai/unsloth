@@ -4,7 +4,7 @@
 """
 Anthropic Messages API ↔ OpenAI format translation utilities.
 
-Pure functions and a stateful stream emitter — no FastAPI, no I/O.
+Pure functions plus stateful stream emitters; no FastAPI, no I/O.
 """
 
 from __future__ import annotations
@@ -46,9 +46,9 @@ def anthropic_messages_to_openai(
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
-    User messages that carry ``image`` blocks are emitted as OpenAI
-    multimodal content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``)
-    so they flow through llama-server's native vision pathway.
+    User messages with ``image`` blocks are emitted as OpenAI multimodal
+    content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
+    they flow through llama-server's native vision pathway.
     """
     result: list[dict] = []
 
@@ -104,9 +104,9 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "user":
-            # Build an ordered part list so text/image interleaving is
-            # preserved (e.g. [text, image, text, image]). tool_result
-            # blocks become their own OpenAI "tool" role messages.
+            # Ordered part list to preserve text/image interleaving (e.g.
+            # [text, image, text, image]). tool_result blocks become their
+            # own OpenAI "tool" role messages.
             user_parts: list[dict] = []
             has_image = False
             tool_results: list[dict] = []
@@ -137,8 +137,8 @@ def anthropic_messages_to_openai(
             if has_image:
                 result.append({"role": "user", "content": user_parts})
             else:
-                # No images — collapse text parts to a plain string so
-                # existing text-only callers keep their simple shape.
+                # No images: collapse text parts to a plain string so
+                # text-only callers keep their simple shape.
                 text = "\n".join(p["text"] for p in user_parts)
                 if text:
                     result.append({"role": "user", "content": text})
@@ -181,8 +181,8 @@ def anthropic_tool_choice_to_openai(tc: Any) -> Any:
     - ``{"type": "tool", "name": "get_weather"}``
           → ``{"type": "function", "function": {"name": "get_weather"}}``
 
-    Returns ``None`` for ``None`` or any unrecognized shape (caller may
-    then fall back to its own default, typically ``"auto"``).
+    Returns ``None`` for ``None`` or any unrecognized shape (caller falls
+    back to its own default, typically ``"auto"``).
     """
     if tc is None:
         return None
@@ -209,8 +209,8 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
 
 
 class AnthropicStreamEmitter:
-    """Converts generator events from generate_chat_completion_with_tools()
-    into Anthropic Messages SSE strings."""
+    """Converts generate_chat_completion_with_tools() events into Anthropic
+    Messages SSE strings."""
 
     def __init__(self) -> None:
         self.block_index: int = 0
@@ -320,8 +320,8 @@ class AnthropicStreamEmitter:
         # Close current text block if open.
         if self._text_block_open:
             events.append(self._close_block())
-        # Defensive: if a replacement/different tool_start arrives while a
-        # tool_use block is open, close the stale block before starting another.
+        # Defensive: if a different tool_start arrives while a tool_use
+        # block is open, close the stale block before starting another.
         elif self._open_tool_call_id is not None:
             events.append(self._close_block())
             self._open_tool_call_id = None
@@ -421,10 +421,10 @@ class AnthropicStreamEmitter:
 class AnthropicPassthroughEmitter:
     """Converts llama-server's OpenAI-format streaming chunks into Anthropic SSE.
 
-    Used for the client-side tool-use pass-through path: the client (e.g. Claude
-    Code) sends its own tool definitions in the ``tools`` field and expects to
-    execute them itself. We forward them to llama-server and translate the
-    streaming response back to Anthropic format without executing anything.
+    Used for the client-side tool-use pass-through path: the client (e.g.
+    Claude Code) sends its own tool definitions in ``tools`` and executes
+    them itself. We forward them to llama-server and translate the streaming
+    response back to Anthropic format without executing anything.
     """
 
     def __init__(self) -> None:

@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
 
-# Lightweight instrumentation counters for operational visibility.
+# Instrumentation counters for operational visibility.
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
     "calls": 0,
     "memo_hits": 0,
@@ -63,8 +63,7 @@ def normalize_path(path: str) -> str:
 
     # Handle Windows drive letters (C:\\ or c:\\)
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
-        # Only map to /mnt/<drive>/ when running under WSL;
-        # on native Windows the drive letter must be preserved.
+        # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
             drive = path[0].lower()
             rest = path[3:].replace("\\", "/")
@@ -86,7 +85,7 @@ def is_local_path(path: str) -> bool:
     if not path:
         return False
 
-    # If it exists on disk, treat as local (covers relative paths like "outputs/foo").
+    # Exists on disk → local (covers relative paths like "outputs/foo").
     try:
         if Path(normalize_path(path)).expanduser().exists():
             return True
@@ -122,7 +121,7 @@ def is_model_cached(model_name: str) -> bool:
     if not cache_path:
         return False
 
-    # Check for actual model files
+    # Check for model files
     for suffix in [".safetensors", ".bin", ".json"]:
         if list(cache_path.rglob(f"*{suffix}")):
             return True
@@ -146,9 +145,9 @@ def _hf_hub_cache_dir() -> Path:
 def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
     """Resolve repo_id to the exact casing already present in local HF cache.
 
-    Policy: prefer the requested/canonical repo_id, but if a case-variant already
-    exists in local HF cache, reuse that exact cached spelling. This avoids
-    duplicate downloads while preserving user intent whenever possible.
+    Policy: prefer the requested/canonical repo_id, but reuse a case-variant's
+    exact cached spelling if one already exists in local HF cache. Avoids
+    duplicate downloads while preserving user intent where possible.
     """
     _CACHE_CASE_RESOLUTION_STATS["calls"] += 1
 
@@ -163,8 +162,8 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
 
     expected_dir = f"models--{model_name.replace('/', '--')}"
 
-    # Always check the exact-case path first so a newly-appeared exact match
-    # wins over any previously memoized variant.
+    # Check the exact-case path first so a newly-appeared exact match wins over
+    # any previously memoized variant.
     exact_path = cache_dir / expected_dir
     if exact_path.is_dir():
         if use_memo:
@@ -172,8 +171,8 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
-    # Validate memoized entries still exist on disk before returning them.
-    # This prevents stale results when cache dirs are deleted/recreated.
+    # Validate memoized entries still exist on disk before returning them,
+    # preventing stale results when cache dirs are deleted/recreated.
     if use_memo:
         cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
         if cached is not None:
@@ -181,7 +180,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
-            # Stale entry -- drop it and re-scan below.
+            # Stale entry -- drop it and re-scan below
             _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()
@@ -200,7 +199,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             candidates.append(repo_part.replace("--", "/"))
 
         if candidates:
-            # Deterministic tie-break if multiple case variants coexist.
+            # Deterministic tie-break if multiple case variants coexist
             resolved = sorted(candidates)[0]
             if len(candidates) > 1:
                 _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1

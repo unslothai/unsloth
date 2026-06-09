@@ -3,9 +3,9 @@
 
 """``_wait_for_vram_settle`` helper contract.
 
-Pins the bounded poll over ``_get_gpu_free_memory`` that bridges the
-kill -> spawn VRAM-reclaim window. Patches ``_get_gpu_free_memory``;
-no real llama-server or nvidia-smi involved.
+Pins the bounded poll over ``_get_gpu_free_memory`` bridging the kill -> spawn
+VRAM-reclaim window. Patches ``_get_gpu_free_memory``; no real llama-server or
+nvidia-smi involved.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Same external-dep stubs as the other llama_cpp tests so this module
-# imports cleanly without httpx / structlog / loggers installed.
+# Same external-dep stubs as the other llama_cpp tests so this module imports
+# without httpx / structlog / loggers installed.
 # ---------------------------------------------------------------------------
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -34,8 +34,8 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
-# Ensure get_logger is set even if a previous test module already
-# inserted a bare ``structlog`` stub via ``setdefault``.
+# Set get_logger even if a prior test inserted a bare ``structlog`` stub
+# via ``setdefault``.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
@@ -74,8 +74,8 @@ def _patch_probe(samples):
     """Patch ``_get_gpu_free_memory`` to yield ``samples`` in order.
 
     Each entry is a list[(idx, free_mib)], a callable, or an exception
-    (instance or class). Calls past the end repeat the last entry so
-    tests can assert "stopped polling" via the call count.
+    (instance or class). Calls past the end repeat the last entry so tests
+    can assert "stopped polling" via the call count.
     """
     state = {"i": 0, "calls": 0}
 
@@ -112,8 +112,8 @@ def _kw(**extra):
 
 
 def test_cold_start_returns_immediately_without_probing():
-    """Default ``since_kill=0.0`` is cold-start: no kill recorded,
-    helper short-circuits without ever invoking the probe."""
+    """Default ``since_kill=0.0`` is cold-start: no kill recorded, so the
+    helper short-circuits without invoking the probe."""
     ctx, state = _patch_probe([[(0, 10000)], [(0, 10000)]])
     with ctx:
         start = time.monotonic()
@@ -154,8 +154,8 @@ def test_first_probe_raises_returns_without_polling():
 
 
 def test_two_consecutive_samples_within_tolerance_settles():
-    """The reclaim ramp from 10000 → 11500 → 11550: third sample within
-    256 MiB of the second so the helper returns after exactly three probes."""
+    """Reclaim ramp 10000 → 11500 → 11550: third sample within 256 MiB of
+    the second, so the helper returns after exactly three probes."""
     ctx, state = _patch_probe(
         [
             [(0, 10000)],
@@ -168,7 +168,7 @@ def test_two_consecutive_samples_within_tolerance_settles():
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
         elapsed = time.monotonic() - start
     assert state["calls"] == 3
-    # interval * 2 sleeps = 0.10; allow generous slack for scheduler jitter.
+    # interval * 2 sleeps = 0.10; allow slack for scheduler jitter.
     assert elapsed < 1.0
 
 
@@ -199,7 +199,7 @@ def test_max_wait_respected_when_never_settles():
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
-    # We must stop near max_wait, not run forever. Generous upper bound for CI.
+    # Must stop near max_wait, not run forever. Generous upper bound for CI.
     assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
 
 
@@ -217,8 +217,8 @@ def test_max_wait_respected_when_probe_is_slow():
             **_kw(max_wait = 0.4, interval = 0.25),
         )
         elapsed = time.monotonic() - start
-    # First probe (0.30 s) + at most one short clipped sleep + bail.
-    # Hard cap well below the old behaviour of 0.30 + 0.25 + 0.30 = 0.85.
+    # First probe (0.30 s) + at most one clipped sleep + bail.
+    # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
     assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
 
 
@@ -264,8 +264,8 @@ def test_tolerance_two_percent_for_large_cards():
 
 
 def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
-    """Pin the call site: outside Phase 3 lock, gated on the timestamp,
-    no ``had_live_process`` in-band flag regression. Mirrors the
+    """Pin the call site: outside Phase 3 lock, gated on the timestamp, no
+    ``had_live_process`` in-band flag regression. Mirrors the
     ``inspect.getsource`` pattern from ``test_llama_cpp_no_context_shift``.
     """
     import inspect
@@ -274,11 +274,11 @@ def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
     assert "_wait_for_vram_settle" in src
     assert "since_kill" in src
     assert "self._last_kill_monotonic" in src
-    # Must be invoked before Phase 3's broad lock so /unload, /cancel,
-    # /status are not blocked during the wait.
+    # Must run before Phase 3's broad lock so /unload, /cancel, /status
+    # are not blocked during the wait.
     assert src.index("_wait_for_vram_settle") < src.index("# ── Phase 3:")
-    # An in-band ``had_live_process`` flag would silently regress the
-    # frontend /unload+/load Apply path; use the timestamp instead.
+    # An in-band ``had_live_process`` flag would regress the frontend
+    # /unload+/load Apply path; use the timestamp instead.
     assert "had_live_process" not in src
 
 

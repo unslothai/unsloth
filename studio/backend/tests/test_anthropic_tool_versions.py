@@ -7,13 +7,12 @@ helpers in ``core.inference.external_provider``.
 
 Anthropic ships date-pinned tool versions per model family. The newer
 ``_20260209`` web_search / web_fetch and ``_20260120`` code_execution
-variants only run on a subset of models; sending them to an older
-model returns a 400 from upstream, and sending the older
-``_20250305`` / ``_20250910`` / ``_20250825`` variants to a newer
-model misses dynamic filtering and the free-when-paired pricing. The
-helpers below decide which version goes out per model; this test pins
-the dispatch matrix so future model launches keep working without
-silently regressing the newer-version path.
+variants only run on a subset of models; sending them to an older model
+returns a 400 from upstream, and sending the older ``_20250305`` /
+``_20250910`` / ``_20250825`` variants to a newer model misses dynamic
+filtering and the free-when-paired pricing. The helpers below pick the
+version per model; this test pins the dispatch matrix so future model
+launches keep working without regressing the newer-version path.
 
 Covers:
 - ``_anthropic_web_search_version`` / ``_anthropic_web_fetch_version``
@@ -23,10 +22,10 @@ Covers:
 - ``_anthropic_code_execution_version`` picks ``_20260120`` for the
   Opus 4.5+ / Sonnet 4.5+ / Opus 4.7 / Sonnet 4.6 family and falls back
   to ``_20250825`` everywhere else (Haiku 4.5, 4.1, 4.0).
-- ``_stream_anthropic`` body integration: when ``enabled_tools=
-  ["web_search", "code_execution"]`` is set on Opus 4.7, the outbound
-  body carries the newer pinned versions; the same payload on Haiku
-  4.5 falls back to the legacy versions.
+- ``_stream_anthropic`` body integration: with ``enabled_tools=
+  ["web_search", "code_execution"]`` on Opus 4.7, the outbound body
+  carries the newer pinned versions; the same payload on Haiku 4.5 falls
+  back to the legacy versions.
 - The ``anthropic-beta: code-execution-2025-08-25`` header is sent
   unchanged for both code-execution variants (no header rev needed).
 """
@@ -165,9 +164,9 @@ def test_outbound_body_uses_new_versions_on_opus_4_7(monkeypatch):
     assert "code_execution_20260120" in tool_types
     assert "web_search_20250305" not in tool_types
     assert "code_execution_20250825" not in tool_types
-    # Beta header for code execution stays on the existing flag for
-    # both _20250825 and _20260120; the API uses one header to gate
-    # the feature, not the date.
+    # Beta header for code execution stays on the existing flag for both
+    # _20250825 and _20260120; the API gates the feature by one header, not
+    # the date.
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 

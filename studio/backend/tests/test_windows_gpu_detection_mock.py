@@ -3,12 +3,12 @@
 
 """Windows GPU-detection regression test on a synthetic layout.
 
-The bug (#5106): on Windows without a system CUDA toolkit, the prebuilt
-llama-server.exe could not LoadLibrary cudart64_X / cublas64_X /
+Bug (#5106): on Windows without a system CUDA toolkit, the prebuilt
+llama-server.exe couldn't LoadLibrary cudart64_X / cublas64_X /
 cublasLt64_X, so ggml-cuda.dll's static import on cublas64_X.dll failed
 and the model fell back to CPU even when nvidia-smi reported the GPU.
 
-The fix:
+Fix:
   * #5322 overlays upstream's paired cudart bundle into
     install_dir/build/bin/Release/ next to llama-server.exe.
   * #5324 prepends pip-installed nvidia/<pkg>/{bin,bin/x86_64,Library/
@@ -34,13 +34,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy deps only if they actually fail to import -- unconditional
-# stubs would shadow the real module for sibling tests in this dir.
-# Use try-import rather than find_spec: loggers/__init__.py re-exports
-# handlers.get_logger, which does `from fastapi import Request,
-# Response` at module load. find_spec("loggers") returns a spec even
-# without fastapi, but the import then raises. CI has fastapi, so this
-# is dev-machine ergonomics only.
+# Stub heavy deps only if they fail to import -- unconditional stubs
+# would shadow the real module for sibling tests here. Use try-import,
+# not find_spec: loggers/__init__.py re-exports handlers.get_logger,
+# which does `from fastapi import Request, Response` at load. find_spec
+# returns a spec even without fastapi, but the import then raises. CI has
+# fastapi, so this is dev-machine ergonomics only.
 import importlib as _importlib  # noqa: E402
 
 
@@ -100,7 +99,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
 # Upstream b9103 cudart bundle: exactly these three DLLs per CUDA major,
-# no executables, no subdirectories. Verified by direct unzip.
+# no executables or subdirectories. Verified by direct unzip.
 REAL_UPSTREAM_CUDART_BUNDLE = {
     "12.4": ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"),
     "13.1": ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"),
@@ -133,15 +132,15 @@ REAL_PIP_NVIDIA_WHEEL_LAYOUTS = {
 
 def _populate_studio_venv(prefix: Path) -> None:
     """Lay out fake nvidia + torch wheels in <prefix>/Lib/site-packages
-    matching the real win_amd64 wheel layouts. Contents are stub bytes;
-    only directory structure matters."""
+    matching real win_amd64 layouts. Contents are stub bytes; only
+    directory structure matters."""
     site = prefix / "Lib" / "site-packages"
     for rel, dlls in REAL_PIP_NVIDIA_WHEEL_LAYOUTS.items():
         d = site / Path(rel)
         d.mkdir(parents = True, exist_ok = True)
         for name in dlls:
             (d / name).write_bytes(b"PE-stub")
-    # install_python_stack always installs torch alongside nvidia.
+    # install_python_stack always installs torch beside nvidia.
     (site / "torch" / "lib").mkdir(parents = True, exist_ok = True)
     for fn in ("c10.dll", "torch.dll", "torch_cpu.dll", "torch_python.dll"):
         (site / "torch" / "lib" / fn).write_bytes(b"PE-stub")
@@ -149,7 +148,7 @@ def _populate_studio_venv(prefix: Path) -> None:
 
 def _populate_studio_install(install_dir: Path, runtime: str = "13.1") -> None:
     """Lay out install_dir/build/bin/Release/ as #5322 leaves it: main
-    archive payload + paired cudart bundle overlay."""
+    archive payload + cudart bundle overlay."""
     rel = install_dir / "build" / "bin" / "Release"
     rel.mkdir(parents = True, exist_ok = True)
     for fn in (
@@ -163,7 +162,7 @@ def _populate_studio_install(install_dir: Path, runtime: str = "13.1") -> None:
         "mtmd.dll",
     ):
         (rel / fn).write_bytes(b"PE-stub")
-    # The cudart overlay #5322 contributes.
+    # The cudart overlay from #5322.
     for fn in REAL_UPSTREAM_CUDART_BUNDLE[runtime]:
         (rel / fn).write_bytes(b"PE-stub")
 
@@ -173,15 +172,15 @@ def _build_path_dirs_like_start_llama_server(
     prefix: Path,
     cuda_path: str = "",
 ) -> list[str]:
-    """Path-friendly wrapper around LlamaCppBackend._build_windows_path_dirs.
-    Asserting against the staticmethod (not a hand-copy) is the point:
-    if the win32 PATH order drops _windows_pip_nvidia_dll_dirs, tests fail."""
+    """Path-friendly wrapper around _build_windows_path_dirs. Asserting
+    against the real staticmethod (not a hand-copy) is the point: if the
+    win32 PATH order drops _windows_pip_nvidia_dll_dirs, tests fail."""
     return LlamaCppBackend._build_windows_path_dirs(str(binary_dir), str(prefix), cuda_path)
 
 
 def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0) -> "mock._patch":
     """Patch subprocess.run so the nvidia-smi probe returns fake_output;
-    other subprocess.run calls pass through."""
+    other calls pass through."""
     real_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
@@ -199,11 +198,11 @@ def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0) -> "mock._patch"
 # --------------------------------------------------------------------- #
 class TestWindowsGpuDetectionAfter5106Fix:
     """End-to-end #5106 fix on a synthetic Windows layout. nvidia-smi
-    mocked; resolver, PATH builder and install layout exercised live."""
+    mocked; resolver, PATH builder, and install layout run live."""
 
     def test_nvidia_smi_probe_reports_synthetic_gpu(self, monkeypatch):
         """Probe parses CSV output and returns (index, free_mib)."""
-        # Clear inherited masks so the synthetic CSV is not filtered.
+        # Clear inherited masks so the synthetic CSV isn't filtered.
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("NVIDIA_VISIBLE_DEVICES", raising = False)
         # The #5106 reporter's exact reproducer: RTX 4090, 22805 MiB.
@@ -222,7 +221,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
 
     def test_windows_install_dir_has_all_three_cudart_dlls(self, tmp_path):
         """All three bundle DLLs must land in install_dir/build/bin/
-        Release; missing any one breaks ggml-cuda.dll's PE import chain."""
+        Release; any missing one breaks ggml-cuda.dll's PE import chain."""
         install = tmp_path / "studio_install"
         _populate_studio_install(install, runtime = "13.1")
         rel = install / "build" / "bin" / "Release"
@@ -232,8 +231,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
         assert (rel / "ggml-cuda.dll").exists()
 
     def test_resolver_finds_real_pypi_wheel_layouts(self, tmp_path):
-        """Resolver must pick up every real-world wheel layout:
-        nvidia/<pkg>/bin, nvidia/<pkg>/bin/x86_64, torch/lib."""
+        """Resolver must pick up every wheel layout: nvidia/<pkg>/bin,
+        nvidia/<pkg>/bin/x86_64, torch/lib."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         out = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
@@ -249,8 +248,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
 
     def test_path_assembly_makes_cudart_reachable_without_toolkit(self, tmp_path):
         """The #5106 scenario: GPU detected, pip nvidia wheels present,
-        no system CUDA toolkit. cudart must be reachable from PATH, and
-        from BOTH binary_dir (#5322) and a pip nvidia dir (#5324)."""
+        no system CUDA toolkit. cudart must be reachable from PATH via
+        BOTH binary_dir (#5322) and a pip nvidia dir (#5324)."""
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
         _populate_studio_venv(prefix)
@@ -278,7 +277,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         ), f"#5324's pip nvidia dir not contributing cudart: {cudart_locations}"
 
     def test_cublas_and_cublasLt_also_reachable(self, tmp_path):
-        """ggml-cuda imports cublas64; cublas64 imports cublasLt64. All
+        """ggml-cuda imports cublas64, which imports cublasLt64. All
         three must resolve or LoadLibrary returns NULL."""
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
@@ -293,7 +292,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
             )
 
     def test_no_pip_nvidia_wheels_still_works_via_install_dir(self, tmp_path):
-        """No pip nvidia wheels (CPU-only torch / unsloth run standalone):
+        """No pip nvidia wheels (CPU-only torch / standalone unsloth):
         cudart still resolves via #5322's binary_dir drop."""
         prefix = tmp_path / "bare_venv"
         prefix.mkdir()
@@ -309,7 +308,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
 
     def test_no_install_dir_still_works_via_pip_wheels(self, tmp_path):
         """Pre-#5322 install (binary_dir lacks cudart): #5324's pip
-        wheel directories on PATH still resolve cudart."""
+        wheel dirs on PATH still resolve cudart."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         install = tmp_path / "studio_install_pre5322"
@@ -339,9 +338,9 @@ class TestWindowsGpuDetectionAfter5106Fix:
         assert cublas_reachable, "cublas unreachable on cudart-less install"
 
     def test_pre_pr_scenario_would_have_failed(self, tmp_path):
-        """Negative control: pre-#5322 + pre-#5324 world leaves cudart
+        """Negative control: pre-#5322 + pre-#5324 leaves cudart
         unreachable -- the original failure mode. Confirms the test
-        actually catches a regression."""
+        catches a regression."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         install = tmp_path / "pre_pr_install"
@@ -349,7 +348,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         rel.mkdir(parents = True)
         for fn in ("llama-server.exe", "llama.dll", "ggml-cuda.dll"):
             (rel / fn).write_bytes(b"PE-stub")
-        # Pre-PR PATH: binary_dir only. No pip nvidia dirs, no toolkit.
+        # Pre-PR PATH: binary_dir only, no pip nvidia dirs, no toolkit.
         pre_pr_path_dirs = [str(rel)]
         cudart_reachable_pre = any(
             (Path(d) / "cudart64_12.dll").exists() or (Path(d) / "cudart64_13.dll").exists()
@@ -362,9 +361,9 @@ class TestWindowsGpuDetectionAfter5106Fix:
 
 
 class TestWindowsSysPlatformMocked:
-    """Confirm the win32 branch in start_llama_server is what we test
-    (not the linux fallback). Patches sys.platform and re-runs the
-    branch-selecting helper."""
+    """Confirm we test the win32 branch in start_llama_server, not the
+    linux fallback. Patches sys.platform and re-runs the branch-selecting
+    helper."""
 
     def test_sys_platform_win32_uses_pip_nvidia_resolver(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sys, "platform", "win32")

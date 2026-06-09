@@ -3,8 +3,8 @@
 
 """Tests for the llama.cpp prebuilt freshness check.
 
-Pins the marker parser, the disk+memory cache, the stale decision
-matrix, and fail-open behaviour on missing data.
+Pins the marker parser, disk+memory cache, stale-decision matrix, and
+fail-open behaviour on missing data.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
 
 
 def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
-    """Stub llama-server under one of the supported install layouts."""
+    """Stub llama-server under a supported install layout."""
     if layout == "cmake":
         bin_dir = install_dir / "build" / "bin"
         bin_name = "llama-server"
@@ -77,7 +77,7 @@ def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
 
 @pytest.fixture(autouse = True)
 def _reset(monkeypatch, tmp_path):
-    # Isolate disk cache per-test; never touch the user's real cache.
+    # Isolate disk cache per-test; never touch the real cache.
     monkeypatch.setattr(fr, "_cache_dir", lambda: tmp_path / ".freshness")
     fr.reset_caches()
     yield
@@ -107,8 +107,8 @@ def test_read_install_marker_finds_root_layout(tmp_path):
 
 
 def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
-    # Windows cmake puts the .exe under build/bin/Release/, so the
-    # marker is four levels above the binary.
+    # Windows cmake puts the .exe under build/bin/Release/, so the marker
+    # is four levels above the binary.
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b8888")
     bin_path = _fake_binary(install_dir, layout = "windows")
@@ -121,8 +121,8 @@ def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
 def test_read_install_marker_carries_published_repo_dynamically(tmp_path, repo):
     # The freshness check queries whichever release repo the marker
     # records, so CUDA Linux (unslothai), CPU Linux x86_64 / macOS
-    # (ggml-org), and ROCm source-build (unslothai upstream label)
-    # all surface the right "latest" tag.
+    # (ggml-org), and ROCm source-build all surface the right "latest"
+    # tag.
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9000", published_repo = repo)
     bin_path = _fake_binary(install_dir, layout = "cmake")

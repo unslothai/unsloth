@@ -4,13 +4,13 @@
 """
 LLM-assisted dataset analysis using an ephemeral GGUF helper model.
 
-Complements heuristic-based detection in format_detection.py and
-vlm_processing.py.  Only invoked when heuristics are uncertain.
+Complements heuristic detection in format_detection.py and vlm_processing.py.
+Only invoked when heuristics are uncertain.
 
 Architecture:
   - Instantiates LlamaCppBackend, loads model, runs completion(s), unloads.
   - Not kept warm — VRAM is freed immediately after use.
-  - Gracefully degrades: returns None when unavailable (no binary, OOM, disabled).
+  - Degrades gracefully: returns None when unavailable (no binary, OOM, disabled).
 """
 
 import json
@@ -35,20 +35,19 @@ README_MAX_CHARS = 1500
 def _strip_think_tags(text: str) -> str:
     """Strip <think>...</think> reasoning blocks emitted by some models.
 
-    If the model places its actual answer OUTSIDE the think block, we
-    discard the think block and keep the rest.  If the entire response
-    is INSIDE a think block (nothing useful outside), we extract and
-    return the inner content instead of discarding everything.
+    If the answer is OUTSIDE the think block, discard the block and keep the
+    rest. If the entire response is INSIDE a think block (nothing useful
+    outside), return the inner content instead of discarding everything.
     """
     if "<think>" not in text:
         return text
 
-    # Try stripping think blocks — keep content outside them
+    # Strip think blocks — keep content outside them
     stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
     if stripped:
         return stripped
 
-    # Everything was inside <think> tags — extract the inner content of the last block
+    # Everything was inside <think> tags — return the last block's inner content
     matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if matches:
         return matches[-1].strip()
@@ -60,9 +59,9 @@ def precache_helper_gguf():
     """
     Pre-download the helper GGUF to HF cache.
 
-    Called on FastAPI startup in a background thread so subsequent
+    Called on FastAPI startup in a background thread so later
     ``_run_with_helper()`` calls skip the download and only pay for
-    llama-server startup.  No-op if already cached or disabled.
+    llama-server startup. No-op if already cached or disabled.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return
@@ -82,7 +81,7 @@ def precache_helper_gguf():
         files = api.list_repo_files(repo, repo_type = "model")
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
-        # Find all GGUF files matching the variant (may be split into shards)
+        # All GGUF files matching the variant (may be split into shards)
         variant_lower = variant.lower().replace("-", "_")
         matching = sorted(f for f in gguf_files if variant_lower in f.lower().replace("-", "_"))
 
@@ -150,7 +149,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         ):
             if isinstance(chunk, dict):
                 continue  # skip metadata events
-            cumulative = chunk  # cumulative — last value is full text
+            cumulative = chunk  # cumulative; last value is full text
 
         result = cumulative.strip()
         result = _strip_think_tags(result)
@@ -181,8 +180,8 @@ def llm_generate_vlm_instruction(
     """
     Ask a helper LLM to generate a task-specific VLM instruction.
 
-    Called when heuristic instruction generation returns low confidence
-    or falls back to generic.
+    Called when heuristic instruction generation returns low confidence or
+    falls back to generic.
 
     Args:
         column_names: Column names in the dataset.
@@ -218,9 +217,9 @@ def llm_generate_vlm_instruction(
     if not result:
         return None
 
-    # Clean up: strip quotes, ensure it's a single sentence
+    # Strip quotes; ensure a single sentence
     instruction = result.strip().strip('"').strip("'").strip()
-    # Reject obviously bad outputs (too short, too long, or multi-line)
+    # Reject bad outputs (too short, too long, or multi-line)
     if len(instruction) < 10 or len(instruction) > 200 or "\n" in instruction:
         logger.warning(f"Helper model returned unusable instruction: {instruction!r}")
         return None
@@ -243,8 +242,7 @@ def llm_classify_columns(column_names: list[str], samples: list[dict]) -> Option
         samples: 3-5 sample rows with values truncated to 200 chars.
 
     Returns:
-        Dict mapping column_name → role ("user"|"assistant"|"system"|"metadata"),
-        or None on failure.
+        Dict mapping column_name → role ("user"|"assistant"|"system"|"metadata"), or None.
     """
     formatted = ""
     for i, row in enumerate(samples[:5], 1):
@@ -281,7 +279,7 @@ def llm_classify_columns(column_names: list[str], samples: list[dict]) -> Option
     try:
         mapping = json.loads(text)
     except json.JSONDecodeError:
-        # Try to find JSON object in the response
+        # Find a JSON object in the response
         import re
         match = re.search(r"\{[^}]+\}", text)
         if match:
@@ -324,7 +322,7 @@ def llm_generate_dataset_warning(
     column_names: Optional[list[str]] = None,
 ) -> Optional[str]:
     """
-    Ask the helper LLM to turn technical dataset issues into a user-friendly warning.
+    Ask the helper LLM to turn technical dataset issues into a friendly warning.
 
     Works for all modalities (text, vision, audio).
 
@@ -359,7 +357,7 @@ def llm_generate_dataset_warning(
         return None
 
     warning = result.strip()
-    # Reject obviously bad outputs
+    # Reject bad outputs
     if len(warning) < 10 or len(warning) > 500:
         return None
 
@@ -489,7 +487,7 @@ def _run_multi_pass_advisor(
     """
     Multi-pass LLM analysis: classify → convert → validate.
 
-    Keeps model loaded across all passes. Returns combined result dict or None.
+    Keeps the model loaded across passes. Returns combined result dict or None.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
@@ -619,7 +617,7 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
             return None
 
-        # If dataset is already conversational, skip passes 2-3
+        # Already conversational: skip passes 2-3
         if pass1.get("is_conversational") and not pass1.get("needs_conversion"):
             return {
                 "success": True,
@@ -724,7 +722,7 @@ def _run_multi_pass_advisor(
         column_roles = pass2.get("column_roles", {})
         label_map = pass2.get("label_mapping") or {}  # may be null
 
-        # Validate: must have at least one user AND one assistant
+        # Must have at least one user AND one assistant
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
             logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
@@ -739,7 +737,7 @@ def _run_multi_pass_advisor(
             logger.info("Pass 3: Generating system prompt...")
             t3 = time.monotonic()
 
-            # Format label mapping info for the prompt
+            # Format label mapping for the prompt
             label_info = ""
             if label_map:
                 for col, mapping in label_map.items():
@@ -782,12 +780,12 @@ def _run_multi_pass_advisor(
             )
 
             if raw3:
-                # Pass 3 returns raw text, not JSON — clean it up
+                # Pass 3 returns raw text, not JSON — clean it
                 cleaned = raw3.strip().strip('"').strip("'").strip()
                 if len(cleaned) >= 20 and cleaned.lower() not in ("null", "none", ""):
                     sys_prompt = cleaned
 
-        # Build suggested_mapping (column → role, for the frontend dropdowns)
+        # Build suggested_mapping (column → role) for the frontend dropdowns
         suggested_mapping = {}
         for col, role in column_roles.items():
             if col in columns and role in ("user", "assistant", "system"):
@@ -855,7 +853,7 @@ def llm_conversion_advisor(
     if dataset_name and "/" in dataset_name:
         dataset_card, dataset_metadata = fetch_hf_dataset_card(dataset_name, hf_token)
 
-    # Try multi-pass advisor
+    # Try the multi-pass advisor
     result = _run_multi_pass_advisor(
         columns = column_names,
         samples = samples,

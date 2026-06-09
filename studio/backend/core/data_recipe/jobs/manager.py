@@ -134,8 +134,8 @@ class JobManager:
 
         ``internal_api_key_id`` is the row id of a workflow-scoped
         sk-unsloth-* key minted by the route layer for local providers.
-        JobManager revokes it when the job reaches a terminal state so the
-        key's live window is no longer than the run.
+        JobManager revokes it on terminal state so the key's live window is
+        no longer than the run.
         """
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
@@ -202,7 +202,7 @@ class JobManager:
             return True
 
     def get_status(self, job_id: str) -> dict | None:
-        """UI friendly snapshot that we need. Alternative to sse kinda of and structured"""
+        """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -537,9 +537,9 @@ class JobManager:
     def _retire_workflow_key(self, job: Job) -> None:
         """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.
 
-        Best-effort: revocation failures are swallowed. The key would
-        expire on its own after 24h, so a missed revoke is a latency
-        concern, not a correctness one.
+        Best-effort: revocation failures are swallowed. The key expires on
+        its own after 24h, so a missed revoke is a latency concern, not a
+        correctness one.
         """
         key_id = getattr(job, "internal_api_key_id", None)
         if not key_id:

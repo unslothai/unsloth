@@ -89,9 +89,9 @@ def env_int(
     return value
 
 
-# Prefer "latest" over "master" -- "master" bypasses the prebuilt resolver
+# Prefer "latest" over "master": "master" bypasses the prebuilt resolver
 # (no matching GitHub release), forces a source build, and causes HTTP 422
-# errors. Only use "master" temporarily when the latest release is missing
+# errors. Use "master" only temporarily when the latest release lacks
 # support for a new model architecture.
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
 # Default published repo for prebuilt release resolution. Linux uses
@@ -113,21 +113,19 @@ LEMONADE_ROCM_RELEASES_API = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}
 
 
 def _lemonade_release_api_for(llama_tag: str) -> str:
-    """Return the GitHub API URL for the lemonade release that matches a
-    requested llama.cpp tag.
+    """Return the GitHub API URL for the lemonade release matching a llama.cpp tag.
 
-    When llama_tag is unset or "latest", point at /releases/latest. When the
-    caller has pinned a specific tag (e.g. "b1260"), point at the same tag in
-    lemonade. Lemonade tracks `ggml-org/llama.cpp` build tags (e.g. "b1260")
-    but is NOT guaranteed to publish every upstream build -- lemonade may be
-    several builds behind ggml-org. Pinning to a specific tag that lemonade
-    skipped will produce a 404 and the caller falls through to the upstream
-    tarball; that is intentional so pinned installs stay reproducible.
-    Do NOT pass a `unslothai/llama.cpp` fork tag -- the fork uses its own
-    namespace and will always 404 against lemonade.
+    When llama_tag is unset or "latest", point at /releases/latest. When
+    pinned (e.g. "b1260"), point at the same tag in lemonade. Lemonade
+    tracks `ggml-org/llama.cpp` build tags but is NOT guaranteed to publish
+    every upstream build -- it may be several builds behind. Pinning a tag
+    lemonade skipped produces a 404 and the caller falls through to the
+    upstream tarball; intentional so pinned installs stay reproducible.
+    Do NOT pass a `unslothai/llama.cpp` fork tag -- the fork's namespace
+    always 404s against lemonade.
 
-    The tag is URL-encoded with `safe=""` so an unexpected slash / hash / query
-    character cannot reshape the URL.
+    The tag is URL-encoded with `safe=""` so a stray slash / hash / query
+    char cannot reshape the URL.
     """
     normalized = (llama_tag or "").strip()
     if not normalized or normalized.lower() == "latest":
@@ -162,25 +160,25 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     2,
     minimum = 1,
 )
-# Deeper macOS-only walk-back: upstream can ship a run of prebuilts built for a
-# newer macOS than the host, only caught at validate time, so an older host must
-# skip the whole run. Free on new hosts (first plan validates, extras unused).
+# Deeper macOS-only walk-back: upstream can ship a run of prebuilts built for
+# a newer macOS than the host, caught only at validate time, so an older host
+# must skip the whole run. Free on new hosts (first plan validates).
 DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = env_int(
     "UNSLOTH_LLAMA_MAX_MACOS_RELEASE_FALLBACKS",
     16,
     minimum = 1,
 )
 # Deterministic macOS pin. At b9428 ggml-org's macOS runner moved to macOS 26
-# (Tahoe), so b9428+ prebuilts only load on macOS 26+. b9415 is the last build
-# stamped below 26 (arm64 minos 14, x64 minos 13.3); loads on macOS 13.3/14/15/26.
+# (Tahoe), so b9428+ prebuilts load only on macOS 26+. b9415 is the last build
+# stamped below 26 (arm64 minos 14, x64 minos 13.3); loads on 13.3/14/15/26.
 _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
 # sm_103 (B300 / GB300 Blackwell Ultra) is not built natively but runs on the
 # bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
-# It is listed in every bundle that ships the sm_100 build (the "newer" and
-# "portable" classes) so those hosts get a prebuilt instead of a source compile.
+# Listed in every bundle that ships the sm_100 build (the "newer" and
+# "portable" classes) so those hosts get a prebuilt, not a source compile.
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
         "runtime_line": "cuda12",
@@ -234,18 +232,18 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
 
 # Lowest CUDA major we ship prebuilts for, and the highest major we probe for
 # installed runtime libraries. Detection and runtime-line derivation are
-# generated per major so a new toolkit (cuda14, ...) needs no code change while
-# llama.cpp keeps the cudart64_<major>.dll / libcudart.so.<major> naming.
+# generated per major so a new toolkit (cuda14, ...) needs no code change as
+# long as llama.cpp keeps the cudart64_<major>.dll / libcudart.so.<major> naming.
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
 # Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
 # (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
 # and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
-# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.0/13.1/13.2
-# driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
-# immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
-# fallback for exactly those hosts. See unslothai/unsloth#5887.
+# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a
+# 13.0/13.1/13.2 driver is gated off 13.3 and would drop to CPU-only 12.4.
+# b9360 is immutable, so we pin its cuda-13.1 build (plus paired cudart) as a
+# GPU fallback for exactly those hosts. See unslothai/unsloth#5887.
 _PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
 _PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
 # Floor at 13.0: b9360 ships native sm_120a SASS (no PTX/JIT) and a bundled
@@ -255,15 +253,15 @@ _PINNED_BLACKWELL_DRIVER_FLOOR = (13, 0)
 _BLACKWELL_MIN_SM = 120
 # ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
 # windows-cuda build at or above this already covers Blackwell and makes the
-# older pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
+# pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 _PINNED_BLACKWELL_LLAMA_SHA256 = "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
 _PINNED_BLACKWELL_CUDART_SHA256 = "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
-    """Runtime lines a driver of this CUDA major can use, newest major first
-    down to the minimum we ship. A driver runs its own major and any older one
+    """Runtime lines a driver of this CUDA major can use, newest first down to
+    the minimum we ship. A driver runs its own major and any older one
     (backward compatibility)."""
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
 
@@ -272,7 +270,7 @@ def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None
     """Profile (runtime line + sm coverage) for a linux-x64-cuda<major>-<class>
     bundle. Known majors use their published coverage; an unknown future major
     reuses the newest known major's coverage for the same class as a forward
-    default, with the post-build GPU smoke test as the backstop."""
+    default, with the post-build GPU smoke test as backstop."""
     known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
     if known is not None:
         return known
@@ -325,8 +323,8 @@ class AssetChoice:
     url: str
     source_label: str
     # Paired runtime archive (Windows CUDA cudart bundle). When set,
-    # install_from_archives also downloads it and overlays its DLLs on
-    # top of the main install. See unslothai/unsloth#5106.
+    # install_from_archives also downloads it and overlays its DLLs on top
+    # of the main install. See unslothai/unsloth#5106.
     runtime_name: str | None = None
     runtime_url: str | None = None
     runtime_sha256: str | None = None
@@ -553,14 +551,13 @@ def is_github_api_url(url: str | None) -> bool:
 
 def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        # GitHub returns 403 (not the standard 429) when the API rate
-        # limit is hit. Anonymous calls share a 60-req/hour bucket per
-        # runner IP, which CI fleets can exhaust trivially. Treat 403
-        # against api.github.com as retryable so we get one or two
-        # backoff cycles before the source-build fallback fires; honour
-        # Retry-After / X-RateLimit-Reset in sleep_backoff for accurate
-        # waits. Real 403s on other hosts (private artefact downloads,
-        # auth failures) stay non-retryable.
+        # GitHub returns 403 (not 429) when the API rate limit is hit.
+        # Anonymous calls share a 60-req/hour bucket per runner IP, which
+        # CI fleets exhaust trivially. Treat 403 against api.github.com as
+        # retryable so we get a backoff cycle or two before the source-build
+        # fallback fires; sleep_backoff honours Retry-After /
+        # X-RateLimit-Reset for accurate waits. Real 403s on other hosts
+        # (private artefact downloads, auth failures) stay non-retryable.
         if exc.code == 403:
             return is_github_api_url(getattr(exc, "url", None))
         return exc.code in RETRYABLE_HTTP_STATUS
@@ -579,9 +576,9 @@ _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 def _http_error_retry_delay(exc: Exception) -> float | None:
     """Extract a recommended wait from rate-limit headers on a 403/429.
 
-    Returns None when no header is present or the indicated wait is
-    longer than _RATE_LIMIT_WAIT_CAP_SECONDS (in which case the caller
-    should not block on it -- the source-build fallback is faster).
+    Returns None when no header is present or the wait exceeds
+    _RATE_LIMIT_WAIT_CAP_SECONDS (the caller should not block then -- the
+    source-build fallback is faster).
     """
     if not isinstance(exc, urllib.error.HTTPError):
         return None
@@ -790,12 +787,12 @@ def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
 
 
 def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
-    """Normalize a source ref to a form that ``git clone --branch`` accepts.
+    """Normalize a source ref to a form ``git clone --branch`` accepts.
 
-    Fully qualified branch refs like ``refs/heads/main`` are stripped to
-    ``main``; tag refs like ``refs/tags/b8508`` are stripped to ``b8508``.
-    Pull refs like ``refs/pull/123/head`` are left as-is since they are
-    always fetched explicitly rather than cloned with ``--branch``.
+    Fully qualified branch refs (``refs/heads/main``) are stripped to
+    ``main``; tag refs (``refs/tags/b8508``) to ``b8508``. Pull refs
+    (``refs/pull/123/head``) are left as-is since they are fetched
+    explicitly rather than cloned with ``--branch``.
     """
     if not isinstance(ref, str) or not ref:
         return ref
@@ -845,8 +842,8 @@ def _published_windows_cuda_runtime(
     """Highest cuda-<major>.<minor> published upstream that `driver` can run by
     default CUDA compatibility, i.e. (major, minor) <= driver. None if nothing
     qualifies. Gating on the driver (not just the major) keeps a 13.3 build off
-    a driver that only advertises 13.1, where it would otherwise rely on the
-    unguaranteed minor-version-compatibility path."""
+    a 13.1-only driver, where it would rely on the unguaranteed
+    minor-version-compatibility path."""
     if driver is None:
         return None
     best: int | None = None
@@ -1361,8 +1358,8 @@ def direct_linux_release_plan(
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
         # Prefer the cudart major Studio loads at runtime (torch's bundled
-        # libcudart), not the newest detected on disk. Without this a stray
-        # cuda13 runtime outranks the torch cuda12 the binary links against.
+        # libcudart), not the newest on disk. Otherwise a stray cuda13
+        # runtime outranks the torch cuda12 the binary links against.
         torch_preference = detect_torch_cuda_runtime_preference(host)
         selection = linux_cuda_choice_from_release(
             host,
@@ -1375,14 +1372,13 @@ def direct_linux_release_plan(
     if host.has_rocm and not host.has_usable_nvidia:
         # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
         # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
-        # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
-        # The "ubuntu" label is lemonade's asset naming convention only --
-        # the binary is a manylinux-style glibc build that runs on Arch,
-        # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
-        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
-        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
-        # so the caller triggers the HIP source build, not silently install a
-        # CPU-only binary.
+        # Strix Halo) the upstream combined-ROCm tarball doesn't cover.
+        # "ubuntu" is lemonade's asset naming convention only -- the binary
+        # is a manylinux-style glibc build that runs on Arch, Fedora,
+        # openSUSE, etc. with a recent-enough glibc. Do NOT append the CPU
+        # asset for ROCm-only hosts: if lemonade fails validation we want
+        # validate_prebuilt_attempts to raise PrebuiltFallback so the caller
+        # triggers the HIP source build, not silently install a CPU binary.
         lemonade_choice = resolve_lemonade_rocm_choice(
             host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
@@ -1405,9 +1401,9 @@ def direct_linux_release_plan(
     ):
         approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
         # Require exact source provenance for branch/pull/commit releases.
-        # Mirrors validated_checksums_for_bundle so incomplete metadata
-        # fails closed instead of degrading to the legacy branch-as-tag
-        # source hydration path that this PR is meant to eliminate.
+        # Mirrors validated_checksums_for_bundle so incomplete metadata fails
+        # closed instead of degrading to the legacy branch-as-tag source
+        # hydration path this PR eliminates.
         if (
             not approved_checksums.source_commit
             or exact_source_archive_hash(approved_checksums) is None
@@ -1455,7 +1451,7 @@ def direct_upstream_release_plan(
                 )
             )
             # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
-            # build over the CPU-only cuda-12.4 the in-release gating leaves.
+            # build over the CPU-only cuda-12.4 left by in-release gating.
             pinned = _pinned_windows_cuda_fallback(host, attempts)
             if pinned is not None:
                 attempts.insert(0, pinned)
@@ -1493,9 +1489,9 @@ def direct_upstream_release_plan(
             )
     elif host.is_windows and host.is_arm64:
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-win-cpu-arm64.zip
-        # (visible in the b9334 release manifest). Without this branch the
-        # selector returned 0 attempts and the installer fell back to a
-        # source build on every Windows ARM64 host.
+        # (in the b9334 release manifest). Without this branch the selector
+        # returned 0 attempts and fell back to a source build on every
+        # Windows ARM64 host.
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-arm64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
@@ -1553,10 +1549,10 @@ def direct_upstream_release_plan(
             )
     elif host.is_linux and host.is_arm64 and not host.has_usable_nvidia:
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-ubuntu-arm64.tar.gz
-        # (visible in the b9334 release manifest). Without this branch the
-        # selector returned 0 attempts and the installer fell back to a
-        # source build on every Linux ARM64 host (DGX Spark, Ampere
-        # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
+        # (in the b9334 release manifest). Without this branch the selector
+        # returned 0 attempts and fell back to a source build on every Linux
+        # ARM64 host (DGX Spark, Ampere Altra, GitHub ubuntu-24.04-arm
+        # runners, etc.).
         asset_name = f"llama-{release_tag}-bin-ubuntu-arm64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -1586,9 +1582,9 @@ def direct_upstream_release_plan(
 
 
 def pinned_macos_release_tag(host: HostInfo, repo: str) -> str | None:
-    """Pin b9415 (the last upstream macOS build that loads below macOS 26) for a
-    known pre-26 host on ggml-org upstream; return None to keep latest selection.
-    The unslothai/llama.cpp fork ships its own prebuilts (arm64 minos 14, x64
+    """Pin b9415 (last upstream macOS build that loads below macOS 26) for a
+    known pre-26 host on ggml-org upstream; None keeps latest selection. The
+    unslothai/llama.cpp fork ships its own prebuilts (arm64 minos 14, x64
     minos 13.3) and needs no pin, so this is a no-op there and for macOS 26+,
     unknown version, non-macOS."""
     if repo != UPSTREAM_REPO:
@@ -1614,9 +1610,9 @@ def resolve_simple_install_release_plans(
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     requested_tag = normalized_requested_llama_tag(llama_tag)
     # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
-    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
-    # x64 binary, so fall back to a source build that targets the GPU rather than
-    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
+    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install
+    # an x64 binary, so fall back to a GPU-targeting source build rather than
+    # the wrong arch (or silently dropping to a CPU arm64 build).
     if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
         raise PrebuiltFallback(
             f"{repo} ships only linux-x64 prebuilts; "
@@ -1625,7 +1621,7 @@ def resolve_simple_install_release_plans(
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     # macOS: pin the last upstream build that loads on a pre-26 host instead of
     # fetching the latest (macOS 26 only) build and walking back release by
-    # release. No-op on macOS 26+, unknown version, non-macOS, and the fork.
+    # release. No-op on macOS 26+, unknown version, non-macOS, the fork.
     if allow_older_release_fallback:
         pinned_macos = pinned_macos_release_tag(host, repo)
         if pinned_macos is not None:
@@ -1940,8 +1936,8 @@ def parse_published_release_bundle(
     if not manifest_url:
         return None
 
-    # Mixed repos are filtered by an explicit release-side manifest rather than
-    # by release tag or asset filename conventions.
+    # Mixed repos are filtered by an explicit release-side manifest, not by
+    # release tag or asset filename conventions.
     manifest_bytes = download_bytes(
         manifest_url,
         timeout = 30,
@@ -2393,9 +2389,9 @@ def validated_checksums_for_bundle(
             raise PrebuiltFallback(
                 "published manifest checksum did not match the approved checksum asset"
             )
-    # Accept bundles that carry only an exact-commit source archive
-    # (e.g. llama.cpp-source-commit-<sha>.tar.gz) without requiring the
-    # legacy llama.cpp-source-<upstream_tag>.tar.gz entry.
+    # Accept bundles carrying only an exact-commit source archive
+    # (llama.cpp-source-commit-<sha>.tar.gz) without requiring the legacy
+    # llama.cpp-source-<upstream_tag>.tar.gz entry.
     if exact_source_archive_hash(checksums) is None:
         require_approved_source_hash(checksums, bundle.upstream_tag)
     return checksums
@@ -2531,23 +2527,22 @@ def resolve_requested_llama_tag(
 
     Resolution order:
       1. Concrete tag (e.g. "b8508") -- returned as-is.
-      2. "latest" with published_repo -- resolve the latest usable Unsloth
-         published release bundle and return its upstream_tag. This is the
-         preferred version that matches the published prebuilt metadata.
-      3. "latest" without published_repo or if (2) fails -- query the upstream
-         ggml-org/llama.cpp repo. This may return a newer, untested tag.
+      2. "latest" with published_repo -- the latest usable Unsloth published
+         bundle's upstream_tag (matches the published prebuilt metadata).
+      3. "latest" without published_repo, or if (2) fails -- query upstream
+         ggml-org/llama.cpp. May return a newer, untested tag.
 
-    The Unsloth repo is preferred because its releases are pinned to specific
-    upstream tags that have been validated with Unsloth Studio. Using the
-    upstream bleeding-edge tag risks API/ABI incompatibilities.
+    The Unsloth repo is preferred because its releases are pinned to upstream
+    tags validated with Unsloth Studio; the upstream bleeding-edge tag risks
+    API/ABI incompatibilities.
     """
     normalized_requested = normalized_requested_llama_tag(requested_tag)
     if normalized_requested != "latest":
         return normalized_requested
     # Prefer the Unsloth release repo tag (tested/approved) over bleeding-edge
-    # upstream. For example, unslothai/llama.cpp may publish b8508 while
-    # ggml-org/llama.cpp latest is b8514. The source-build fallback should
-    # compile the same version the prebuilt path would have installed.
+    # upstream. E.g. unslothai/llama.cpp may publish b8508 while ggml-org
+    # latest is b8514. The source-build fallback should compile the same
+    # version the prebuilt path would have installed.
     if published_repo:
         try:
             return resolve_published_release(
@@ -2557,7 +2552,7 @@ def resolve_requested_llama_tag(
             ).bundle.upstream_tag
         except Exception:
             pass
-    # Fall back to upstream ggml-org latest release tag
+    # Fall back to the upstream ggml-org latest release tag
     return latest_upstream_release_tag()
 
 
@@ -2704,38 +2699,38 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     A bare first-match picked the wrong device on mixed APU + dGPU hosts
     (e.g. Strix Halo gfx1151 + discrete RX 7900 gfx1100). Respect
     HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES so the
-    asset matches what HIP actually runs on. Falls back to the first GPU when
-    no env var is set.
+    asset matches what HIP runs on; falls back to the first GPU with no env
+    var set.
 
     rocminfo / hipinfo print the same gfx token multiple times per GPU (Name,
-    ISA, marketing-name). We first try to split the output on per-GPU section
-    headers (rocminfo: "Agent N" blocks, hipinfo: "device#N" entries) and take
-    exactly one gfx token per section. This gives the correct per-GPU list even
-    on same-arch multi-GPU hosts (e.g. two RX 7900 XTX cards) where global
-    dict.fromkeys dedup would collapse both cards to a single entry and make
-    HIP_VISIBLE_DEVICES=1 point out of range.
+    ISA, marketing-name). We first split the output on per-GPU section headers
+    (rocminfo: "Agent N" blocks, hipinfo: "device#N" entries) and take exactly
+    one gfx token per section -- this gives the correct per-GPU list even on
+    same-arch multi-GPU hosts (e.g. two RX 7900 XTX) where global dict.fromkeys
+    dedup would collapse both to one entry and make HIP_VISIBLE_DEVICES=1 point
+    out of range.
 
     Falls back to insertion-order dedup when the output has no recognisable
     section markers (flat gfx-string inputs, unit-test stubs, etc.).
 
     Empty / "-1" env values mean no AMD GPU is visible to HIP: return None.
     """
-    # Try to build a per-GPU token list by splitting on section boundaries.
-    # rocminfo sections are introduced by "Agent N" lines (optionally between
-    # rows of asterisks). hipinfo sections start with "device#N".
+    # Build a per-GPU token list by splitting on section boundaries. rocminfo
+    # sections start with "Agent N" lines (optionally between rows of
+    # asterisks); hipinfo sections with "device#N".
     _sections = re.split(
         r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bdevice\s*#\s*\d+\b",
         out,
     )
     if len(_sections) > 1:
-        # Section-based: one gfx token per GPU section preserves physical order.
+        # One gfx token per GPU section preserves physical order.
         _tokens: list[str] = []
         for _sec in _sections[1:]:
             _m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _sec.lower())
             if _m:
                 _tokens.append(_m.group(0))
     else:
-        # Fallback: insertion-order dedup (handles flat strings / unknown formats).
+        # Fallback: insertion-order dedup (flat strings / unknown formats).
         _raw = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
         _tokens = list(dict.fromkeys(_raw))
 
@@ -2751,7 +2746,7 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
             break
     if _vis_raw is not None:
         _vis = _vis_raw.strip()
-        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio).
+        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio)
         if _vis == "" or _vis == "-1":
             return None
         _first = _vis.split(",")[0].strip()
@@ -2783,11 +2778,10 @@ def detect_host() -> HostInfo:
     has_physical_nvidia = False
     has_usable_nvidia = False
     if nvidia_smi:
-        # Require `nvidia-smi -L` to actually list a GPU before treating the
-        # host as NVIDIA. The banner text "NVIDIA-SMI ..." is printed even
-        # when the command fails to communicate with the driver (e.g. stale
-        # container leftovers), which would otherwise misclassify an AMD
-        # ROCm host as NVIDIA and short-circuit the ROCm path.
+        # Require `nvidia-smi -L` to list a GPU before treating the host as
+        # NVIDIA. The "NVIDIA-SMI ..." banner prints even when the command
+        # can't reach the driver (e.g. stale container leftovers), which
+        # would misclassify an AMD ROCm host as NVIDIA and skip the ROCm path.
         try:
             listing = run_capture([nvidia_smi, "-L"], timeout = 20)
             gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
@@ -2800,9 +2794,9 @@ def detect_host() -> HostInfo:
         try:
             result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
-            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
-            # "CUDA UMD Version: X.Y" instead of the legacy
-            # "CUDA Version: X.Y"; accept both spellings.
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print "CUDA UMD
+            # Version: X.Y" instead of the legacy "CUDA Version: X.Y"; accept
+            # both spellings.
             cuda_match = re.search(
                 r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)",
                 merged,
@@ -2845,10 +2839,10 @@ def detect_host() -> HostInfo:
 
             if visible_gpu_rows:
                 has_usable_nvidia = True
-                # Older nvidia-smi versions (pre -L support) hit the
-                # except in the first try block but still succeed here,
-                # leaving has_physical_nvidia unset. Mirror the -L path
-                # so downstream diagnostics on line ~4390 still run.
+                # Older nvidia-smi (pre -L support) hits the except in the
+                # first try block but still succeeds here, leaving
+                # has_physical_nvidia unset. Mirror the -L path so downstream
+                # diagnostics on line ~4390 still run.
                 if not has_physical_nvidia:
                     has_physical_nvidia = True
             elif visible_device_tokens == []:
@@ -2870,10 +2864,10 @@ def detect_host() -> HostInfo:
     rocm_gfx_target: str | None = None
     if is_linux:
         for _cmd, _check in (
-            # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
-            # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
-            # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
-            # the dash and must not be treated as a real GPU.
+            # rocminfo: a real gfx GPU id (3-4 chars, nonzero first digit).
+            # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines
+            # ("gfx11-generic", "gfx9-4-generic") with only 1-2 digits before
+            # the dash, which must not be treated as a real GPU.
             (
                 ["rocminfo"],
                 lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
@@ -2893,14 +2887,13 @@ def detect_host() -> HostInfo:
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
     elif is_windows:
-        # Windows: prefer active probes that validate GPU presence.
-        # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
-        # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
-        # the system PATH.  Mirror setup.ps1's fallback: check the env-var
-        # bin dirs before giving up so that `has_rocm` is not silently False
-        # on machines where the PATH is not yet updated.
+        # Windows: prefer active probes that validate GPU presence. hipinfo /
+        # amd-smi are often NOT on PATH -- the HIP SDK installer sets HIP_PATH
+        # / ROCM_PATH but doesn't always add the bin dir to PATH. Mirror
+        # setup.ps1's fallback: check the env-var bin dirs before giving up so
+        # `has_rocm` isn't silently False when PATH isn't updated yet.
         def _resolve_exe(name: str) -> str | None:
-            """Return full path to `name`, checking PATH then HIP_PATH/ROCM_PATH bin."""
+            """Full path to `name`, checking PATH then HIP_PATH/ROCM_PATH bin."""
             found = shutil.which(name)
             if found:
                 return found
@@ -2929,8 +2922,8 @@ def detect_host() -> HostInfo:
                     # hipinfo reports "gcnArchName: gfx1100" -- extract if present
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
-        # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
-        # since the HIP SDK can be installed without an AMD GPU.
+        # Note: amdhip64.dll presence alone is NOT GPU evidence -- the HIP SDK
+        # can be installed without an AMD GPU.
 
     return HostInfo(
         system = system,
@@ -2955,7 +2948,7 @@ def detect_host() -> HostInfo:
 def _normalize_forwarded_gfx(value: str | None) -> str | None:
     """Extract a single gfx token from a forwarded --rocm-gfx / env value.
     setup.sh/setup.ps1 already picked the active GPU, so take the token as-is
-    without re-applying visible-device selection. Ignore anything malformed."""
+    without re-applying visible-device selection. Ignore malformed input."""
     if not value:
         return None
     m = re.search(r"gfx[1-9][0-9a-z]{2,3}", value.lower())
@@ -2971,8 +2964,8 @@ def _apply_host_overrides(
 ) -> HostInfo:
     """Fold setup.sh/setup.ps1's forwarded detection into the host profile.
     A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) is authoritative and
-    implies ROCm: the installer's own hipinfo/amd-smi probe can miss the arch on
-    amd-smi-only hosts or when setup inferred it from the GPU name, leaving
+    implies ROCm: the installer's own hipinfo/amd-smi probe can miss the arch
+    on amd-smi-only hosts or when setup inferred it from the GPU name, leaving
     rocm_gfx_target None and no lemonade prebuilt selected. force_cpu is the
     opposite explicit signal (arm64 Linux GPU host whose source build failed):
     drop GPU attributes so the CPU prebuilt for this OS/arch is selected."""
@@ -3014,7 +3007,7 @@ def compatible_linux_runtime_lines(host: HostInfo) -> list[str]:
 
 def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
     # Generated per CUDA major (newest first) so a new toolkit is detected
-    # without a code change while the cudart64_<major>.dll naming holds.
+    # without code changes while the cudart64_<major>.dll naming holds.
     return {
         f"cuda{m}": (
             f"cudart64_{m}*.dll",
@@ -3041,7 +3034,7 @@ def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, minor = host.driver_cuda_version
-    # cuda12 prebuilts need a 12.4+ driver; cuda13+ any minor of the major.
+    # cuda12 prebuilts need a 12.4+ driver; cuda13+ any minor.
     if major < _MIN_CUDA_MAJOR or (major == _MIN_CUDA_MAJOR and minor < 4):
         return []
     return _cuda_runtime_lines_for_major(major)
@@ -3181,8 +3174,8 @@ def windows_cuda_attempts(
     runtime_order.extend(
         runtime_line for runtime_line in normal_runtime_lines if runtime_line not in runtime_order
     )
-    # Keep every driver-compatible line reachable as a fallback, so a line gated
-    # out by the driver version still drops to an older major (cuda13 -> cuda12).
+    # Keep every driver-compatible line reachable as a fallback, so a line
+    # gated out by driver version still drops to an older major (cuda13->cuda12).
     runtime_order.extend(
         runtime_line
         for runtime_line in compatible_runtime_lines
@@ -3201,7 +3194,7 @@ def windows_cuda_attempts(
     for runtime_line in runtime_order:
         major = int(runtime_line.removeprefix("cuda"))
         # Track whatever minor llama.cpp actually ships for this major
-        # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
+        # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release lacks a
         # matching asset instead of guessing a now-missing name.
         runtime = _published_windows_cuda_runtime(upstream_assets, major, host.driver_cuda_version)
         if runtime is None:
@@ -3222,10 +3215,10 @@ def windows_cuda_attempts(
                 + ",".join(windows_cuda_upstream_asset_names(llama_tag, runtime))
             )
             continue
-        # Pair the cudart bundle when upstream ships it. Without this
-        # the binary needs a system CUDA toolkit on PATH at runtime
-        # (#5106). Only pair when the selected main archive is the
-        # binary archive, not the cudart archive itself.
+        # Pair the cudart bundle when upstream ships it; otherwise the binary
+        # needs a system CUDA toolkit on PATH at runtime (#5106). Only pair
+        # when the selected main archive is the binary archive, not the cudart
+        # archive itself.
         runtime_archive_name: str | None = None
         runtime_archive_url: str | None = None
         if selected_name.startswith("llama-"):
@@ -3264,8 +3257,8 @@ def windows_cuda_attempts(
 
 
 def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt is built with a toolkit that
-    covers Blackwell sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    """True if an in-release windows-cuda attempt's toolkit covers Blackwell
+    sm_120 (>= 12.8), read from its asset name's CUDA minor."""
     if attempt.install_kind != "windows-cuda":
         return False
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
@@ -3276,16 +3269,16 @@ def _pinned_windows_cuda_fallback(
     host: HostInfo, existing_cuda_attempts: list[AssetChoice]
 ) -> AssetChoice | None:
     """Pinned GPU fallback for a Blackwell host the in-release build gates off.
-    Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360, and
-    cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
-    b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
-    (dormant) whenever the in-release selection already offers a Blackwell-capable
-    build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14), so it self-disables
-    once upstream ships a driver-runnable build again.
+    Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360,
+    and cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on
+    CPU. b9360's cuda-13.1 build is immutable and runs on those drivers.
+    Returns None (dormant) whenever the in-release selection already offers a
+    Blackwell-capable build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14),
+    so it self-disables once upstream ships a driver-runnable build again.
 
-    The b9360 binary reuses the current release's source tree and convert scripts
-    and is recorded via binary_release_tag, the same binary/source split used for
-    the lemonade prebuilt."""
+    The b9360 binary reuses the current release's source tree and convert
+    scripts and is recorded via binary_release_tag, the same binary/source
+    split used for the lemonade prebuilt."""
     if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
         return None
     driver = host.driver_cuda_version
@@ -3327,8 +3320,8 @@ def _pinned_windows_cuda_fallback(
 def _augment_checksums_with_pin(
     checksums: ApprovedReleaseChecksums, pin: AssetChoice
 ) -> ApprovedReleaseChecksums:
-    """Add the pin's own verified hashes to a copy of the approved checksums so
-    apply_approved_hashes keeps it on the published path (b9360 is not in the
+    """Add the pin's verified hashes to a copy of the approved checksums so
+    apply_approved_hashes keeps it on the published path (b9360 isn't in the
     release manifest)."""
     artifacts = dict(checksums.artifacts)
     if pin.expected_sha256:
@@ -3352,7 +3345,7 @@ def _with_pinned_windows_cuda_fallback(
     host: HostInfo, attempts: list[AssetChoice], checksums: ApprovedReleaseChecksums
 ) -> tuple[list[AssetChoice], ApprovedReleaseChecksums]:
     """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
-    through apply_approved_hashes, or return the inputs unchanged when dormant.
+    through apply_approved_hashes, or return inputs unchanged when dormant.
     Gives the published install path the same GPU fallback as the simple path."""
     pin = _pinned_windows_cuda_fallback(host, attempts)
     if pin is None:
@@ -3369,7 +3362,7 @@ def published_windows_cuda_attempts(
     selection_log = list(release.selection_log) + list(selection_preamble)
     # Seed the runtime-line ordering from the real published windows-cuda minors
     # (their names encode the minor), so a future CUDA major published here is
-    # ordered too instead of a hardcoded cuda12/cuda13 pair. Keys mirror the
+    # ordered too rather than a hardcoded cuda12/cuda13 pair. Keys mirror the
     # upstream naming so windows_cuda_attempts can match them; fall back to the
     # long-standing default when the release lists no windows-cuda asset.
     published_minors: list[str] = []
@@ -3414,8 +3407,8 @@ def published_windows_cuda_attempts(
             if not asset_url:
                 continue
             am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
-            # Gate the real published minor against the driver, so a published
-            # windows-cuda artifact can never bypass the driver-version gate.
+            # Gate the published minor against the driver so it can never
+            # bypass the driver-version gate.
             if (
                 am is not None
                 and host.driver_cuda_version is not None
@@ -3516,9 +3509,9 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm runtime, or None.
 
     Best-effort read from /opt/rocm/.info/version, amd-smi version, and
-    hipconfig --version. Used to pick a compatible upstream llama.cpp
-    ROCm prebuilt rather than always taking the numerically newest one
-    (which can be newer than the host runtime).
+    hipconfig --version. Used to pick a compatible upstream llama.cpp ROCm
+    prebuilt rather than the numerically newest one (which can be newer than
+    the host runtime).
     """
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     for path in (
@@ -3528,9 +3521,9 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             with open(path) as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
-            # Explicit length guard avoids relying on the broad except
-            # below to swallow IndexError when the version file contains
-            # a single component (e.g. "6\n" on a partial install).
+            # Explicit length guard so we don't rely on the broad except
+            # below to swallow IndexError when the version file has a single
+            # component (e.g. "6\n" on a partial install).
             if len(parts) >= 2:
                 return int(parts[0]), int(parts[1])
         except Exception:
@@ -3571,8 +3564,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
 
     # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
     # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
+    # ROCm hosts without /opt/rocm/.info/version still report a usable version,
+    # letting the <= host version filter in resolve_upstream_asset_choice pick
     # the correct upstream prebuilt instead of the newest-regardless fallback.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
@@ -3594,7 +3587,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         if _result.returncode != 0 or not _result.stdout.strip():
             continue
         _raw = _result.stdout.strip()
-        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it first.
         _raw = re.sub(r"^\d+:", "", _raw)
         _m = re.match(r"(\d+)[.-](\d+)", _raw)
         if _m:
@@ -3603,7 +3596,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
 
 
 # Map detected gfx IDs to lemonade-sdk asset family suffixes.
-# More-specific prefixes must come before shorter ones (e.g. gfx1151 before gfx110).
+# More-specific prefixes must precede shorter ones (e.g. gfx1151 before gfx110).
 _LEMONADE_GFX_FAMILIES: list[tuple[str, str]] = [
     ("gfx1151", "gfx1151"),
     ("gfx1150", "gfx1150"),
@@ -3627,9 +3620,8 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     Accepts:
       https://github.com/{expected_repo}/releases/download/...
       https://objects.githubusercontent.com/...   (GitHub's release CDN)
-    Anything else (including http://, raw.githubusercontent.com, gist, etc.)
-    is rejected so a malicious API response cannot redirect downloads to an
-    attacker-chosen host.
+    Anything else (http://, raw.githubusercontent.com, gist, etc.) is rejected
+    so a malicious API response can't redirect downloads to an attacker host.
     """
     if not isinstance(url, str) or not url:
         return False
@@ -3642,8 +3634,8 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     host = (parsed.netloc or "").lower()
     if host == "objects.githubusercontent.com":
         # GitHub's release CDN. Restrict to release-asset paths so a tampered
-        # API response pointing at an arbitrary CDN object is still rejected.
-        # Real release asset URLs carry the "/github-production-release-asset-"
+        # API response pointing at an arbitrary CDN object is rejected. Real
+        # release asset URLs carry the "/github-production-release-asset-"
         # prefix; gist / raw / avatar CDN paths do not.
         return parsed.path.startswith("/github-production-release-asset-")
     if host == "github.com":
@@ -3655,12 +3647,12 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
 def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
     """Cached wrapper around fetch_json for lemonade release lookups.
 
-    resolve_lemonade_rocm_choice() is called twice per install (once from the
-    direct planner, once from resolve_upstream_asset_choice) with identical
-    arguments. Without memoisation, each install hits api.github.com twice,
-    doubling the rate-limit failure surface on busy CI runners. Cache is
-    process-scoped; tests that need to vary fetch_json's return value across
-    invocations should call cache_clear().
+    resolve_lemonade_rocm_choice() is called twice per install (direct planner
+    + resolve_upstream_asset_choice) with identical arguments. Without
+    memoisation each install hits api.github.com twice, doubling the
+    rate-limit failure surface on busy CI runners. Cache is process-scoped;
+    tests that vary fetch_json's return value across calls should call
+    cache_clear().
     """
     try:
         return fetch_json(api_url)
@@ -3686,23 +3678,21 @@ def resolve_lemonade_rocm_choice(
 
     os_prefix:   lemonade's asset filename label, NOT a host-distro filter.
                  Pass "ubuntu" for any Linux host (Arch, Fedora, openSUSE,
-                 Debian, ...) -- lemonade only publishes one Linux variant
-                 and it is a manylinux-style glibc build that runs on any
-                 distro with a recent-enough glibc. Pass "windows" for
-                 Windows hosts.
+                 Debian, ...) -- lemonade publishes one Linux variant, a
+                 manylinux-style glibc build that runs on any distro with a
+                 recent-enough glibc. Pass "windows" for Windows hosts.
     install_kind: "linux-rocm" or "windows-hip"
     llama_tag:   the requested upstream llama.cpp tag ("latest" or a pinned
-                 release like "b1260"). When pinned, the resolver fetches
-                 the matching lemonade release. When the pinned tag is not
-                 published by lemonade we skip silently (and the caller
-                 falls through to upstream) rather than drift to whatever
-                 lemonade ships as latest.
+                 release like "b1260"). When pinned, fetch the matching
+                 lemonade release; if lemonade hasn't published that tag, skip
+                 silently (caller falls through to upstream) rather than drift
+                 to whatever lemonade ships as latest.
     """
     if not host.rocm_gfx_target:
         return None
     # Opt-out for users who want the upstream HIP build path only -- lemonade
-    # binaries are downloaded without entries in the approved-hash manifest, so
-    # the integrity gate is functional validation only.
+    # binaries lack approved-hash manifest entries, so their integrity gate is
+    # functional validation only.
     if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in (
         "1",
         "true",
@@ -3735,7 +3725,7 @@ def resolve_lemonade_rocm_choice(
         return None
     asset_url = assets[asset_name]
     if not asset_url:
-        # release_asset_map defaults to "" when an asset row is missing
+        # release_asset_map defaults to "" when an asset row lacks
         # browser_download_url; skip cleanly instead of letting
         # download_file("") raise a less obvious error downstream.
         log(
@@ -3744,9 +3734,9 @@ def resolve_lemonade_rocm_choice(
         )
         return None
     # Defence in depth: lemonade browser_download_url should be on github.com
-    # or githubusercontent.com. A compromised GitHub API response that
-    # redirects to an attacker-chosen host would otherwise be honoured
-    # silently (lemonade assets are not in the approved-hash manifest).
+    # or githubusercontent.com. A compromised GitHub API response redirecting
+    # to an attacker host would otherwise be honoured silently (lemonade
+    # assets are not in the approved-hash manifest).
     if not _is_trusted_github_release_url(asset_url, LEMONADE_ROCM_REPO):
         log(
             f"{LEMONADE_ROCM_REPO}@{release_tag} asset {asset_name!r} points "
@@ -3754,9 +3744,9 @@ def resolve_lemonade_rocm_choice(
             "lemonade prebuilt"
         )
         return None
-    # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
-    # generic glibc build that runs on any distro (Arch, Fedora, ...), so
-    # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
+    # Note: lemonade tags Linux assets "ubuntu" but the binary is a generic
+    # glibc build that runs on any distro (Arch, Fedora, ...), so this attempt
+    # is selected for all Linux ROCm hosts, not just Ubuntu.
     log(
         f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
         f"trying lemonade-sdk ROCm prebuilt {asset_name} "
@@ -3782,28 +3772,27 @@ def resolve_lemonade_rocm_choice(
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
-        # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
-        # Source build (via setup.sh) compiles with -DGGML_HIP=ON and auto-detects
-        # the exact GPU target via rocminfo, which is more reliable for consumer
-        # GPUs (e.g. gfx1151) that may not be in the prebuilt.
+        # AMD ROCm: try upstream ROCm prebuilt first, then a source build. The
+        # source build (via setup.sh) compiles with -DGGML_HIP=ON and
+        # auto-detects the exact GPU target via rocminfo, more reliable for
+        # consumer GPUs (e.g. gfx1151) that may not be in the prebuilt.
         if host.has_rocm and not host.has_usable_nvidia:
-            # Try lemonade-sdk per-GPU prebuilt first: these are built against
-            # specific gfx targets and bundle all required ROCm runtime libs.
+            # Try lemonade-sdk per-GPU prebuilt first: built against specific
+            # gfx targets and bundle all required ROCm runtime libs.
             lemonade_choice = resolve_lemonade_rocm_choice(
                 host, "ubuntu", "linux-rocm", llama_tag = llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
 
-            # Fall back to upstream combined ROCm tarball.
-            # Scan upstream assets for any rocm-<version> prebuilt. When the
-            # host ROCm runtime version is known, pick the newest candidate
-            # whose major.minor is <= host version -- otherwise a ROCm 6.4
-            # host would download the rocm-7.2 tarball, fail preflight, and
-            # fall back to a source build even though a compatible 6.4
-            # prebuilt exists. If no compatible candidate matches (e.g. host
-            # runtime is older than every published prebuilt), fall back to
-            # the numerically newest so we at least try something.
+            # Fall back to the upstream combined ROCm tarball. Scan for any
+            # rocm-<version> prebuilt; when the host ROCm version is known,
+            # pick the newest candidate whose major.minor is <= host version
+            # -- otherwise a ROCm 6.4 host downloads the rocm-7.2 tarball,
+            # fails preflight, and source-builds even though a 6.4 prebuilt
+            # exists. If none is compatible (host older than every published
+            # prebuilt), fall back to the numerically newest so we try
+            # something.
             _rocm_pattern = re.compile(
                 rf"llama-{re.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
             )
@@ -3822,10 +3811,10 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     item for item in rocm_candidates if item[0][:2] <= _host_rocm_version
                 ]
             if rocm_candidates and not _compatible:
-                # Fall back to the newest candidate so a source build is
-                # not forced when the host runtime is older than every
-                # published prebuilt: preflight will still catch a true
-                # incompatibility and trigger a fallback.
+                # Fall back to the newest candidate so we don't force a source
+                # build when the host runtime is older than every published
+                # prebuilt: preflight still catches a true incompatibility and
+                # triggers a fallback.
                 _compatible = rocm_candidates[:1]
             if _compatible:
                 rocm_name = _compatible[0][1]
@@ -3848,7 +3837,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "linux-rocm",
                 )
-            # No ROCm prebuilt available -- fall back to source build
+            # No ROCm prebuilt available -- fall back to a source build
             raise PrebuiltFallback(
                 "AMD ROCm detected but no upstream ROCm prebuilt found; "
                 "falling back to source build with HIP support"
@@ -3978,12 +3967,11 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # AMD Windows hosts should prefer a hash-approved published
-        # Windows HIP bundle when one exists, but otherwise fall through
-        # to resolve_asset_choice() so the upstream HIP prebuilt is
-        # tried before the CPU fallback. Hard-pinning the published
-        # windows-cpu bundle here would make the new HIP path
-        # unreachable.
+        # AMD Windows hosts prefer a hash-approved published Windows HIP
+        # bundle when one exists, otherwise fall through to
+        # resolve_asset_choice() so the upstream HIP prebuilt is tried before
+        # the CPU fallback. Hard-pinning the published windows-cpu bundle here
+        # would make the HIP path unreachable.
         if host.has_rocm:
             published_choice = published_asset_choice_for_kind(release, "windows-hip")
         else:

@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Capability advertisement contract: classifier honesty, worker→
-orchestrator IPC hop, and route-layer end-to-end. Pure helpers + fakes;
-no torch / transformers import.
+Capability advertisement contract: classifier honesty, worker→orchestrator
+IPC hop, route-layer end-to-end. Pure helpers + fakes; no torch/transformers.
 """
 
 from __future__ import annotations
@@ -116,7 +115,7 @@ def test_detect_safetensors_features_none_template_returns_all_false():
 
 
 def test_detect_safetensors_features_gptoss_disables_tools():
-    """gpt-oss Harmony: tools intentionally off even if template marks it."""
+    """gpt-oss Harmony: tools off even if template marks it."""
     from routes.inference import _detect_safetensors_features
 
     backend = MagicMock()
@@ -129,11 +128,10 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral templates advertise tool handling but the model emits
-# tool calls in <|python_tag|> / [TOOL_CALLS] format -- not the
-# <tool_call> / <function= our parser understands. The route helper must
-# refuse to flip supports_tools=True for those families so the UI does
-# not enable a pill the agentic loop cannot honour.
+# Llama-3 / Mistral templates advertise tools but emit calls in
+# <|python_tag|> / [TOOL_CALLS] format -- not the <tool_call> / <function=
+# our parser understands. The route helper must not flip supports_tools=True
+# for those families, else the UI enables a pill the agentic loop can't honour.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -207,10 +205,10 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
-# Qwen3.5 family pins -- the live GGUF + safetensors templates fetched
-# from the unsloth/Qwen3.5-0.8B(-GGUF) repos both wrap tool calls as
-# ``<tool_call>\n<function=name>...``. Capture a faithful slice so the
-# classifier never silently regresses for this family.
+# Qwen3.5 family pins -- the live GGUF + safetensors templates from the
+# unsloth/Qwen3.5-0.8B(-GGUF) repos both wrap tool calls as
+# ``<tool_call>\n<function=name>...``. Faithful slice so the classifier
+# never silently regresses for this family.
 
 QWEN35_TOOL_INSTRUCTION = (
     "{%- if tools %}\n"
@@ -234,7 +232,7 @@ QWEN35_TOOL_INSTRUCTION = (
 
 
 def test_detect_safetensors_features_qwen35_keeps_tools_on():
-    """unsloth/Qwen3.5-0.8B family must surface tools+reasoning enabled."""
+    """unsloth/Qwen3.5-0.8B family must surface tools+reasoning on."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Qwen3.5-0.8B")
@@ -248,7 +246,7 @@ def test_detect_safetensors_features_qwen35_keeps_tools_on():
 
 
 def test_orchestrator_mirrors_chat_template_info_into_models_dict():
-    """Worker → orchestrator must copy chat_template_info verbatim."""
+    """Worker → orchestrator copies chat_template_info verbatim."""
     from core.inference.orchestrator import InferenceOrchestrator
 
     orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -274,7 +272,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
         },
     }
 
-    # Replay orchestrator.load_model's mirror block verbatim.
+    # Replay orchestrator.load_model's mirror block.
     orch.active_model_name = model_info["identifier"]
     orch.models[orch.active_model_name] = {
         "is_vision": model_info.get("is_vision", False),
@@ -386,7 +384,7 @@ def test_worker_load_reply_payload_includes_chat_template_info():
 
 
 def test_worker_load_reply_payload_survives_missing_template():
-    """Tokenizer with no chat_template still produces a valid reply."""
+    """Tokenizer with no chat_template still yields a valid reply."""
 
     class _StubBackend:
         def __init__(self):
@@ -421,7 +419,7 @@ def test_worker_load_reply_payload_survives_missing_template():
 
 
 def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
-    """End-to-end: Qwen3 safetensors flips supports_tools=True."""
+    """E2E: Qwen3 safetensors flips supports_tools=True."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(

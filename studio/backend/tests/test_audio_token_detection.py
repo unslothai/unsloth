@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for tokenizer-based audio_type detection patterns, covering both
-Gemma 3n (<audio_soft_token>) and Gemma 4 (<|audio|>) audio-input tokens."""
+"""Tests for tokenizer-based audio_type detection, covering Gemma 3n
+(<audio_soft_token>) and Gemma 4 (<|audio|>) audio-input tokens."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
 
 
 def _classify(tokens: list[str]) -> str | None:
-    """Mirror _detect_audio_from_tokenizer._check_token_patterns: first match
-    in dict order wins."""
+    """Mirror _check_token_patterns: first match in dict order wins."""
     for audio_type, check in _AUDIO_TOKEN_PATTERNS.items():
         if check(tokens):
             return audio_type

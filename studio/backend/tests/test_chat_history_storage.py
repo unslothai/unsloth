@@ -30,9 +30,9 @@ def _reset_studio_db(
 def workspace_projects_home(tmp_path):
     """Projects root outside the platform delete denylist.
 
-    tmp_path resolves under /private/tmp on macOS, which the workspace
-    delete guard refuses by design. Linux/Windows tmp is not denied and is
-    used as-is; only the denied case falls back to a home subdir.
+    tmp_path resolves under /private/tmp on macOS, which the workspace delete
+    guard refuses by design. Linux/Windows tmp is not denied and is used as-is;
+    only the denied case falls back to a home subdir.
     """
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
@@ -367,8 +367,8 @@ def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
     accepted, inserted = studio_db.upsert_chat_legacy_imports(
         ["x", "x", "y", "x"],
     )
-    # accepted is the deduped non-empty input size; inserted is the rows
-    # actually new in the ledger after ON CONFLICT DO NOTHING.
+    # accepted is the deduped non-empty input size; inserted is the rows newly
+    # added to the ledger after ON CONFLICT DO NOTHING.
     assert accepted == 2
     assert inserted == 2
     assert set(studio_db.list_chat_legacy_imports()) == {"x", "y"}

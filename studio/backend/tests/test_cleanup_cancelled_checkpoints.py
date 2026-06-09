@@ -16,11 +16,11 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture
 def outputs_setup(tmp_path, monkeypatch):
-    """Point outputs_root() at a temp dir so cleanup is allowed to run on it.
+    """Point outputs_root() at a temp dir so cleanup may run on it.
 
     The training module binds ``outputs_root`` at import time
-    (``from utils.paths import outputs_root``), so we have to patch
-    the symbol on the importer module, not on storage_roots.
+    (``from utils.paths import outputs_root``), so patch the symbol on the
+    importer module, not on storage_roots.
     """
     from core.training import training as training_mod
 
@@ -36,8 +36,8 @@ def _mk_dir(parent: Path, name: str) -> Path:
 
 
 def test_completed_checkpoints_are_preserved(outputs_setup):
-    """The big regression: prior to this fix, every completed
-    checkpoint-N/ was rmtree'd on Cancel, destroying resume points."""
+    """The big regression: before this fix, every completed checkpoint-N/
+    was rmtree'd on Cancel, destroying resume points."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     out = outputs_setup / "run-1"

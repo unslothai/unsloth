@@ -4,13 +4,13 @@
 """
 Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
 
-These tests are designed to pass on ANY platform:
+Designed to pass on ANY platform:
   • NVIDIA GPU  (CUDA backend, requires torch)
   • Apple Silicon (MLX backend, requires mlx)
   • CPU-only     (no GPU at all)
 
-No ML framework is imported at the top level.
-Tests that need torch/mlx internals for mocking are skipped when unavailable.
+No ML framework is imported at the top level; tests needing torch/mlx
+internals for mocking are skipped when unavailable.
 
 Run with:
     cd studio/backend
@@ -189,10 +189,9 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        # The backend field uses _backend_label, which swaps "cuda" for
-        # "rocm" when running on an AMD host (IS_ROCM=True) so the UI
-        # can render the correct label. On CUDA / XPU / MLX / CPU hosts
-        # it is equivalent to `get_device().value`.
+        # backend uses _backend_label, which swaps "cuda" for "rocm" on
+        # AMD hosts (IS_ROCM=True) for the UI label. On CUDA/XPU/MLX/CPU
+        # hosts it equals `get_device().value`.
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())

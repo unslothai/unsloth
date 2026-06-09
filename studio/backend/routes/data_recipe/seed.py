@@ -394,7 +394,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
 
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
-    """Extract text from uploaded file based on extension, converting to markdown where possible."""
+    """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
@@ -581,7 +581,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
-    # Legacy single-file unstructured path only supports .txt/.md
+    # Legacy single-file unstructured path supports only .txt/.md;
     # PDF/DOCX extraction uses the multi-file upload endpoint instead
     _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":

@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """
-Tests for the Anthropic Messages API schemas and translation layer.
+Tests for Anthropic Messages API schemas and translation layer.
 No running server or GPU required.
 """
 
@@ -1187,14 +1187,14 @@ class TestAnthropicRequestedStudioTools:
 
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
         # Anthropic dispatches server tools by `type`; bare-name matching
-        # would let a malformed client tool (e.g. user forgot input_schema)
-        # silently flip the request into server-execution mode.
+        # would let a malformed client tool (missing input_schema) silently
+        # flip the request into server-execution mode.
         tools = [{"name": "python"}]
         assert _anthropic_requested_studio_tools(tools) == set()
 
     def test_client_tool_named_python_is_not_misclassified(self):
-        # input_schema is the client-tool discriminator; presence of it
-        # must prevent the name from being treated as a Studio alias.
+        # input_schema is the client-tool discriminator; its presence must
+        # prevent the name from being treated as a Studio alias.
         tools = [
             {
                 "name": "python",
@@ -1239,8 +1239,8 @@ class _ToolPathCalled(Exception):
 def _mock_backend(monkeypatch, **overrides):
     """Install a minimal stub backend on routes.inference.
 
-    Generation methods raise sentinel exceptions so the caller can assert
-    which path the route entered.
+    Generation methods raise sentinels so the caller can assert which path
+    the route entered.
     """
     import routes.inference as inf_mod
 
@@ -1299,10 +1299,10 @@ class TestAnthropicMessagesToolRouting:
         assert "Mixing Anthropic server tools" in exc.value.detail
 
     def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
-        # Regression: a client tool sharing a name with a mapped server
-        # tool (e.g. user defines their own "web_search") must still
-        # trigger the mixed-mode 400 — the post-name filter would
-        # otherwise drop the client tool and silently route to server-only.
+        # Regression: a client tool sharing a name with a mapped server tool
+        # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
+        # otherwise the post-name filter drops the client tool and silently
+        # routes to server-only.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
@@ -1329,10 +1329,10 @@ class TestAnthropicMessagesToolRouting:
 
     def test_client_tool_missing_name_rejected_with_400(self, monkeypatch):
         # Regression: AnthropicTool.name was relaxed to Optional for server
-        # tools, so a client-tool payload that has input_schema but omits
-        # `name` (e.g. typo) now parses successfully but would be silently
-        # dropped by anthropic_tools_to_openai, leaving the request with
-        # tool calling disabled. Reject at the boundary instead.
+        # tools, so a client-tool payload with input_schema but no `name`
+        # (typo) now parses but would be silently dropped by
+        # anthropic_tools_to_openai, leaving tool calling disabled. Reject at
+        # the boundary instead.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"input_schema": {"type": "object"}}],
@@ -1346,7 +1346,7 @@ class TestAnthropicMessagesToolRouting:
     def test_client_tool_empty_name_rejected_with_400(self, monkeypatch):
         # Same silent-disable class as missing-name: `name: ""` passes the
         # isinstance check but is dropped by anthropic_tools_to_openai's
-        # `if not name` guard. Reject at the boundary so the typo surfaces.
+        # `if not name` guard. Reject at the boundary so the typo shows.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"name": "", "input_schema": {"type": "object"}}],
@@ -1358,10 +1358,10 @@ class TestAnthropicMessagesToolRouting:
         assert "name" in exc.value.detail
 
     def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
-        # Regression: a typo'd client tool whose name happens to collide
-        # with a Studio alias (e.g. user meant a custom "python" tool but
-        # forgot input_schema) must surface a 400, not silently switch
-        # the request into Studio's built-in python execution.
+        # Regression: a typo'd client tool whose name collides with a Studio
+        # alias (e.g. a custom "python" tool missing input_schema) must
+        # surface a 400, not silently switch into Studio's built-in python
+        # execution.
         _mock_backend(monkeypatch)
         payload = _basic_payload(tools = [{"name": "python"}])
 
@@ -1380,9 +1380,8 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
-        # CLI `unsloth run --disable-tools` sets policy=False. A request
-        # carrying a Studio server-tool alias must NOT enter the agentic
-        # loop in that configuration.
+        # CLI `unsloth run --disable-tools` sets policy=False. A request with
+        # a Studio server-tool alias must NOT enter the agentic loop then.
         _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(
