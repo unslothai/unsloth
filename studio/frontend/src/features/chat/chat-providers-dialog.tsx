@@ -319,16 +319,15 @@ export function ChatProvidersSettings({
   useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
+    seededProviderTypeRef.current = providerType;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
-        seededProviderTypeRef.current = providerType;
         setCustomProviderName(customProviderDisplayName(providerType));
         setBaseUrlDraft("");
       }
       return;
     }
-    seededProviderTypeRef.current = providerType;
     // Seed default_models only for curated providers (catalog too large to
     // enumerate). Remote cloud providers and local OpenAI-compat presets stay
     // empty until the user clicks "Load available models".
