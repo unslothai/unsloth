@@ -66,6 +66,7 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
+  providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
