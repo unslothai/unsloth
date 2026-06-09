@@ -284,7 +284,6 @@ def _start_helper_precache_if_enabled() -> None:
     """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
     try:
         from utils.helper_precache_settings import should_preload_helper_on_startup
-
         if not should_preload_helper_on_startup():
             return
     except Exception:
@@ -295,7 +294,6 @@ def _start_helper_precache_if_enabled() -> None:
     def _precache():
         try:
             from utils.datasets.llm_assist import precache_helper_gguf
-
             precache_helper_gguf()
         except Exception:
             pass  # non-critical

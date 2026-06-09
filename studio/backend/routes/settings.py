@@ -98,8 +98,7 @@ def get_helper_precache(
 
 @router.put("/helper-precache", response_model = HelperPrecacheResponse)
 def update_helper_precache(
-    payload: HelperPrecachePayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: HelperPrecachePayload, current_subject: str = Depends(get_current_subject)
 ) -> HelperPrecacheResponse:
     try:
         enabled = set_helper_precache_enabled(payload.enabled)
