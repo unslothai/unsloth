@@ -2193,6 +2193,14 @@ def validated_checksums_for_bundle(
     # legacy llama.cpp-source-<upstream_tag>.tar.gz entry.
     if exact_source_archive_hash(checksums) is None:
         require_approved_source_hash(checksums, bundle.upstream_tag)
+    elif source_clone_url_from_checksums(checksums) is None:
+        # Without a source repo, preferred_source_archive silently falls back to
+        # ggml-org source at the upstream tag, pairing the prebuilt with a
+        # possibly mismatched tree. Fail closed so the resolver skips this release.
+        raise PrebuiltFallback(
+            f"approved checksum asset for {repo}@{bundle.release_tag} declared an "
+            "exact source archive without a source repo to clone it from"
+        )
     return checksums
 
 

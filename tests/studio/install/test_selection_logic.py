@@ -945,6 +945,7 @@ class TestPublishedReleaseResolution:
                 [],
                 release_tag = release_tag,
                 upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
                 source_commit = commit,
             ),
         )
@@ -1144,6 +1145,23 @@ class TestValidatedChecksumsForBundle:
         )
 
         with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
+            validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
+
+    def test_rejects_exact_source_without_repo(self, monkeypatch):
+        # An exact source archive with no source repo to clone from would let
+        # preferred_source_archive silently fall back to upstream source at the
+        # tag, so validation must fail closed (clean source build instead).
+        bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
+        checksums = make_checksums_with_source(
+            [], release_tag = "r1", upstream_tag = "b8508", source_commit = "a" * 40
+        )  # exact source archive, but no source_repo
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: checksums,
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "exact source archive"):
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
 
