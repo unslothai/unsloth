@@ -333,6 +333,7 @@ if _FLASH_ATTN_VARLEN_AVAILABLE:
     from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func
 
 _XFORMERS_ATTN_AVAILABLE = False
+_XFORMERS_CAUSAL_AVAILABLE = False
 _XFORMERS_DROPOUT_SAFE = True
 try:
     from xformers.ops import (
@@ -347,6 +348,20 @@ try:
     if torch.cuda.is_available():
         _major, _ = torch.cuda.get_device_capability()
         _XFORMERS_DROPOUT_SAFE = _major >= 8
+
+    # BlockDiagonalCausalMask powers the decoder packed-varlen path. Unlike
+    # flash-attn / torch varlen_attn (Ampere+ only) it runs on Turing (T4) via the
+    # cutlass backend, and unlike FlexAttention it needs no torch.compile (so no
+    # per-shape recompiles). Separate try so a missing name can't disable the
+    # (non-causal) encoder path above.
+    try:
+        from xformers.ops.fmha.attn_bias import (
+            BlockDiagonalCausalMask as _XFormersBlockDiagonalCausalMask,
+        )
+
+        _XFORMERS_CAUSAL_AVAILABLE = True
+    except ImportError:
+        pass
 except ImportError:
     pass
 
@@ -812,6 +827,11 @@ _UNPAD_SUPPORTED_TYPES = {
     "distilbert",
 }
 _UNPAD_MIN_PADDING_RATIO = 0.15
+# Decoder packing under sdpa/eager enforces sequence boundaries with an explicit
+# block-diagonal causal mask, which is O(total_tokens^2) in memory. Above this many
+# real tokens we skip packing and fall back to the padded forward to avoid an OOM.
+# (flash_attention_2 uses O(N) varlen via position_ids and is NOT subject to this cap.)
+_UNPAD_DECODER_MAX_PACKED_TOKENS = 16384
 
 
 def _register_varlen_attention():
@@ -947,6 +967,111 @@ def _register_varlen_attention():
 
 
 _VARLEN_ATTN_REGISTERED = _register_varlen_attention()
+
+
+def _is_gradient_checkpointing(model):
+    """GC active anywhere (handles PEFT / unsloth GC). Under GC the packed path
+    must use the sdpa block-mask (a tensor kwarg, replayed on recompute), not the
+    xformers tier (its config swap + stashed seqlens don't survive recompute)."""
+    if getattr(model, "gradient_checkpointing", False):
+        return True
+    try:
+        return any(getattr(m, "gradient_checkpointing", False) for m in model.modules())
+    except Exception:
+        return False
+
+
+def _resolve_sliding_window(config):
+    """Effective sliding-window size, or None for full attention. A full causal
+    block mask only matches windowed attention when seqlen <= window."""
+    if config is None:
+        return None
+    sw = getattr(config, "sliding_window", None)
+    if not sw:
+        return None
+    if getattr(config, "use_sliding_window", True) is False:   # Qwen3: present but off
+        return None
+    layer_types = getattr(config, "layer_types", None)          # Gemma3: only if a layer is sliding
+    if layer_types is not None and not any("sliding" in str(t) for t in layer_types):
+        return None
+    return int(sw)
+
+
+def _repeat_kv_heads(hidden, n_rep):
+    """Expand GQA key/value heads to match query heads. Mirrors transformers'
+    repeat_kv on a (batch, num_kv_heads, seq, head_dim) tensor."""
+    if n_rep == 1:
+        return hidden
+    b, h, s, d = hidden.shape
+    return hidden[:, :, None, :, :].expand(b, h, n_rep, s, d).reshape(b, h * n_rep, s, d)
+
+
+def _xformers_blockdiag_causal_attention(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    dropout = 0.0,
+    scaling = None,
+    is_causal = None,
+    **kwargs,
+):
+    """Packed causal attention via xformers BlockDiagonalCausalMask (runs on
+    Turing/T4+; O(sum seqlen^2)). seqlens are stashed on the config by
+    _patch_unpadded_decoder. The passed attention_mask is ignored in favour of the
+    bias, so transformers' mask handling for an unknown impl can't corrupt it.
+    Validated on transformers 4.56.2 / 5.5.0 / 5.10.2."""
+    seqlens = getattr(getattr(module, "config", None), "_unsloth_blockdiag_seqlens", None)
+    if seqlens is None:
+        # Only valid inside the packed forward (which stashes seqlens). Firing
+        # without them (e.g. a GC recompute after the impl was restored) would run
+        # unmasked attention over the packed row and leak across boundaries -> fail
+        # loud. GC training routes through the sdpa block-mask tier to avoid this.
+        raise RuntimeError(
+            "unsloth_blockdiag_causal attention invoked without packed seqlens on "
+            "the config (bug; set UNSLOTH_UNPADDING=0 to disable packing and report)."
+        )
+    n_rep = getattr(module, "num_key_value_groups", 1) or 1   # (B,H,T,D); expand GQA kv heads
+    if n_rep > 1:
+        key = _repeat_kv_heads(key, n_rep)
+        value = _repeat_kv_heads(value, n_rep)
+    # xformers wants (B,T,H,D); dropout matches sdpa tiers (unsafe pre-Ampere -> 0).
+    # Reuse the bias built once per forward (identical across layers).
+    bias = getattr(module.config, "_unsloth_blockdiag_bias", None)
+    if bias is None:
+        bias = _XFormersBlockDiagonalCausalMask.from_seqlens(seqlens)
+    out = _xformers_memory_efficient_attention(
+        query.transpose(1, 2),
+        key.transpose(1, 2),
+        value.transpose(1, 2),
+        attn_bias = bias,
+        p = float(dropout) if _XFORMERS_DROPOUT_SAFE else 0.0,
+        scale = scaling,
+    )
+    return out, None
+
+
+def _register_xformers_blockdiag_causal():
+    """Register the xformers causal packed-varlen dispatcher (transformers
+    attention-interface). Returns whether it is usable."""
+    if not _XFORMERS_CAUSAL_AVAILABLE:
+        return False
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except ImportError:
+        return False
+    try:
+        if "unsloth_blockdiag_causal" not in ALL_ATTENTION_FUNCTIONS:
+            ALL_ATTENTION_FUNCTIONS.register(
+                "unsloth_blockdiag_causal", _xformers_blockdiag_causal_attention
+            )
+        return True
+    except Exception:
+        return False
+
+
+_XFORMERS_CAUSAL_REGISTERED = _register_xformers_blockdiag_causal()
 
 
 def _patch_unpadded_encoder(st_model, model_type):
@@ -1275,6 +1400,19 @@ def _patch_unpadded_decoder(st_model):
     if transformer_mod is None:
         return False
 
+    _patch_am = transformer_mod.auto_model
+    _patch_inner = _patch_am._orig_mod if hasattr(_patch_am, "_orig_mod") else _patch_am
+    _patch_cfg = getattr(_patch_inner, "config", None)
+
+    # Never apply a causal mask to a bidirectional encoder. Encoders usually divert
+    # to the fast-encoder path, but UNSLOTH_COMPILE_DISABLE=1 lets a BERT/RoBERTa
+    # model fall through to here, so exclude encoder types explicitly.
+    _model_type = str(getattr(_patch_cfg, "model_type", "")).lower()
+    if _model_type in _UNPAD_SUPPORTED_TYPES:
+        return False
+
+    _sliding_window = _resolve_sliding_window(_patch_cfg)   # None = full attention
+
     if hasattr(transformer_mod, "model_forward_params"):
         transformer_mod.model_forward_params.add("packed_seq_lengths")
 
@@ -1300,6 +1438,30 @@ def _patch_unpadded_decoder(st_model):
         # cumsum) on lightly-padded batches that will bail out.
         total_tokens = int(attention_mask.sum().item())
         if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
+            return _original_forward(features, **kwargs)
+
+        # Sliding-window models: the full causal block mask only equals windowed
+        # attention when seqlen <= window. S upper-bounds real lengths, so above the
+        # window fall back to padded rather than ignore the window.
+        if _sliding_window is not None and S > _sliding_window:
+            return _original_forward(features, **kwargs)
+
+        # Boundaries must be enforced or a causal decoder attends across packed
+        # sequences. Backend (same math; differ on cost/hardware/GC):
+        #   FA2          -> position_ids varlen, O(N), Ampere+, GC-safe. Preferred.
+        #   xformers     -> O(sum seqlen^2), Turing+; CUDA-only, NOT GC-safe -> off under GC/CPU.
+        #   sdpa blockmask-> tensor kwarg, GC- & CPU-safe, O(total^2) so capped -> else padded.
+        attn_impl = getattr(actual_model.config, "_attn_implementation", None)
+        _native_varlen = attn_impl == "flash_attention_2"
+        _gc_active = _is_gradient_checkpointing(actual_model)
+        _use_xformers = (
+            _XFORMERS_CAUSAL_REGISTERED
+            and not _native_varlen
+            and not _gc_active
+            and attention_mask.is_cuda
+        )
+        _use_blockmask = not _native_varlen and not _use_xformers
+        if _use_blockmask and total_tokens > _UNPAD_DECODER_MAX_PACKED_TOKENS:
             return _original_forward(features, **kwargs)
 
         seq_info = get_encoder_seq_info(attention_mask)
@@ -1330,8 +1492,47 @@ def _patch_unpadded_decoder(st_model):
             for k, v in packed_features.items()
             if k in transformer_mod.model_forward_params
         }
+        # Drop any caller-supplied attention_mask so it cannot clobber the packing
+        # semantics (each backend below enforces boundaries its own way).
+        _extra = {k: v for k, v in kwargs.items() if k != "attention_mask"}
 
-        outputs = auto_model(**trans_features, return_dict = True, **kwargs)
+        if _use_xformers:
+            # Stash seqlens + one prebuilt bias (reused by every layer) and flip the
+            # attn impl only for this packed call (restored in finally).
+            _cfg = actual_model.config
+            _saved_impl = getattr(_cfg, "_attn_implementation", None)
+            _seqlens = seq_info.seq_lengths.tolist()
+            _cfg._unsloth_blockdiag_seqlens = _seqlens
+            _cfg._unsloth_blockdiag_bias = _XFormersBlockDiagonalCausalMask.from_seqlens(
+                _seqlens
+            )
+            _cfg._attn_implementation = "unsloth_blockdiag_causal"
+            try:
+                outputs = auto_model(**trans_features, return_dict = True, **_extra)
+            finally:
+                _cfg._attn_implementation = _saved_impl
+                _cfg._unsloth_blockdiag_seqlens = None
+                _cfg._unsloth_blockdiag_bias = None
+        elif _native_varlen:
+            # position_ids alone -> flash-attn-2 rebuilds cu_seqlens internally.
+            outputs = auto_model(**trans_features, return_dict = True, **_extra)
+        else:
+            # sdpa/eager: block-diagonal causal mask (i attends j iff same seq and j<=i).
+            _seg = torch.repeat_interleave(
+                torch.arange(B, device = device), seq_info.seq_lengths.long()
+            )
+            _ar = torch.arange(total_tokens, device = device)
+            _allowed = (_seg[None, :] == _seg[:, None]) & (_ar[None, :] <= _ar[:, None])
+            _mask_dtype = next(actual_model.parameters()).dtype
+            trans_features["attention_mask"] = torch.where(
+                _allowed,
+                torch.zeros((), dtype = _mask_dtype, device = device),
+                torch.full(
+                    (), torch.finfo(_mask_dtype).min, dtype = _mask_dtype, device = device
+                ),
+            )[None, None]
+            outputs = auto_model(**trans_features, return_dict = True, **_extra)
+
         packed_embeddings = outputs[0].squeeze(0)  # (total_tokens, D)
 
         token_embeddings = pad_output(packed_embeddings, seq_info, B, S)
@@ -1342,7 +1543,17 @@ def _patch_unpadded_decoder(st_model):
     transformer_mod.forward = _unpadded_forward
     transformer_mod._original_forward = _original_forward
     transformer_mod._unpadding_active = True
-    transformer_mod._unpadding_backend = "native_packing"
+    _am = transformer_mod.auto_model
+    _actual = _am._orig_mod if hasattr(_am, "_orig_mod") else _am
+    _impl = getattr(getattr(_actual, "config", None), "_attn_implementation", None)
+    # Representative backend at patch time (the per-forward selection may fall back
+    # to blockdiag_sdpa under gradient checkpointing / on CPU / above the cap).
+    if _impl == "flash_attention_2":
+        transformer_mod._unpadding_backend = "varlen_position_ids"
+    elif _XFORMERS_CAUSAL_REGISTERED:
+        transformer_mod._unpadding_backend = "xformers_blockdiag_causal"
+    else:
+        transformer_mod._unpadding_backend = "blockdiag_sdpa"
     return True
 
 
@@ -3441,13 +3652,14 @@ class FastSentenceTransformer(FastModel):
 
         _inner = None
         _is_bidirectional = False
+        _is_encoder_decoder = False
         for _mod in st_model:
             if hasattr(_mod, "auto_model"):
                 _am = _mod.auto_model
                 _am_unwrap = _am._orig_mod if hasattr(_am, "_orig_mod") else _am
                 _cfg = getattr(_am_unwrap, "config", None)
                 _is_bidirectional = getattr(_cfg, "use_bidirectional_attention", False)
-                _is_decoder = bool(getattr(_cfg, "is_decoder", False))
+                _is_encoder_decoder = bool(getattr(_cfg, "is_encoder_decoder", False))
                 if (
                     _cfg is not None
                     and getattr(_cfg, "_attn_implementation", None) == "flex_attention"
@@ -3497,9 +3709,16 @@ class FastSentenceTransformer(FastModel):
                     "Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel"
                 )
 
-        # Skip bidirectional decoders — Unsloth patch closure prevents varlen injection
+        # Enable variable-length batching (unpadding) for causal decoders. Encoders
+        # take the fast-encoder path, so anything reaching here that is neither
+        # bidirectional nor an encoder-decoder is a causal decoder. We do NOT gate on
+        # config.is_decoder: that flag is the encoder-decoder cross-attention marker
+        # and is always False on decoder-only LLMs (Qwen3 / Llama / Mistral), which
+        # silently disabled this path for every model it was built for. Boundary
+        # correctness is now enforced inside _patch_unpadded_decoder (varlen under
+        # flash-attn-2, block-diagonal mask under sdpa), so the broad gate is safe.
         _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
-        if _unpad_env == "1" and _is_decoder and not _is_bidirectional:
+        if _unpad_env == "1" and not _is_bidirectional and not _is_encoder_decoder:
             if _patch_unpadded_decoder(st_model):
                 _backend = getattr(st_model[0], "_unpadding_backend", "unknown")
                 print(
