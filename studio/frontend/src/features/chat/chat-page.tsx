@@ -1160,6 +1160,46 @@ export function ChatPage(): ReactElement {
         useChatRuntimeStore.getState().setVoiceMode("active");
         return;
       }
+
+      // Download-confirmation gate: skip if the repo is already in the local
+      // cache list (fast path). Otherwise ask gguf-variants for the default
+      // variant's size and whether it's already downloaded.
+      const isCached = cachedGgufs.some((g) => g.id === id);
+      if (!isCached) {
+        try {
+          const vr = await authFetch(
+            `/api/models/gguf-variants?repo_id=${encodeURIComponent(id)}`,
+          );
+          if (vr.ok) {
+            const vdata = (await vr.json()) as {
+              default_variant?: string;
+              variants?: { quant: string; size_bytes: number; downloaded: boolean }[];
+            };
+            const defaultVariant =
+              vdata.variants?.find((v) => v.quant === vdata.default_variant) ??
+              vdata.variants?.[0];
+            const HUNDRED_MB = 100 * 1024 * 1024;
+            if (
+              defaultVariant &&
+              !defaultVariant.downloaded &&
+              defaultVariant.size_bytes > HUNDRED_MB
+            ) {
+              const sizeMb = Math.round(defaultVariant.size_bytes / (1024 * 1024));
+              const modelName = id.includes("/") ? (id.split("/")[1] ?? id) : id;
+              const confirmed = window.confirm(
+                `Download ${modelName} (~${sizeMb} MB)? This downloads from HuggingFace.`,
+              );
+              if (!confirmed) {
+                setSelectedVoiceModelId(null);
+                return;
+              }
+            }
+          }
+        } catch {
+          // gguf-variants unavailable (e.g. local LoRA path) — proceed silently
+        }
+      }
+
       setVoiceSlotLoading(true);
       try {
         const res = await authFetch("/api/inference/voice/load", {
@@ -1184,7 +1224,7 @@ export function ChatPage(): ReactElement {
         setVoiceSlotLoading(false);
       }
     },
-    [setSelectedVoiceModelId],
+    [setSelectedVoiceModelId, cachedGgufs],
   );
 
   // Unload the voice slot whenever voice mode turns off.
