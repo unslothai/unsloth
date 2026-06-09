@@ -59,8 +59,7 @@ _skip_as_root = pytest.mark.skipif(
 
 
 def test_helper_exists_in_source():
-    # Guard against a refactor silently dropping the helper the fix needs
-    # (the extractor would then raise StopIteration).
+    # Guard against a refactor silently dropping the helper the fix needs.
     assert callable(safe_is_dir)
 
 

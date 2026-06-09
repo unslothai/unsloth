@@ -1,27 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the prompt-cache accounting chunk emitted by the
-external-provider streaming proxy.
+"""Unit tests for the prompt-cache accounting chunk from the external-provider proxy.
 
-The streaming Anthropic + OpenAI Responses paths emit one extra
-``include_usage``-style SSE chunk (``choices: []`` with a populated
-``usage`` block) just before ``[DONE]`` / after the final
-``finish_reason`` chunk, so clients see cache savings without scraping
-the structlog stream.
-
-Covers:
-- Helper alone: shape for Anthropic / OpenAI usage payloads, missing
-  fields treated as 0, all-zero usage suppressed.
-- Anthropic stream: ``message_start.usage`` + ``message_delta.usage``
-  with ``cache_creation_input_tokens`` and ``cache_read_input_tokens``
-  produce the expected usage chunk before ``[DONE]``.
-- OpenAI Responses stream: ``response.completed.usage`` with
-  ``input_tokens_details.cached_tokens`` produces the expected usage
-  chunk after the ``stop`` finish_reason chunk.
-- OpenAI Responses ``response.incomplete`` also emits the chunk so
-  length-truncated turns still report cached tokens.
+The streaming Anthropic + OpenAI Responses paths emit one extra include_usage
+SSE chunk (``choices: []`` with a ``usage`` block) before ``[DONE]`` so clients
+see cache savings. Covers the helper directly plus the Anthropic stream and the
+OpenAI Responses completed/incomplete streams.
 """
 
 import asyncio

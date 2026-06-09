@@ -44,19 +44,10 @@ _IS_WSL: bool = _is_wsl()
 
 
 def normalize_path(path: str) -> str:
-    """
-    Normalize filesystem paths for cross-platform use.
+    """Normalize filesystem paths for cross-platform use.
 
-    On WSL, converts Windows drive-letter paths to ``/mnt/<drive>/...``.
-    On native Windows, keeps the drive letter and normalizes separators.
-    On Linux/macOS (non-WSL), paths are returned with forward slashes.
-
-    Examples (WSL):
-        C:\\Users\\... -> /mnt/c/Users/...
-    Examples (native Windows):
-        C:\\Users\\... -> C:/Users/...
-    Examples (Linux/macOS):
-        /home/user/... -> /home/user/... (unchanged)
+    WSL maps drive-letter paths to ``/mnt/<drive>/...``; native Windows keeps
+    the drive and normalizes separators; elsewhere slashes are forward-only.
     """
     if not path:
         return path
@@ -162,8 +153,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
 
     expected_dir = f"models--{model_name.replace('/', '--')}"
 
-    # Check the exact-case path first so a newly-appeared exact match wins over
-    # any previously memoized variant.
+    # Exact-case path first so a new exact match beats a memoized variant.
     exact_path = cache_dir / expected_dir
     if exact_path.is_dir():
         if use_memo:
@@ -171,8 +161,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
-    # Validate memoized entries still exist on disk before returning them,
-    # preventing stale results when cache dirs are deleted/recreated.
+    # Revalidate memoized entries on disk to avoid stale results.
     if use_memo:
         cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
         if cached is not None:

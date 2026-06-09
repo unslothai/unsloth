@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
+"""Tests for utils/hardware and utils/utils: device detection, GPU memory, error formatting.
 
-Designed to pass on ANY platform:
-  • NVIDIA GPU  (CUDA backend, requires torch)
-  • Apple Silicon (MLX backend, requires mlx)
-  • CPU-only     (no GPU at all)
-
-No ML framework is imported at the top level; tests needing torch/mlx
-internals for mocking are skipped when unavailable.
-
-Run with:
-    cd studio/backend
-    python -m pytest tests/test_utils.py -v
+Passes on any platform (NVIDIA/CUDA, Apple Silicon/MLX, CPU-only). No ML framework
+is imported at top level; tests needing torch/mlx internals skip when unavailable.
 """
 
 import platform
@@ -189,9 +179,8 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        # backend uses _backend_label, which swaps "cuda" for "rocm" on
-        # AMD hosts (IS_ROCM=True) for the UI label. On CUDA/XPU/MLX/CPU
-        # hosts it equals `get_device().value`.
+        # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it
+        # equals get_device().value.
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())

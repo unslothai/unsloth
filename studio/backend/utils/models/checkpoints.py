@@ -14,11 +14,7 @@ logger = get_logger(__name__)
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
-    """
-    Read training loss from a checkpoint's trainer_state.json.
-
-    Returns the loss from the last log_history entry, or None if unavailable.
-    """
+    """Read loss from the last log_history entry of trainer_state.json, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not trainer_state.exists():
         return None
@@ -36,14 +32,13 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 def scan_checkpoints(
     outputs_dir: str = str(outputs_root()),
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
-    """
-    Scan outputs folder for training runs and their checkpoints.
+    """Scan outputs folder for training runs and their checkpoints.
 
     Returns:
-        List of tuples: [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
-        metadata keys: base_model, peft_type, lora_rank (all optional)
-        The first entry in each checkpoint list is the main adapter; its loss is
-        set to the loss of the last (highest-step) intermediate checkpoint.
+        [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
+        metadata keys (optional): base_model, peft_type, lora_rank.
+        First checkpoint entry is the main adapter; its loss mirrors the last
+        (highest-step) intermediate checkpoint.
     """
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
@@ -63,7 +58,7 @@ def scan_checkpoints(
             if not (config_file.exists() or adapter_config.exists()):
                 continue
 
-            # Extract training metadata from adapter_config.json / config.json
+            # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
                 if adapter_config.exists():
@@ -75,7 +70,7 @@ def scan_checkpoints(
                     cfg = json.loads(config_file.read_text())
                     metadata["base_model"] = cfg.get("_name_or_path")
 
-                # Detect BNB quantization from config.json (present in both cases)
+                # Detect BNB quantization from config.json
                 if config_file.exists():
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text())

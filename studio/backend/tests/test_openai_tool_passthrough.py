@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
 
-Covers:
-- ChatCompletionRequest accepts standard OpenAI `tools` / `tool_choice` / `stop`.
-- ChatMessage accepts role="tool" with `tool_call_id` and role="assistant"
-  with `content: None` + `tool_calls`.
-- ChatCompletionRequest carries unknown fields via `extra="allow"`.
-- anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
-- _build_passthrough_payload() honors a caller tool_choice, defaults to "auto".
-- _friendly_error() maps httpx transport errors to a "Lost connection"
-  message so passthrough failures are legible instead of bare 500s.
-
-No running server or GPU required.
+Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
+extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
+tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
+mapping. No server or GPU required.
 """
 
 import os
@@ -303,23 +295,16 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI's /v1/chat/completions spec defaults `stream` to false.
-        # Studio previously defaulted to true, breaking naive curl clients
-        # (and .NET / System.Text.Json SDKs per #5047) that omit `stream`:
-        # they expect a JSON blob, got SSE. Pin the corrected default so it
-        # can't silently regress.
+        # OpenAI defaults `stream` to false. Studio used to default true,
+        # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
         req = self._make()
         assert req.stream is False
 
     def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
-        # Wire-level guard for the same default: a POST body that omits
-        # `stream` (the exact shape naive curl / .NET clients send) must
-        # deserialise into stream=False *and* return `application/json`, never
-        # `text/event-stream`. Mounts the real `routes.inference.router` so
-        # this catches middleware/aliasing regressions on the actual endpoint
-        # (e.g. a request layer that injects stream=True before pydantic builds
-        # the model). Backends are bypassed via `provider_type` + a stubbed
-        # external provider proxy.
+        # Wire-level guard: a POST body omitting `stream` must deserialise to
+        # stream=False and return application/json, never text/event-stream.
+        # Mounts the real router to catch middleware/aliasing regressions;
+        # backends are bypassed via provider_type + a stubbed proxy.
         from fastapi import FastAPI
         from fastapi.responses import JSONResponse
         from fastapi.testclient import TestClient
@@ -482,13 +467,10 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 class TestFriendlyErrorHttpx:
-    """The async pass-through helpers talk to llama-server via httpx.
-    When the subprocess is down, httpx raises RequestError subclasses whose
-    string form (``"All connection attempts failed"``, ``"[Errno 111]
-    Connection refused"``, ...) lacks the ``"Lost connection to llama-server"``
-    substring the sync path uses, so the old substring-only `_friendly_error`
-    returned a useless generic message. These tests pin the new
-    isinstance-based mapping.
+    """When llama-server is down, httpx RequestError strings lack the
+    "Lost connection to llama-server" substring the sync path keys off, so the
+    old substring-only `_friendly_error` returned a useless generic message.
+    These tests pin the new isinstance-based mapping.
     """
 
     def _req(self):

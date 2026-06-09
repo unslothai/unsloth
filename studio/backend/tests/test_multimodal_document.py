@@ -85,9 +85,8 @@ _PDF_DATA_URI = f"data:application/pdf;base64,{_TINY_PDF_B64}"
 
 
 def _strip_cache(p: dict) -> dict:
-    # Studio's prompt-cache wiring attaches cache_control:{type:ephemeral}
-    # to the tail block of the last user message; strip it so this test
-    # focuses on translation, not the caching layer.
+    # Strip the prompt-cache cache_control off the last user block so this
+    # test focuses on translation, not the caching layer.
     return {k: v for k, v in p.items() if k != "cache_control"}
 
 
@@ -115,8 +114,8 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
     types = [p.get("type") for p in parts]
     assert "document" in types, parts
     doc = _strip_cache(next(p for p in parts if p.get("type") == "document"))
-    # citations:{enabled:true} opts into Anthropic's natural-citation
-    # pipeline; without it the citations_delta handler is a no-op.
+    # citations:{enabled:true} opts into Anthropic's citation pipeline;
+    # without it the citations_delta handler is a no-op.
     assert doc == {
         "type": "document",
         "source": {
@@ -177,9 +176,8 @@ def test_anthropic_empty_document_part_is_dropped(monkeypatch):
 
 
 def test_anthropic_empty_only_document_drops_whole_message(monkeypatch):
-    # If the ONLY part is an unparseable input_document, the helper must
-    # NOT append an empty-content message (Anthropic 400s on "at least
-    # one block is required").
+    # If the only part is an unparseable input_document, the helper must not
+    # append an empty-content message (Anthropic 400s on "at least one block").
     captured = _capture(
         monkeypatch,
         provider = "anthropic",
@@ -195,9 +193,8 @@ def test_anthropic_empty_only_document_drops_whole_message(monkeypatch):
 
 
 def test_anthropic_empty_data_uri_payload_is_dropped(monkeypatch):
-    # Codex P2: `data:application/pdf;base64,` with no (or whitespace-only)
-    # payload would make an empty `source.data` that Anthropic 400s on.
-    # Must be filtered before the wire.
+    # A `data:application/pdf;base64,` with empty/whitespace payload makes an
+    # empty `source.data` that Anthropic 400s on; filter it before the wire.
     captured = _capture(
         monkeypatch,
         provider = "anthropic",
@@ -226,11 +223,9 @@ def test_anthropic_empty_data_uri_payload_is_dropped(monkeypatch):
 
 
 def test_anthropic_empty_data_uri_falls_back_to_file_url(monkeypatch):
-    # Codex P2 follow-up: the empty-data-URI -> file_url fallback was on
-    # the OpenAI side but missing on Anthropic, where the empty-payload
-    # branch did `continue` and discarded a valid file_url on the same
-    # part. Mirror OpenAI so a malformed inline payload + remote URL
-    # still attaches.
+    # The empty-data-URI -> file_url fallback existed on OpenAI but not
+    # Anthropic, which discarded a valid file_url on the same part. Mirror
+    # OpenAI so a malformed inline payload + remote URL still attaches.
     captured = _capture(
         monkeypatch,
         provider = "anthropic",
@@ -341,10 +336,9 @@ def test_openai_url_pdf_becomes_input_file(monkeypatch):
 
 
 def test_openai_empty_data_uri_falls_back_to_file_url(monkeypatch):
-    # Codex P2 follow-up: an empty `data:application/pdf;base64,` payload
-    # was preferred over a valid `file_url` in the same part, sending
-    # `file_data=""` and 400ing the turn. The translator must treat empty
-    # data URIs as missing and recover via file_url.
+    # An empty `data:application/pdf;base64,` payload was preferred over a valid
+    # `file_url` in the same part, sending `file_data=""` and 400ing. The
+    # translator must treat empty data URIs as missing and recover via file_url.
     captured = _capture(
         monkeypatch,
         provider = "openai",
@@ -444,12 +438,9 @@ def test_openai_empty_document_part_is_dropped(monkeypatch):
 
 
 # ── Pydantic schema + builder pass-through ──────────────────────────
-#
-# The translation tests above call the client directly with hand-built
-# dicts, bypassing both ChatCompletionRequest's discriminated Union and
-# routes/inference._build_external_messages. The tests below close that
-# gap: parse an input_document part through the real schema, run the
-# builder, and assert the part survives to the dict the client receives.
+# The tests above call the client with hand-built dicts, bypassing the schema
+# and _build_external_messages. The tests below parse an input_document part
+# through the real schema + builder and assert it survives to the client dict.
 
 
 def test_chat_message_accepts_input_document_part():

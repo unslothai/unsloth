@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for OpenAI Responses API schemas and input normalisation.
-No running server or GPU required -- validates the Pydantic models and
-the _normalise_responses_input helper.
-"""
+"""Tests for OpenAI Responses API Pydantic schemas and the
+_normalise_responses_input helper. No server or GPU required."""
 
 import sys
 import os
@@ -33,9 +30,8 @@ from models.inference import (
 )
 
 
-# ── _normalise_responses_input: copied from routes/inference.py ──
-# Can't import routes.inference directly: routes/__init__.py pulls in
-# heavy deps (structlog/twisted/torch). This is a direct copy for tests.
+# Copied from routes/inference.py: can't import it directly because
+# routes/__init__.py pulls in heavy deps (structlog/twisted/torch).
 
 
 def _normalise_responses_input(payload: ResponsesRequest) -> list:

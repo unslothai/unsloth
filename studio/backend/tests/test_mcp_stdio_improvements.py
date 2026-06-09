@@ -188,8 +188,7 @@ def test_validate_url_allows_url_in_argument(monkeypatch):
 
 
 # ── P6: Data Recipe stdio path obeys the same host gate ─────────────
-# build_mcp_providers needs the data_designer plugin, installed only in the
-# Studio test job; skip there rather than fail the core matrix.
+# build_mcp_providers needs the Studio-only data_designer plugin; skip if absent.
 
 _STDIO_RECIPE = {
     "mcp_providers": [

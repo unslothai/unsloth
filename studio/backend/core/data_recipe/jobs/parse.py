@@ -327,7 +327,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         _apply_source_progress(job, update.source_progress)
 
     if update.stage in USAGE_RESET_STAGES:
-        # Usage summary is a short block; reset on entering the next stage.
+        # Usage summary is a short block; reset on the next stage.
         job._in_usage_summary = False
 
     if update.usage_section_start is not None:

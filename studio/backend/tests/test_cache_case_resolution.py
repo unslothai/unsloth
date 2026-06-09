@@ -5,8 +5,7 @@ from pathlib import Path
 import sys
 import types
 
-# Keep this test runnable in lightweight environments where optional logging
-# deps are not installed.
+# Stub structlog so this test runs where the optional dep is absent.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:

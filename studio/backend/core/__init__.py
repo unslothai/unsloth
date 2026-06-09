@@ -12,8 +12,8 @@ torch) before the version-activation code runs.
 import sys
 from pathlib import Path
 
-# Put the backend dir on sys.path so bare "from utils.*" imports work when core
-# is imported as a package (e.g. CLI: "from studio.backend.core import ModelConfig").
+# Add backend dir to sys.path so bare "from utils.*" imports work when core
+# is imported as a package.
 _backend_dir = str(Path(__file__).resolve().parent.parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)

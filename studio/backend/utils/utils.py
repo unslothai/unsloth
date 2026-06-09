@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Shared backend utilities
-"""
+"""Shared backend utilities."""
 
 import os
 import structlog
@@ -18,16 +16,12 @@ logger = get_logger(__name__)
 
 
 # ── Client-safe error helpers ───────────────────────────────────
-# Never return raw exception text to clients (it can leak paths/internals);
-# log the full exception server-side and return a generic message.
+# Never return raw exception text to clients; log server-side, return generic.
 
 
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
-    """Map a caught exception to a generic, client-safe message.
-
-    Never includes raw ``str(error)`` (which can leak internal paths or stack
-    detail); known transient conditions get a friendlier hint. Always log the
-    real exception server-side (e.g. via ``log_and_http_error``) for diagnosis.
+    """Map an exception to a generic, client-safe message (never raw
+    ``str(error)``, which can leak paths). Log the real exception server-side.
     """
     text = str(error).lower()
     if (
@@ -43,10 +37,10 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
 
 
 def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
-    """Client-safe text for curated domain/validation exceptions meant for the user.
+    """Client-safe text for curated domain/validation exceptions.
 
-    Keeps the message (paths stripped) instead of a generic fallback; use for known
-    exception types, keep ``safe_error_detail`` for generic ``Exception``.
+    Keeps the message (paths stripped) instead of a generic fallback; for known
+    exception types only (use ``safe_error_detail`` for generic ``Exception``).
     """
     from utils.native_path_leases import redact_native_paths
 
@@ -69,7 +63,7 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # Works for both structlog and stdlib loggers; exc_info=error logs its traceback.
+    # exc_info=error works for both structlog and stdlib loggers.
     (log or logger).error(f"{event}: {error}", exc_info = error)
     return HTTPException(status_code = status_code, detail = public_message)
 
@@ -84,7 +78,6 @@ def without_hf_auth():
             # Code that should run without cached tokens
             model_info(model_name, token=None)
     """
-    # Save and clear env vars
     saved_env = {}
     env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:

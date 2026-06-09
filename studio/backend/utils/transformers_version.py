@@ -1,27 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Automatic transformers version switching.
+"""Automatic transformers version switching.
 
-Some newer architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
-tiny_qwen3_moe) need transformers>=5.3.0; Gemma 4 needs >=5.5.0. Everything
-else uses the default 4.57.x that ships with Unsloth.
+Some newer architectures need transformers>=5.3.0 (.venv_t5_530/); Gemma 4
+needs >=5.5.0 (.venv_t5_550/). Everything else uses the default 4.57.x. A
+custom-named LoRA adapter's base model is resolved from adapter_config.json.
 
-Two target directories:
-  - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
-  - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
-
-For a custom-named LoRA adapter, the base model is resolved from
-``adapter_config.json`` and checked against the model list.
-
-Strategy:
-  Training and inference run in subprocesses that activate the right version
-  via sys.path (prepending the appropriate .venv_t5_*/ dir). See
-  core/training/worker.py and core/inference/worker.py.
-
-  For export (in-process), ensure_transformers_version() does a lightweight
-  sys.path swap using the same setup.sh-installed directories.
+Training/inference run in subprocesses that activate the right version via
+sys.path; export (in-process) uses ensure_transformers_version() for the swap.
 """
 
 import importlib
@@ -397,12 +384,11 @@ _PURGE_PREFIXES = (
     "trl",
     "accelerate",
     "auto_gptq",
-    # NOTE: bitsandbytes is intentionally EXCLUDED — it registers torch custom
-    # operators at import via torch.library.define() into torch's global
-    # registry, which survives module purge. Re-importing it after purge →
-    # duplicate registration → crash.
-    # Our own modules that import from transformers at module level
-    # (e.g. model_config.py: `from transformers import AutoConfig`)
+    # NOTE: bitsandbytes is intentionally EXCLUDED -- it registers torch custom
+    # operators via torch.library.define() into torch's global registry, which
+    # survives module purge; re-importing after purge -> duplicate registration
+    # -> crash.
+    # Our own modules that import from transformers at module level.
     "utils.models",
     "core.training",
     "core.inference",

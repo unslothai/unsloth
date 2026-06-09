@@ -58,7 +58,6 @@ def generate_smart_vlm_instruction(
     # ===== LEVEL 2: Infer from Column Names + Content =====
     text_col_lower = text_column.lower()
 
-    # Sample text content for pattern detection
     text_sample = str(sample.get(text_column, ""))[:500]  # First 500 chars
 
     # Task-specific keywords and their instructions
@@ -66,7 +65,7 @@ def generate_smart_vlm_instruction(
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long text passages (Latin/Arabic)
+            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long Latin/Arabic passages
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
@@ -129,17 +128,14 @@ def generate_smart_vlm_instruction(
     for task_name, task_info in task_patterns.items():
         score = 0.0
 
-        # Column name
         if any(keyword in text_col_lower for keyword in task_info["keywords"]):
             score += 0.5
 
-        # Dataset name if provided
         if dataset_name and any(
             keyword in dataset_name.lower() for keyword in task_info["keywords"]
         ):
             score += 0.3
 
-        # Content patterns
         for pattern in task_info["content_hints"]:
             if re.search(pattern, text_sample, re.IGNORECASE):
                 score += 0.4

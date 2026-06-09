@@ -8,8 +8,7 @@ Colab helpers for Unsloth Studio. Uses Colab's built-in proxy.
 from pathlib import Path
 import sys
 
-# Anaconda/conda-forge Python: seed platform._sys_version_cache before any
-# import that triggers attrs -> rich -> structlog -> platform crash.
+# Seed platform._sys_version_cache before attrs->rich->structlog->platform crash on conda Python.
 # See: https://github.com/python/cpython/issues/102396
 _backend_dir = str(Path(__file__).parent)
 if _backend_dir not in sys.path:
@@ -41,7 +40,7 @@ def get_colab_url(port: int = 8888) -> str:
     for attempt in range(3):
         try:
             url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
-            # Valid Colab proxy URL starts with https:// and embeds the port.
+            # Valid proxy URL is https:// and embeds the port.
             if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
                 return url.rstrip("/")
         except Exception as e:
@@ -59,16 +58,13 @@ def get_colab_url(port: int = 8888) -> str:
 def show_link(port: int = 8888, *, _url: "str | None" = None):
     """Display a styled clickable link to the UI.
 
-    *_url* is an optional pre-fetched Colab proxy URL; when omitted,
-    ``get_colab_url(port)`` is called. Pass it from ``_show_and_embed`` to
-    avoid a second ``eval_js`` round-trip.
+    *_url* is an optional pre-fetched proxy URL; pass it to avoid a second eval_js round-trip.
     """
     from IPython.display import display, HTML
 
     url = _url if _url is not None else get_colab_url(port)
 
-    # Truncated display URL. try/except so an unexpected URL shape never
-    # prevents the link from rendering.
+    # Truncated display URL; try/except so an odd URL shape still renders the link.
     try:
         port_prefix = f"{port}-"
         idx = url.index(port_prefix)
@@ -77,7 +73,7 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
     except (ValueError, IndexError):
         short_url = url
 
-    # Plain-text line so the URL is visible even if HTML display fails.
+    # Plain-text line so the URL shows even if HTML display fails.
     logger.info(f"🌐 Unsloth Studio URL: {url}")
 
     html = f"""
@@ -120,10 +116,8 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
 def _show_and_embed(port: int):
     """Embed the Studio inline for *port* with a branded header bar.
 
-    Fetches the Colab proxy URL once (also registering the port with Colab's
-    reverse-proxy) then renders a header bar + full-height iframe as one HTML
-    block. Falls back to ``serve_kernel_port_as_iframe`` if
-    ``IPython.display.HTML`` is unavailable.
+    Fetches the proxy URL once (registering the port), then renders header bar +
+    iframe. Falls back to serve_kernel_port_as_iframe if IPython HTML is unavailable.
     """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
@@ -162,7 +156,7 @@ def _show_and_embed(port: int):
 """)
         )
     except Exception:
-        # Fallback: Colab's built-in helper (less control, but always works)
+        # Fallback: Colab's built-in helper.
         try:
             from google.colab import output as colab_output
             colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
@@ -182,9 +176,8 @@ def start(port: int = 8888):
 
     logger.info("🦥 Starting Unsloth Studio...")
 
-    # --- Fast path: Studio is already running (cell re-run) ---
-    # Re-launching would collide on the port or silently shift to a new one.
-    # Just re-show the link and iframe instead.
+    # Fast path: Studio already running (cell re-run). Re-launching would collide on
+    # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
         _show_and_embed(port)
@@ -217,16 +210,14 @@ def start(port: int = 8888):
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
 
-    # run_server auto-increments the port if the requested one is in use (e.g.
-    # Jupyter on 8888). Read back the bound port so the Colab proxy URL and
-    # iframe point at the right place.
+    # run_server auto-increments the port if in use; read back the bound port so the
+    # proxy URL and iframe point at the right place.
     actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
 
     logger.info(f"   Server started on port {actual_port}!")
 
-    # Poll health endpoint to confirm reachability before showing the link and
-    # registering the iframe — avoids the race where ready_event fires but the
-    # process hasn't finished binding.
+    # Poll health endpoint before showing the link — avoids the race where ready_event
+    # fires but the process hasn't finished binding.
     import urllib.request
 
     server_ready = False
@@ -247,9 +238,8 @@ def start(port: int = 8888):
 
     _show_and_embed(actual_port)
 
-    # Keep kernel alive so the daemon server thread stays running. Handle
-    # KeyboardInterrupt cleanly so interrupting the cell gives a readable
-    # message, not a raw traceback.
+    # Keep kernel alive so the daemon server thread runs; handle KeyboardInterrupt
+    # cleanly so interrupting the cell gives a readable message.
     try:
         for _ in range(10000):
             time.sleep(300)

@@ -27,8 +27,7 @@ if sys.platform == "win32":
             _val = os.environ.get(_var)
             if _val:
                 candidates.append(os.path.join(_val, "bin"))
-        # 2. Standard AMD installer location: C:\Program Files\AMD\ROCm\<ver>\bin
-        #    Scan all installed versions, newest first.
+        # 2. AMD installer: C:\Program Files\AMD\ROCm\<ver>\bin, newest first.
         _default_root = os.path.join(
             os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
         )
@@ -62,15 +61,11 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs
 
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
-    # bitsandbytes on Windows ROCm loads libbitsandbytes_rocm<ver>.dll where
-    # <ver> comes from torch.version.hip (e.g. "7.13..." → "713"). The installed
-    # BNB wheel ships rocm72.dll (not rocm713.dll), so without this the server
-    # crashes with "Configured ROCm binary not found". Detect the available DLL,
-    # fall back to "72", and set BNB_ROCM_VERSION before any bitsandbytes import
-    # (mirrors worker.py). Gate on the rocm bnb DLL (the file this configures) or
-    # HIP_PATH/ROCM_PATH, not torch.version.hip: that needed importing torch on
-    # every Windows host (NVIDIA/CPU too), adding startup seconds. Radeon wheels
-    # without HIP_PATH still ship the rocm bnb DLL, so they're covered.
+    # bitsandbytes derives the rocm<ver>.dll name from torch.version.hip, but the
+    # wheel ships rocm72.dll, so the server crashes ("Configured ROCm binary not
+    # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
+    # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
+    # to avoid importing torch on every Windows host.
     if "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
         import logging as _logging
@@ -164,14 +159,11 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 
 
 def _read_studio_install_id() -> str:
-    """Per-install opaque id written by install.sh / install.ps1 at
-    $STUDIO_HOME/share/studio_install_id. Returns "" when the file is absent
-    (pre-PR install, or fresh tree never run through the installer) or holds
-    anything other than a 64-char lowercase-hex token; then /api/health emits
-    "" and the launcher's _check_health falls back to "no baked id, accept any
-    healthy Unsloth backend". Replaces a previous sha256(resolved_install_path)
-    so the field carries no install-path info for callers reaching /api/health
-    (relevant when Studio runs with -H 0.0.0.0)."""
+    """Per-install opaque id at $STUDIO_HOME/share/studio_install_id.
+
+    Returns "" when absent or not a 64-char lowercase-hex token; then
+    /api/health emits "" and the launcher accepts any healthy backend.
+    Carries no install-path info (matters when Studio runs -H 0.0.0.0)."""
     try:
         token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
     except (OSError, ValueError):
@@ -183,20 +175,16 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 
 def _studio_root_id() -> str:
-    """Same-install discriminator for /api/health: a per-install opaque token
-    written once by the installer and read once at module import. Empty when no
-    installer token is present; the launcher contract treats "" as "no baked id,
-    accept any healthy backend"."""
+    """Same-install discriminator for /api/health (cached at import).
+
+    Empty when no installer token is present; the launcher treats "" as
+    "accept any healthy backend"."""
     return _STUDIO_ROOT_ID_CACHE
 
 
-# Fix broken Windows registry MIME types. Some Windows installs map .js to
-# "text/plain" in the registry (HKCR\.js\Content Type). Python's mimetypes reads
-# from the registry, and Starlette's StaticFiles uses mimetypes.guess_type() for
-# Content-Type. Browsers strictly MIME-check ES module scripts
-# (<script type="module">) and refuse .js served as text/plain, giving a blank
-# page. Calling add_type() *before* StaticFiles is instantiated forces the
-# correct types regardless of the OS registry.
+# Fix broken Windows registry MIME types: some installs map .js to text/plain,
+# which mimetypes (hence StaticFiles) inherits and browsers reject for ES
+# modules. add_type() before StaticFiles forces correct types.
 if sys.platform == "win32":
     mimetypes.add_type("application/javascript", ".js")
     mimetypes.add_type("text/css", ".css")
@@ -215,7 +203,6 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pathlib import Path
 from datetime import datetime
 
-# Import routers
 from routes import (
     auth_router,
     chat_history_router,
@@ -296,16 +283,14 @@ def _desktop_owner() -> dict[str, str] | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
-    # Clean up stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
-    # Remove stale .venv_overlay from previous versions — no longer used.
-    # Version switching now uses .venv_t5/ (pre-installed by setup.sh).
+    # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
-    # Detect hardware first — sets DEVICE global used everywhere
+    # Detect hardware first — sets the DEVICE global used everywhere.
     detect_hardware()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
@@ -382,12 +367,10 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
-    # Cleanup
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 
 
-# Create FastAPI app
 app = FastAPI(
     title = "Unsloth UI Backend",
     version = UNSLOTH_VERSION,
@@ -395,7 +378,6 @@ app = FastAPI(
     lifespan = lifespan,
 )
 
-# Initialize structured logging
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
 
@@ -432,19 +414,14 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    # In Colab the parent frame can be colab.research.google.com, a multi-level
-    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — CSP wildcards
-    # only match one level, so *.prod.colab.dev misses these), or a sandboxed
-    # null-origin output iframe. Use '*' to allow any ancestor; Colab is already
-    # a sandboxed single-user environment.
+    # Colab parent frames span multi-level *.prod.colab.dev subdomains (CSP
+    # wildcards match one level only) and null-origin iframes; use '*' since
+    # Colab is already a sandboxed single-user environment.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
-    # In Colab the frontend is served over the Colab reverse-proxy at an HTTPS
-    # *.prod.colab.dev URL. Colab's kernel layer and output-iframe scaffolding
-    # inject scripts from *.prod.colab.dev and *.googleusercontent.com, and
-    # fetch/WebSocket to those origins. Widen script-src and connect-src in
-    # Colab mode so those aren't blocked. 'unsafe-inline' for scripts is still
-    # omitted; our inline script uses a nonce.
+    # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
+    # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and
+    # connect-src for those. Scripts still use a nonce, not 'unsafe-inline'.
     if _IS_COLAB:
         script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
         connect_src = (
@@ -693,7 +670,6 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-# CORS middleware
 _api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
 _cors_origins = ["*"]
 if _api_only:
@@ -729,9 +705,7 @@ app.include_router(inference_router, prefix = "/api/inference", tags = ["inferen
 # OpenAI-compat prefix below.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# OpenAI-compatible endpoints: mount the same inference router at /v1 so
-# external tools (Open WebUI, SillyTavern, etc.) can use the standard
-# /v1/chat/completions path.
+# OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
@@ -747,14 +721,12 @@ app.include_router(training_history_router, prefix = "/api/train", tags = ["trai
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Liveness plus launcher capability bits; install fingerprint gated on a valid bearer.
+    """Liveness plus launcher capability bits; host fingerprint gated on a bearer.
 
-    Unauthenticated callers (Tauri watchdog, frontend bootstrap polls) need
-    ``service`` / ``studio_root_id`` / ``chat_only`` / ``desktop_*`` / ``native_path_leases_supported``
-    to (a) re-adopt a sibling backend across restarts and (b) gate UI surfaces
-    before a token is available. None of those leak install path or version.
-    ``version`` / ``studio_version`` / ``device_type`` require a bearer since
-    they fingerprint the host.
+    Unauthenticated callers get non-sensitive fields (service, studio_root_id,
+    chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
+    backend and gate UI before a token exists. version / studio_version /
+    device_type require a bearer since they fingerprint the host.
     """
     base = {
         "status": "healthy",
@@ -837,11 +809,9 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
 async def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
 
-    Gated behind auth: the response includes platform, Python version, GPU name,
-    memory total, and ML package set -- enough to fingerprint a host. Studio's
-    chat-only design assumes only the local user reaches /api/system; in
-    -H 0.0.0.0 / Colab / Tauri-relayed setups that breaks unless we require a
-    bearer.
+    Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
+    fingerprint a host, which matters in -H 0.0.0.0 / Colab / Tauri-relayed
+    setups where remote callers can reach /api/system.
     """
     import platform
     import psutil
@@ -860,8 +830,8 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        # Centralized _backend_label so /api/system reports "rocm" on AMD hosts
-        # instead of "cuda", matching /api/hardware and /api/gpu-visibility.
+        # _backend_label so /api/system reports "rocm" (not "cuda") on AMD,
+        # matching /api/hardware and /api/gpu-visibility.
         "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
@@ -898,10 +868,9 @@ async def get_hardware_info(current_subject: str = Depends(get_current_subject))
 def _strip_crossorigin(html_bytes: bytes) -> bytes:
     """Remove ``crossorigin`` attributes from script/link tags.
 
-    Vite adds ``crossorigin`` by default, forcing CORS mode on font subresource
-    loads. Over plain HTTP, Firefox HTTPS-Only Mode doesn't exempt CORS font
-    requests, so all @font-face downloads fail silently. Stripping the attribute
-    makes them same-origin fetches that work on any protocol.
+    Vite's default ``crossorigin`` forces CORS mode on font loads, which
+    Firefox HTTPS-Only Mode breaks over plain HTTP; stripping it makes them
+    same-origin fetches that work on any protocol.
     """
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
@@ -983,10 +952,10 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
 
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
-    Top-level same-document GETs omit Origin, so missing counts as same-origin.
-    Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
-    :func:`_canonical_origin` so default-port stripping and scheme/host case
-    don't misclassify same-origin requests as cross-origin.
+
+    Missing Origin counts as same-origin (top-level GETs omit it). Both sides
+    are canonicalised via :func:`_canonical_origin`; callers must emit
+    ``Vary: Origin``.
     """
     origin = request.headers.get("origin")
     if origin is None:
@@ -1021,7 +990,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if not build_path.exists():
         return False
 
-    # Mount assets
     assets_dir = build_path / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")

@@ -95,7 +95,6 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
 
 
 def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
-    # Input-side mirror of the output zero-precedence test.
     out = calculate_cost(
         "openai",
         "gpt-5.5",

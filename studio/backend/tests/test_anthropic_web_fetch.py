@@ -369,12 +369,10 @@ def _finish_reasons(lines: list[str]) -> list:
 
 
 def test_pause_turn_does_not_emit_finish_reason_chunk(monkeypatch):
-    # Anthropic emits `pause_turn` when a long server-tool turn
-    # (typically web_search / web_fetch) pauses and resumes on the next
-    # request. Mapping it to finish_reason="stop" makes the
-    # OpenAI-formatted client truncate the assistant message. The adapter
-    # must skip the chunk so the stream ends cleanly with [DONE] and no
-    # terminal finish_reason.
+    # Anthropic emits `pause_turn` when a long server-tool turn pauses and
+    # resumes next request. Mapping it to finish_reason="stop" truncates the
+    # OpenAI client's message, so the adapter must skip the chunk and end
+    # cleanly with [DONE] and no terminal finish_reason.
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
         {
@@ -488,11 +486,9 @@ def test_refusal_maps_to_content_filter(monkeypatch):
 
 
 def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
-    # Anthropic may omit `document.title` when the HTML has nothing
-    # usable. Without a fallback the formatter emits `URL: ...\nSnippet:
-    # ...` only, and the frontend's parseSourcesFromResult skips entries
-    # lacking a `Title:` line, so the source pill disappears. Verify the
-    # formatter mirrors web_search and falls back to the URL.
+    # Anthropic may omit `document.title`. Without a fallback the formatter
+    # emits no `Title:` line, and the frontend's parseSourcesFromResult drops
+    # those entries (source pill disappears). Verify it falls back to the URL.
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
         {

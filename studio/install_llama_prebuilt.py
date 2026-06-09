@@ -113,19 +113,13 @@ LEMONADE_ROCM_RELEASES_API = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}
 
 
 def _lemonade_release_api_for(llama_tag: str) -> str:
-    """Return the GitHub API URL for the lemonade release matching a llama.cpp tag.
+    """GitHub API URL for the lemonade release matching a llama.cpp tag.
 
-    When llama_tag is unset or "latest", point at /releases/latest. When
-    pinned (e.g. "b1260"), point at the same tag in lemonade. Lemonade
-    tracks `ggml-org/llama.cpp` build tags but is NOT guaranteed to publish
-    every upstream build -- it may be several builds behind. Pinning a tag
-    lemonade skipped produces a 404 and the caller falls through to the
-    upstream tarball; intentional so pinned installs stay reproducible.
-    Do NOT pass a `unslothai/llama.cpp` fork tag -- the fork's namespace
-    always 404s against lemonade.
-
-    The tag is URL-encoded with `safe=""` so a stray slash / hash / query
-    char cannot reshape the URL.
+    "latest"/unset -> /releases/latest; a pinned tag -> the same lemonade tag.
+    Lemonade tracks ggml-org build tags but may lag, so a tag it skipped 404s
+    and the caller falls back to the upstream tarball (keeps pinned installs
+    reproducible). Do NOT pass a fork tag -- the fork namespace always 404s.
+    Tag is URL-encoded (safe="") to prevent URL injection.
     """
     normalized = (llama_tag or "").strip()
     if not normalized or normalized.lower() == "latest":

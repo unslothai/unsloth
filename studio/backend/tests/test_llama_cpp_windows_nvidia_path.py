@@ -60,8 +60,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
 def _make_nvidia_layout(prefix: Path, pkgs_with_layout: dict[str, str]):
-    """Build a fake <prefix>/Lib/site-packages/nvidia/<pkg>/{bin|Library/bin}
-    tree with a stub DLL in each leaf so isdir() picks them up."""
+    """Build a fake nvidia/<pkg>/{bin|Library/bin} tree with a stub DLL per leaf."""
     nv = prefix / "Lib" / "site-packages" / "nvidia"
     for pkg, layout in pkgs_with_layout.items():
         if layout == "bin":
@@ -133,10 +132,8 @@ class TestWindowsPipNvidiaDllDirs:
         assert result == []
 
     def test_picks_up_torch_lib(self, tmp_path):
-        # PyTorch's Windows CUDA wheel bundles cudart64_X.dll /
-        # cublas64_X.dll directly under Lib/site-packages/torch/lib/ rather
-        # than as separate nvidia-* wheels. Without this, torch-bundled-CUDA
-        # installs still hit #5106.
+        # PyTorch's Windows CUDA wheel bundles cudart64/cublas64 DLLs under
+        # torch/lib/ rather than as nvidia-* wheels; else still hits #5106.
         torch_lib = tmp_path / "Lib" / "site-packages" / "torch" / "lib"
         torch_lib.mkdir(parents = True)
         (torch_lib / "cudart64_12.dll").write_bytes(b"")
@@ -179,16 +176,13 @@ class TestWindowsPipNvidiaDllDirs:
         assert result == []
 
     def test_missing_prefix_does_not_raise(self):
-        # If sys.prefix points to a nonexistent path (unusual but possible
-        # during test setup), the resolver must return [], not raise.
+        # Nonexistent sys.prefix: resolver must return [], not raise.
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs("/this/path/does/not/exist/anywhere")
         assert result == []
 
     def test_picks_up_cu13_bin_x86_64_layout(self, tmp_path):
-        # Current ``nvidia-cuda-runtime`` 13.x and ``nvidia-cublas`` 13.x
-        # Windows wheels ship DLLs under ``nvidia/cu13/bin/x86_64/`` instead
-        # of ``nvidia/<pkg>/bin/``. Without this, the new CUDA 13 wheel
-        # generation hits the original #5106 failure mode.
+        # nvidia 13.x Windows wheels ship DLLs under nvidia/cu13/bin/x86_64/
+        # not nvidia/<pkg>/bin/; else the new CUDA 13 wheels hit #5106.
         dll_dir = tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
         dll_dir.mkdir(parents = True)
         for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
@@ -219,10 +213,8 @@ class TestWindowsPipNvidiaDllDirs:
         assert cu13_arch in result_set
 
     def test_glob_meta_in_prefix_is_safe(self, tmp_path):
-        # Windows usernames / install paths can contain ``[`` or ``]``. A
-        # glob-based resolver would read these as a character class and
-        # return [] even when DLL dirs exist. The iterdir-based
-        # implementation must work on such paths.
+        # Windows paths can contain ``[``/``]``; a glob-based resolver would
+        # read these as a character class. The iterdir impl must handle them.
         prefix = tmp_path / "studio_[gpu]_install"
         dll_dir = prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime" / "bin"
         dll_dir.mkdir(parents = True)
@@ -231,9 +223,8 @@ class TestWindowsPipNvidiaDllDirs:
         assert str(dll_dir) in result, f"bracket-prefixed path returned empty: {result}"
 
     def test_arch_subdir_listed_before_parent_bin(self, tmp_path):
-        # When both ``nvidia/<pkg>/bin/`` and ``nvidia/<pkg>/bin/x86_64/``
-        # exist, the arch-specific subdir must be listed first so the Windows
-        # DLL search finds cudart64_X.dll even if the parent ``bin`` is empty.
+        # When both bin/ and bin/x86_64/ exist, the arch subdir must come first
+        # so the Windows DLL search finds cudart64_X.dll if parent bin is empty.
         site = tmp_path / "Lib" / "site-packages"
         outer_bin = site / "nvidia" / "cu13" / "bin"
         arch_bin = outer_bin / "x86_64"

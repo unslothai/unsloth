@@ -7,8 +7,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-# Keep this test runnable in lightweight environments without optional
-# logging deps.
+# Keep this test runnable without optional logging deps.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -211,8 +210,7 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypa
 
 
 def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypatch, tmp_path):
-    """Mirror of the _skips_ test: the mixed repo should still surface in
-    cached-gguf so the picker shows it as a GGUF download."""
+    """Mixed repo still surfaces in cached-gguf as a GGUF download."""
     mixed = _repo(
         "Org/MixedRepo",
         [
@@ -240,9 +238,8 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
 
 
 def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
-    """A partial/interrupted GGUF download has ``size_on_disk = None``. The
-    route must treat unknown bytes as zero instead of raising TypeError from
-    ``sum()`` and wiping the whole response."""
+    """``size_on_disk = None`` (partial download) is treated as zero, not a
+    TypeError from ``sum()`` that wipes the response."""
     partial = _repo(
         "Org/PartialDownload",
         [_file("Q4_K_M.gguf", None), _file("Q6_K.gguf", 5_000)],
@@ -267,8 +264,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
 
 
 def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypatch, tmp_path):
-    """One repo raising during classification must not poison the response
-    for the other repos in the scan."""
+    """One repo raising during classification must not poison the response."""
 
     class _ExplodingRepo:
         repo_id = "Org/Broken"
@@ -303,9 +299,8 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
 
 
 def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
-    """A repo whose only ``.gguf`` artifact is an mmproj vision adapter must
-    not be classified as a GGUF repo: the variant selector filters mmproj
-    out and the picker would otherwise show zero variants."""
+    """A repo whose only ``.gguf`` is an mmproj vision adapter is not a GGUF
+    repo: mmproj is filtered out, leaving zero variants."""
     mmproj_only = _repo(
         "Org/MmprojOnly",
         [
@@ -327,9 +322,8 @@ def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path
 
 
 def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
-    """Mirror of the cached-gguf skip: a safetensors repo with an auxiliary
-    mmproj vision adapter must still surface in cached-models so the user
-    can load it as a normal model."""
+    """A safetensors repo with an auxiliary mmproj adapter still surfaces in
+    cached-models as a normal model."""
     mmproj_aux = _repo(
         "Org/MmprojAux",
         [
@@ -351,10 +345,8 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):
-    """A vision-capable GGUF repo (main weight + mmproj adapter) is still a
-    GGUF repo. Reported size is the main weight size; mmproj is excluded
-    from GGUF-size accounting since it is filtered out at classification
-    time."""
+    """A vision GGUF repo (main weight + mmproj) is a GGUF repo; reported size
+    is the main weight only, since mmproj is filtered at classification."""
     vision_repo = _repo(
         "Org/VisionGguf",
         [

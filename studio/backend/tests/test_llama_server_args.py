@@ -16,10 +16,8 @@ from pathlib import Path
 
 import pytest
 
-# Load llama_server_args.py directly so this test doesn't drag in the full
-# backend chain (fastapi / structlog / loggers / utils.hardware) via
-# core/inference/__init__.py. The validator is intentionally dependency-free
-# and unit tests should reflect that.
+# Load llama_server_args.py directly to avoid dragging in the full backend
+# chain via core/inference/__init__.py. The validator is dependency-free.
 _LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
@@ -72,10 +70,9 @@ validate_extra_args = _lsa.validate_extra_args
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed: user flags last-wins-override Studio's auto-set
-        # version. --parallel / -np / --n-parallel are NOT here -- they're
-        # hard-denied (KV-cache + slot count would desync). Use
-        # `unsloth studio run --parallel N` instead.
+        # Soft-managed: user flags last-wins over Studio's auto-set version.
+        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
+        # count would desync); use `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],

@@ -3,15 +3,8 @@
 
 """Structured logging configuration via structlog.
 
-Centralized config with environment-specific formats and processors for
-development and production.
-
-Key features:
-- Environment-specific formatting (JSON for prod, console for dev)
-- ISO timestamps
-- Context variable integration
-- Log level filtering
-- Logger caching for performance
+Environment-specific formats (JSON for prod, console for dev), ISO timestamps,
+context-var integration, log-level filtering, and logger caching.
 """
 
 import logging
@@ -25,11 +18,7 @@ from loggers.handlers import filter_sensitive_data
 
 
 class LogConfig:
-    """Structured logging configuration for the application.
-
-    Static method to configure structlog with environment-specific
-    formatting and processors.
-    """
+    """Structured logging configuration for the application."""
 
     @staticmethod
     def setup_logging(

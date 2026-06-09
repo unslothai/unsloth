@@ -3,17 +3,11 @@
 
 """Unit tests for OpenAI Responses API image_generation tool wiring.
 
-The image_generation tool is a server-side Responses-API tool:
-``{type: "image_generation"}`` in the request's tools array; the result
-returns as an ``image_generation_call`` output item carrying the base64 image
-on ``result``. Studio translates that item into ``_toolEvent`` chunks
-(``tool_start`` with `kind:"image"`, ``tool_end`` with ``image_b64`` +
-``image_mime``) so the chat adapter renders the image inline.
-
-These tests pin: the tool is added to the outbound body only when the caller
-asks for it on a cloud OpenAI base; the SSE output_item.done for
-``image_generation_call`` produces the expected _toolEvent chunks; non-cloud
-bases drop the tool silently.
+The tool is a server-side Responses-API tool (``{type: "image_generation"}``);
+the result comes back as an ``image_generation_call`` output item, which Studio
+translates into ``_toolEvent`` chunks so the chat adapter renders it inline.
+Tests pin: the tool is added to the body only on a cloud OpenAI base when asked
+for, the done event produces the expected chunks, and non-cloud bases drop it.
 """
 
 import asyncio

@@ -44,8 +44,8 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
-# Re-export shim: reference the project-path helpers by name so the
-# import-hoist safety net sees them used, not just named in __all__.
+# Re-export shim: mark project-path helpers as used so the import-hoist
+# safety net does not flag them as unused.
 _REEXPORTED = (documents_root, project_workspaces_root)
 
 __all__ = [

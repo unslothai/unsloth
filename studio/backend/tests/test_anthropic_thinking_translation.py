@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the Anthropic extended-thinking translation in external_provider.
+"""Unit tests for Anthropic extended-thinking translation in external_provider.
 
 Covers:
-- Adaptive-mode request body nests effort under
-  ``output_config: {effort: "<level>"}`` per the Messages API reference (a
-  top-level ``effort`` field 400s with "effort: Extra inputs are not permitted").
-- Streaming SSE: ``content_block_delta`` with ``delta.type == "thinking_delta"``
-  is translated into inline ``<think>...</think>`` chat-completion chunks so the
-  frontend's reasoning-panel pipeline lifts it correctly.
-- The ``<think>`` tag closes when the first ``text_delta`` arrives, on
-  ``content_block_stop``, on ``message_delta``, or on ``message_stop``.
-- Thinking is paired with ``temperature=1`` and no ``top_p`` / ``top_k`` on the
-  wire (Anthropic extended-thinking contract).
+- Adaptive-mode body nests effort under ``output_config: {effort}`` (a
+  top-level ``effort`` field 400s).
+- Streaming ``thinking_delta`` is translated into inline ``<think>...</think>``
+  chunks for the frontend reasoning panel.
+- The ``<think>`` tag closes on the first ``text_delta``, ``content_block_stop``,
+  ``message_delta``, or ``message_stop``.
+- Thinking forces ``temperature=1`` with no ``top_p`` / ``top_k`` (contract).
 """
 
 import asyncio

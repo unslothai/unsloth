@@ -20,7 +20,6 @@ Internal utilities live in separate modules:
 
 import json
 
-# Import from modular files
 from .format_detection import (
     detect_dataset_format,
     detect_multimodal_dataset,
@@ -915,8 +914,7 @@ def format_and_template_dataset(
                         "errors": [],
                     }
                 except Exception as e:
-                    # User mapping failed — fall back to auto-detection rather
-                    # than give up (handles stale cached mappings gracefully)
+                    # User mapping failed; fall back to auto-detection (handles stale cached mappings).
                     warnings.append(
                         f"User VLM mapping (image='{user_vlm_image_column}', "
                         f"text='{user_vlm_text_column}') failed: {e} — "
@@ -1154,8 +1152,7 @@ def format_and_template_dataset(
         all_warnings = dataset_info.get("warnings", []) + template_result.get("warnings", [])
         all_errors = template_result.get("errors", [])
 
-        # If format_dataset returned "unknown" but apply_chat_template rescued
-        # it via heuristic detection, update final_format accordingly.
+        # If apply_chat_template rescued an "unknown" format, update final_format.
         final_format = dataset_info["final_format"]
         requires_manual = dataset_info.get("requires_manual_mapping", False)
         if final_format == "unknown" and template_result["success"]:

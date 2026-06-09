@@ -11,11 +11,9 @@ import json
 import re
 
 
-# _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing
-# unclosed runs so truncated tails don't leak markup.
-# Function-name char set tracks OpenAI's ^[a-zA-Z0-9_-]{1,64}$ so hyphenated
-# MCP tool names (e.g. mcp__srv__list-issues) parse the same as built-in
-# web_search/python/terminal names.
+# _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing unclosed
+# runs so truncated tails don't leak markup. The [\w-] name set matches OpenAI's
+# so hyphenated MCP tool names (mcp__srv__list-issues) parse like built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
@@ -72,8 +70,7 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Parameter names can carry hyphens too (e.g. MCP schemas with
-# `issue-number`, `repo-name`); `\w+` alone dropped those keys.
+# [\w-] so hyphenated MCP param names (issue-number) aren't dropped.
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _PARAM_CLOSE_TAG = "</parameter>"
@@ -124,10 +121,10 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     """
     tool_calls: list[dict] = []
 
-    # Pattern 1: <tool_call>{json}. Balanced-brace scan skipping braces
-    # inside JSON strings.
+    # Pattern 1: <tool_call>{json}. Balanced-brace scan, skipping braces in
+    # JSON strings.
     for m in _TC_JSON_START_RE.finditer(content):
-        brace_start = m.end() - 1  # position of the opening {
+        brace_start = m.end() - 1  # opening {
         depth, i = 0, brace_start
         in_string = False
         while i < len(content):
@@ -166,8 +163,7 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 pass
 
     # Pattern 2: <function=name><parameter=k>v... -- closing tags optional;
-    # don't use </function> as body boundary since code values can contain
-    # that literal.
+    # </function> isn't a body boundary since code values can contain it.
     if not tool_calls:
         func_starts = [
             fm
@@ -190,7 +186,7 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
             if len(param_starts) == 1:
-                # Single param: take everything to body end so embedded
+                # Single param: take everything to body end so an embedded
                 # </parameter> in code strings is preserved.
                 pm = param_starts[0]
                 val = body[pm.end() :]

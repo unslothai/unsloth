@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-# Defer scraper_impl imports until `scrape()` runs with a resolved token.
+# Defer scraper_impl imports until scrape() has a resolved token.
 _IMPL_DIR = Path(__file__).parent / "scraper_impl"
 
 
@@ -165,7 +165,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
     client = GitHubClient(token = token.value, token_source = token.source)
     base_dir.mkdir(parents = True, exist_ok = True)
 
-    # Per-resource trial limits. limit <= 0 means "all": use a large cap.
+    # Per-resource limits; limit <= 0 means "all" (large cap).
     effective_limit = cfg.limit if cfg.limit and cfg.limit > 0 else 1_000_000
     trial_limits: dict[str, int] = {}
     if "issues" in cfg.item_types:

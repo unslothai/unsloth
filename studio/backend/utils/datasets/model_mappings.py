@@ -434,7 +434,7 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
 
-    # Get lowercased
+    # Also map lowercased names.
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key

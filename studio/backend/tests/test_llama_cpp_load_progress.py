@@ -3,32 +3,20 @@
 
 """Tests for ``LlamaCppBackend.load_progress()``.
 
-The chat settings flow and the training overlay both show a generic
-"Starting model..." spinner in the window after a GGUF download finishes
-and before llama-server reports healthy. For small models that window is a
-second or two and nobody notices. For large MoE GGUFs (MiniMax-M2.7,
-Qwen3.5-397B-A17B, etc.) llama-server spends minutes in kernel state D,
-paging tens or hundreds of GB of shards into the page cache. The UI has no
-way to show a real progress bar, rate, or ETA during that window.
+For large MoE GGUFs, llama-server spends minutes paging shards into the page
+cache after download. ``load_progress()`` samples ``/proc/<pid>/status VmRSS``
+against the total shard size on disk so the UI can render a real bar plus
+rate/ETA. Contract pinned here:
 
-``load_progress()`` samples ``/proc/<pid>/status VmRSS`` (what the kernel
-actually paged in) against the total shard file size on disk, so the
-frontend can render a real bar plus rate/ETA. This module pins that
-contract:
-
-  * returns ``None`` when no load is in flight
-  * returns ``{"phase": "mmap", ...}`` while the subprocess is alive
-    but ``_healthy`` is False
-  * returns ``{"phase": "ready", ...}`` once ``_healthy`` flips
-  * ``bytes_total`` is derived from the resolved on-disk path
-    (which the paired fix assigns to ``self._gguf_path`` on both the
-    local-GGUF and HF-download code paths)
+  * ``None`` when no load is in flight
+  * ``{"phase": "mmap", ...}`` while the subprocess is alive but ``_healthy`` is False
+  * ``{"phase": "ready", ...}`` once ``_healthy`` flips
+  * ``bytes_total`` derived from the resolved on-disk path (``self._gguf_path``)
   * ``bytes_loaded`` is VmRSS in bytes, capped by total, rounded
-  * ``fraction`` is clamped to 0..1 and rounded to 4 decimal places
+  * ``fraction`` clamped to 0..1, rounded to 4 dp
 
-Linux-only via ``/proc``; without ``/proc`` the method returns ``None``
-instead of raising. Cross-platform test: skips cleanly on macOS / Windows
-when ``/proc`` is unavailable.
+Linux-only via ``/proc``; returns ``None`` (not raises) without it, so tests
+skip cleanly on macOS / Windows.
 """
 
 from __future__ import annotations
@@ -42,10 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:

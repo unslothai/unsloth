@@ -223,11 +223,8 @@ class TestUploadDenylist:
 
 
 class TestSandboxEnvIsolation:
-    """The sandbox subprocess env is built from a whitelist, not by stripping.
-
-    Confirm every credential-shaped parent var is absent regardless of the
-    operator's process config. Covers Linux/macOS/WSL/Windows shapes.
-    """
+    """Sandbox env is built from a whitelist, so credential-shaped parent
+    vars stay absent regardless of operator config (Linux/macOS/WSL/Windows)."""
 
     _SECRET_KEYS = (
         # HF + ML tooling
@@ -346,12 +343,8 @@ class TestMaxBodyDefault:
 
 
 class TestBashBlocklistPosition:
-    """The blocklist must fire at command position only.
-
-    Pre-fix, the per-token loop fired on any token, so `grep -r curl .`
-    and `echo source` were rejected. The position-anchored regex plus a
-    shlex-aware command-position-only token check fixes this.
-    """
+    """The blocklist must fire at command position only, so args like
+    `grep -r curl .` and `echo source` are not falsely rejected."""
 
     @staticmethod
     def _find():
@@ -464,9 +457,8 @@ class TestBashBlocklistPosition:
 
 
 class TestHfUploadImportGate:
-    """HfApi-style upload-method blocking requires an HF import in scope;
-    otherwise paramiko / boto3 / internal SDKs with the same method names
-    false-positive."""
+    """Upload-method blocking requires an HF import in scope, so paramiko /
+    boto3 / internal SDKs with the same method names don't false-positive."""
 
     def test_paramiko_upload_file_allowed_without_hf_import(self):
         _ok("import paramiko; sftp=None; sftp.upload_file('a','b')")
@@ -523,10 +515,9 @@ class TestHfUploadImportGate:
 
 
 class TestHfUploadSandboxLocalPaths:
-    """The HF upload gate allows only files already in the sandbox workdir.
-    Absolute paths, `..` traversal, home expansion, and Windows drive
-    letters are rejected — the LLM could use them to lift secrets from
-    outside the sandbox."""
+    """HF upload gate allows only files in the sandbox workdir. Absolute paths,
+    `..` traversal, home expansion, and Windows drives are rejected (they could
+    lift secrets from outside the sandbox)."""
 
     def test_relative_literal_allowed(self):
         _ok(
@@ -673,11 +664,9 @@ class TestHfUploadSandboxLocalPaths:
 
 
 class TestHfUploadEnvAndSecretLeakBlock:
-    """The HF upload gate rejects any positional / keyword arg sourced from
-    `os.environ` / `os.getenv` / subprocess env reads. `_build_safe_env`
-    strips HF_TOKEN/WANDB/AWS for the sandbox shell, but a Python script
-    can still reach the parent env if it bypasses the safe-env wrapper at
-    the source -- so block statically."""
+    """HF upload gate rejects any arg sourced from os.environ / os.getenv /
+    subprocess env reads, since a script can reach the parent env directly
+    despite the safe-env shell wrapper."""
 
     def test_path_from_os_environ_subscript_blocked(self):
         _blocked(

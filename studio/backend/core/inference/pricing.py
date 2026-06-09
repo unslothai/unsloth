@@ -95,9 +95,8 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
         return None
     if model in table:
         return table[model]
-    # Longest-prefix match on a dash boundary, longest-first: dated
-    # snapshots inherit canonical prices, but "claude-opus-4-15" won't
-    # match "claude-opus-4-1" nor "gpt-5.5-prod" match "gpt-5.5-pro".
+    # Longest-prefix match on a dash boundary: dated snapshots inherit
+    # canonical prices, but "claude-opus-4-15" won't match "claude-opus-4-1".
     for key in sorted(table, key = len, reverse = True):
         if model.startswith(key) and (len(model) == len(key) or model[len(key)] == "-"):
             return table[key]
@@ -105,10 +104,9 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
 
 
 def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str, float]:
-    """Return a per-turn USD cost breakdown (per-bucket + total) so the
-    frontend renders a number or tooltip without redoing the math.
-    Unknown model -> ``priced`` False and USD fields 0.0 (token counts
-    still report).
+    """Return a per-turn USD cost breakdown (per-bucket + total).
+
+    Unknown model -> ``priced`` False and USD fields 0.0 (token counts still report).
     """
     prices = _lookup(provider, model)
     out: dict[str, float] = {

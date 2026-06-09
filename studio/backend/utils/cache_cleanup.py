@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Utility for cleaning up the Unsloth compiled cache directory.
+"""Clean up the Unsloth compiled cache directory.
 
-unsloth_compiled_cache is created by unsloth_zoo/compiler.py during
-FastModel.from_pretrained() and holds model-type-specific compiled Python files.
-Clear it selectively between model loads to avoid stale artefacts, while
-preserving model-agnostic components (like Trainers) needed by spawned
-subprocesses.
+unsloth_compiled_cache (created by unsloth_zoo/compiler.py during
+FastModel.from_pretrained) holds model-type-specific compiled files. Clear it
+selectively between model loads, preserving model-agnostic components (Trainers)
+that spawned subprocesses need.
 """
 
 import shutil
@@ -79,7 +77,6 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
 
             for item in cache_dir.iterdir():
                 if item.is_file():
-                    # Keep the file if it matches any preserve pattern
                     preserve = any(item.match(pattern) for pattern in preserve_patterns)
                     if not preserve:
                         try:
@@ -91,6 +88,6 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                     # Always clear __pycache__ and other subdirectories
                     shutil.rmtree(item, ignore_errors = True)
         else:
-            # Legacy behavior: remove the entire directory
+            # Legacy: remove the entire directory
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
             shutil.rmtree(cache_dir, ignore_errors = True)

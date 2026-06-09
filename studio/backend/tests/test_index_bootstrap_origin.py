@@ -2,8 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Regression coverage for the bootstrap-pw cross-origin leak (PR 5739).
-``_is_same_origin_request`` gates ``_inject_bootstrap`` so the seeded
-admin password only ships to same-origin callers.
+
+``_is_same_origin_request`` gates ``_inject_bootstrap`` so the seeded admin
+password only ships to same-origin callers.
 """
 
 import os
@@ -61,9 +62,7 @@ def test_is_same_origin_request_port_mismatch_is_cross_origin():
 
 
 def test_is_same_origin_request_https_default_port_stripped_on_origin():
-    """RFC 6454 strips default ports on Origin; Starlette netloc may keep
-    ``:443``. Canonicalise both sides so this stays same-origin.
-    """
+    """RFC 6454 strips default ports on Origin; canonicalise both sides so this stays same-origin."""
     from main import _is_same_origin_request
 
     req = _build_request("example.com:443", origin = "https://example.com", scheme = "https")
@@ -109,9 +108,7 @@ def test_is_same_origin_request_null_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_unparseable_origin_is_cross_origin():
-    """Hostless garbage falls to cross-origin; a malformed header
-    must not leak the bootstrap.
-    """
+    """Hostless garbage falls to cross-origin so a malformed header can't leak the bootstrap."""
     from main import _is_same_origin_request
 
     req = _build_request("example.com", origin = "not-a-url")
@@ -119,8 +116,7 @@ def test_is_same_origin_request_unparseable_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_userinfo_in_netloc_ignored():
-    """``user:pass@host:port`` netlocs (RFC 3986) must compare equal to the
-    credentials-less Origin."""
+    """``user:pass@host:port`` netlocs (RFC 3986) must compare equal to the credentials-less Origin."""
     from main import _is_same_origin_request
 
     req = _build_request("user:pass@example.com:80", origin = "http://example.com")

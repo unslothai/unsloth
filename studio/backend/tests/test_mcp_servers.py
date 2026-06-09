@@ -151,8 +151,7 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
-    """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; names with '.',
-    '/', spaces, etc. would 400 the whole request."""
+    """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad names 400 the request."""
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -177,8 +176,7 @@ def test_mcp_specs_skip_empty_tool_name():
 
 
 def test_mcp_specs_drops_duplicate_names():
-    """Same tool name twice from one MCP server -> OpenAI rejects the
-    request as 'duplicates'. Drop duplicates before forwarding."""
+    """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -188,8 +186,7 @@ def test_mcp_specs_drops_duplicate_names():
 
 
 def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
-    """cancel_event set before the call -> immediate Error: cancelled, no
-    network round-trip."""
+    """Pre-set cancel_event -> immediate cancellation, no network round-trip."""
     import threading
     from core.inference import mcp_client
 
@@ -399,9 +396,8 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
 
 
 def test_tool_xml_parser_handles_hyphenated_parameter_names():
-    """MCP tool schemas often use hyphenated property names like
-    `issue-number` / `repo-name`; the XML parser's `<parameter=\\w+>` regex
-    dropped those keys. Verify hyphenated names round-trip."""
+    """Hyphenated property names like `issue-number` must round-trip through the
+    XML parser (the old `<parameter=\\w+>` regex dropped them)."""
     from core.inference.tool_call_parser import parse_tool_calls_from_text
     import json as _json
 
@@ -417,8 +413,8 @@ def test_tool_xml_parser_handles_hyphenated_parameter_names():
 
 
 def test_tool_healing_strip_handles_hyphenated_function_names():
-    """GGUF's core/tool_healing.py has its own copy of the XML strip
-    regex; the round-4 fix to the shared parser missed this file."""
+    """core/tool_healing.py has its own copy of the XML strip regex that the
+    shared-parser fix missed."""
     from core.tool_healing import strip_tool_call_markup
 
     out = strip_tool_call_markup(
@@ -428,9 +424,8 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
 
 
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
-    """When the model emits a tool call not in the per-request tool list,
-    the GGUF agentic loop must refuse to dispatch (mirroring the
-    safetensors path). execute_tool previously ran the call regardless."""
+    """A tool call not in the per-request list must be refused by the GGUF
+    agentic loop (mirroring the safetensors path)."""
     from core.inference import tools as tools_mod
 
     captured: list[str] = []
@@ -441,8 +436,7 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 
     monkeypatch.setattr(tools_mod, "execute_tool", fake_execute)
 
-    # Re-create the allow-list check inline to unit-test the behavior
-    # without spinning up llama-server.
+    # Inline allow-list check to unit-test behavior without llama-server.
     def _gate(tools_advertised, called_name, args):
         allowed = {
             (t.get("function") or {}).get("name")
@@ -472,9 +466,8 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 
 
 def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
-    """cancel_event set BEFORE call_tool_sync runs -> no HTTP request made.
-    The call task was previously created before the cancel check, opening a
-    transport that the watcher then had to cancel."""
+    """Pre-set cancel_event -> no HTTP request (task used to open a transport
+    before the cancel check)."""
     from core.inference import mcp_client
 
     opened: list[str] = []
@@ -511,8 +504,7 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
 
 def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
     """clear_oauth_tokens_async is best-effort; an OAuth constructor failure
-    (e.g. missing fastmcp.client.auth) must not bubble into a 500 from the
-    delete / update routes."""
+    must not bubble into a 500 from the delete/update routes."""
     import asyncio
     from core.inference import mcp_client
 
@@ -534,9 +526,8 @@ def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
 
 
 def test_tool_xml_parser_handles_hyphenated_function_names():
-    """MCP tool names are advertised as `mcp__srv__list-issues` (the regex
-    fix allows '-'); the XML tool-call parser must parse them too, else the
-    model can call the tool but Studio cannot dispatch."""
+    """Hyphenated tool names like `mcp__srv__list-issues` must parse, else the
+    model can call the tool but Studio can't dispatch."""
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
@@ -570,9 +561,8 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
 
 
 def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
-    """Document the contract: at the safetensors_agentic layer, tools=[] is
-    still "no constraint" (existing callers work unchanged). The real fix
-    for the MCP-only-no-discovery case lives at the route level in
+    """Contract: at the safetensors_agentic layer tools=[] means "no
+    constraint". The MCP-only-no-discovery fix lives at the route level in
     inference.py, which refuses use_tools when the resolved list is empty."""
     import threading
     from core.inference.safetensors_agentic import run_safetensors_tool_loop

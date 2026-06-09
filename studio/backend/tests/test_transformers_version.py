@@ -185,9 +185,8 @@ class TestNeedsTransformers5:
         config_cfg = {"model_name": "Qwen/Qwen3.5-9B"}
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
-        # ensure_transformers_version calls _resolve_base_model, but
-        # needs_transformers_5 just does substring matching. Test the
-        # full resolution chain here.
+        # needs_transformers_5 only does substring matching, so test the
+        # full resolution chain via _resolve_base_model here.
         resolved = _resolve_base_model(str(tmp_path))
         assert needs_transformers_5(resolved) is True
 
@@ -311,7 +310,6 @@ class TestGetTransformersTier:
 
     def test_550_checked_before_530(self):
         """5.5.0 is checked first — a model matching both gets 550."""
-        # Shouldn't happen in practice, but verifies priority.
         assert get_transformers_tier("gemma-4-model") == "550"
 
     def test_needs_transformers_5_compat(self):

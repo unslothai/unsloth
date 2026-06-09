@@ -61,10 +61,8 @@ def _parse_argparse_add_argument_default(source: str, option_name: str):
 def test_run_server_default_host_is_loopback():
     """run_server() 'host' default must be 127.0.0.1, not 0.0.0.0.
 
-    Binding to 0.0.0.0 by default exposes the service on all interfaces,
-    contradicting the "privacy first / 100% local" guarantee. Loopback
-    (127.0.0.1) is the least-permissive default; users who need network
-    access can pass -H 0.0.0.0 explicitly.
+    0.0.0.0 exposes the service on all interfaces; loopback is the
+    least-permissive default. Users needing network access pass -H 0.0.0.0.
     """
     source = _RUN_PY.read_text()
     defaults = _parse_function_param_defaults(source, "run_server")

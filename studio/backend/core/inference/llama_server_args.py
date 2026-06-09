@@ -72,10 +72,9 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def _flag_name(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels `--key=value` to `--key`, treats `-1` / `-0.5` as values
-    (llama-server shorts always start with a letter), strips whitespace, and
-    normalises attached `-np8` / signed `-np-1` / digit-prefix-junk `-np8x`
-    to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
+    Peels `--key=value` to `--key`, treats `-1`/`-0.5` as values (shorts
+    always start with a letter), and normalises attached `-np8` / `-np-1` /
+    `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -162,8 +161,8 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Return the last user-supplied ``-c`` / ``--ctx-size`` value.
 
-    Mirrors llama.cpp's last-wins parsing for the one pass-through numeric
-    knob Studio's load-time fit logic needs to see.
+    Mirrors llama.cpp's last-wins parsing for the one numeric knob Studio's
+    load-time fit logic needs.
     """
     if not args:
         return None
@@ -201,10 +200,8 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
     """Return the context size load_model should treat as requested.
 
-    Single source of truth for the ``ctx_override = parse_ctx_override(...);
-    requested_ctx = ctx_override if ctx_override is not None else n_ctx``
-    pattern used by ``load_model``, so tests don't reimplement the
-    conditional and assert against their own reimplementation.
+    Single source of truth for load_model's ctx-override conditional so
+    tests don't reimplement and assert against their own logic.
     """
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
@@ -213,10 +210,8 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
 def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last-wins cache type if extras pass cache flags.
 
-    Like parse_ctx_override but for cache type. Recognises -ctk (key) and
-    -ctv (value); when both appear, returns the last-wins value, treating
-    key and value flags as one setting because Studio's KV estimate has a
-    single cache_type_kv knob.
+    Recognises -ctk (key) and -ctv (value); treats both as one setting,
+    since Studio's KV estimate has a single cache_type_kv knob.
     """
     if not args:
         return None
@@ -271,8 +266,7 @@ def strip_shadowing_flags(
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
     inherited `-c 4096` can't override the current `max_seq_length` (same for
-    cache / spec / template). Each ``strip_*`` toggle controls one group; the
-    route only strips groups whose first-class field the caller supplied.
+    cache / spec / template). Each ``strip_*`` toggle controls one group.
     """
     shadowing: set[str] = set()
     if strip_context:

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Inference configuration loading utilities.
-
-Loads inference parameters (temperature, top_p, top_k, min_p) from model YAML
-configs, falling back to default.yaml. Includes family-based lookup from
-inference_defaults.json for GGUF models.
-"""
+"""Load inference params (temperature, top_p, top_k, min_p) from model YAML, family defaults, or default.yaml."""
 
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -48,17 +42,10 @@ def _load_family_defaults():
 
 
 def get_family_inference_params(model_id: str) -> Dict[str, Any]:
-    """
-    Look up recommended inference parameters by model family.
+    """Look up recommended inference params by model family.
 
     Extracts the family from the identifier (e.g. "unsloth/Qwen3.5-9B-GGUF" ->
-    "qwen3.5") and returns the matching params from inference_defaults.json.
-
-    Args:
-        model_id: Model identifier (e.g. "unsloth/Qwen3.5-9B-GGUF")
-
-    Returns:
-        Dict with inference params, or empty dict if no family match.
+    "qwen3.5") and returns matching params from inference_defaults.json, or {}.
     """
     _load_family_defaults()
 
@@ -87,13 +74,11 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     script_dir = Path(__file__).parent.parent.parent
     defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
 
-    # Check the mapping.
     if model_identifier.lower() in _REVERSE_MODEL_MAPPING:
         return True
 
-    # For local paths (e.g. C:\Users\...\model on Windows), normalize backslashes
-    # so Path().parts splits correctly on POSIX/WSL, then match the last 1-2 path
-    # components against the registry (mirrors load_model_defaults).
+    # For local paths, normalize backslashes so Path().parts splits correctly,
+    # then match the last 1-2 components against the registry (mirrors load_model_defaults).
     _is_local = is_local_path(model_identifier)
     _normalized = normalize_path(model_identifier) if _is_local else model_identifier
 
@@ -108,8 +93,7 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     else:
         _lookup = model_identifier
 
-    # Exact filename match (basename for local paths; passing absolute paths to
-    # rglob raises "Non-relative patterns are unsupported" on Windows).
+    # Exact filename match (basename for local paths; absolute paths break rglob on Windows).
     model_filename = _lookup.replace("/", "_") + ".yaml"
     for config_path in defaults_dir.rglob(model_filename):
         if config_path.is_file():
@@ -119,27 +103,11 @@ def _has_specific_yaml(model_identifier: str) -> bool:
 
 
 def load_inference_config(model_identifier: str) -> Dict[str, Any]:
+    """Load inference params for a model.
+
+    Priority: model-specific YAML, then family defaults (inference_defaults.json),
+    then default.yaml. Returns a dict of temperature/top_p/top_k/min_p/etc.
     """
-    Load inference configuration parameters for a model.
-
-    Priority chain:
-    1. Model-specific YAML (if it exists and has inference params).
-    2. Family-based defaults from inference_defaults.json.
-    3. default.yaml fallback.
-
-    Args:
-        model_identifier: Model identifier (e.g., "unsloth/llama-3-8b-bnb-4bit")
-
-    Returns:
-        Dict of inference parameters:
-        {
-            "temperature": float,
-            "top_p": float,
-            "top_k": int,
-            "min_p": float
-        }
-    """
-    # Model defaults for inference parameters.
     model_defaults = load_model_defaults(model_identifier)
 
     # default.yaml for fallback values.

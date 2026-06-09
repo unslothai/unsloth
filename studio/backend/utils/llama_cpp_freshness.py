@@ -53,10 +53,7 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
         return cached
     p = Path(binary_path)
     marker: Optional[dict] = None
-    # Cover all _find_llama_server_binary layouts:
-    #   <install>/llama-server                          (1 up)
-    #   <install>/build/bin/llama-server                (3 up, Linux/macOS cmake)
-    #   <install>/build/bin/Release/llama-server.exe   (4 up, Windows cmake)
+    # Cover all _find_llama_server_binary layouts (binary is 1-4 dirs deep):
     for parent in p.parents[:5]:
         candidate = parent / _INSTALL_MARKER_NAME
         if candidate.is_file():

@@ -1,6 +1,4 @@
 """
-dataset_none_detect.py
-
 Detect None/empty content turns in conversation datasets. Reports findings
 without modifying data.
 
@@ -71,10 +69,8 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                 break
         if first is None:
             # No usable dict turn in 100 rows. Record an all_corrupt fallback,
-            # plausible only if we saw turn-shaped data (a None cell or a list
-            # holding a dict/None turn); scalars and list-of-strings must not
-            # look like chatml. Upgrade a non-plausible fallback when a later
-            # candidate is plausible, so probe order keeps the best match.
+            # plausible only with turn-shaped data (None cell or list of dict/None
+            # turns); a later plausible candidate upgrades a non-plausible one.
             if all_corrupt_fallback is None or not all_corrupt_fallback.get("has_plausible_turns"):
                 has_plausible_turns = False
                 for i in range(min(len(dataset), 100)):

@@ -84,8 +84,8 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve IS_ROCM at access time so callers see the live value after
-    detect_hardware() runs (it flips the flag in hardware.py)."""
+    """Resolve IS_ROCM lazily so callers see the live value detect_hardware()
+    sets in hardware.py."""
     if name == "IS_ROCM":
         return getattr(_hardware, "IS_ROCM")
     raise AttributeError(name)

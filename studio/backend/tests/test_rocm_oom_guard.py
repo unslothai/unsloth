@@ -3,16 +3,12 @@
 
 """Unit tests for _rocm_classify_unified_memory (ROCm OOM-guard classifier).
 
-Three classification paths:
-  Path 1 – canonical gcnArchName attribute present.
-  Path 2 – gcnArchName absent, alternate-spelling attribute present.
-  Path 3 – ALL arch attrs absent; falls back to device-name substring match.
+Three paths: (1) canonical gcnArchName, (2) alternate-spelling attr, (3) all
+arch attrs absent -> device-name substring match.
 
-Regression: Strix Halo (gfx1151) misclassified as discrete on AMD SDK / Radeon
-wheels that set props.name = "Radeon 8060S Graphics" but no gcnArchName attr.
-Without the 8060s/8050s name patterns the fallback returned is_unified=False,
-applying 0.90 instead of 0.80 and leaving only ~12.8 GiB OS headroom on a
-128 GiB unified-memory pool.
+Regression: Strix Halo (gfx1151) was misclassified as discrete on Radeon wheels
+that set props.name="Radeon 8060S Graphics" but no gcnArchName, applying the
+wrong headroom factor on a 128 GiB unified-memory pool.
 """
 
 from __future__ import annotations

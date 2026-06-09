@@ -402,11 +402,9 @@ def test_already_in_target_state_vision_mtp_default_matches():
 
 
 def test_already_in_target_state_vision_off_matches_vision_backend():
-    # Vision loads silently drop speculative decoding at the route level
-    # (_request_matches_loaded_settings overrides req to "off"). In
-    # llama_cpp.py, _already_in_target_state compares canonical requested
-    # modes; a vision backend recorded with _requested_spec_mode = "off"
-    # matches a req of "off" or None+vision.
+    # Vision loads drop speculative decoding at the route level (req -> "off").
+    # _already_in_target_state compares canonical requested modes; a vision
+    # backend with _requested_spec_mode="off" matches req "off" or None+vision.
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
         _is_vision = True,

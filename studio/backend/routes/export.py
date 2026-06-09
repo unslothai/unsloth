@@ -16,17 +16,14 @@ from fastapi.responses import StreamingResponse
 import structlog
 from loggers import get_logger
 
-# Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Auth
 from auth.authentication import get_current_subject
 
 from utils.utils import safe_error_detail
 
-# Backend functions
 try:
     from core.export import get_export_backend
 except ImportError:
@@ -35,7 +32,6 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.export import get_export_backend
 
-# Pydantic models
 from models import (
     LoadCheckpointRequest,
     ExportStatusResponse,
@@ -56,9 +52,6 @@ async def load_checkpoint(
 ):
     """Load a checkpoint into the export backend (ExportBackend.load_checkpoint)."""
     try:
-        # The subprocess-based export backend handles version switching
-        # automatically — no ensure_transformers_version() needed here.
-
         # Free GPU memory: shut down running inference/training subprocesses
         # before loading the export checkpoint (they'd compete for VRAM).
         try:
@@ -81,8 +74,7 @@ async def load_checkpoint(
             if trn.is_training_active():
                 logger.info("Stopping active training to free GPU memory for export")
                 trn.stop_training()
-                # Wait for the training subprocess to exit; else it may still
-                # hold GPU memory when export tries to load.
+                # Wait for the training subprocess to exit, else it may still hold GPU memory.
                 for _ in range(60):  # up to 30s
                     if not trn.is_training_active():
                         break
@@ -94,9 +86,8 @@ async def load_checkpoint(
             logger.warning("Could not stop training: %s", e)
 
         backend = get_export_backend()
-        # load_checkpoint spawns and waits on a subprocess and can take
-        # minutes. Run it in a worker thread so the event loop stays free
-        # to serve the live log SSE stream concurrently.
+        # Run in a worker thread (spawns and waits on a subprocess, can take
+        # minutes) so the event loop stays free to serve the live log SSE stream.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -329,21 +320,14 @@ async def export_lora_adapter(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Live export log stream (Server-Sent Events)
-# ─────────────────────────────────────────────────────────────────────
+# Live export log stream (Server-Sent Events).
 #
-# The export worker subprocess redirects its stdout/stderr into a pipe a
-# reader thread forwards to the orchestrator as log entries (see
-# core/export/worker.py::_setup_log_capture and
-# core/export/orchestrator.py::_append_log). This endpoint streams those
-# entries to the browser so the export dialog shows a live terminal-style
-# panel while load_checkpoint / export_merged / export_gguf / export_lora /
-# export_base run.
+# The export worker's stdout/stderr is piped to the orchestrator as log
+# entries (core/export/worker.py, orchestrator.py); this endpoint streams
+# them to the browser for a live terminal panel during export operations.
 #
-# Shape follows the training progress SSE endpoint
-# (routes/training.py::stream_training_progress): each event carries `id`,
-# `event`, `data` fields, the stream starts with a `retry:` directive, and
+# Shape follows routes/training.py::stream_training_progress: each event
+# carries id/event/data, the stream starts with a `retry:` directive, and
 # `Last-Event-ID` is honored on reconnect.
 
 
@@ -388,11 +372,9 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID header on
-    # reconnect, else the run-start snapshot from clear_logs() so the client
-    # sees every line since the run began -- even if the SSE connection
-    # opened after the POST that kicked off the export. get_current_log_seq()
-    # would lose the early bootstrap lines arriving between POST and connect.
+    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect,
+    # else the run-start snapshot so the client sees every line since the run
+    # began even if the SSE connection opened after the export-kickoff POST.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -441,8 +423,8 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
-                        # Give the reader thread a moment to drain trailing
-                        # lines the worker printed just before signalling done.
+                        # Let the reader thread drain trailing lines printed just
+                        # before the worker signalled done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:
@@ -457,8 +439,7 @@ async def stream_export_logs(
 
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
-            # Client disconnected mid-yield. Don't re-raise; end the
-            # generator cleanly so StreamingResponse finalizes.
+            # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
             return
         except Exception as exc:
             logger.error("Export log stream failed: %s", exc, exc_info = True)

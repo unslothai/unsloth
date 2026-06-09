@@ -4,16 +4,14 @@
 """
 Safetensors/transformers agentic tool loop.
 
-Wraps a single-turn cumulative-text generator (the
-``InferenceOrchestrator.generate_chat_response`` pipeline streaming from a
-worker subprocess) with the tool-calling, thinking-block, status, and
-metadata event protocol used by the GGUF path. The front-end SSE shape
-stays identical across backends, so the chat UI is engine-agnostic.
+Wraps a single-turn cumulative-text generator with the same tool-calling,
+thinking-block, status, and metadata event protocol the GGUF path uses, so
+the front-end SSE shape is identical across backends.
 
-The GGUF path (``llama_cpp.py``) uses llama-server's structured
-``delta.tool_calls`` directly. Native transformers has no such channel, so
-this loop parses tool calls from the cumulative text and dispatches them
-via ``core.inference.tools``.
+Unlike the GGUF path (``llama_cpp.py``), which uses llama-server's structured
+``delta.tool_calls``, native transformers has no such channel, so this loop
+parses tool calls from the cumulative text and dispatches via
+``core.inference.tools``.
 """
 
 import json

@@ -3,29 +3,12 @@
 
 """Extended test matrix for ``LlamaCppBackend.load_progress()``.
 
-Companion to ``test_llama_cpp_load_progress.py`` (basic contract). Widens
-coverage to edge cases that bit (or were thought to bite) cross-platform
-installs:
+Companion to ``test_llama_cpp_load_progress.py`` (basic contract). Covers
+cross-platform edge cases: platform matrix (/proc absence), VmRSS parsing,
+filesystem edges (HF-cache symlinks, broken/missing/relative paths), shard
+aggregation, lifecycle races, concurrent sampling, and fraction bounds.
 
-  * Platform matrix — macOS/Windows via ``/proc`` absence.
-  * ``VmRSS`` parsing — tab vs space delimiter, missing line, malformed
-    integer.
-  * Filesystem edges — HF-cache symlinks, broken symlinks, nonexistent
-    paths, relative paths.
-  * Shard aggregation — partial multi-shard downloads with some shards
-    still ``.incomplete``, two shard series in one dir,
-    ``mmproj-*.gguf`` sibling exclusion for non-sharded primaries,
-    single-file models.
-  * Lifecycle races — process set before ``_gguf_path``, process dead
-    mid-sample, ``_healthy`` flipped to True.
-  * Concurrent sampling — 10 threads × 50 iterations against one
-    backend, hitting real ``/proc`` (no mocks — see
-    ``TestConcurrentSampling`` for why).
-  * Fraction bounds — capped at 1.0 when RSS exceeds total; 0.0 when
-    total is zero.
-
-Linux-only in practice (``/proc`` stubbed where needed). The stable
-subset runs in well under a second.
+Linux-only in practice (``/proc`` stubbed where needed).
 """
 
 from __future__ import annotations
@@ -40,10 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Stub heavy/unavailable deps before importing the module under test.
-# Same pattern as test_llama_cpp_load_progress.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -420,11 +400,8 @@ class TestConcurrentSampling:
     def test_parallel_invocations_never_raise(self, tmp_path):
         """Many concurrent samplers on one backend must not raise.
 
-        We do NOT patch ``builtins.open`` here: ``unittest.mock.patch``
-        is not thread-safe -- interleaved enter/exit across threads can
-        leak a Mock into ``builtins.open`` and poison later tests.
-        Instead each thread hits the real ``/proc/self/status``, the
-        code path that matters in prod.
+        No ``builtins.open`` patch: ``mock.patch`` isn't thread-safe and could
+        leak a Mock into ``open``. Each thread hits the real ``/proc/self/status``.
         """
         _sparse(tmp_path / "m.gguf", 1 * 1024**3)
         inst = _make()

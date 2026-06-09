@@ -28,11 +28,10 @@ def _is_valid_repo_id(repo_id: str) -> bool:
 def _safe_is_dir(path) -> bool:
     """``Path.is_dir()`` returning ``False`` instead of raising.
 
-    Python >= 3.12's ``is_dir()`` propagates ``PermissionError``
-    (EACCES); <= 3.11 returned ``False``. Folder-scan endpoints probe
-    system locations (e.g. root-owned mode-700
-    ``/usr/share/ollama/.ollama/models``) and must treat an un-stat-able
-    path as "not a directory", never 500.
+    Python >= 3.12 propagates ``PermissionError`` from ``is_dir()``;
+    folder-scan endpoints probe system locations (e.g. root-owned
+    ``/usr/share/ollama``) and must treat un-stat-able paths as "not a
+    directory", never 500.
     """
     try:
         return Path(path).is_dir()
@@ -40,14 +39,12 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
-# Add backend dir to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
 
-# Import backend functions
 try:
     from utils.models import (
         scan_trained_models,
@@ -76,7 +73,7 @@ try:
         resolve_export_dir,
     )
 except ImportError:
-    # Fallback: import from parent directory
+    # Fallback: import from parent directory.
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
@@ -164,14 +161,10 @@ def _resolve_hf_cache_dir() -> Path:
 def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
-    Requires **both** a config (``config.json`` or
-    ``adapter_config.json``) **and** weight files: loose ``.gguf`` files
-    without config may be a mixed collection, and config without weights
-    is not a model dir.
-
-    Excludes ``mmproj`` GGUF files (vision projectors) and non-weight
-    ``.bin`` files (``tokenizer.bin``, ``vocab.bin``, etc.) to avoid
-    false positives.
+    Requires both a config (``config.json``/``adapter_config.json``) and
+    weight files. Excludes ``mmproj`` GGUFs (vision projectors) and
+    non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid false
+    positives.
     """
 
     def _is_weight_file(f: Path) -> bool:
@@ -235,8 +228,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 or any(child.glob("*.gguf"))
             )
         except OSError:
-            # Skip unreadable children (permissions, broken symlinks)
-            # rather than failing the whole scan.
+            # Skip unreadable children rather than failing the scan.
             continue
         if not has_model_files:
             continue
@@ -253,7 +245,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 updated_at = updated_at,
             ),
         )
-    # Also scan standalone .gguf files in the models directory
+    # Also scan standalone .gguf files in the models directory.
     if limit is None or len(found) < limit:
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
@@ -317,10 +309,8 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If lm_dir is itself a model directory (config AND weights), it's
-    # not an LM Studio publisher structure -- return it as a single
-    # entry. Can't skip it silently: this is the only scanner called for
-    # default LM Studio roots.
+    # If lm_dir is itself a model directory (not a publisher structure),
+    # return it as a single entry rather than skipping it silently.
     if _is_model_directory(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
@@ -356,9 +346,8 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                     )
                 continue
 
-            # If the child looks like a model directory (config AND
-            # weights), surface it directly instead of descending into
-            # it as a publisher.
+            # Surface a model-directory child directly instead of
+            # descending into it as a publisher.
             if _is_model_directory(child):
                 try:
                     updated_at = child.stat().st_mtime
@@ -375,7 +364,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 )
                 continue
 
-            # child is a publisher directory -- scan its subdirectories
+            # child is a publisher directory; scan its subdirectories.
             for model_dir in child.iterdir():
                 try:
                     if model_dir.is_dir():
@@ -427,10 +416,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     """Return a writable directory for Ollama ``.gguf`` symlinks.
 
     Prefers ``<ollama_dir>/.studio_links/`` so links sit next to their
-    blobs. Falls back to a per-ollama-dir namespace under Studio's cache
-    when the models dir is read-only (common for system installs under
-    ``/usr/share/ollama`` or ``/var/lib/ollama``) so Ollama models still
-    surface there.
+    blobs; falls back to a per-ollama-dir namespace under Studio's cache
+    when the models dir is read-only (common for system installs).
     """
     from utils.paths.storage_roots import cache_root
 
@@ -445,8 +432,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
             e,
         )
 
-    # Fallback: namespace by a hash of ollama_dir so two Ollama roots
-    # don't collide. Cache path, not a security boundary.
+    # Fallback: namespace by a hash of ollama_dir so two roots don't
+    # collide. Cache path, not a security boundary.
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except OSError:
@@ -467,29 +454,19 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
-    Ollama uses a content-addressable layout::
-
-        <ollama_dir>/manifests/<host>/<namespace>/<model>/<tag>
-        <ollama_dir>/blobs/sha256-...
-
-    Default host is ``registry.ollama.ai`` namespace ``library``
-    (official), but users can pull from custom namespaces
-    (``mradermacher/llama3``) or other hosts (``hf.co/org/repo:tag``).
-    We ``rglob`` all manifest files so every layout depth is found.
-
-    Each manifest is JSON with a ``layers`` array. The
-    ``application/vnd.ollama.image.model`` layer holds the GGUF weights;
-    vision models add an ``application/vnd.ollama.image.projector``
-    layer. We read the config layer for family/size info.
+    Ollama uses a content-addressable layout
+    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``);
+    we ``rglob`` all manifests so every layout depth is found. Each
+    manifest is JSON with a ``layers`` array: the
+    ``application/vnd.ollama.image.model`` layer holds the GGUF weights
+    and ``...image.projector`` is the vision adapter.
 
     Ollama blobs lack the ``.gguf`` extension the loading pipeline
-    requires, so we create ``.gguf``-named links to them so
-    ``detect_gguf_model`` and ``llama-server -m`` work unchanged. Each
-    model gets its own subdir under the links dir (keyed by a short hash
-    of the manifest path) so ``detect_mmproj_file`` only sees that
-    model's projector. Links are symlinks when possible, falling back to
-    hardlinks (Windows without Developer Mode). The link dir is
-    ``<ollama_dir>/.studio_links/`` when writable, else Studio's cache.
+    requires, so we create ``.gguf``-named links to them (one subdir per
+    model, keyed by a short hash of the manifest path, so
+    ``detect_mmproj_file`` only sees that model's projector). Links are
+    symlinks when possible, else hardlinks; the link dir is
+    ``.studio_links/`` when writable, else Studio's cache.
     """
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
@@ -508,10 +485,8 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     def _make_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
         """Create a .gguf-named link to an Ollama blob.
 
-        Tries symlink, then hardlink (Windows without Developer Mode,
-        same filesystem). Skips the model if neither works -- a full
-        multi-GB copy in a sync API request would block the backend.
-
+        Tries symlink, then hardlink; skips the model if neither works
+        (a multi-GB copy in a sync request would block the backend).
         Idempotent: skips recreation when a valid link already exists.
         """
         link_dir.mkdir(parents = True, exist_ok = True)
@@ -519,8 +494,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
         resolved = target.resolve()
 
         # Skip if the link already points at the same blob. Use samefile
-        # only -- size checks can reuse stale links after `ollama pull`
-        # updates a tag to a same-sized blob.
+        # only; size checks can reuse stale links after `ollama pull`.
         try:
             if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
                 return str(link_path)
@@ -673,10 +647,7 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    List local model candidates from custom models dir, HF cache,
-    legacy Unsloth HF cache, and LM Studio directories.
-    """
+    """List local model candidates from the models dir, HF caches, and LM Studio dirs."""
     from utils.paths import (
         legacy_hf_cache_dir,
         hf_default_cache_dir,
@@ -691,7 +662,7 @@ async def list_local_models(
 
     # Validate models_dir against an allowlist of trusted dirs. Only the
     # trusted Path objects are used for FS access; the user string is
-    # only used for matching, never for path construction.
+    # used for matching only, never for path construction.
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if legacy_hf.is_dir():
         allowed_roots.append(legacy_hf)
@@ -719,11 +690,11 @@ async def list_local_models(
     try:
         local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
 
-        # Scan legacy Unsloth HF cache for backward compatibility
+        # Scan legacy Unsloth HF cache for backward compatibility.
         if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
             local_models += _scan_hf_cache(legacy_hf)
 
-        # Scan HF system default cache (may differ under env overrides)
+        # Scan HF system default cache (may differ under env overrides).
         if (
             hf_default.is_dir()
             and hf_default.resolve() != hf_cache_dir.resolve()
@@ -731,11 +702,11 @@ async def list_local_models(
         ):
             local_models += _scan_hf_cache(hf_default)
 
-        # Scan LM Studio directories
+        # Scan LM Studio directories.
         for lm_dir in lm_dirs:
             local_models += _scan_lmstudio_dir(lm_dir)
 
-        # Scan user-added custom folders (per-folder cap)
+        # Scan user-added custom folders (per-folder cap).
         from storage.studio_db import list_scan_folders
 
         _MAX_MODELS_PER_FOLDER = 200
@@ -747,9 +718,8 @@ async def list_local_models(
         for folder in custom_folders:
             folder_path = Path(folder["path"])
             try:
-                # Ollama scanner creates .studio_links/ with .gguf
-                # symlinks. Filter those from generic scanners to avoid
-                # duplicates and leaking internal paths into the UI.
+                # Filter Ollama .studio_links/ from generic scanners to
+                # avoid duplicates and leaking internal paths into the UI.
                 _generic = [
                     m
                     for m in (
@@ -770,10 +740,9 @@ async def list_local_models(
                 continue
             local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
 
-        # Deduplicate, but always keep custom folder entries so they show
-        # in the "Custom Folders" UI section even when the same model is
-        # also in the HF cache or default models dir. Custom entries use
-        # an (id, source) key to avoid collisions.
+        # Deduplicate, but always keep custom folder entries (keyed by
+        # (id, source)) so they show in the "Custom Folders" UI section
+        # even when the model is also in the HF cache.
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
             key = f"{model.id}\x00custom" if model.source == "custom" else model.id
@@ -820,8 +789,7 @@ async def add_scan_folder_endpoint(
         folder = add_scan_folder(body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
-        # Curated, path-free validation message (e.g. "Path does not exist"):
-        # forward the text, not the raw exception.
+        # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
@@ -844,10 +812,9 @@ async def remove_scan_folder_endpoint(
 async def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
     """Return well-known model directories that exist on this machine.
 
-    Lightweight alternative to ``browse-folders`` for quick-pick chips
-    without enumerating a directory tree. Returns paths that exist on
-    disk (HF cache, LM Studio, Ollama, ``~/models``, etc.) for the
-    frontend's one-click "Recommended" shortcuts.
+    Lightweight alternative to ``browse-folders`` for the frontend's
+    one-click "Recommended" chips; returns existing paths only (HF
+    cache, LM Studio, Ollama, ``~/models``, etc.).
     """
     from utils.paths.storage_roots import lmstudio_model_dirs
 
@@ -867,14 +834,14 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
             seen.add(resolved)
             folders.append(resolved)
 
-    # LM Studio model directories
+    # LM Studio model directories.
     try:
         for p in lmstudio_model_dirs():
             _add(p)
     except Exception as e:
         logger.warning("Failed to scan for LM Studio model directories: %s", e)
 
-    # Ollama model directories
+    # Ollama model directories.
     ollama_env = os.environ.get("OLLAMA_MODELS")
     if ollama_env:
         _add(Path(ollama_env).expanduser())
@@ -889,24 +856,19 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
 
 
 # Max children to stat when checking if a directory "looks like" it
-# holds models. Keeps the browser snappy on dirs with thousands of
-# unrelated entries.
+# holds models; keeps the browser snappy on huge dirs.
 _BROWSE_MODEL_HINT_PROBE = 64
-# Hard cap on subdirectory entries returned. Browsing ``/usr/lib`` or
-# ``/proc`` must not stat-storm the process or send tens of thousands of
-# rows to the client.
+# Hard cap on subdirectory entries returned, so browsing ``/usr/lib``
+# can't stat-storm the process or flood the client.
 _BROWSE_ENTRY_CAP = 2000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
     """Count GGUF/safetensors files immediately inside *directory*.
 
-    Surfaces a count-hint so the UI can mark a leaf directory (no
-    subdirs, only weights) as a valid "Use this folder" target.
-
-    Bounded by *visited entries*, not match count: the scan stops after
-    ``cap`` entries even in dirs full of non-model files/subdirs, so a UI
-    hint never costs more than a bounded directory walk.
+    Surfaces a count-hint so the UI can mark a weights-only leaf dir as a
+    valid "Use this folder" target. Bounded by *visited entries* (stops
+    after ``cap``), so the hint never costs more than a bounded walk.
     """
     n = 0
     visited = 0
@@ -932,10 +894,9 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
 
 
 def _has_direct_model_signal(directory: Path) -> bool:
-    """Return True if *directory* has an immediate child signalling a
-    model: a GGUF/safetensors/config.json file, or a `models--*` subdir
-    (HF hub cache). Bounded by ``_BROWSE_MODEL_HINT_PROBE`` to stay
-    fast."""
+    """Return True if an immediate child signals a model: a
+    GGUF/safetensors/config.json file or a ``models--*`` subdir (HF
+    cache). Bounded by ``_BROWSE_MODEL_HINT_PROBE``."""
     try:
         it = directory.iterdir()
     except OSError:
@@ -962,22 +923,13 @@ def _has_direct_model_signal(directory: Path) -> bool:
 
 
 def _looks_like_model_dir(directory: Path) -> bool:
-    """Bounded heuristic to flag directories worth exploring in the
-    folder browser. False negatives are fine; the real scanner is
-    authoritative.
+    """Bounded heuristic to flag dirs worth exploring in the browser.
 
-    Three signals, cheapest first:
-
-    1. Directory name ``models--*`` (HuggingFace hub cache layout; its
-       ``blobs``/``refs``/``snapshots`` children wouldn't match the
-       file-level probes below).
-    2. An immediate child is a weight file or config (via
-       :func:`_has_direct_model_signal`).
-    3. A grandchild has a direct signal -- catches the
-       ``publisher/model/weights.gguf`` layout of LM Studio and Ollama.
-       Probes at most the first ``_BROWSE_MODEL_HINT_PROBE`` child dirs,
-       each via a bounded :func:`_has_direct_model_signal`, so total cost
-       is O(PROBE^2) worst-case.
+    False negatives are fine (the real scanner is authoritative). Three
+    signals, cheapest first: (1) name ``models--*`` (HF cache layout),
+    (2) an immediate child weight/config file, (3) a grandchild with a
+    direct signal (LM Studio / Ollama ``publisher/model`` layout, probing
+    the first ``_BROWSE_MODEL_HINT_PROBE`` child dirs).
     """
     if directory.name.startswith("models--"):
         return True
@@ -997,7 +949,6 @@ def _looks_like_model_dir(directory: Path) -> bool:
                     continue
             except OSError:
                 continue
-            # Fast name check first.
             if child.name.startswith("models--"):
                 return True
             if _has_direct_model_signal(child):
@@ -1008,15 +959,13 @@ def _looks_like_model_dir(directory: Path) -> bool:
 
 
 def _build_browse_allowlist() -> list[Path]:
-    """Return the root directories the folder browser may walk. The same
-    list seeds the sidebar suggestion chips, so chip targets are always
-    reachable.
+    """Return the root directories the folder browser may walk.
 
-    Roots: the user's HOME, resolved HF cache dirs, Studio's
+    The same list seeds the sidebar suggestion chips, so chip targets are
+    always reachable. Roots: HOME, resolved HF cache dirs, Studio's
     outputs/exports/studio root, registered scan folders, and well-known
-    third-party local-LLM dirs (LM Studio, Ollama, `~/models`). Each is
-    added only if it resolves to a real directory, so we never produce a
-    "dead" sandbox boundary.
+    local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
+    it resolves to a real directory.
     """
     from utils.paths import (
         hf_default_cache_dir,
@@ -1085,7 +1034,8 @@ def _build_browse_allowlist() -> list[Path]:
 
 
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
-    """Return True if *target* equals or descends from any allowed root.
+    """True if *target* equals or descends from any allowed root.
+
     Uses ``os.path.realpath`` so symlinks can't escape the sandbox.
     """
     try:
@@ -1243,31 +1193,21 @@ async def browse_folders(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    List immediate subdirectories of *path* for the Custom Folders picker.
+    """List immediate subdirectories of *path* for the Custom Folders picker.
 
     Lets the frontend render a modal folder browser without a native OS
-    dialog (Studio is served over HTTP, so the browser can't reveal host
-    paths). Read-only: it only enumerates visible subdirectories so the
-    user can click to a folder and hand the string back to POST
-    `/api/models/scan-folders`.
+    dialog. Read-only: enumerates visible subdirectories so the user can
+    click to a folder and hand the string to POST /api/models/scan-folders.
 
-    Sandbox: bounded to the allowlist from
-    :func:`_build_browse_allowlist` (HOME, HF cache, Studio dirs,
-    registered scan folders, well-known model dirs). Paths outside it
-    return 403 so users can't probe ``/etc``, ``/proc``, ``/root`` (when
-    not HOME), or other sensitive locations even if the process can read
-    them. Symlinks are resolved via ``os.path.realpath`` first, so
-    traversal can't escape the sandbox.
-
-    Sorting: model-bearing dirs first, then plain dirs, then hidden
-    entries (if `show_hidden=true`).
+    Sandbox: bounded to :func:`_build_browse_allowlist`; paths outside it
+    return 403, and symlinks are resolved via ``os.path.realpath`` first
+    so traversal can't escape. Sorting: model-bearing dirs, then plain,
+    then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from storage.studio_db import list_scan_folders
 
-    # Build the allowlist once -- the sandbox check and suggestion chips
-    # share it, so chips are always navigable.
+    # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist()
 
     try:
@@ -1282,8 +1222,7 @@ async def browse_folders(
             )
         raise
 
-    # Enumerate immediate subdirectories with a bounded cap so a stray
-    # query against ``/usr/lib`` or ``/proc`` can't stat-storm us.
+    # Enumerate immediate subdirectories with a bounded cap.
     entries: list[BrowseEntry] = []
     truncated = False
     visited = 0
@@ -1303,12 +1242,9 @@ async def browse_folders(
 
     try:
         for child in it:
-            # Bound by *visited*, not *appended*: in dirs full of files
-            # (or hidden subdirs when ``show_hidden=False``) a cap on
-            # ``len(entries)`` would never trigger and we'd stat every
-            # child. Counting visits caps worst-case work at
-            # ``_BROWSE_ENTRY_CAP`` iterdir/is_dir calls regardless of
-            # how many survive the filters below.
+            # Bound by *visited*, not *appended*: a cap on len(entries)
+            # would never trigger in dirs full of files. Counting visits
+            # caps worst-case work at ``_BROWSE_ENTRY_CAP`` calls.
             visited += 1
             if visited > _BROWSE_ENTRY_CAP:
                 truncated = True
@@ -1336,10 +1272,10 @@ async def browse_folders(
             exc,
         )
     except OSError as exc:
-        # Rare: iterdir succeeded but reading a specific entry failed.
+        # Rare: iterdir succeeded but reading an entry failed.
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
 
-    # Model-bearing dirs first, then plain, then hidden; case-insensitive
+    # Model-bearing first, then plain, then hidden; case-insensitive
     # alphabetical within each bucket.
     def _sort_key(e: BrowseEntry) -> tuple[int, str]:
         bucket = 0 if e.has_models else (2 if e.hidden else 1)
@@ -1347,10 +1283,9 @@ async def browse_folders(
 
     entries.sort(key = _sort_key)
 
-    # Parent is None at the filesystem root (`p.parent == p`) and when
-    # the parent would leave the sandbox -- otherwise the up-row would
-    # 403 on click. Users can still hop to other allowed roots via the
-    # suggestion chips below.
+    # Parent is None at the filesystem root and when it would leave the
+    # sandbox (else the up-row would 403 on click); users can still hop
+    # to other allowed roots via the suggestion chips.
     parent: Optional[str]
     if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
         parent = None
@@ -1387,12 +1322,8 @@ async def browse_folders(
             _add_sug(Path(folder.get("path", "")))
     except Exception as exc:
         logger.debug("browse-folders: could not load scan folders: %s", exc)
-    # Dirs used by other local-LLM tools: LM Studio
-    # (`~/.lmstudio/models` + legacy `~/.cache/lm-studio/models` + LM
-    # Studio settings.json downloadsFolder), Ollama (`~/.ollama/models`
-    # + common system paths + OLLAMA_MODELS env var), and generic spots
-    # (`~/models`, `~/Models`). Each helper returns only existing paths
-    # so we never show dead chips.
+    # Dirs used by other local-LLM tools (LM Studio, Ollama, ~/models);
+    # the helper returns only existing paths, so no dead chips.
     try:
         for p in well_known_model_dirs():
             _add_sug(p)
@@ -1410,8 +1341,8 @@ async def browse_folders(
 
 
 def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models, mirrors the -GGUF suffix check.
-    Tokenized so MLX only matches as a whole name segment."""
+    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
+    tokenized so MLX only matches as a whole name segment."""
     if model_id.lower().startswith("mlx-community/"):
         return True
     tail = model_id.split("/")[-1]
@@ -1459,14 +1390,12 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 )
             )
 
-        # Combine default and loaded models.
+        # Combine default and loaded; prefer loaded entries for duplicate
+        # ids so runtime flags survive.
         all_models = []
         seen_ids = set()
-
-        # Prefer loaded entries for duplicate ids so runtime flags survive.
         loaded_by_id = {model_info.id: model_info for model_info in loaded_models}
 
-        # Add default models
         for model_id in default_models:
             if model_id not in seen_ids:
                 model_info = loaded_by_id.get(model_id) or ModelDetails(
@@ -1478,7 +1407,6 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 all_models.append(model_info)
                 seen_ids.add(model_id)
 
-        # Add loaded models.
         for model_info in loaded_models:
             if model_info.id not in seen_ids:
                 all_models.append(model_info)
@@ -1551,12 +1479,11 @@ async def get_model_config(
 
         config_dict = load_model_defaults(model_name)
 
-        # Detect capabilities (pass HF token for gated models).
+        # Detect capabilities (HF token for gated models).
         is_vision = is_vision_model(model_name, hf_token = hf_token)
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
         audio_type = detect_audio_type(model_name, hf_token = hf_token)
 
-        # Check if it's a LoRA adapter.
         is_lora = False
         base_model = None
         max_position_embeddings = None
@@ -1568,7 +1495,7 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: try AutoConfig directly if not found yet.
+        # Fallback: try AutoConfig directly.
         if max_position_embeddings is None:
             try:
                 from transformers import AutoConfig as _AutoConfig
@@ -1630,7 +1557,6 @@ async def scan_loras(
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
         lora_list = []
 
-        # Scan training outputs.
         trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
         for display_name, model_path, model_type in trained_models:
             base_model = get_base_model_from_checkpoint(model_path)
@@ -2092,16 +2018,15 @@ async def get_gguf_variants(
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF quantization variants for a HuggingFace repo or local
-    directory (e.g. LM Studio model folder).
+    """List GGUF quantization variants for a HF repo or local directory.
 
-    Returns all variants (Q4_K_M, Q8_0, BF16, etc.) with file sizes,
-    whether the model supports vision, and the recommended default.
+    Returns all variants with file sizes, vision support, and the
+    recommended default.
     """
     try:
         from utils.models.model_config import is_local_path, list_local_gguf_variants
 
-        # Local directory path (e.g. LM Studio models) — scan filesystem.
+        # Local directory path — scan filesystem.
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
 
@@ -2127,22 +2052,19 @@ async def get_gguf_variants(
         # Remote HuggingFace repo — query HF API.
         variants, has_vision = list_gguf_variants(repo_id, hf_token = hf_token)
 
-        # Determine default variant.
         filenames = [v.filename for v in variants]
         best = _pick_best_gguf(filenames)
         default_variant = _extract_quant_label(best) if best else None
 
         # Which variants are fully downloaded in the HF cache. For split
-        # GGUFs, ALL shards must be present -- sum cached bytes per
-        # variant vs. the expected total. The HF cache dir uses the
-        # repo_id casing from download time, which may differ from the
+        # GGUFs ALL shards must be present, so sum cached bytes per variant
+        # vs. the expected total. Cache dir casing may differ from the
         # canonical repo_id, so match case-insensitively.
         cached_bytes_by_quant: dict[str, int] = {}
         try:
             import re as _re
             from huggingface_hub import constants as hf_constants
 
-            # Sanitize repo_id: "owner/name" with safe chars only.
             if not _is_valid_repo_id(repo_id):
                 raise ValueError(f"Invalid repo_id format: {repo_id}")
 
@@ -2166,7 +2088,7 @@ async def get_gguf_variants(
             cached = cached_bytes_by_quant.get(variant.quant, 0)
             if cached == 0 or variant.size_bytes == 0:
                 return False
-            # Small rounding tolerance (symlinks vs real sizes).
+            # Rounding tolerance (symlinks vs real sizes).
             return cached >= variant.size_bytes * 0.99
 
         return GgufVariantsResponse(
@@ -2226,7 +2148,7 @@ async def get_gguf_download_progress(
                     fname = f.name.lower().replace("-", "").replace("_", "")
                     if not variant_lower or variant_lower in fname:
                         downloaded_bytes += f.stat().st_size
-                # In-progress downloads (.incomplete) in blobs.
+                # In-progress (.incomplete) downloads in blobs.
                 blobs_dir = entry / "blobs"
                 if blobs_dir.is_dir():
                     for f in blobs_dir.iterdir():
@@ -2251,9 +2173,9 @@ async def get_gguf_download_progress(
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
     """Pick the most useful on-disk path for a HF cache repo.
 
-    Prefers the most-recent snapshot dir (what `from_pretrained` points
-    at), falling back to the cache repo root. Returns the resolved
-    realpath so symlinks under snapshots/ follow back to blobs/.
+    Prefers the most-recent snapshot dir (what ``from_pretrained`` uses),
+    falling back to the cache repo root. Returns the resolved realpath so
+    snapshot symlinks follow back to blobs/.
     """
     try:
         snapshots_dir = repo_dir / "snapshots"
@@ -2318,7 +2240,6 @@ async def get_download_progress(
         if downloaded_bytes == 0:
             return {**_empty, "cache_path": cache_path}
 
-        # Expected size from HF API (cached per repo_id).
         expected_bytes = _get_repo_size_cached(repo_id)
         if expected_bytes <= 0:
             # Total unknown; report bytes only, no percentage.
@@ -2329,10 +2250,9 @@ async def get_download_progress(
                 "cache_path": cache_path,
             }
 
-        # 95% completion threshold (blob dedup can make completed_bytes
-        # differ slightly from expected_bytes). Do NOT treat "no
-        # .incomplete files" as done -- HF downloads sequentially, so
-        # between files none exist even though it's far from finished.
+        # 95% threshold (blob dedup can skew completed_bytes). Do NOT
+        # treat "no .incomplete files" as done: HF downloads sequentially,
+        # so none exist between files even when far from finished.
         if completed_bytes >= expected_bytes * 0.95:
             progress = 1.0
         else:
@@ -2374,7 +2294,7 @@ def _all_hf_cache_scans():
     scans = [scan_cache_dir()]
     seen: set[str] = set()
     try:
-        # Resolve the active cache dir for deduplication.
+        # Resolve the active cache dir for dedup.
         from huggingface_hub.constants import HF_HUB_CACHE
         seen.add(str(Path(HF_HUB_CACHE).resolve()))
     except Exception:

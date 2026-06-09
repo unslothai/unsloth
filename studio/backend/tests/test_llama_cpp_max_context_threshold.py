@@ -28,10 +28,8 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Stub heavy / unavailable deps before importing the module under test.
 # Same pattern as test_kv_cache_estimation.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -79,9 +77,7 @@ sys.modules.setdefault("httpx", _httpx_stub)
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 GIB = 1024**3
 
@@ -154,9 +150,7 @@ def _compute_max_available_ctx(
     return max_available_ctx
 
 
-# ---------------------------------------------------------------------------
 # Weights exceed every GPU subset's VRAM  (MiniMax-M2.7-like)
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthForWeightsExceedVRAM:
@@ -193,9 +187,7 @@ class TestMaxContextLengthForWeightsExceedVRAM:
         assert got == 2048
 
 
-# ---------------------------------------------------------------------------
 # Fittable models (regression guard)
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthForFittableModels:
@@ -233,9 +225,7 @@ class TestMaxContextLengthForFittableModels:
         assert got >= 131072 - 256  # rounded to 256 boundary
 
 
-# ---------------------------------------------------------------------------
 # Property plumbing
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthProperty:

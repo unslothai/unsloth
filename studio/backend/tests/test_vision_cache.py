@@ -20,9 +20,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # sys.path + logger stub — same pattern as the rest of the test suite
-# ---------------------------------------------------------------------------
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -38,9 +36,7 @@ from utils.models.model_config import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse = True)
@@ -51,9 +47,7 @@ def _clear_vision_cache():
     _vision_detection_cache.clear()
 
 
-# ---------------------------------------------------------------------------
 # Cache hit / miss tests
-# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheHitMiss:
@@ -93,9 +87,7 @@ class TestVisionCacheStoresFalse:
         assert _vision_detection_cache[("org/text-only", None)] is False
 
 
-# ---------------------------------------------------------------------------
 # Subprocess path (transformers 5.x) caching
-# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheSubprocessPath:
@@ -128,9 +120,7 @@ class TestVisionCacheSubprocessPath:
         mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
 
 
-# ---------------------------------------------------------------------------
 # Exception handling — cache the False fallback
-# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheOnException:
@@ -146,14 +136,10 @@ class TestVisionCacheOnException:
     def test_permanent_exception_result_cached(self, mock_needs_t5, mock_load_config):
         """A permanent failure (ValueError / RepositoryNotFoundError /
         GatedRepoError / JSONDecodeError) is caught, returns False, and
-        that False is cached so subsequent calls don't retry.
-
-        ValueError is used as the simplest cacheable exception type that
-        avoids importing huggingface_hub errors (whose module path
-        varies across versions)."""
-        # First call: load_model_config raises -> except branch -> False.
+        that False is cached so subsequent calls don't retry. ValueError
+        stands in as the simplest cacheable exception type."""
+        # First call raises -> False; second is a cache hit.
         assert is_vision_model("broken/model") is False
-        # Second call: cache hit, load_model_config not called again.
         assert is_vision_model("broken/model") is False
         mock_load_config.assert_called_once()
 
@@ -164,21 +150,15 @@ class TestVisionCacheOnException:
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     def test_transient_exception_not_cached(self, mock_needs_t5, mock_load_config):
         """A transient failure (OSError, timeouts) returns None from
-        _is_vision_model_uncached, surfaces as False to the caller, and
-        is NOT cached, so the next call retries. Matches the documented
-        _vision_detection_cache behaviour: 'transient failures (network
-        errors, timeouts) are NOT cached so they can be retried.'"""
-        # First call: OSError -> uncached None -> caller returns False,
-        # no caching.
+        _is_vision_model_uncached, surfaces as False, and is NOT cached
+        so the next call retries."""
+        # First call: OSError -> False, not cached; second call retries.
         assert is_vision_model("broken/model") is False
-        # Second call: cache miss again, load_model_config called twice.
         assert is_vision_model("broken/model") is False
         assert mock_load_config.call_count == 2
 
 
-# ---------------------------------------------------------------------------
 # Direct detection path (non-transformers-5 models) caching
-# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheDirectPath:
@@ -278,9 +258,7 @@ class TestVisionCacheDirectPath:
         mock_load_config.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # hf_token handling
-# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheTokenHandling:

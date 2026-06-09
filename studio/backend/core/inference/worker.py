@@ -4,14 +4,10 @@
 """
 Inference subprocess entry point.
 
-Each inference session runs in a persistent subprocess
-(mp.get_context("spawn")), giving a clean Python interpreter with no stale
-module state — fully solving the transformers version-switching problem.
-
-The subprocess stays alive while a model is loaded, accepting commands
-(generate, load, unload) via mp.Queue. It exits on shutdown or unload.
-
-Pattern follows core/training/worker.py.
+Each session runs in a persistent spawn subprocess, giving a clean interpreter
+with no stale module state (solves transformers version-switching). It stays
+alive while a model is loaded, taking commands (generate, load, unload) via
+mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.py.
 """
 
 from __future__ import annotations
@@ -96,16 +92,10 @@ def _build_model_config(config: dict):
 def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, bool] | None:
     """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
 
-    When *model_names* is provided, only those models' ``blobs/`` dirs are
-    checked instead of scanning every cached model -- much faster with many
-    models. Accepts multiple names so LoRA loads can watch both the adapter
-    repo and the base model repo at once.
-
-    *has_incomplete* is True when any ``*.incomplete`` files exist in the
-    watched blobs dirs, indicating ``huggingface_hub`` is actively downloading.
-
-    Returns None if the state cannot be determined (import error, permission
-    error, etc.) so callers can skip stall logic.
+    With *model_names*, only those models' ``blobs/`` dirs are checked (faster);
+    accepts multiple names so LoRA loads can watch adapter + base repos at once.
+    *has_incomplete* is True when any ``*.incomplete`` files exist (download
+    active). None means state could not be determined, so callers skip stall logic.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -123,10 +113,8 @@ def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, b
             for name in model_names:
                 if not name:
                     continue
-                # Skip local filesystem paths -- HF model IDs use forward
-                # slashes (org/model) but never start with / . ~ or contain
-                # backslashes, distinguishing them from absolute, relative,
-                # and Windows paths.
+                # Skip local filesystem paths -- HF IDs (org/model) never start
+                # with / . ~ or contain backslashes.
                 if name.startswith(("/", ".", "~")) or "\\" in name:
                     continue
                 name = resolve_cached_repo_id_case(name)
@@ -163,16 +151,10 @@ def _start_heartbeat(
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
-    Monitors the HF Hub cache for download activity. A stall is reported only
-    when ``*.incomplete`` files are present (``huggingface_hub`` is actively
-    downloading) **and** the total cache size has not changed for
-    *stall_timeout* seconds.
-
-    Once the download finishes (no more ``.incomplete`` files), the stall timer
-    resets, so post-download init (quantization, GPU weight loading) is never
-    misclassified as a stalled download.
-
-    Returns a stop event -- set it to terminate the heartbeat thread.
+    A stall is reported only when ``*.incomplete`` files are present (download
+    active) AND cache size hasn't changed for *stall_timeout* seconds. When the
+    download finishes the timer resets, so post-download init (quantization, GPU
+    weight load) isn't misclassified as a stall. Returns a stop event.
     """
     stop = threading.Event()
     transport = "https" if xet_disabled else "xet"
@@ -204,9 +186,8 @@ def _start_heartbeat(
                 last_size = current_size
                 last_change = now
 
-            # Only fire stall when .incomplete files confirm a download is in
-            # progress. Once downloads finish (no .incomplete), reset the timer
-            # so model init time is not counted as a stall.
+            # Only fire stall while .incomplete files confirm an active download;
+            # reset the timer otherwise so model init isn't counted as a stall.
             if not has_incomplete:
                 last_change = now
             elif now - last_change >= stall_timeout:
@@ -221,7 +202,7 @@ def _start_heartbeat(
                         "ts": time.time(),
                     },
                 )
-                # Only fire once -- the orchestrator will kill us.
+                # fire once -- the orchestrator will kill us
                 return
 
             _send_response(
@@ -277,10 +258,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for NemotronH/Nano models only:
-        # NemotronH has config parsing bugs requiring trust_remote_code=True.
-        # Other transformers 5.x models are native and do NOT need it.
-        # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+        # Auto-enable trust_remote_code only for NemotronH/Nano (config parsing
+        # bugs require it). Must NOT match Llama-Nemotron (standard Llama arch).
         _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
@@ -295,12 +274,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_name,
                 )
 
-        # Send heartbeats every 30s so the orchestrator knows we're alive
-        # (download/weight loading can be slow on slow connections).
+        # Heartbeat every 30s so the orchestrator knows we're alive during slow loads.
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
 
-        # Watch both the model repo and base model repo (for LoRA loads where
-        # the base model download is the real bottleneck).
+        # Watch model + base repos (base download is the LoRA bottleneck).
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
@@ -338,8 +315,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
-            # Forward chat_template_info so the parent can classify capabilities
-            # without re-entering the subprocess.
+            # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _bm = getattr(backend, "models", {}) or {}
                 _entry = (
@@ -394,21 +370,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
-    cancel_event is an mp.Event shared with the parent. The parent can set it
-    at any time (e.g. user stops generation, or loads a new model mid-generate)
-    and generation stops within 1-2 tokens.
+    cancel_event is an mp.Event the parent can set anytime (user stop, or new
+    model load mid-generate); generation stops within 1-2 tokens.
     """
     request_id = cmd.get("request_id", "")
 
     try:
-        # Decode image if provided.
         image = None
         image_b64 = cmd.get("image_base64")
         if image_b64:
             image = _decode_image(image_b64)
             image = _resize_image(image)
 
-        # Build generation kwargs.
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
@@ -422,8 +395,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "cancel_event": cancel_event,
         }
 
-        # Optional template/tool plumbing: only forward keys that are present so
-        # the backend signature can evolve without breaking older payloads.
+        # Forward only present optional keys so the backend signature can evolve.
         for opt_key in (
             "tools",
             "enable_thinking",
@@ -433,7 +405,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
 
-        # Choose generation path.
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
             generator = backend.generate_with_adapter_control(
@@ -537,7 +508,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # Decode audio array from list (numpy arrays can't go through mp.Queue).
+        # numpy arrays can't go through mp.Queue, so decode from list.
         audio_array = np.array(cmd["audio_data"], dtype = np.float32)
 
         audio_type = cmd.get("audio_type")
@@ -868,7 +839,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
-                # Load a new model in this subprocess; unload the current one first.
+                # Unload the current model before loading the new one.
                 if backend.active_model_name:
                     backend.unload_model(backend.active_model_name)
                 _handle_load(backend, cmd, resp_queue)
@@ -901,7 +872,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
 
             elif cmd_type == "status":
-                # Return current status.
                 _send_response(
                     resp_queue,
                     {
@@ -921,7 +891,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
-                # Unload all models.
                 for model_name in list(backend.models.keys()):
                     try:
                         backend.unload_model(model_name)

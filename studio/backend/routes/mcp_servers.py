@@ -44,10 +44,8 @@ def _validate_url(url: str) -> str:
     trimmed = (url or "").strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # When stdio is enabled on this host, a non-HTTP value is a local command.
-    # Reuse this field so stdio servers ride the existing CRUD/storage with no
-    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so
-    # keep existing behaviour and treat any non-HTTP value as a command here.
+    # When stdio is enabled, a non-HTTP value is a local command (reuses this
+    # field so stdio servers ride existing CRUD/storage).
     if stdio_mcp_enabled() and is_stdio(trimmed):
         try:
             parts = parse_stdio_command(trimmed)
@@ -76,8 +74,7 @@ def _validate_url(url: str) -> str:
             "MCP server address must start with http:// or https:// "
             "(for example https://example.com/mcp)."
         )
-        # Host-scoped wording ("this server"), not "desktop only": self-hosted
-        # hosts can opt in via the env var.
+        # Host-scoped wording: self-hosted hosts can opt in via the env var.
         if _looks_like_command(trimmed):
             detail += " Running a local command is not enabled on this server."
         raise HTTPException(status_code = 400, detail = detail)

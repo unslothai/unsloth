@@ -57,11 +57,8 @@ IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monit
 def _backend_label(device: DeviceType) -> str:
     """Return the user-facing backend name for API responses.
 
-    ROCm hosts stay ``DeviceType.CUDA`` internally (ROCm torch sets
-    ``torch.cuda.is_available() = True`` and reuses ``torch.cuda.*``), so
-    branching on ``DeviceType`` stays consistent. But "cuda" is misleading
-    in JSON responses on an AMD machine, so this swaps the label to
-    ``"rocm"`` when ``IS_ROCM`` is set, sparing callers the check.
+    ROCm hosts stay ``DeviceType.CUDA`` internally (ROCm reuses ``torch.cuda.*``),
+    but "cuda" is misleading in JSON, so swap to ``"rocm"`` when ``IS_ROCM`` is set.
     """
     if IS_ROCM and device == DeviceType.CUDA:
         return "rocm"
@@ -117,10 +114,8 @@ def detect_hardware() -> DeviceType:
             CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
 
-            # Distinguish AMD ROCm (HIP) from NVIDIA CUDA for display only;
-            # DeviceType stays CUDA since torch.cuda.* works on ROCm via HIP.
-            # AMD's repo.radeon.com SDK wheels (e.g. 2.9.0+rocmsdk20251116)
-            # don't set torch.version.hip, so fall back to __version__.
+            # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA).
+            # AMD SDK wheels don't set torch.version.hip, so fall back to __version__.
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
@@ -144,9 +139,8 @@ def detect_hardware() -> DeviceType:
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
         CHAT_ONLY = False
-        # platform.processor() (`uname -p`) returns "i386" on most
-        # universal2 / Rosetta Python builds even on native arm64.
-        # platform.machine() is "arm64" once is_apple_silicon() gated us.
+        # Use platform.machine() ("arm64"); platform.processor() returns "i386"
+        # on universal2 / Rosetta builds even on native arm64.
         chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         return DEVICE
@@ -191,8 +185,7 @@ def clear_gpu_cache():
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
     elif device == DeviceType.MLX:
-        # MLX manages memory automatically; no empty_cache equivalent,
-        # so the gc.collect() above is enough.
+        # MLX manages memory automatically; gc.collect() above is enough.
         pass
 
 
@@ -271,16 +264,14 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import mlx.core as mx
             import psutil
 
-            # MLX uses unified memory: total = system RAM, GPU used comes
-            # from IORegistry's AGXAccelerator (system-wide, no sudo).
+            # Unified memory: total = system RAM, GPU used from IORegistry AGX.
             total = psutil.virtual_memory().total
             agx = _read_apple_gpu_stats()
             allocated = agx.get("vram_used_bytes", 0) if agx else 0
 
             try:
                 info = mx.device_info()
-                # See detect_hardware(): platform.processor() can return "i386"
-                # on native arm64 builds, so prefer machine() as fallback.
+                # prefer machine(); processor() can return "i386" on native arm64.
                 gpu_name = info.get("device_name") or platform.machine() or "arm64"
             except Exception:
                 gpu_name = platform.machine() or "arm64"
@@ -409,11 +400,10 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
-            # torch uses 0-based ordinals relative to CUDA_VISIBLE_DEVICES
+            # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            # Prefer mem_get_info (system-wide usage, not just this process)
-            # so auto-selection accounts for other GPU consumers.
+            # Prefer mem_get_info (system-wide) so auto-select sees other consumers.
             if hasattr(mod, "mem_get_info"):
                 free_bytes, total_bytes = mod.mem_get_info(ordinal)
                 used_bytes = total_bytes - free_bytes
@@ -631,13 +621,11 @@ def get_gpu_utilization() -> Dict[str, Any]:
         if result is not None:
             result["backend"] = _backend_label(device)
             if IS_ROCM:
-                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.).
                 _reconcile_primary_rocm_unified_memory(result, _get_parent_visible_gpu_spec())
             return result
-        # SMI tool unavailable or returned nothing usable. On Windows, query
-        # the Performance Counter API (same source as Task Manager) for
-        # system-wide dedicated VRAM — covers cross-process usage that
-        # torch.cuda.mem_get_info can't see from the Studio server process.
+        # SMI unavailable. On Windows, use Performance Counters (Task Manager
+        # source) for system-wide VRAM, covering cross-process usage torch can't see.
         if IS_ROCM and platform.system() == "Windows":
             _win_used, _win_total = _rocm_windows_perf_counter_vram_gb()
             if _win_used is not None and _win_total is not None:
@@ -699,8 +687,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 "power_utilization_pct": None,
             }
 
-    # MLX path: one _read_apple_gpu_stats() call carries both VRAM-used bytes
-    # and GPU utilization %. psutil for unified-memory total is cheap.
+    # MLX: _read_apple_gpu_stats() carries both VRAM-used and GPU util%.
     if device == DeviceType.MLX:
         try:
             import psutil
@@ -790,9 +777,8 @@ def _apply_unified_memory_correction(
 def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: list[int]) -> None:
     """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
 
-    amd-smi reports only the dedicated slice (~512 MB); torch sees the full
-    GTT pool (~128 GB). When torch total > smi total, overwrite per-device
-    VRAM fields so GPU selection uses real available memory.
+    amd-smi reports only the dedicated slice; torch sees the full GTT pool. When
+    torch total > smi total, overwrite per-device VRAM fields with the real value.
     """
     torch_devices = _torch_get_per_device_info(device_indices)
     if not torch_devices:
@@ -814,9 +800,8 @@ def _reconcile_primary_rocm_unified_memory(
         # No visibility env var set: torch ordinal 0 is the primary device.
         primary_idx = [0]
     elif len(numeric_ids) == 0:
-        # Empty mask (HIP_VISIBLE_DEVICES="" or "-1"): no GPU visible to this
-        # process. Querying torch device 0 would raise or return stale data,
-        # so bail rather than write bad values into the utilization dict.
+        # Empty mask: no GPU visible. Querying torch device 0 would raise or
+        # return stale data, so bail rather than write bad values.
         return
     else:
         primary_idx = [int(numeric_ids[0])]
@@ -840,15 +825,14 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             result["backend"] = _backend_label(device)
             numeric_ids = parent_visible_spec.get("numeric_ids")
             if IS_ROCM and numeric_ids is not None:
-                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.).
                 _reconcile_rocm_unified_memory(result, numeric_ids)
             return result
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_ids = get_parent_visible_gpu_ids()
-        # When parent_visible_ids is empty (UUID/MIG mask or no CVD set),
-        # enumerate torch-visible ordinals so the UI still shows devices.
+        # Empty parent_ids (UUID/MIG mask or no CVD): enumerate torch ordinals.
         if parent_ids:
             torch_indices = parent_ids
             index_kind = "physical"
@@ -935,13 +919,10 @@ _visible_gpu_count: Optional[int] = None
 
 
 def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
-    # ROCm uses HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES on top of
-    # CUDA_VISIBLE_DEVICES (which HIP also respects). Check ROCm env vars
-    # first for multi-GPU AMD setups. Use explicit None checks (not `or`)
-    # so empty string "" is honoured as "no visible GPUs" rather than
-    # falling through to CUDA_VISIBLE_DEVICES.
+    # ROCm uses HIP/ROCR_VISIBLE_DEVICES on top of CUDA_VISIBLE_DEVICES; check
+    # them first. Explicit None checks (not `or`) so "" reads as "no visible GPUs".
     cuda_visible = None
-    # Prefer ROCm masks only on a ROCm host, or when no CUDA mask is set, so a
+    # Prefer ROCm masks only on a ROCm host or when no CUDA mask is set, so a
     # stale HIP_VISIBLE_DEVICES on NVIDIA can't override CUDA_VISIBLE_DEVICES.
     _is_rocm_spec = IS_ROCM or (
         "CUDA_VISIBLE_DEVICES" not in os.environ
@@ -1028,15 +1009,13 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
             f"Rejected IDs: {negative_ids}. Parent-visible GPUs: {parent_visible_ids}"
         )
 
-    # Only enforce the physical upper bound when the count is reliable
-    # (from nvidia-smi). A torch count reflects visible devices (filtered by
-    # CUDA_VISIBLE_DEVICES), not the physical total, so e.g. index 3 would be
-    # falsely rejected on a CUDA_VISIBLE_DEVICES="2,3" host reporting
-    # device_count()=2. The parent-visible check below is always authoritative.
+    # Only enforce the physical upper bound when the count is reliable (nvidia-smi).
+    # A torch count reflects only visible devices, so it could falsely reject valid
+    # physical indices. The parent-visible check below is always authoritative.
     if physical_gpu_count > 0 and parent_visible_ids:
         max_parent_id = max(parent_visible_ids)
         if physical_gpu_count > max_parent_id:
-            # Count is plausibly physical (not just visible), so enforce it
+            # Count is plausibly physical, so enforce it.
             out_of_range = [gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count]
             if out_of_range:
                 raise ValueError(
@@ -1115,13 +1094,11 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
 
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
-    # torch.distributed is incomplete on Windows ROCm: torch._C is a C
-    # extension (not a package), so the submodule torch._C._distributed_c10d
-    # that torch.distributed depends on can't be imported. Inject an empty
-    # stub into sys.modules BEFORE importing torch.distributed so the import
-    # succeeds, then patch the missing process-group helpers.
+    # torch.distributed is incomplete on Windows ROCm (torch._C._distributed_c10d
+    # can't be imported). Inject stubs into sys.modules before importing
+    # torch.distributed, then patch the missing process-group helpers.
     if sys.platform == "win32" and IS_ROCM:
-        # Dummy for any name torch.distributed imports from these stubs
+        # Dummy for any name torch.distributed imports from these stubs.
         class _Dummy:
             pass
 
@@ -1132,8 +1109,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         ):
             if _c10d_name not in sys.modules:
                 _stub = types.ModuleType(_c10d_name)
-                # torch.distributed imports these names from _distributed_c10d;
-                # provide no-op dummies so the import doesn't raise AttributeError.
+                # No-op dummies for names torch.distributed imports from _distributed_c10d.
                 for _sym in (
                     "FakeProcessGroup",
                     "ProcessGroup",
@@ -1169,11 +1145,9 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
 
-    # why: resolve_attention_implementation calls _set_attn_impl, which writes
-    # _attn_implementation onto the config; PreTrainedConfig's setter walks
-    # `sub_configs` and propagates to nested text_config / sub-configs, so a
-    # shallow copy would still mutate those shared inner objects on the cached
-    # config from _load_config_for_gpu_estimate. Deepcopy isolates them.
+    # why: resolve_attention_implementation writes _attn_implementation onto the
+    # config and propagates to nested sub-configs; a shallow copy would still
+    # mutate the cached config's shared inner objects. Deepcopy isolates them.
     config_copy = copy.deepcopy(config)
 
     model_class = None
@@ -1349,31 +1323,29 @@ def estimate_required_model_memory_gb(
                 config
             )
         except Exception as e:
-            # Debug-level: on Windows ROCm the torch.distributed stub lacks
-            # Store, so this fires every estimate call. Expected and
-            # non-actionable -- eager is the safe fallback.
+            # Debug-level: fires every estimate on Windows ROCm (stub lacks Store);
+            # expected and non-actionable -- eager is the safe fallback.
             logger.debug(
                 "Could not resolve attention implementation for '%s': %s",
                 estimate_model,
                 e,
             )
-            # why: if flash attention can't be proven usable, charge the
-            # quadratic non-flash activation path so GPU selection stays
-            # conservative.
+            # why: charge the quadratic non-flash activation path so GPU
+            # selection stays conservative when flash attn isn't proven usable.
             vram_config.attention_implementation = "eager"
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
         breakdown = estimate_training_vram(arch, vram_config)
-        # why: extract_arch_config only sees text_config; safetensors include
-        # vision/audio tower bytes the text-arch fp16 total misses.
+        # why: extract_arch_config only sees text_config; add the vision/audio
+        # tower bytes that the text-arch fp16 total misses.
         arch_fp16_bytes = compute_total_params(arch) * 2
         extra_bytes = max(0, int(model_size_bytes) - arch_fp16_bytes)
         if extra_bytes > 0:
             breakdown.model_weights += extra_bytes
             if training_method == "full":
-                # why: full fine-tuning makes the extra (vision/audio) params
-                # trainable; optimizer + gradient bytes scale with them.
+                # why: full fine-tuning makes extra params trainable; optimizer +
+                # gradient bytes scale with them.
                 extra_params = extra_bytes // 2
                 breakdown.optimizer_states += compute_optimizer_bytes(
                     extra_params,
@@ -1392,7 +1364,7 @@ def estimate_required_model_memory_gb(
             )
         return required_gb, metadata
 
-    # Fallback when model config is unavailable
+    # Fallback when model config is unavailable.
     overhead_gb = CUDA_OVERHEAD_BYTES / (1024**3)
     if training_method == "full":
         required_gb = model_size_gb * 3.5 + overhead_gb
@@ -1452,8 +1424,7 @@ def auto_select_gpu_ids(
         return None, metadata
 
     if required_gb is None:
-        # Cannot estimate model size -- fall back to all visible GPUs rather
-        # than risk loading on a single GPU that may lack memory.
+        # Can't estimate size -- use all visible GPUs rather than risk one too small.
         parent_ids = get_parent_visible_gpu_ids()
         metadata["selection_mode"] = "fallback_all"
         metadata["selected_gpu_ids"] = parent_ids
@@ -1491,16 +1462,13 @@ def auto_select_gpu_ids(
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
-    # Multi-GPU sharding has inter-GPU communication overhead (NCCL
-    # all-reduce, PCIe/NVLink transfers, sync barriers), so each extra GPU
-    # contributes less than its raw free memory; the first GPU keeps full
-    # capacity. 0.85 was calibrated empirically on 2-8 GPU NVLink/PCIe
-    # setups -- the 15% discount covers NCCL buffers (~2-5% of VRAM),
-    # pipeline bubble overhead, and fragmentation from non-uniform shards.
+    # Sharding has inter-GPU overhead, so each extra GPU contributes less than
+    # its raw free memory (first GPU keeps full capacity). 0.85 is empirical on
+    # 2-8 GPU setups: covers NCCL buffers, pipeline bubbles, fragmentation.
     multi_gpu_overhead = 0.85
 
-    # Per-GPU check: activations don't shard, so each GPU needs its weight
-    # shard + full activation cost. Uses precomputed min_per_gpu_N values.
+    # Per-GPU check: activations don't shard, so each GPU needs its weight shard
+    # + full activation cost. Uses precomputed min_per_gpu_N values.
     vram_breakdown = estimate_metadata.get("vram_breakdown", {})
 
     for candidate in ranked:
@@ -1537,7 +1505,7 @@ def auto_select_gpu_ids(
             )
             return selected, metadata
 
-    # Use only GPUs with verified VRAM data (gpu_candidates, not raw devices)
+    # Use only GPUs with verified VRAM data.
     fallback_all = [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
     metadata["selection_mode"] = "fallback_all"
     if ranked:
@@ -1642,7 +1610,7 @@ def get_physical_gpu_count() -> int:
                 return _physical_gpu_count
         except Exception:
             pass
-        # SMI tool unavailable or failed -- fall back to torch
+        # SMI unavailable -- fall back to torch.
         count = _torch_get_physical_gpu_count()
         _physical_gpu_count = count if count is not None else 1
         return _physical_gpu_count
@@ -1678,7 +1646,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
-        # Try native SMI tool first (nvidia-smi for NVIDIA, skipped for ROCm)
+        # Try native SMI first (nvidia-smi; skipped for ROCm).
         if device == DeviceType.CUDA and not IS_ROCM:
             try:
                 from . import nvidia
@@ -1694,9 +1662,8 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
 
-        # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed).
-        # When parent_visible_ids is empty (UUID/MIG mask), enumerate by
-        # torch ordinal so the UI still shows devices.
+        # Torch fallback (ROCm, XPU, nvidia-smi missing). Empty parent_visible_ids
+        # (UUID/MIG mask) -> enumerate by torch ordinal so the UI shows devices.
         if parent_visible_ids:
             torch_indices = parent_visible_ids
             index_kind = "physical"
@@ -1814,9 +1781,8 @@ def apply_gpu_ids(gpu_ids) -> None:
     if gpu_ids is None:
         return
 
-    # Empty list means "no GPUs visible" -- treat like None (inherit parent)
-    # to avoid setting CUDA_VISIBLE_DEVICES="", which disables CUDA entirely
-    # and crashes downstream torch calls.
+    # Empty list -> treat like None (inherit parent); setting CUDA_VISIBLE_DEVICES=""
+    # disables CUDA entirely and crashes downstream torch calls.
     if isinstance(gpu_ids, (list, tuple)) and len(gpu_ids) == 0:
         return
 
@@ -1828,23 +1794,16 @@ def apply_gpu_ids(gpu_ids) -> None:
         value = str(gpu_ids)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = value
-    # Keep ROCm visibility env vars in sync so _get_parent_visible_gpu_spec()
-    # picks up the narrowed set on AMD. Workers may call apply_gpu_ids()
-    # before detect_hardware() runs (IS_ROCM still default False), so also
-    # mirror the selection whenever the parent already set a ROCm visibility
-    # var -- a downstream ROCm process then inherits the narrowed mask before
-    # hardware detection classifies the host. Final fallback: probe
-    # torch.version.hip so AMD workers without HIP_VISIBLE_DEVICES still get
-    # the correct ROCm visibility mask.
+    # Keep ROCm visibility env vars in sync. Workers may call apply_gpu_ids()
+    # before detect_hardware() (IS_ROCM still False), so also mirror when the
+    # parent set a ROCm visibility var, with a torch.version.hip probe fallback.
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
     _is_rocm = IS_ROCM or _inherits_rocm_visibility
     if not _is_rocm:
-        # torch.version.hip is a non-empty string on ROCm, None on CUDA.
-        # AMD SDK / Radeon ROCm wheels may leave it unset but still encode
-        # "rocm" in torch.__version__ (matching detect_hardware()).
-        # Broad except: a probe failure must never crash a training worker.
+        # torch.version.hip is set on ROCm, None on CUDA; AMD SDK wheels may leave
+        # it unset but encode "rocm" in __version__. Broad except: never crash a worker.
         try:
             import torch as _torch
             _is_rocm = (
@@ -1887,8 +1846,8 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
         multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
 
         if not multi_gpu:
-            # UUID/MIG masks can't be split into numeric IDs, so if multiple
-            # GPUs are visible we assume multi-GPU sharding is intended.
+            # UUID/MIG masks can't be split into numeric IDs; >1 visible GPU
+            # means multi-GPU sharding is intended.
             parent_visible_spec = _get_parent_visible_gpu_spec()
             if parent_visible_spec["numeric_ids"] is None and get_visible_gpu_count() > 1:
                 multi_gpu = True

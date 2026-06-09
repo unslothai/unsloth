@@ -119,10 +119,9 @@ def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
 
 @pytest.mark.parametrize("repo", ["unslothai/llama.cpp", "ggml-org/llama.cpp"])
 def test_read_install_marker_carries_published_repo_dynamically(tmp_path, repo):
-    # The freshness check queries whichever release repo the marker
-    # records, so CUDA Linux (unslothai), CPU Linux x86_64 / macOS
-    # (ggml-org), and ROCm source-build all surface the right "latest"
-    # tag.
+    # The freshness check queries whichever release repo the marker records,
+    # so CUDA (unslothai), CPU/macOS (ggml-org), and ROCm all get the right
+    # "latest" tag.
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9000", published_repo = repo)
     bin_path = _fake_binary(install_dir, layout = "cmake")

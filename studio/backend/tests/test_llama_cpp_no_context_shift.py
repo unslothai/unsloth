@@ -101,8 +101,7 @@ def test_flag_sits_inside_the_base_cmd_list():
     source = _load_model_source()
     start = source.find("cmd = [")
     assert start >= 0, "could not find the base cmd = [...] block"
-    # Find the first line containing only ``]`` (possibly indented); works for
-    # any indentation style the formatter picks.
+    # Find the first line containing only ``]`` (possibly indented).
     rest = source[start:]
     end_rel = -1
     for line_start, line in _iter_lines_with_offset(rest):
@@ -119,7 +118,7 @@ def test_flag_sits_inside_the_base_cmd_list():
         "conditional branch -- otherwise some code paths would still "
         "run with silent context shift enabled."
     )
-    # Also pin that it sits next to -c / --ctx so the grouping makes sense.
+    # Pin that it sits next to -c / --ctx so the grouping makes sense.
     assert '"-c"' in block
     assert '"--flash-attn"' in block
 

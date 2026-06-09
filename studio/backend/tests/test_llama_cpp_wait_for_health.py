@@ -50,9 +50,7 @@ for _exc_name in (
 
 
 def _make_backend(port: int = 12345) -> LlamaCppBackend:
-    """Barebones LlamaCppBackend with only the attributes
-    _wait_for_health touches. Bypasses __init__ to avoid the full
-    subprocess + logging stack."""
+    """Barebones LlamaCppBackend with only the attributes _wait_for_health touches (bypasses __init__)."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._port = port
     b._stdout_thread = None
@@ -70,12 +68,9 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
-        """WinError 10054 maps to httpx.ReadError. The loop must swallow it;
-        the next iteration detects the dead subprocess via poll() != None and
-        returns False with a structured exit-code log, not the ReadError."""
+        """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
-        # Iter 1: process alive (reach the httpx probe).
-        # Iter 2: process exited (hit the exit-code branch, return False).
+        # Iter 1: alive (reach probe); iter 2: exited (exit-code branch -> False).
         b._process.poll.side_effect = [None, 1]
         b._process.returncode = 1
         b._stdout_lines = ["llama-server: ggml-cuda.dll failed to load"]

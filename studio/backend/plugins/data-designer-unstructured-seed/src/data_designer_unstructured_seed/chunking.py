@@ -74,7 +74,7 @@ def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[
     if not rows or preview_size <= 0:
         return []
 
-    # Group rows by source_file, preserving first-appearance order.
+    # Group by source_file, preserving first-appearance order.
     from collections import OrderedDict
 
     grouped: OrderedDict[str, list[dict[str, str]]] = OrderedDict()

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Capability advertisement contract: classifier honesty, worker→orchestrator
-IPC hop, route-layer end-to-end. Pure helpers + fakes; no torch/transformers.
-"""
+"""Capability advertisement contract: classifier honesty, worker->orchestrator
+IPC hop, route-layer end-to-end. Pure helpers + fakes; no torch/transformers."""
 
 from __future__ import annotations
 
@@ -128,10 +126,9 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral templates advertise tools but emit calls in
-# <|python_tag|> / [TOOL_CALLS] format -- not the <tool_call> / <function=
-# our parser understands. The route helper must not flip supports_tools=True
-# for those families, else the UI enables a pill the agentic loop can't honour.
+# Llama-3 / Mistral advertise tools but emit <|python_tag|> / [TOOL_CALLS],
+# which our parser can't read. The route helper must not flip supports_tools=True
+# for them, else the UI enables a pill the agentic loop can't honour.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -205,10 +202,9 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
-# Qwen3.5 family pins -- the live GGUF + safetensors templates from the
-# unsloth/Qwen3.5-0.8B(-GGUF) repos both wrap tool calls as
-# ``<tool_call>\n<function=name>...``. Faithful slice so the classifier
-# never silently regresses for this family.
+# Qwen3.5 family pin: the live GGUF + safetensors templates both wrap tool
+# calls as ``<tool_call>\n<function=name>...``. Faithful slice so the
+# classifier never silently regresses for this family.
 
 QWEN35_TOOL_INSTRUCTION = (
     "{%- if tools %}\n"

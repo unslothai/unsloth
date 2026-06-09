@@ -36,23 +36,13 @@ logger = get_logger(__name__)
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
-    gpt-oss emits multi-channel output via special tokens like
-    ``<|channel|>analysis<|message|>...`` / ``<|channel|>final<|message|>...``.
-    A plain ``TextIteratorStreamer(skip_special_tokens=True)`` drops the tokens
-    but leaves channel names glued to content, producing garbled output like
-    ``analysisWe need to respond...assistantfinalHello!``.
-
-    This streamer decodes with ``skip_special_tokens=False`` so the harmony
-    markup is visible, then uses stateful incremental parsing:
-
-    - ``<think>`` once when ``analysis`` channel is first seen
-    - analysis content streamed incrementally
-    - ``</think>`` once when ``final`` channel is first seen
-    - final content streamed incrementally
-
-    This avoids the delta-on-transformed bug where wrapping tags shift
-    position as content grows. Implements the same ``put`` / ``end`` / iterator
-    interface as ``TextIteratorStreamer`` for drop-in use in ``generate_stream``.
+    gpt-oss emits multi-channel output via ``<|channel|>analysis<|message|>...``
+    / ``<|channel|>final<|message|>...``. Plain skip_special_tokens streaming
+    glues channel names to content. This decodes with skip_special_tokens=False
+    and parses statefully: emit ``<think>`` on first analysis, stream analysis,
+    emit ``</think>`` on first final, stream final. Tracking per-channel lengths
+    avoids the delta-on-transformed bug where wrapping tags shift position.
+    Same put/end/iterator interface as TextIteratorStreamer.
     """
 
     import re as _re
@@ -87,9 +77,7 @@ class HarmonyTextStreamer:
         self._analysis_emitted: int = 0  # chars of analysis content emitted
         self._final_emitted: int = 0  # chars of final content emitted
 
-    # ------------------------------------------------------------------
     # put / end — called from the generation thread
-    # ------------------------------------------------------------------
 
     def put(self, value):
         """Receive new token IDs from model.generate()."""
@@ -104,7 +92,7 @@ class HarmonyTextStreamer:
             ids = [value]
 
         if self._is_first_put and self.skip_prompt:
-            # First call is the full prompt; remember its length
+            # First call is the full prompt; remember its length.
             self._prompt_len = len(ids)
             self._token_ids = list(ids)
             self._is_first_put = False
@@ -112,20 +100,20 @@ class HarmonyTextStreamer:
 
         self._token_ids.extend(ids)
 
-        # Decode only the generated part (after the prompt)
+        # Decode only the generated part (after the prompt).
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
         self._process_incremental(raw)
 
     def end(self):
         """Signal generation is complete."""
-        # Final decode to capture remaining content
+        # Final decode to capture remaining content.
         gen_ids = self._token_ids[self._prompt_len :]
         if gen_ids:
             raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
             self._process_incremental(raw)
 
-        # Close any open think tags
+        # Close any open think tags.
         if self._emitted_think_open and not self._emitted_think_close:
             self._queue.put("</think>")
             self._emitted_think_close = True
@@ -133,9 +121,7 @@ class HarmonyTextStreamer:
         self._stop = True
         self._queue.put(None)  # sentinel
 
-    # ------------------------------------------------------------------
     # Iterator interface — consumed by the streaming loop
-    # ------------------------------------------------------------------
 
     def __iter__(self):
         return self
@@ -153,33 +139,19 @@ class HarmonyTextStreamer:
                 raise StopIteration
             return val
 
-    # ------------------------------------------------------------------
     # Stateful incremental harmony protocol parsing
-    # ------------------------------------------------------------------
 
     def _process_incremental(self, raw: str) -> None:
-        """Parse harmony channels and emit per-channel deltas.
-
-        Tracks per-channel content lengths (instead of diffing transformed
-        whole-text, which breaks when wrapping ``<think>`` tags shift position)
-        and emits:
-
-        - ``<think>`` once when analysis channel first appears
-        - analysis content deltas (computed on channel content directly)
-        - ``</think>`` once when final channel first appears
-        - final content deltas
-        """
-        # raw has <|channel|> but no complete channel+message pair yet:
-        # buffer silently, don't emit partial channel names as text.
+        """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
+        # If raw has <|channel|> but no complete channel+message pair yet, buffer.
         has_channel_token = "<|channel|>" in raw
         matches = list(self._HARMONY_RE.finditer(raw))
 
         if has_channel_token and not matches:
-            # Partial harmony markup still building — wait for more tokens
+            # Partial harmony markup still building — wait for more tokens.
             return
 
         if not has_channel_token and not matches:
-            # No harmony protocol (shouldn't happen for gpt-oss) — emit nothing
             return
 
         for m in matches:
@@ -221,11 +193,9 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
 
-        # _generation_lock serializes model.generate() calls. Must be a plain
-        # Lock (NOT RLock): in async FastAPI requests share one event-loop
-        # thread, so RLock reentrancy would let concurrent compare-mode
-        # requests race on the GPU. Acquired by the *background generation
-        # thread*, not the event-loop.
+        # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):
+        # RLock reentrancy would let concurrent compare-mode requests race on
+        # the GPU. Acquired by the background generation thread, not the event-loop.
         import threading
 
         self._generation_lock = threading.Lock()
@@ -313,14 +283,13 @@ class InferenceBackend:
                     from unsloth import FastModel
 
                     if config.is_lora and config.base_model:
-                        # LoRA adapter from local path. base_model is e.g.
-                        # /home/.../Spark-TTS-0.5B/LLM; BiCodec weights live in
-                        # the parent dir (Spark-TTS-0.5B/).
+                        # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
+                        # BiCodec weights live in the parent dir.
                         base_path = config.base_model
                         if os.path.isdir(base_path):
                             abs_repo_path = os.path.abspath(os.path.dirname(base_path))
                         else:
-                            # base_model is an HF ID — download it
+                            # base_model is an HF ID — download it.
                             from huggingface_hub import snapshot_download
 
                             local_dir = base_path.split("/")[-1]
@@ -463,17 +432,14 @@ class InferenceBackend:
 
                 FastVisionModel.for_inference(model)
 
-                # FastVisionModel may return a raw tokenizer (e.g.
-                # GemmaTokenizerFast) instead of a proper Processor for some
-                # models (e.g. Gemma-3). If so, load the real processor from
-                # the base model.
+                # FastVisionModel may return a raw tokenizer instead of a
+                # Processor for some models (e.g. Gemma-3); load the real one.
                 from transformers import ProcessorMixin
 
                 if not (
                     isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
                 ):
-                    # LoRA adapters: use the base model. Local merged exports:
-                    # read export_metadata.json for the original base model.
+                    # LoRA adapters: use base model. Local merged exports: read base from export_metadata.json.
                     processor_source = config.base_model if config.is_lora else config.identifier
                     if not config.is_lora and config.is_local:
                         _meta_path = Path(config.path) / "export_metadata.json"
@@ -557,9 +523,8 @@ class InferenceBackend:
 
                 clear_gpu_cache()
 
-                # Drop stale compiled cache so the next model gets a fresh one.
-                # On spawn-based platforms, preserve trainer files so concurrent
-                # training dataset.map() workers can still import them.
+                # Drop stale compiled cache for the next model. On spawn platforms,
+                # preserve trainer files so concurrent dataset.map() workers can import them.
                 import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
@@ -593,9 +558,8 @@ class InferenceBackend:
                 self.models[base_model_name]["model"] = unwrapped_base_model
                 model = unwrapped_base_model
 
-            # Clear any lingering peft_config. model.unload() can leave a
-            # peft_config attribute; removing it gives PeftModel.from_pretrained()
-            # a clean base model without "multiple adapters" warnings.
+            # model.unload() can leave a peft_config; removing it avoids
+            # "multiple adapters" warnings on the next from_pretrained().
             if hasattr(model, "peft_config"):
                 del model.peft_config
 
@@ -701,8 +665,7 @@ class InferenceBackend:
             return False
 
     def set_active_adapter(self, base_model_name: str, adapter_name: str) -> bool:
-        """Set the active adapter for generation (replaces the flawed
-        'enable_adapter')."""
+        """Set the active adapter for generation."""
         model = self.models[base_model_name].get("model")
         try:
             logger.info(f"Setting active adapter to: '{adapter_name}'")
@@ -715,16 +678,11 @@ class InferenceBackend:
             return False
 
     def _apply_adapter_state(self, use_adapter: Optional[Union[bool, str]]) -> None:
-        """Apply adapter state before generation. Must hold _generation_lock.
+        """Apply adapter state before generation (must hold _generation_lock).
 
-        Uses PEFT's disable_adapter_layers() / enable_adapter_layers(), which
-        toggle a flag (proj.disable_adapters) on each LoRA layer; Unsloth's
-        fast_linear_forward checks it and skips LoRA when True. Non-destructive,
-        no unload/reload.
-
-        Args:
-            use_adapter: None = no change, False = disable (base model),
-                         True = enable current adapter, str = enable specific adapter.
+        Toggles PEFT enable/disable_adapter_layers (non-destructive, no reload).
+        use_adapter: None = no change, False = base model, True = current adapter,
+        str = named adapter.
         """
         if use_adapter is None:
             return
@@ -739,7 +697,7 @@ class InferenceBackend:
             return
 
         if use_adapter is False:
-            # Disable LoRA layers → base model output
+            # Disable LoRA layers -> base model output.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(
                     f"Compare mode: disabling adapters on '{base}' for base model generation"
@@ -749,7 +707,7 @@ class InferenceBackend:
                 logger.info(f"Compare mode: model '{base}' is not a PeftModel, already base")
 
         elif use_adapter is True:
-            # Re-enable LoRA layers → adapter output
+            # Re-enable LoRA layers -> adapter output.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapters on '{base}' for LoRA generation")
                 model.base_model.enable_adapter_layers()
@@ -757,7 +715,7 @@ class InferenceBackend:
                 logger.warning("use_adapter=true but model is not a PeftModel")
 
         elif isinstance(use_adapter, str):
-            # Enable adapters and set the named one active
+            # Enable adapters and set the named one active.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapter '{use_adapter}' on '{base}'")
                 model.base_model.enable_adapter_layers()
@@ -773,14 +731,9 @@ class InferenceBackend:
     ) -> Generator[str, None, None]:
         """Thread-safe generation with optional adapter toggling.
 
-        The adapter toggle + model.generate() are serialized by _generation_lock
-        in the background generation thread, NOT the event-loop thread. Prevents
-        the RLock-reentrant race when two async SSE handlers share one
-        event-loop thread.
-
-        Args:
-            use_adapter: Adapter control (None/False/True/str). See _apply_adapter_state.
-            **gen_kwargs: Forwarded to generate_chat_response.
+        Adapter toggle + model.generate() are serialized by _generation_lock in
+        the background thread, avoiding the RLock-reentrant race when two async
+        SSE handlers share one event-loop thread. use_adapter: see _apply_adapter_state.
         """
         yield from self._generate_chat_response_inner(
             cancel_event = cancel_event, _adapter_state = use_adapter, **gen_kwargs
@@ -870,14 +823,11 @@ class InferenceBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
-        """Generate response for text or vision models.
-        The generation lock is acquired by the background generation thread.
+        """Generate response for text or vision models (lock held by background thread).
 
-        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
-        ``preserve_thinking`` are forwarded into
-        ``tokenizer.apply_chat_template`` so templates that understand them
-        (Qwen3, Llama 3.1+, gpt-oss harmony, ...) advertise the tool schemas
-        and reasoning controls to the model.
+        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking``
+        are forwarded into ``apply_chat_template`` so templates that understand them
+        (Qwen3, Llama 3.1+, gpt-oss harmony) advertise tool schemas / reasoning controls.
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
@@ -927,15 +877,13 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
-        # Unwrap processor → raw tokenizer for VLMs on the text path
+        # Unwrap processor -> raw tokenizer for VLMs on the text path.
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
         if is_vision and image:
-            # Vision generation (only with an actual image). Verify the stored
-            # processor can handle images — FastVisionModel may return a raw
-            # tokenizer (e.g. GemmaTokenizerFast) instead of a ProcessorMixin
-            # for some models (e.g. Gemma-3).
+            # Verify the stored processor can handle images; FastVisionModel may
+            # return a raw tokenizer instead of a ProcessorMixin (e.g. Gemma-3).
             from transformers import ProcessorMixin
 
             processor = model_info.get("processor")
@@ -963,10 +911,9 @@ class InferenceBackend:
                     f"falling back to text-only generation (image will be ignored)."
                 )
 
-        # Text path: training-pipeline approach. Messages are already in
-        # ChatML format from eval.py.
+        # Text path: messages are already in ChatML format from eval.py.
 
-        # Step 1: apply get_chat_template if model is in mapper
+        # Step 1: apply get_chat_template if model is in mapper.
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
@@ -980,7 +927,6 @@ class InferenceBackend:
                     f"Applying chat template '{template_name}' for {self.active_model_name}"
                 )
 
-                # Sets the correct template on the tokenizer
                 tokenizer = get_chat_template(
                     tokenizer,
                     chat_template = template_name,
@@ -992,7 +938,7 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
-        # Step 2: format with tokenizer.apply_chat_template()
+        # Step 2: format with tokenizer.apply_chat_template().
         if system_prompt:
             template_messages = [{"role": "system", "content": system_prompt}] + messages
         else:

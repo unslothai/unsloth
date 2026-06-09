@@ -27,8 +27,8 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
-# Anaconda/conda-forge Python: seed platform._sys_version_cache before
-# imports that trigger attrs -> rich -> structlog -> platform crash.
+# Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
+# that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
@@ -83,10 +83,9 @@ def _resolve_external_ip() -> str:
 
 
 def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap the wildcard bind for the
-    externally-reachable address, replace the CTRL+C suffix with our
-    Mac-aware stop hint, and rename the prefix to "Unsloth Studio running
-    on"."""
+    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
+    externally-reachable address, use our Mac-aware stop hint, and rename the
+    prefix to "Unsloth Studio running on"."""
     import logging
     import re
 
@@ -147,8 +146,8 @@ def _local_port_open(
 
 
 def _working_local_url(port: int) -> "str | None":
-    """A working loopback URL on this machine, or None if neither
-    127.0.0.1 nor ::1 responds. Fallback when external reachability fails."""
+    """A working loopback URL on this machine, or None if neither 127.0.0.1 nor
+    ::1 responds. Fallback when external reachability fails."""
     if _local_port_open("127.0.0.1", port):
         return f"http://127.0.0.1:{port}"
     if _local_port_open("::1", port):
@@ -159,10 +158,9 @@ def _working_local_url(port: int) -> "str | None":
 def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
     """Return the IPv4 loopback URL when localhost won't reach 127.0.0.1.
 
-    Local Studio binds to 127.0.0.1. Where localhost resolves to IPv6
-    only (::1), http://localhost:<port> fails -- or worse, hits a
-    different process on ::1 -- even though http://127.0.0.1:<port> works.
-    Return the IPv4 URL so the caller can tell the user what to open.
+    Local Studio binds to 127.0.0.1. Where localhost resolves to IPv6 only (::1),
+    http://localhost:<port> fails (or hits a different process on ::1) even though
+    http://127.0.0.1:<port> works. Return the IPv4 URL for the caller to surface.
     """
     import socket
 
@@ -193,11 +191,10 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
             if host == "::1":
                 has_ipv6_loopback = True
 
-    # A connection to ::1 is NOT evidence Studio is reachable there:
-    # Studio binds 127.0.0.1 only, so anything on ::1 is a different
-    # process -- exactly when to steer the user to 127.0.0.1. Dual-stack
-    # localhost is fine (browsers fall back to 127.0.0.1 when ::1
-    # refuses), so only the IPv6-only case strands the user.
+    # A connection to ::1 is NOT evidence Studio is reachable there: Studio binds
+    # 127.0.0.1 only, so anything on ::1 is a different process. Dual-stack
+    # localhost is fine (browsers fall back to 127.0.0.1), so only the IPv6-only
+    # case strands the user.
     if has_ipv6_loopback and not has_ipv4_loopback:
         return ipv4_url
     return None
@@ -230,11 +227,10 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 
 
 def _verify_global_reachability(display_host: str, port: int) -> None:
-    """Probe check-host.net to confirm display_host:port is reachable
-    from the public internet. Synchronous so the caller can render output
-    between the banner URL section and the trailing stop hint. Bounded at
-    ~15s; failures are swallowed (verifier failing != Studio failing).
-    Only meaningful when bound to a wildcard host."""
+    """Probe check-host.net to confirm display_host:port is reachable from the
+    public internet. Synchronous so output lands between the banner URLs and the
+    stop hint. Bounded at ~15s; failures swallowed (verifier failing != Studio
+    failing). Only meaningful for a wildcard bind."""
     import ipaddress
     import json
     import time
@@ -423,9 +419,8 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     """Return (pid, process_name) listening on *port*, or None.
 
-    Uses psutil when available, falling back to None so callers can still
-    report the conflict without process details. Works on Windows, macOS,
-    and Linux wherever psutil is installed.
+    Uses psutil when available, else None so callers can still report the conflict
+    without process details.
     """
     try:
         import psutil
@@ -450,17 +445,14 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding.
 
-    When *host* is ``0.0.0.0`` (wildcard), also check whether anything is
-    already listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists). An
-    SSH tunnel may hold the loopback address while our wildcard bind
-    succeeds, making Studio unreachable via ``localhost``.
-
-    Works on Windows, macOS, and Linux.
+    For a ``0.0.0.0`` wildcard host, also check whether anything is listening on
+    ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback
+    while the wildcard bind succeeds, making Studio unreachable via ``localhost``.
     """
     import socket
 
     # 1. Can we bind to the requested address? getaddrinfo resolves both
-    #    IPv4 ("0.0.0.0") and IPv6 ("::") to the right address family.
+    #    IPv4 and IPv6 to the right address family.
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         family, socktype, proto, _, sockaddr = addr_info[0]
@@ -470,9 +462,8 @@ def _is_port_free(host: str, port: int) -> bool:
     except OSError:
         return False
 
-    # 2. When binding to all interfaces, verify localhost isn't already
-    #    claimed by another process (e.g. an SSH -L tunnel). A successful
-    #    TCP connect means something is listening.
+    # 2. On a wildcard bind, verify localhost isn't already claimed by another
+    #    process (e.g. an SSH -L tunnel); a successful connect means it is.
     if host in ("0.0.0.0", "::"):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
@@ -550,9 +541,8 @@ def _remove_pid_file():
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
-    Called from signal handlers to clean up child processes before the
-    parent exits. Critical on Windows where atexit handlers are
-    unreliable after Ctrl+C.
+    Called from signal handlers to clean up children before exit. Critical on
+    Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
     logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
@@ -610,9 +600,8 @@ _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "
 def _iter_frontend_fallback_candidates() -> "list[Path]":
     """Yield `studio/frontend/dist` paths to try when the default is missing.
 
-    Covers PATH-shadowed binaries whose __file__ resolves into a
-    site-packages tree with no vite build (e.g. plain `pip install
-    unsloth` from PyPI).
+    Covers PATH-shadowed binaries whose __file__ resolves into a site-packages
+    tree with no vite build (e.g. plain `pip install unsloth`).
     """
     import ast
     import re
@@ -638,9 +627,8 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     src = finder.read_text(encoding = "utf-8")
                 except OSError:
                     continue
-                # Tolerate single- or multi-line dict literals; [^}]*
-                # still rejects nested dicts, which the setuptools
-                # template never emits for editable installs.
+                # Tolerate single/multi-line dict literals; [^}]* rejects nested
+                # dicts, which the setuptools editable template never emits.
                 m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
                 if not m:
                     continue
@@ -648,8 +636,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     mapping = ast.literal_eval(m.group(1))
                 except (SyntaxError, ValueError):
                     continue
-                # Defensive: literal_eval can return a set/list/None if
-                # the matched `{...}` literal isn't a dict.
+                # literal_eval can return a set/list/None if `{...}` isn't a dict.
                 if not isinstance(mapping, dict):
                     continue
                 studio_pkg = mapping.get("studio")
@@ -661,8 +648,8 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
 def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Path]]:
     """Pick a frontend dir that contains `index.html`.
 
-    Returns (chosen, attempted). `chosen` is None if nothing servable was
-    found; `attempted` is the ordered list for diagnostics.
+    Returns (chosen, attempted). `chosen` is None if nothing servable was found;
+    `attempted` is the ordered list for diagnostics.
     """
     attempted: list[Path] = []
     seen: set[Path] = set()
@@ -706,14 +693,12 @@ def run_server(
         llama_parallel_slots: parallel slots for llama-server
 
     Note:
-        Signal handlers are NOT registered here so embedders (e.g. Colab
-        notebooks) keep their own interrupt semantics. Standalone callers
-        should register handlers after calling this.
+        Signal handlers are NOT registered here so embedders (e.g. Colab) keep
+        their own interrupt semantics; standalone callers register them after.
     """
     global _server, _shutdown_event
 
-    # Windows console encoding (cp1252) can't encode emoji. Reconfigure
-    # stdout to UTF-8 so startup messages don't crash the server.
+    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
@@ -756,9 +741,8 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend if path provided (skip in api-only mode). Falls back
-    # through alternate locations if the default lacks a built dist;
-    # errors loudly rather than serving 404 on `/`.
+    # Setup frontend (skip in api-only). Falls back through alternate locations if
+    # the default lacks a built dist; errors loudly rather than 404 on `/`.
     if frontend_path and not api_only:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
         if chosen is not None and setup_frontend(app, chosen):
@@ -775,9 +759,8 @@ def run_server(
                 or os.environ.get("STUDIO_HOME")
                 or str(Path.home() / ".unsloth" / "studio")
             )
-            # Windows ships the shim at $STUDIO_HOME/bin/unsloth.exe (a
-            # hardlink to the venv exe); Linux/macOS use the venv binary
-            # at $STUDIO_HOME/unsloth_studio/bin/unsloth.
+            # Windows shim: $STUDIO_HOME/bin/unsloth.exe; Linux/macOS venv binary:
+            # $STUDIO_HOME/unsloth_studio/bin/unsloth.
             home = Path(home_str).expanduser()
             if sys.platform == "win32":
                 installer_bin = home / "bin" / "unsloth.exe"
@@ -821,11 +804,10 @@ def run_server(
         access_log = False,
         server_header = False,
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the
-    # app sees the real https origin. forwarded_allow_ips="*" is fine in
-    # Colab's single-user sandbox but an unwanted relaxation for a normal
-    # local/standalone Studio, so leave uvicorn's safe defaults
-    # (forwarded headers trusted from loopback only) elsewhere.
+    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
+    # the real https origin. forwarded_allow_ips="*" is safe in Colab's
+    # single-user sandbox but too lax for local/standalone, so leave uvicorn's
+    # loopback-only default elsewhere.
     if _IS_COLAB:
         config_kwargs["proxy_headers"] = True
         config_kwargs["forwarded_allow_ips"] = "*"
@@ -833,16 +815,14 @@ def run_server(
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
-    # Expose the actual bound port so request handlers build loopback
-    # URLs pointing at the real backend, not whatever port a proxy/tunnel
-    # exposed in the request URL. Only publish a concrete port; for
-    # ephemeral binds (port==0) leave it unset so handlers fall back to
-    # the ASGI request scope or request.base_url.
+    # Expose the actual bound port so handlers build loopback URLs at the real
+    # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
+    # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
     app.state.llama_parallel_slots = llama_parallel_slots
 
-    # Expose a shutdown callable via app.state before the server accepts
-    # requests so /api/shutdown is ready as soon as readiness publishes.
+    # Expose a shutdown callable before the server accepts requests so
+    # /api/shutdown is ready as soon as readiness publishes.
     def _trigger_shutdown():
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
@@ -850,10 +830,9 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # Run server in a daemon thread. Use explicit new_event_loop() +
-    # run_until_complete() rather than asyncio.run() so nest_asyncio's
-    # global patches to asyncio.run don't interfere when called from a
-    # thread while Colab/IPython already runs a loop on the main thread.
+    # Run server in a daemon thread with explicit new_event_loop() +
+    # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
+    # interfere when Colab/IPython already runs a loop on the main thread.
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -870,9 +849,8 @@ def run_server(
     thread = Thread(target = _run, daemon = True)
     thread.start()
 
-    # Wait until uvicorn finishes lifespan startup and binds sockets, or
-    # until the server exits/fails before startup. No correctness
-    # deadline: a slow but live startup should remain in progress.
+    # Wait until uvicorn finishes lifespan startup and binds sockets, or until it
+    # exits/fails first. No deadline: a slow but live startup stays in progress.
     try:
         while not ready_event.is_set():
             if startup_failed.is_set() or not thread.is_alive():
@@ -892,8 +870,7 @@ def run_server(
 
     atexit.register(_remove_pid_file)
 
-    # Output port for Tauri to parse in api-only mode. Emit only after
-    # uvicorn sockets are bound and FastAPI startup completed.
+    # Output port for Tauri (api-only), only after sockets bind and startup done.
     if api_only:
         print(f"TAURI_PORT={port}", flush = True)
 
@@ -935,9 +912,8 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
-    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1
-    # applies to direct backend launches only; `unsloth studio run`
-    # always passes its own value (4) explicitly.
+    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
+    # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
     _PARALLEL_MAX = 64
     _PARALLEL_DEFAULT_PLAIN = 1
@@ -991,9 +967,8 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    # Keep running until shutdown signal.
-    # NOTE: Event.wait() without a timeout blocks at the C level on Linux,
-    # preventing Python from delivering SIGINT (Ctrl+C). A short timeout
-    # in a loop lets the interpreter process pending signals.
+    # Keep running until shutdown signal. Event.wait() without a timeout blocks at
+    # the C level on Linux, preventing SIGINT delivery; a short timeout in a loop
+    # lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)

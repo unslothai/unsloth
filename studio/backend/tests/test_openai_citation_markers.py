@@ -66,8 +66,7 @@ def test_unknown_source_marker_dropped_silently():
 
 
 def test_multiple_concatenated_markers_resolved_in_order():
-    """Real-world wire shape: markers butted together after a sentence,
-    as in the user-reported bug."""
+    """Real-world wire shape: markers butted together after a sentence (user-reported bug)."""
     markers = "".join(_marker(f"turn{i}view{j}") for i, j in [(1, 0), (1, 1), (3, 0)])
     text = f"All animals ranked. {markers}"
     citations = [
@@ -135,8 +134,7 @@ def test_citation_without_source_id_does_not_crash(citation):
 
 
 def test_multiple_source_id_aliases_resolve_to_same_url():
-    """Every alias for the same URL must resolve, not just the first.
-    Regression for the Codex P1 on the original PR."""
+    """Every alias for the same URL must resolve, not just the first (Codex P1 regression)."""
     a = _marker("turn0view0")
     b = _marker("turn0view0_span_1")
     c = _marker("turn0view0_span_2")
@@ -156,8 +154,7 @@ def test_multiple_source_id_aliases_resolve_to_same_url():
 
 
 def test_source_ids_list_and_legacy_source_id_both_resolve():
-    """Mixed-shape citation: legacy ``source_id`` plus newer
-    ``source_ids`` aliases both resolve."""
+    """Mixed-shape citation: legacy ``source_id`` plus newer ``source_ids`` aliases both resolve."""
     legacy = _marker("legacy_id")
     alias = _marker("alias_id")
     text = f"Both {legacy} and {alias} work."
@@ -173,11 +170,9 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
     assert not _has_marker_codepoints(out)
 
 
-# ---------------------------------------------------------------------------
 # _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI emits
 # url_citation annotations on a later SSE event; this helper reports
 # `has_unresolved` so the stream loop defers emission. See PR #5713 audit.
-# ---------------------------------------------------------------------------
 
 
 def test_partial_known_marker_resolves_and_clears_unresolved():
@@ -201,7 +196,7 @@ def test_partial_unknown_marker_preserves_verbatim_and_flags():
 
 
 def test_partial_resolves_after_late_annotation():
-    """Two-pass: first call sees no citations, second resolves after annotation."""
+    """Two-pass: first call sees no citations; second resolves after annotation."""
     text = f"See {_marker('s1')} for details."
     out1, unresolved1 = _rewrite_citation_markers_partial(text, [])
     assert unresolved1 is True
@@ -213,9 +208,7 @@ def test_partial_resolves_after_late_annotation():
 
 
 def test_partial_multi_source_partial_resolution_keeps_marker_pending():
-    """Any unresolved token in a multi-source marker leaves the whole marker
-    verbatim with ``unresolved`` True; defer until every id resolves or
-    end-of-stream forces a flush (dropping unresolved tokens)."""
+    """Any unresolved token in a multi-source marker leaves the whole marker verbatim with ``unresolved`` True until every id resolves or end-of-stream flushes."""
     cite = f"{CITE_START}cite{CITE_DELIM}known{CITE_DELIM}locator{CITE_STOP}"
     text = f"Pre {cite} post."
     citations = [{"source_id": "known", "url": "https://example.com/y"}]

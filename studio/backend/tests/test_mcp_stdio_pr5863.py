@@ -1,13 +1,10 @@
 """Verification tests for PR #5863 (stdio MCP server support).
 
-Covers the pure helpers (is_stdio / parse_stdio_command / stdio_mcp_enabled /
-probe_timeout), the route-level _validate_url gate, and - most importantly -
-that the UNSLOTH_STUDIO_ALLOW_STDIO_MCP gate blocks the stdio transport at
-every enforcement point (create, update, test, refresh, discovery, execute)
-when disabled and reaches it when enabled. The transport (_client) is stubbed
-so no real subprocess spawns; a recorder asserts whether it was reached.
-
-Run from studio/backend:  python -m pytest tests/test_mcp_stdio_pr5863.py -q
+Covers the pure helpers, the route-level _validate_url gate, and that the
+UNSLOTH_STUDIO_ALLOW_STDIO_MCP gate blocks the stdio transport at every
+enforcement point (create/update/test/refresh/discovery/execute) when disabled
+and reaches it when enabled. The transport is stubbed so no subprocess spawns;
+a recorder asserts whether it was reached.
 """
 
 import sys
