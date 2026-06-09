@@ -79,6 +79,34 @@ def _install_httpcore_asyncgen_silencer() -> None:
 _install_httpcore_asyncgen_silencer()
 
 
+def _loaded_chat_template() -> Optional[str]:
+    """Chat template of the currently loaded GGUF model, if any."""
+    try:
+        return get_llama_cpp_backend().chat_template
+    except Exception:
+        return None
+
+
+def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
+    """A chat-template raise_exception message to surface, but only when it appears
+    verbatim in chat_template (simple substring check), so we never leak arbitrary
+    llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
+    if not chat_template:
+        return None
+    marker = "Jinja Exception:"
+    idx = error_text.find(marker)
+    if idx == -1:
+        return None
+    candidate = error_text[idx + len(marker) :]
+    # llama-server appends JSON after the message; cut at the first boundary.
+    for stop in ('"', "\n"):
+        cut = candidate.find(stop)
+        if cut != -1:
+            candidate = candidate[:cut]
+    candidate = candidate.strip()
+    return candidate if candidate and candidate in chat_template else None
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     # httpx transport failures from the async pass-through helpers. Any
@@ -104,6 +132,9 @@ def _friendly_error(exc: Exception) -> str:
         return (
             "Lost connection to the model server. It may have crashed -- try reloading the model."
         )
+    template_msg = _template_raise_message(msg, _loaded_chat_template())
+    if template_msg:
+        return f"An internal error occurred: {template_msg}"
     return "An internal error occurred"
 
 
