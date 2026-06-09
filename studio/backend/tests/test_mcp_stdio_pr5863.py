@@ -87,9 +87,7 @@ def transport(monkeypatch):
     monkeypatch.setattr(
         mcp_client,
         "_client",
-        lambda url, headers, use_oauth = False: _RecordingClient(
-            url, headers, use_oauth, recorder
-        ),
+        lambda url, headers, use_oauth = False: _RecordingClient(url, headers, use_oauth, recorder),
     )
     return recorder
 
@@ -134,9 +132,12 @@ def test_parse_basic_argv():
 
 def test_parse_keeps_url_argument_as_one_command():
     # gemini "high": a :// inside an ARGUMENT must not break the command.
-    assert mcp_client.parse_stdio_command(
-        "npx server --endpoint https://example.com/mcp"
-    ) == ["npx", "server", "--endpoint", "https://example.com/mcp"]
+    assert mcp_client.parse_stdio_command("npx server --endpoint https://example.com/mcp") == [
+        "npx",
+        "server",
+        "--endpoint",
+        "https://example.com/mcp",
+    ]
 
 
 def test_parse_quoted_arg():
@@ -162,9 +163,7 @@ def test_parse_windows_strips_wrapping_quotes(monkeypatch):
     # gemini "medium": posix=False keeps backslash paths but also the wrapping
     # quotes; the PR strips a matched pair so argv[0] reaches the OS clean.
     monkeypatch.setattr(sys, "platform", "win32")
-    parts = mcp_client.parse_stdio_command(
-        r'"C:\Program Files\node\node.exe" server.js'
-    )
+    parts = mcp_client.parse_stdio_command(r'"C:\Program Files\node\node.exe" server.js')
     assert parts[0] == r"C:\Program Files\node\node.exe"
     assert parts[1] == "server.js"
 
@@ -204,10 +203,38 @@ def test_validate_url_gate_off_rejects_stdio(monkeypatch):
     from routes.mcp_servers import _validate_url
 
     assert _validate_url("https://example.com/mcp") == "https://example.com/mcp"
-    for bad in ["npx server", "python -m mod", "ftp://host"]:
+    # urlparse reads "localhost:8000" scheme as "localhost", so it lands here too.
+    for bad in [
+        "npx server",
+        "python -m mod",
+        "ftp://host",
+        "example.com",
+        "localhost:8000",
+        r"C:\node\node.exe server.js",
+    ]:
         with pytest.raises(HTTPException) as exc:
             _validate_url(bad)
         assert exc.value.status_code == 400
+
+
+def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
+    # The message names a command only when the value has whitespace, and never
+    # says "desktop app only" (self-hosted hosts can opt in via the env var).
+    _disable(monkeypatch)
+    from routes.mcp_servers import _validate_url
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_url("npx -y @modelcontextprotocol/server-filesystem /tmp")
+    cmd = exc.value.detail.lower()
+    assert "http://" in cmd and "https://" in cmd
+    assert "local command" in cmd
+    assert "desktop app" not in cmd
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_url("example.com")
+    lone = exc.value.detail.lower()
+    assert "http://" in lone and "https://" in lone
+    assert "local command" not in lone
 
 
 def test_validate_url_gate_on_accepts_stdio(monkeypatch):
@@ -218,9 +245,11 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     # http still works when stdio is on
     assert _validate_url("https://x/mcp") == "https://x/mcp"
     # url-bearing argument accepted as a command
-    assert _validate_url("npx server --url https://x/mcp") == (
-        "npx server --url https://x/mcp"
-    )
+    assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
+    # A lone token is ambiguous; keep the prior behaviour and accept it as a
+    # command rather than guessing it's a URL (no regression for single binaries).
+    assert _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    assert _validate_url("mcp-server-sqlite") == "mcp-server-sqlite"
     # empty / unparseable still rejected
     for bad in ["   ", '"unclosed']:
         with pytest.raises(HTTPException) as exc:
@@ -306,9 +335,7 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
     assert transport == []
 
     _enable(monkeypatch)
-    res = asyncio.run(
-        routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u")
-    )
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u"))
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -319,9 +346,7 @@ def test_discovery_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import get_enabled_mcp_tools
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(
-        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
 
     _disable(monkeypatch)
     assert asyncio.run(get_enabled_mcp_tools()) == []
@@ -337,9 +362,7 @@ def test_execute_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import execute_tool
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(
-        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
 
     _disable(monkeypatch)
     out = execute_tool("mcp__stdio1__list_directory", {"path": "/tmp"})

@@ -10,7 +10,6 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { usePlatformStore } from "@/config/env";
 import { refreshSession } from "../api";
 
 // Bootstrap credentials injected into index.html by the backend
@@ -294,13 +293,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      let msg = err instanceof Error ? err.message : "Auth failed.";
-      if (msg.includes("unsloth studio reset-password") && usePlatformStore.getState().deviceType === "windows") {
-        msg = msg.replace(
-          "unsloth studio reset-password",
-          ".\\unsloth_studio\\Scripts\\unsloth.exe studio reset-password",
-        );
-      }
+      // The backend already returns the correct, PATH-based command
+      // ("unsloth studio reset-password"), which the installer puts on PATH on
+      // every platform. Do NOT rewrite it to a relative Windows path like
+      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves when the
+      // terminal happens to be inside the Studio home dir, so it fails with
+      // CommandNotFoundException everywhere else. Show the backend message as-is.
+      const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
     } finally {
       setLoading(false);
