@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Datasets API routes
-"""
+"""Datasets API routes."""
 
 import base64
 import io
@@ -43,11 +41,9 @@ def _get_dataset_size_cached(repo_id: str) -> int:
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo dir.
+    """Resolved realpath for a HF cache repo dir: most-recent snapshot, else cache root.
 
-    Mirrors the helper in routes/models.py: prefer the most-recent
-    snapshot dir, fall back to the cache repo root, return resolved
-    realpath. Duplicated here to keep routes/datasets.py self-contained.
+    Mirrors routes/models.py; duplicated here to keep this module self-contained.
     """
     try:
         snapshots_dir = repo_dir / "snapshots"
@@ -61,12 +57,10 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         return None
 
 
-# Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Import dataset utilities
 from utils.datasets import check_dataset_format
 from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
@@ -93,13 +87,12 @@ from utils.paths import (
 
 
 def _serialize_preview_value(value):
-    """make it json safe for client preview ⊂(◉‿◉)つ"""
+    """Make a value JSON-safe for the client preview."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
 
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             buffer = io.BytesIO()
             value.convert("RGB").save(buffer, format = "JPEG", quality = 85)
@@ -129,12 +122,9 @@ def _serialize_preview_rows(rows):
     ]
 
 
-# --- Endpoints ---
-
-# Recognized data-file extensions for the single-file fallback approach.
-# Tabular formats are preferred over archives for Tier 1 preview because
-# archives (e.g. images.zip) may be loaded as ImageFolder datasets with
-# synthetic columns (image/label) that don't match the real dataset schema.
+# Data-file extensions for the single-file fallback. Tier 1 preview prefers
+# tabular over archives: archives (e.g. images.zip) load as ImageFolder with
+# synthetic image/label columns that don't match the real schema.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
@@ -261,9 +251,7 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _load_local_preview_slice(
-    *, dataset_path: Path, train_split: str, preview_size: int
-):
+def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     from datasets import load_dataset
 
     if dataset_path.is_dir():
@@ -298,9 +286,7 @@ def _load_local_preview_slice(
     elif dataset_path.suffix == ".csv":
         dataset = load_dataset("csv", data_files = str(dataset_path), split = train_split)
     elif dataset_path.suffix == ".parquet":
-        dataset = load_dataset(
-            "parquet", data_files = str(dataset_path), split = train_split
-        )
+        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
     else:
         raise HTTPException(
             status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
@@ -320,8 +306,7 @@ def _sanitize_filename(filename: str) -> str:
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile,
-    current_subject: str = Depends(get_current_subject),
+    file: UploadFile, current_subject: str = Depends(get_current_subject)
 ) -> UploadDatasetResponse:
     filename = _sanitize_filename(file.filename or "dataset_upload")
     ext = Path(filename).suffix.lower()
@@ -337,9 +322,9 @@ async def upload_dataset(
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
-    # Stream file to disk in chunks to avoid holding entire file in memory.
-    # Keep a route-level cap so users get a clear training-dataset-specific
-    # error and oversized partial files are not left in the Studio uploads directory.
+    # Stream to disk in chunks to avoid holding the whole file in memory. The
+    # route-level cap gives a clear training-dataset error and avoids leaving
+    # oversized partial files in the Studio uploads directory.
     upload_limit_bytes = get_upload_limit_bytes()
     total_bytes = 0
     upload_complete = False
@@ -378,20 +363,14 @@ def list_local_datasets(
 
 @router.get("/download-progress")
 async def get_dataset_download_progress(
-    repo_id: str = Query(
-        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
-    ),
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for a HuggingFace dataset repo.
 
     Mirrors ``GET /api/models/download-progress`` but scans the
-    ``datasets--owner--name`` cache directory under HF_HUB_CACHE.
-    Modern ``datasets``/``huggingface_hub`` caches both raw model and
-    raw dataset blobs in HF_HUB_CACHE; the ``datasets`` library writes
-    its processed Arrow shards elsewhere, but the in-progress *download*
-    bytes are observable here. Returns ``cache_path`` so the UI can
-    show users where the dataset blobs landed on disk.
+    ``datasets--owner--name`` cache dir under HF_HUB_CACHE, where in-progress
+    download bytes are visible. Returns ``cache_path`` so the UI can show it.
     """
     _empty = {
         "downloaded_bytes": 0,
@@ -441,9 +420,8 @@ async def get_dataset_download_progress(
                 "cache_path": cache_path,
             }
 
-        # Same 95% completion threshold as the model endpoint -- HF blob
-        # dedup makes completed_bytes drift slightly under expected_bytes,
-        # and inter-file gaps would otherwise look like "done".
+        # 95% threshold (as in the model endpoint): HF blob dedup makes
+        # completed_bytes drift under expected_bytes; inter-file gaps look "done".
         if completed_bytes >= expected_bytes * 0.95:
             progress = 1.0
         else:
@@ -460,22 +438,15 @@ async def get_dataset_download_progress(
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
-def check_format(
-    request: CheckFormatRequest,
-    current_subject: str = Depends(get_current_subject),
-):
-    """
-    Check if a dataset requires manual column mapping.
+def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
+    """Check if a dataset requires manual column mapping.
 
-    Strategy for HuggingFace datasets:
-      1. list_repo_files → pick the first data file → load_dataset(data_files=[…])
-         Avoids resolving thousands of files; typically ~2-4 s.
+    HuggingFace strategy:
+      1. list_repo_files -> first data file -> load_dataset (avoids resolving thousands of files; ~2-4 s).
       2. Full streaming load_dataset as a last-resort fallback.
 
-    Local files are loaded directly.
-
-    Using a plain `def` (not async) so FastAPI runs this in a thread-pool,
-    preventing any blocking IO from freezing the event loop.
+    Local files load directly. Plain `def` (not async) so FastAPI runs it in a
+    thread-pool, keeping blocking IO off the event loop.
     """
     try:
         from itertools import islice
@@ -499,7 +470,7 @@ def check_format(
             )
         else:
             # ── HuggingFace dataset ─────────────────────────────────
-            # Tier 1: list_repo_files → load only the first data file
+            # Tier 1: load only the first data file from list_repo_files
             preview_slice = None
 
             try:
@@ -511,25 +482,18 @@ def check_format(
                     repo_type = "dataset",
                     token = request.hf_token or None,
                 )
-                data_files = [
-                    f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
-                ]
+                data_files = [f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)]
 
-                # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
-                # with synthetic image/label columns that don't match the real schema).
+                # Prefer tabular over archives (e.g. images.zip -> ImageFolder
+                # with synthetic columns not in the real schema).
                 tabular_files = [
-                    f
-                    for f in data_files
-                    if any(f.endswith(ext) for ext in _TABULAR_EXTS)
+                    f for f in data_files if any(f.endswith(ext) for ext in _TABULAR_EXTS)
                 ]
                 candidates = tabular_files or data_files
 
-                # When a subset is specified, narrow to files whose name matches
-                # (e.g. subset="testmini" → prefer "testmini.parquet").
+                # With a subset, narrow to files whose name matches it.
                 if request.subset and candidates:
-                    subset_matches = [
-                        f for f in candidates if request.subset in Path(f).stem
-                    ]
+                    subset_matches = [f for f in candidates if request.subset in Path(f).stem]
                     if subset_matches:
                         candidates = subset_matches
 
@@ -553,7 +517,7 @@ def check_format(
                 logger.warning(f"Tier 1 (single-file) failed: {e}")
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files — slow for large repos)
+                # Tier 2: full streaming (resolves all files; slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 load_kwargs = {
                     "path": request.dataset_name,
@@ -577,46 +541,40 @@ def check_format(
                 preview_slice = Dataset.from_list(rows)
             total_rows = None
 
-        # Run lightweight format check on the preview slice
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
 
         logger.info(
             f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_image={result.get('is_image', False)}"
         )
 
-        # Generate preview samples
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
                 # Heuristic-detected: show raw data so columns match the API response.
-                # Processing (column stripping) happens at training time, not preview.
+                # Column stripping happens at training time, not preview.
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
                     format_result = format_dataset(
                         preview_slice,
                         format_type = "auto",
-                        num_proc = None,  # Only 10 preview rows -- no need for multiprocessing
+                        num_proc = None,  # Only 10 preview rows
                     )
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(
-                        f"Processed preview generation failed (non-fatal): {e}"
-                    )
+                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
-        # Collect warnings: from check_dataset_format + URL-based image detection
+        # Warnings from check_dataset_format plus URL-based image detection.
         warning = result.get("warning")
         image_col = result.get("detected_image_column")
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(
-                    ("http://", "https://")
-                ):
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -647,33 +605,25 @@ def check_format(
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to check dataset format: {str(e)}"
-        )
+        raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 
 
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
-    request: AiAssistMappingRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: AiAssistMappingRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Run LLM-assisted dataset conversion advisor (user-triggered).
+    """Run LLM-assisted dataset conversion advisor (user-triggered).
 
-    Multi-pass analysis using a 7B helper model:
-      Pass 1: Classify dataset type from HF card + samples
-      Pass 2: Generate conversion strategy (system prompt, templates)
-      Pass 3: Validate conversion quality
-
-    Falls back to simple column classification if the advisor fails.
+    Multi-pass analysis with a 7B helper model: classify dataset type, generate
+    conversion strategy, validate quality. Falls back to simple column
+    classification if the advisor fails.
     """
     try:
         from utils.datasets.llm_assist import llm_conversion_advisor
 
-        # Truncate sample values for the LLM prompt
+        # Truncate sample values for the LLM prompt.
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns}
-            for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(
@@ -705,4 +655,4 @@ def ai_assist_mapping(
 
     except Exception as e:
         logger.error(f"AI assist mapping failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"AI assist failed: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "AI assist failed")

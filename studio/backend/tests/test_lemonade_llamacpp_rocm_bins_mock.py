@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Validates that the installer correctly resolves lemonade ROCm prebuilt assets.
+"""Validates that the installer resolves lemonade ROCm prebuilt assets.
 
-Uses a faked HostInfo so no AMD GPU is needed. Network calls to the lemonade
-GitHub API are stubbed out so the suite runs without internet access and is
-not subject to rate limits.
+Uses a faked HostInfo so no AMD GPU is needed. The lemonade GitHub API calls
+are stubbed so the suite runs offline and isn't subject to rate limits.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ if resolve_lemonade_rocm_choice is None or _LEMONADE_GFX_FAMILIES is None:
 @pytest.fixture(autouse = True)
 def _clear_lemonade_release_cache():
     """Prevent cross-test pollution of the lemonade release lru_cache when
-    future tests vary the fetch_json mock return value."""
+    tests vary the fetch_json mock return value."""
     _cache = getattr(_mod, "_fetch_lemonade_release_cached", None)
     if _cache is not None and hasattr(_cache, "cache_clear"):
         _cache.cache_clear()
@@ -90,9 +89,7 @@ def _lookup_family(gfx: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # GPU family mapping
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -114,9 +111,7 @@ def test_unknown_gpu_not_in_families():
     assert _lookup_family("gfx999") is None
 
 
-# ---------------------------------------------------------------------------
 # Asset resolution - hits real lemonade GitHub API
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -134,12 +129,8 @@ def test_unknown_gpu_not_in_families():
 def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
     host = _make_rocm_host(gfx, windows = windows)
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        result = resolve_lemonade_rocm_choice(
-            host, os_prefix, "default", llama_tag = "latest"
-        )
-    assert (
-        result is not None
-    ), f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
+        result = resolve_lemonade_rocm_choice(host, os_prefix, "default", llama_tag = "latest")
+    assert result is not None, f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
     assert _lookup_family(gfx) in result.name
     assert result.url.startswith("https://github.com/lemonade-sdk/llamacpp-rocm")
 
@@ -150,21 +141,18 @@ def test_unknown_gpu_falls_through_to_upstream():
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Simple-policy dispatcher must plan a lemonade ROCm attempt for AMD-only hosts.
-# This is the path setup.sh actually invokes (via --simple-policy), so the
-# lemonade integration is useless if it isn't wired in here.
-# ---------------------------------------------------------------------------
+# This is the path setup.sh invokes (via --simple-policy), so the lemonade
+# integration is useless if it isn't wired in here.
 
 direct_linux_release_plan = getattr(_mod, "direct_linux_release_plan", None)
 direct_upstream_release_plan = getattr(_mod, "direct_upstream_release_plan", None)
 
 
 def _stub_unsloth_release(release_tag: str = "b9022") -> dict:
-    # Minimal payload that parse_direct_linux_release_bundle accepts. It
-    # requires at least one `app-{label}-linux-x64*.tar.gz` asset for the
-    # bundle to be recognised; we ship a bare CPU one so the planner has a
-    # baseline non-ROCm attempt to fall through to.
+    # Minimal payload parse_direct_linux_release_bundle accepts. It needs at
+    # least one `app-{label}-linux-x64*.tar.gz` asset to recognise the bundle;
+    # we ship a bare CPU one so the planner has a baseline non-ROCm fallback.
     asset_name = f"app-{release_tag}-linux-x64.tar.gz"
     return {
         "tag_name": release_tag,
@@ -213,9 +201,7 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
         "assets": [],
     }
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        plan = direct_upstream_release_plan(
-            release, host, "ggml-org/llama.cpp", "latest"
-        )
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
     assert (
@@ -245,9 +231,7 @@ def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavaila
     plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None
     kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "windows-hip" in kinds
-    ), f"upstream HIP asset not included as fallback; got {kinds}"
+    assert "windows-hip" in kinds, f"upstream HIP asset not included as fallback; got {kinds}"
     hip_attempt = next(a for a in plan.attempts if a.install_kind == "windows-hip")
     assert hip_attempt.source_label == "upstream"
 
@@ -263,9 +247,8 @@ def test_lemonade_release_api_url_pinned_tag():
 
 
 def test_lemonade_release_api_url_encodes_tag():
-    """Unexpected slashes / hashes in the tag must be URL-encoded so the URL
-    cannot be reshaped (defence in depth -- tags should already be sanitised
-    upstream)."""
+    """Slashes / hashes in the tag must be URL-encoded so the URL can't be
+    reshaped (defence in depth -- tags should already be sanitised upstream)."""
     url = _mod._lemonade_release_api_for("b1260/../latest")
     assert "/releases/tags/b1260%2F..%2Flatest" in url
     assert "//latest" not in url.split("/releases/tags/", 1)[1]
@@ -280,9 +263,9 @@ def test_lemonade_resolver_skipped_by_opt_out_env(monkeypatch):
 
 
 def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
-    """If the GitHub API response somehow contained an off-host download URL,
-    the resolver must refuse to use it (lemonade assets are not in the
-    approved-hash manifest)."""
+    """If the GitHub API response contained an off-host download URL, the
+    resolver must refuse it (lemonade assets aren't in the approved-hash
+    manifest)."""
     bad_release = {
         "tag_name": _STUB_TAG,
         "assets": [
@@ -294,9 +277,7 @@ def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = bad_release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -308,7 +289,7 @@ def test_lemonade_resolver_rejects_http_scheme():
 
 
 def test_lemonade_resolver_accepts_github_cdn():
-    # Real GitHub release CDN URLs carry the /github-production-release-asset- prefix.
+    # Real GitHub release CDN URLs carry the /github-production-release-asset- prefix
     assert _mod._is_trusted_github_release_url(
         "https://objects.githubusercontent.com/github-production-release-asset-abc123/456/789?token=x",
         "lemonade-sdk/llamacpp-rocm",
@@ -316,7 +297,7 @@ def test_lemonade_resolver_accepts_github_cdn():
 
 
 def test_lemonade_resolver_rejects_arbitrary_cdn_path():
-    # A CDN URL without the release-asset path prefix must be rejected.
+    # A CDN URL without the release-asset path prefix must be rejected
     assert not _mod._is_trusted_github_release_url(
         "https://objects.githubusercontent.com/abc/def",
         "lemonade-sdk/llamacpp-rocm",
@@ -349,9 +330,7 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -360,7 +339,7 @@ def test_lemonade_runtime_patterns_include_hip_runtime():
 
     Lemonade ZIPs carry transitive deps (libamd_comgr, libLLVM, libclang-cpp,
     ...) whose names change across ROCm releases. A broad ``lib*.so*`` glob
-    avoids having to enumerate every transitive dependency by name.
+    avoids enumerating every transitive dependency by name.
     """
     from install_llama_prebuilt import runtime_patterns_for_choice, AssetChoice
 
@@ -374,7 +353,7 @@ def test_lemonade_runtime_patterns_include_hip_runtime():
     )
     pats = runtime_patterns_for_choice(choice)
     # The broad glob must be present so every .so in the lemonade bundle
-    # (including transitive deps added in future ROCm releases) gets overlaid.
+    # (including future transitive deps) gets overlaid.
     assert "lib*.so*" in pats, f"'lib*.so*' missing from linux-rocm patterns: {pats}"
 
 
@@ -386,9 +365,9 @@ _pick_rocm_gfx_target = getattr(_mod, "_pick_rocm_gfx_target", None)
     reason = "_pick_rocm_gfx_target not present on this branch",
 )
 def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
-    """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
-    on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
-    # Two GPUs; rocminfo reports each token twice (as in the real tool output).
+    """AMD HIP honours CUDA_VISIBLE_DEVICES like HIP_VISIBLE_DEVICES; on a
+    gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
+    # Two GPUs; rocminfo reports each token twice (as in real tool output).
     probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
@@ -417,7 +396,7 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
     """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
     return gfx1151, not fall back to GPU 0 due to dict.fromkeys collapsing the
     two gfx1100 entries into one and making index 2 out of range."""
-    # Simulate rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
+    # rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
     # Each GPU gets its own Agent section with a few token mentions.
     probe_out = (
         "***\nAgent 1\n***\n  gfx1100 some info\n  gfx1100\n"
