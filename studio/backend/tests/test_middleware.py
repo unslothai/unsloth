@@ -24,7 +24,6 @@ if str(_BACKEND_ROOT) not in sys.path:
 @pytest.fixture(scope = "module")
 def main_module():
     import main as _main  # noqa: F401
-
     return _main
 
 
@@ -168,9 +167,7 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 200
         assert r.json()["total"] == 512
 
-    def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(
-        self, main_module
-    ):
+    def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,
             main_module,
@@ -274,9 +271,7 @@ class TestSecurityHeadersMiddleware:
         csp = r.headers["content-security-policy"]
         assert f"'nonce-{nonce}'" in csp
         # Internal handoff header must not leak to clients.
-        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {
-            k.lower() for k in r.headers.keys()
-        }
+        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers.keys()}
 
     def test_build_csp_helper_shape(self, main_module):
         plain = main_module._build_csp()
@@ -290,9 +285,7 @@ class TestSecurityHeadersMiddleware:
         # this allowlist entry citation favicons fall back to gray initials.
         csp = main_module._build_csp()
         img_directive = next(
-            chunk.strip()
-            for chunk in csp.split(";")
-            if chunk.strip().startswith("img-src ")
+            chunk.strip() for chunk in csp.split(";") if chunk.strip().startswith("img-src ")
         )
         # Tokenise and compare with `==` so CodeQL's URL-substring rule does
         # not read directive-string `in` membership as URL sanitisation.

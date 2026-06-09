@@ -34,10 +34,7 @@ def parse_stdio_command(address: str) -> list[str]:
         # posix=False keeps backslash paths intact but also keeps the surrounding
         # quotes on a token. Strip a matched pair so the argv reaches the
         # subprocess clean ('"C:\\Program Files\\node"' -> C:\\Program Files\\node).
-        parts = [
-            p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
-            for p in parts
-        ]
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
     return parts
 
 
@@ -104,7 +101,6 @@ async def clear_oauth_tokens_async(url: str) -> None:
     failing must not make the delete / update route 500."""
     try:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
@@ -112,7 +108,11 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
-def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
+def _client(
+    url: str,
+    headers: Optional[dict],
+    use_oauth: bool = False,
+):
     from fastmcp import Client
 
     if is_stdio(url):
@@ -142,13 +142,10 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
-        SSETransport
-        if infer_transport_type_from_url(url) == "sse"
-        else StreamableHttpTransport
+        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 

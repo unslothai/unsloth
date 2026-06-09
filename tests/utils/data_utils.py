@@ -28,7 +28,11 @@ def create_instruction_dataset(messages: list[dict] = DEFAULT_MESSAGES):
     return dataset
 
 
-def create_dataset(tokenizer, num_examples: int = None, messages: list[dict] = None):
+def create_dataset(
+    tokenizer,
+    num_examples: int = None,
+    messages: list[dict] = None,
+):
     dataset = create_instruction_dataset(messages)
 
     def _apply_chat_template(example):
@@ -119,9 +123,7 @@ def format_summary(stats: dict, precision: int = 6) -> str:
             # Format each element in tuples or lists (e.g., the shape)
             formatted_value = ", ".join(str(v) for v in value)
             formatted_value = (
-                f"({formatted_value})"
-                if isinstance(value, tuple)
-                else f"[{formatted_value}]"
+                f"({formatted_value})" if isinstance(value, tuple) else f"[{formatted_value}]"
             )
         else:
             formatted_value = str(value)
@@ -132,9 +134,7 @@ def format_summary(stats: dict, precision: int = 6) -> str:
 def get_peft_weights(model):
     # ruff: noqa
     is_lora_weight = lambda name: any(s in name for s in ["lora_A", "lora_B"])
-    return {
-        name: param for name, param in model.named_parameters() if is_lora_weight(name)
-    }
+    return {name: param for name, param in model.named_parameters() if is_lora_weight(name)}
 
 
 def describe_peft_weights(model):
@@ -142,7 +142,11 @@ def describe_peft_weights(model):
         yield name, describe_param(param, as_str = True)
 
 
-def check_responses(responses: list[str], answer: str, prompt: str = None) -> bool:
+def check_responses(
+    responses: list[str],
+    answer: str,
+    prompt: str = None,
+) -> bool:
     for i, response in enumerate(responses, start = 1):
         if answer in response:
             print(f"\u2713 response {i} contains answer")
