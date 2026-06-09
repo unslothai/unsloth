@@ -768,7 +768,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
-    top_k = (arguments or {}).get("top_k") or scope.get("default_top_k")
+    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
         query = str(query),
         scope_kb_id = scope.get("kb_id"),

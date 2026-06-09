@@ -79,6 +79,7 @@ def retrieve_hybrid(
     """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
     (default). Pool sizes and the RRF constant come from config."""
     k = k if k is not None else config.TOP_K_HYBRID
+    k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k)
     if mode == "dense":
