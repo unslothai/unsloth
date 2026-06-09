@@ -278,9 +278,7 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name)
-        and not _is_mmproj_filename(name)
-        and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
     )
 
 

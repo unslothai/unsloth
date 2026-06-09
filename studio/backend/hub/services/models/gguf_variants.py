@@ -597,8 +597,7 @@ async def get_gguf_variants_response(
                 # companion_hashes adds the MTP drafter (mmproj_hashes covers
                 # every mmproj precision in the repo, not just the planned one).
                 if (
-                    (requirement.mmproj_hashes | requirement.companion_hashes)
-                    & incomplete_hashes
+                    (requirement.mmproj_hashes | requirement.companion_hashes) & incomplete_hashes
                 ) and _filenames_cached(
                     requirement.main_filenames,
                     requirement.main_size_bytes,

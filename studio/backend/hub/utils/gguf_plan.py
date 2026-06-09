@@ -81,9 +81,7 @@ def _gguf_rfilename(sibling) -> Optional[str]:
 
 
 def mmproj_siblings(siblings: Sequence) -> list:
-    return [
-        s for s in siblings if (name := _gguf_rfilename(s)) and is_mmproj_filename(name)
-    ]
+    return [s for s in siblings if (name := _gguf_rfilename(s)) and is_mmproj_filename(name)]
 
 
 def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
@@ -108,8 +106,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s))
-            and name.lower().rsplit("/", 1)[-1].startswith("mtp-")
+            if (name := _gguf_rfilename(s)) and name.lower().rsplit("/", 1)[-1].startswith("mtp-")
         ),
         key = lambda s: getattr(s, "rfilename"),
     )

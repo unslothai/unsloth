@@ -2425,7 +2425,6 @@ class LlamaCppBackend:
 
         try:
             from huggingface_hub import hf_hub_download
-
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             return hf_hub_download(
                 repo_id = hf_repo,
@@ -2488,8 +2487,7 @@ class LlamaCppBackend:
             mtp_files = sorted(
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf")
-                and Path(f).name.lower().startswith("mtp-")
+                if f.lower().endswith(".gguf") and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
@@ -2526,9 +2524,7 @@ class LlamaCppBackend:
 
         return str(mmproj)
 
-    def _resolve_launch_mtp_path(
-        self, *, mtp_draft_path: Optional[str]
-    ) -> Optional[str]:
+    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
         """Return mtp_draft_path iff it exists on disk, else None.
 
         No family check needed: the drafter is only ever auto-resolved from
@@ -3388,7 +3384,7 @@ class LlamaCppBackend:
                     fallback_cmd = (
                         cmd[:_spec_start]
                         + ["--spec-default"]
-                        + cmd[_spec_start + len(spec_flags):]
+                        + cmd[_spec_start + len(spec_flags) :]
                     )
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:

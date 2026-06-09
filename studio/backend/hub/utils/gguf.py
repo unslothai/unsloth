@@ -138,9 +138,7 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
         for name in filenames
-        if is_gguf_filename(name)
-        and not is_mmproj_filename(name)
-        and not is_mtp_drafter_path(name)
+        if is_gguf_filename(name) and not is_mmproj_filename(name) and not is_mtp_drafter_path(name)
     ]
     if not gguf_files:
         return None

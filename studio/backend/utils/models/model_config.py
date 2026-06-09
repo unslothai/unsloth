@@ -1583,8 +1583,7 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         rel_files = [
             rel
             for f in _iter_gguf_files(snap, recursive = True)
-            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix())
-            and not _is_mmproj(f.name)
+            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix()) and not _is_mmproj(f.name)
         ]
         if rel_files:
             return _pick_best_gguf(rel_files)
