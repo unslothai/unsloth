@@ -962,12 +962,14 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
 	}
 
 	.dark .chat-composer-surface {
 		background-color: #2a2a2c;
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
 	}
 
 	.composer-pill-btn {
@@ -1048,17 +1050,18 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		/* Gemini search pill: soft, centered shadow, no downward offset. */
-		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
 	}
 
 	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .unsloth-composer-surface {
 		background-color: #2a2a2c;
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
