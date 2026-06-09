@@ -60,6 +60,7 @@ import {
 } from "../utils/parse-assistant-content";
 import {
   generateAudio,
+  getLoadProgress,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -945,28 +946,65 @@ async function resolveSandboxSessionId(
   return projectId ? `project-${projectId}` : threadId;
 }
 
-/** Wait for a model to be ready: UI-initiated loads or external CLI loads. */
+/**
+ * Wait for an in-progress UI-initiated model load to finish. Returns as
+ * soon as ``modelLoading`` clears -- whether the load succeeded (checkpoint
+ * set) or ended without one (cancel/failure) -- so a cancelled load does
+ * not leave the send hanging. Adopting an externally loaded model is the
+ * empty-checkpoint path's job (see ``adoptInFlightServerLoad``), not this.
+ */
 async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
-  const deadline = Date.now() + 120_000;
-  while (true) {
+  while (useChatRuntimeStore.getState().modelLoading) {
     if (abortSignal?.aborted) {
       throw new Error("Aborted");
     }
-    if (useChatRuntimeStore.getState().modelLoading) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      continue;
-    }
-    if (useChatRuntimeStore.getState().params.checkpoint) {
-      return;
-    }
-    if (await tryAdoptServerActiveModel()) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      return;
-    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+/**
+ * On an empty checkpoint, adopt a model the server is already running or
+ * loading (e.g. ``unsloth studio run -m``) instead of auto-loading a
+ * different one. Only waits when there is real evidence of an in-flight
+ * load (llama-server paging weight shards, ``load-progress`` phase
+ * ``"mmap"``); a genuinely idle session has no such evidence and returns
+ * ``false`` immediately so the caller auto-loads without delay.
+ */
+async function adoptInFlightServerLoad(
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  if (await tryAdoptServerActiveModel()) {
+    return true;
+  }
+
+  const loadInFlight = async (): Promise<boolean> => {
+    try {
+      return (await getLoadProgress()).phase === "mmap";
+    } catch {
+      return false;
+    }
+  };
+
+  if (!(await loadInFlight())) {
+    return false;
+  }
+
+  toast.info("Waiting for model to finish loading…");
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (abortSignal?.aborted) {
+      throw new Error("Aborted");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (await tryAdoptServerActiveModel()) {
+      return true;
+    }
+    if (!(await loadInFlight())) {
+      // Load finished (healthy) or the process is gone; final adopt try.
+      return await tryAdoptServerActiveModel();
+    }
+  }
+  return await tryAdoptServerActiveModel();
 }
 
 /**
@@ -977,11 +1015,11 @@ async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 
-async function autoLoadSmallestModel(): Promise<{
+async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (await tryAdoptServerActiveModel()) {
+  if (await adoptInFlightServerLoad(abortSignal)) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }
 
@@ -1331,7 +1369,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         let loaded = false;
         let blockedByTrustRemoteCode = false;
         try {
-          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+          ({ loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel(abortSignal));
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;

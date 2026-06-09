@@ -265,7 +265,9 @@ export function useChatModelRuntime() {
         const deadline = Date.now() + 60_000;
         while (
           Date.now() < deadline &&
-          !polledStatus?.active_model
+          !polledStatus?.active_model &&
+          // Stop early if the user picks a model while we are polling.
+          !useChatRuntimeStore.getState().params.checkpoint
         ) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           try {
@@ -287,7 +289,10 @@ export function useChatModelRuntime() {
       const checkpointAfterPoll =
         useChatRuntimeStore.getState().params.checkpoint;
       const isExternalAfterPoll = isExternalModelId(checkpointAfterPoll);
-      if (statusRes.active_model && !isExternalAfterPoll) {
+      // If the user selected a model while the CLI-load poll was running,
+      // a late status response must not clobber that fresh selection.
+      const userSelectedDuringPoll = shouldPollForCliLoad && !!checkpointAfterPoll;
+      if (statusRes.active_model && !isExternalAfterPoll && !userSelectedDuringPoll) {
         const checkpointId = resolveInferenceCheckpointId(statusRes);
         if (checkpointId) {
           setCheckpoint(checkpointId, statusRes.gguf_variant);
