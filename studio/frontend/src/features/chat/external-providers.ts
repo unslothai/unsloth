@@ -107,6 +107,7 @@ export function providerTypeSupportsVision(
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
+export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -130,7 +131,7 @@ export const CUSTOM_PROVIDER_PRESETS = [
 ] as const;
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
-  [LEGACY_CUSTOM_PROVIDER_TYPE]: "Custom",
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: CUSTOM_PROVIDER_DISPLAY_NAME,
   ...Object.fromEntries(
     CUSTOM_PROVIDER_PRESETS.map((preset) => [
       preset.providerType,
@@ -201,7 +202,7 @@ export function allowsManualModelIdsWithCatalog(
 export function customProviderDisplayName(
   providerType: string | null | undefined,
 ): string {
-  if (!providerType) return "Custom";
+  if (!providerType) return CUSTOM_PROVIDER_DISPLAY_NAME;
   return CUSTOM_PROVIDER_LABELS[providerType] ?? providerType;
 }
 

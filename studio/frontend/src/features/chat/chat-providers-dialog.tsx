@@ -59,6 +59,7 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
   supportsProviderPromptCaching,
@@ -229,7 +230,9 @@ export function ChatProvidersSettings({
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const [customProviderName, setCustomProviderName] = useState("Custom");
+  const [customProviderName, setCustomProviderName] = useState(
+    CUSTOM_PROVIDER_DISPLAY_NAME,
+  );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -935,8 +938,13 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    // Local OpenAI-compat presets skip API keys — run the connection check.
-    if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
+    // Hosted registry providers require keys. Local presets and generic
+    // OpenAI-compatible custom endpoints may be keyless.
+    if (
+      !savedKey &&
+      !supportsRemoteModelCatalog(provider.providerType) &&
+      provider.providerType !== LEGACY_CUSTOM_PROVIDER_TYPE
+    ) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -1058,6 +1066,16 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          {CUSTOM_PROVIDER_DISPLAY_NAME}
+                        </span>
+                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
@@ -1140,7 +1158,7 @@ export function ChatProvidersSettings({
                     onChange={(event) =>
                       setCustomProviderName(event.target.value)
                     }
-                    placeholder="Custom"
+                    placeholder={CUSTOM_PROVIDER_DISPLAY_NAME}
                     className="h-9 text-sm"
                   />
                 </div>
