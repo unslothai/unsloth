@@ -2045,7 +2045,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         chat_messages:  Non-system messages with content flattened to strings.
         image_base64:   Base64 of the *first* image found, or ``None``.
     """
-    system_prompt = ""
+    system_parts: list[str] = []
     chat_messages: list[dict] = []
     first_image_b64: Optional[str] = None
 
@@ -2053,10 +2053,10 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         # ── System messages → extract as system_prompt ────────
         if msg.role == "system":
             if isinstance(msg.content, str):
-                system_prompt = msg.content
+                system_parts.append(msg.content)
             elif isinstance(msg.content, list):
                 # Unlikely but handle: join text parts
-                system_prompt = "\n".join(p.text for p in msg.content if p.type == "text")
+                system_parts.append("\n".join(p.text for p in msg.content if p.type == "text"))
             continue
 
         # ── User / assistant messages ─────────────────────────
@@ -2079,7 +2079,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             combined_text = "\n".join(text_parts) if text_parts else ""
             chat_messages.append({"role": msg.role, "content": combined_text})
 
-    return system_prompt, chat_messages, first_image_b64
+    return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
 
 
 # ── External provider proxy ──────────────────────────────────────

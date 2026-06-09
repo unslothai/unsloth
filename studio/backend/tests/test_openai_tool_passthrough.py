@@ -36,6 +36,7 @@ from routes.inference import (
     _build_passthrough_payload,
     _clamp_finish_reason,
     _effective_max_tokens,
+    _extract_content_parts,
     _friendly_error,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
@@ -693,6 +694,24 @@ class TestOpenAICompatibilityHelpers:
         assert usage["prompt_tokens"] == 0
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
+
+    def test_developer_message_preserves_existing_system_prompt(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        for message in payload.messages:
+            if message.role == "developer":
+                message.role = "system"
+
+        system_prompt, chat_messages, image_b64 = _extract_content_parts(payload.messages)
+
+        assert system_prompt == "original system\n\ndeveloper rules"
+        assert chat_messages == [{"role": "user", "content": "hi"}]
+        assert image_b64 is None
 
 
 # =====================================================================
