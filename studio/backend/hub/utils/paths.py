@@ -115,9 +115,8 @@ def _wsl_automount_root() -> str:
     """DrvFs root under which WSL maps Windows drives, with a trailing slash.
 
     Defaults to ``/mnt/`` but is user-configurable via ``/etc/wsl.conf``
-    (``[automount] root``); hard-coding ``/mnt/`` mistranslates Windows paths on
-    a host with a custom root (e.g. ``root = /`` → ``C:`` at ``/c/``). Resolved
-    once at import, since wsl.conf is static for a session."""
+    (``[automount] root``), so hard-coding ``/mnt/`` mistranslates Windows paths
+    on a host with a custom root (e.g. ``root = /`` → ``C:`` at ``/c/``)."""
     default = "/mnt/"
     if not _IS_WSL:
         return default

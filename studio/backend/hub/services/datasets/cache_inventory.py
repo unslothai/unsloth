@@ -43,7 +43,6 @@ def _collect_hf_cache_scans() -> tuple[list, set[str]]:
 
 
 def _hf_hub_cache_roots() -> list[Path]:
-    """Return Hub cache roots that may contain ``datasets--owner--repo`` dirs."""
     roots: list[Path] = []
     seen: set[str] = set()
 
@@ -122,10 +121,7 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
 
 
 def _scan_hub_dataset_cache_dirs() -> list[dict]:
-    """Fallback scanner for HF Hub dataset cache directories.
-
-    ``scan_cache_dir()`` can skip repos when one cache entry is partially corrupt;
-    this resilience keeps the On Device tab matching what's on disk."""
+    """Fallback scanner: ``scan_cache_dir()`` skips repos when one cache entry is partially corrupt, so this keeps On Device matching disk."""
     seen_lower: dict[str, dict] = {}
     for root in _hf_hub_cache_roots():
         try:
@@ -240,11 +236,7 @@ def _looks_like_processed_dataset_cache(path: Path) -> bool:
 
 
 def _scan_processed_dataset_caches() -> list[dict]:
-    """Return HF datasets-library cache rows keyed by repo_id.
-
-    `load_dataset()` stores processed Arrow caches separately from the Hub
-    snapshot cache, so they're usable on-device but invisible to
-    `scan_cache_dir()`."""
+    """`load_dataset()` stores processed Arrow caches separately from the Hub snapshot cache, so they're usable on-device but invisible to `scan_cache_dir()`."""
     seen_lower: dict[str, dict] = {}
     for root in _hf_datasets_cache_roots():
         try:
@@ -274,7 +266,6 @@ def _scan_processed_dataset_caches() -> list[dict]:
 
 
 def _scan_hf_dataset_caches() -> list[dict]:
-    """Walk active + legacy + default HF caches; return one row per cached dataset repo."""
     scans, seen_roots = _collect_hf_cache_scans()
 
     seen_lower: dict[str, dict] = {}

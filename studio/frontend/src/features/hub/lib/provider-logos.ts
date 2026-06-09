@@ -12,24 +12,17 @@
  */
 
 /**
- * How the logo is colored.
- *   - "original": render the file as-is (PNG/JPG, or SVGs whose colors to keep).
- *   - "mono-theme": CSS mask painted with the current text color (follows theme).
- *   - "mono-black": like mono-theme but always pure black, regardless of theme.
+ * Logo coloring. "original" = file as-is; "mono-theme" = CSS mask in current
+ * text color (follows theme); "mono-black" = mask always pure black.
  */
 export type LogoTreatment = "original" | "mono-theme" | "mono-black";
 
-/**
- * Tile background. "white" gives consistent contrast for colored marks across
- * themes; "transparent" lets the surrounding surface show through.
- */
+/** Tile background. "white" keeps colored marks readable; "transparent" shows the surface. */
 export type LogoBackground = "white" | "transparent";
 
 /**
- * Logo sizing within the tile (only consulted for "original"; mono treatments
- * always pad the silhouette).
- *   - "contain" (default): padded at ~75%.
- *   - "cover": full-bleed, edge-to-edge.
+ * Logo sizing (only for "original"; mono always pads). "contain" pads at ~75%;
+ * "cover" is full-bleed.
  */
 export type LogoFit = "contain" | "cover";
 
@@ -262,8 +255,7 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	return null;
 }
 
-// Owners whose avatars get swapped for the matched provider's logo. A set so
-// more Unsloth-controlled orgs can be added without touching call sites.
+// Owners whose avatars get swapped for the matched provider's logo.
 const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
 
 export function isProviderRelabeledOwner(

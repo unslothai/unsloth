@@ -527,15 +527,14 @@ export function useHubModelSearch(
   );
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
 
-  // Secondary sort only when there's no user query (the merged iterator already
-  // floats unsloth results; re-sorting would bury search matches) and outside
-  // channel scoping (which has its own ordering).
+  // Secondary sort only with no user query (merged iterator already floats
+  // unsloth results; re-sorting would bury matches) and outside channel scoping.
   //
   // STABLE-APPEND CONTRACT: when a later page lands, keep the sorted prefix
-  // verbatim and append only the new tail in natural order. Re-sorting the whole
-  // array would let a late unsloth/* repo jump to an earlier index and bump the
-  // viewport during infinite scroll. So we only sort when the listing resets
-  // (length shrinks or zeros), where re-ordering is safe.
+  // verbatim and append only the new tail. Re-sorting the whole array would let
+  // a late unsloth/* repo jump to an earlier index and bump the viewport during
+  // infinite scroll, so we only sort when the listing resets (length shrinks or
+  // zeros), where re-ordering is safe.
   const channelActive = Boolean(channelOwner || channelTagsKey);
   const [stableCache, setStableCache] = useState<{
     source: HfModelResult[] | null;

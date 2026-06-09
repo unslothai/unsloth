@@ -109,7 +109,6 @@ def _serialize_binary_value(data):
 
 
 def _serialize_preview_value(value):
-    """Make a cell JSON-safe for the client preview."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
 
@@ -480,7 +479,6 @@ def ai_assist_mapping_response(
     try:
         from hub.utils.llm_assist import llm_conversion_advisor
 
-        # Truncate sample values for the LLM prompt
         truncated = [
             {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
         ]

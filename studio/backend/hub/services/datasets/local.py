@@ -192,10 +192,7 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 
 
 def _stream_file_preview_slice(path: Path, preview_size: int):
-    """Read the first ``preview_size`` rows via streaming + ``islice`` so a large
-    file is never fully parsed into Arrow. Returns ``(Dataset, None)`` (a stream
-    has no exact count) or ``None`` if empty/unsupported.
-    """
+    """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
 
     from datasets import Dataset, load_dataset

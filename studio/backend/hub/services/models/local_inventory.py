@@ -105,7 +105,6 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 
 
 def _resolve_hf_cache_dir() -> Path:
-    """Resolve local HF cache root used by hub downloads."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
         return Path(HF_HUB_CACHE)
@@ -313,11 +312,7 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
 
 
 def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory for model files.
-
-    LM Studio uses a ``publisher/model-name`` folder structure containing
-    GGUF files, or standalone GGUF files at the top level.
-    """
+    """Scan an LM Studio models dir (``publisher/model-name`` folders of GGUFs, or top-level standalone GGUFs)."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -440,11 +435,7 @@ def _resolve_allowed_models_dir(models_dir: str, allowed_roots: list[Path]) -> P
 
 
 def _coerce_scan_folder_path(raw_path: str) -> str:
-    """Normalize a scan registration target.
-
-    The registry stores directories, so a pasted weight-file path is reduced to
-    its parent folder (standalone GGUFs are then picked up by _scan_models_dir).
-    """
+    """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
         raise ValueError("Path cannot be empty")
     raw = raw_path.strip()

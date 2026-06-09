@@ -50,7 +50,6 @@ _SENSITIVE_PATH_COMPONENTS = {
 
 
 def _denied_path_prefixes() -> list[str]:
-    """Platform-aware denylist of system directories."""
     system = platform.system()
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]

@@ -100,13 +100,7 @@ def all_hf_cache_scans():
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
-    """Total on-disk size of primary GGUF weights across revisions, excluding
-    mmproj vision adapters.
-
-    Dedupes by blob path (HF hardlinks shared blobs) to avoid double-counting;
-    unknown-size files count as zero. mmproj is excluded so a repo whose only
-    ``.gguf`` is a vision adapter isn't classed as GGUF (it has no pickable variant).
-    """
+    """Sum primary GGUF blob sizes across revisions, deduped by blob path (HF hardlinks shared blobs); mmproj is excluded so a vision-adapter-only repo isn't classed as GGUF."""
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -122,7 +116,6 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 
 def _repo_has_gguf_files(repo_info) -> bool:
-    """True if any revision has a primary GGUF weight (mmproj-only repos excluded)."""
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
@@ -164,8 +157,7 @@ def invalidate_hf_cache_scans() -> None:
 
 
 def _scan_cached_gguf() -> list[dict]:
-    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread
-    so the iterdir/stat calls don't block the event loop."""
+    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
 
     seen_lower: dict[str, dict] = {}
@@ -382,8 +374,7 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 
 
 def _scan_cached_models() -> list[dict]:
-    """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker
-    thread to keep the iterdir/stat calls off the event loop."""
+    """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
 
     seen_lower: dict[str, dict] = {}

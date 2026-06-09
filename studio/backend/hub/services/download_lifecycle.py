@@ -125,9 +125,7 @@ def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
 
 
 def _cancellation_return_codes() -> frozenset[int]:
-    """Negative returncodes meaning intentional cancellation (SIGKILL/SIGTERM/
-    SIGINT). Crash signals are excluded so they surface as errors; ``getattr``
-    keeps this valid on Windows where these POSIX signals may be absent."""
+    """Returncodes for intentional cancellation only (SIGKILL/SIGTERM/SIGINT); crash signals stay errors, and ``getattr`` tolerates Windows where these signals are absent."""
     codes: set[int] = set()
     for name in ("SIGKILL", "SIGTERM", "SIGINT"):
         sig = getattr(signal, name, None)

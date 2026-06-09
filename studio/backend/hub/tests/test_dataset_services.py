@@ -126,9 +126,9 @@ def test_delete_cached_dataset_attempts_all_roots_before_raising(monkeypatch):
 
 
 def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
-    """A blob-only ``datasets--owner--repo`` dir (no usable snapshot/refs) must
-    still be fully removable: purge_partial_repo alone clears only
-    ``.incomplete`` files and would leave the complete blobs and the row."""
+    """A blob-only ``datasets--owner--repo`` dir (no usable snapshot/refs) is
+    fully removable: purge_partial_repo alone clears only ``.incomplete`` files
+    and would leave the complete blobs and the row."""
     purged_dirs: list[str] = []
 
     monkeypatch.setattr(

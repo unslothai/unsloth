@@ -29,11 +29,8 @@ LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "cust
 
 
 def _safe_is_dir(path) -> bool:
-    """``Path.is_dir()`` that returns ``False`` instead of raising.
-
-    Py >= 3.12 propagates ``PermissionError`` (EACCES); folder scans probe
-    root-owned system dirs and must treat un-stat-able paths as not-a-dir.
-    """
+    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(); folder scans
+    # probe root-owned system dirs, so treat un-stat-able paths as not-a-dir.
     try:
         return Path(path).is_dir()
     except OSError:
@@ -67,11 +64,7 @@ _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
 
 def _is_model_directory(d: Path) -> bool:
-    """Return ``True`` when *d* has both a config file and real weight files.
-
-    Excludes mmproj GGUFs (vision projectors) and non-weight ``.bin`` files
-    (``tokenizer.bin``, etc.) from the weight check to avoid false positives.
-    """
+    """True when *d* has a config plus real weights; excludes mmproj GGUFs and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
 
     def _is_weight_file(f: Path) -> bool:
         suffix = f.suffix.lower()
@@ -157,12 +150,7 @@ def _prefer_complete_larger(
 
 
 def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
-    """Return whether GGUF variant-scoped state exists and its expected size.
-
-    A cancelled/in-progress variant may have only manifests, markers, and
-    `.incomplete` blobs (no completed `.gguf` yet), so inventory needs this
-    state to avoid a generic/safetensors fallback row for the same repo.
-    """
+    """Whether GGUF variant-scoped state exists and its expected size; a cancelled/in-progress variant may have only manifests/markers/`.incomplete` blobs, which inventory needs to avoid a generic fallback row."""
     from hub.utils import download_manifest
 
     variant_keys: set[str] = set()
@@ -195,9 +183,7 @@ def _apply_format_aware_partial(
     gguf_partial: bool,
     snapshot_partial_transport: Optional[str] = None,
 ) -> List[LocalModelInfo]:
-    """Rewrite each row's partial flag with format-aware predicates so a hybrid
-    (gguf + safetensors) repo's broken format doesn't taint the clean one.
-    Capabilities are recomputed since they derive from the partial flag."""
+    """Rewrite each row's partial flag with format-aware predicates so a hybrid (gguf + safetensors) repo's broken format doesn't taint the clean one; capabilities are recomputed from the new flag."""
     rewritten: List[LocalModelInfo] = []
     for row in rows:
         target = gguf_partial if row.model_format == "gguf" else snapshot_partial
@@ -290,7 +276,6 @@ def _classify_non_gguf_model_format(
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A primary GGUF weight, not an mmproj vision adapter."""
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
 
 

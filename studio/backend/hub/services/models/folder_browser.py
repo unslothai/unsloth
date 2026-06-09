@@ -78,11 +78,7 @@ _BROWSE_ENTRY_CAP = 2000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
-    """Count GGUF/safetensors files immediately inside *directory*.
-
-    Bounded by visited entries (not matches) so a UI hint never costs more
-    than ``cap`` stats even in a directory full of non-model files.
-    """
+    """Count GGUF/safetensors files immediately inside *directory*, bounded by visited entries (not matches) so the hint never costs more than ``cap`` stats."""
     n = 0
     visited = 0
     try:
@@ -107,8 +103,7 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
 
 
 def _has_direct_model_signal(directory: Path) -> bool:
-    """True if an immediate child signals a model: a GGUF/safetensors/config
-    file or a ``models--*`` HF-cache subdir. Bounded by the hint probe."""
+    """True if an immediate child signals a model (GGUF/safetensors/config file or ``models--*`` HF-cache subdir); bounded by the hint probe."""
     try:
         it = directory.iterdir()
     except OSError:
@@ -135,12 +130,7 @@ def _has_direct_model_signal(directory: Path) -> bool:
 
 
 def _looks_like_model_dir(directory: Path) -> bool:
-    """Bounded heuristic flagging directories worth exploring (false negatives
-    are fine; the real scanner is authoritative). Three signals, cheapest first:
-    a ``models--*`` name (HF cache), a direct child signal, or a grandchild
-    signal (the LM Studio / Ollama ``publisher/model/weights.gguf`` layout).
-    The grandchild probe stays O(PROBE^2) worst-case.
-    """
+    """Bounded heuristic flagging dirs worth exploring (false negatives are fine; the scanner is authoritative). Three signals, cheapest first: a ``models--*`` name, a direct child signal, or a grandchild signal (LM Studio / Ollama ``publisher/model/weights.gguf`` layout)."""
     if directory.name.startswith("models--"):
         return True
     if _has_direct_model_signal(directory):
@@ -168,13 +158,7 @@ def _looks_like_model_dir(directory: Path) -> bool:
 
 
 def _build_browse_allowlist() -> list[Path]:
-    """Root directories the browser may walk (also seeds the suggestion chips).
-
-    Roots: HOME, the resolved HF cache dirs, Studio outputs/exports/root,
-    registered scan folders, and well-known local-LLM dirs (LM Studio, Ollama,
-    ``~/models``). Each is added only if it resolves to a real directory so the
-    sandbox never has a dead boundary.
-    """
+    """Root directories the browser may walk (also seeds the suggestion chips): HOME, resolved HF cache dirs, Studio outputs/exports/root, registered scan folders, and well-known local-LLM dirs. Each is added only if it resolves to a real directory so the sandbox has no dead boundary."""
     from hub.storage.scan_folders import list_scan_folders
 
     candidates: list[Path] = []
@@ -231,8 +215,7 @@ def _build_browse_allowlist() -> list[Path]:
 
 
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
-    """True if *target* equals or descends from any allowed root. Uses
-    ``os.path.realpath`` so symlinks cannot escape the sandbox."""
+    """True if *target* equals or descends from any allowed root; uses ``os.path.realpath`` so symlinks cannot escape the sandbox."""
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
     except OSError:
@@ -264,7 +247,6 @@ def _normalize_browse_request_path(path: Optional[str], *, relative_root: Path) 
 
 
 def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str]]:
-    """Return validated relative path components under ``root``."""
     if "\x00" in requested_path:
         raise HTTPException(
             status_code = 400,
@@ -291,13 +273,7 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
-    """Return the immediate child named ``name`` under ``current``, or None.
-
-    ``name`` is pre-validated as a safe single component, so the direct join is
-    O(1). Case-insensitive filesystems resolve differing case transparently
-    (the caller's ``.resolve()`` canonicalizes it); case-sensitive ones require
-    an exact match, matching OS semantics.
-    """
+    """Immediate child named ``name`` under ``current``, or None. ``name`` is pre-validated as a safe single component, so the join is O(1); case resolution follows OS filesystem semantics."""
     child = current / name
     try:
         child.stat()

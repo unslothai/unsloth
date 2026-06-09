@@ -38,12 +38,7 @@ logger = get_logger(__name__)
 
 
 def _snapshot_blob_reference_counts(repo_dir: Optional[Path]) -> dict[Path, int]:
-    """Map each blob's realpath to how many snapshot symlinks still point at it.
-
-    Per-variant deletion uses this to avoid unlinking a blob another revision
-    still references (which would dangle that symlink). Computed after the
-    target variant's own symlinks are removed so they don't self-count.
-    """
+    """Map each blob's realpath to its live snapshot symlink count, so per-variant deletion never unlinks a blob another revision still references (call after the target variant's own symlinks are removed)."""
     counts: dict[Path, int] = {}
     if repo_dir is None:
         return counts
@@ -227,8 +222,7 @@ def _delete_gguf_variant_from_repos(
 
 
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
-    """True when *loaded_id* is *repo_id* itself or a file within it. Boundary
-    aware on ``/`` so ``org/model`` doesn't match sibling ``org/model-v2``."""
+    """True when *loaded_id* is *repo_id* or a file within it; ``/``-boundary aware so ``org/model`` doesn't match sibling ``org/model-v2``."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
     return lid == rid or lid.startswith(f"{rid}/")
@@ -253,12 +247,7 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 
 
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
-    """Whether the llama.cpp backend currently holds *repo_id* (/variant).
-
-    Acquiring the backend fails open (an import error means nothing is loaded);
-    reading an acquired backend's load state is left unguarded so a raise
-    propagates and the caller fails closed rather than delete a live model.
-    """
+    """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
@@ -285,10 +274,7 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
 
 
 def _inference_backend_blocks_delete(repo_id: str) -> bool:
-    """Whether the subprocess inference backend currently holds *repo_id*.
-
-    Same fail-open-on-acquire / surface-on-query contract as
-    :func:`_llama_cpp_blocks_delete`."""
+    """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference import get_inference_backend
         backend = get_inference_backend()

@@ -602,10 +602,9 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
-    """No prior manifest + metadata still unavailable + leftover .incomplete
-    blobs means a cached partial was returned without downloading: the worker
-    must exit 1, not derive a self-certifying manifest from the finalized
-    subset."""
+    """No prior manifest + metadata unavailable + leftover .incomplete blobs means
+    a cached partial was returned without downloading: the worker must exit 1, not
+    derive a self-certifying manifest from the finalized subset."""
     written = []
     verified = []
 
@@ -721,9 +720,8 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
 
 
 def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, tmp_path):
-    """A finished mmproj companion must keep counting toward progress once the
-    caller supplies expected bytes; resolving the variant requirement credits
-    the projector, else the bar regressed the moment the mmproj finalized."""
+    """A finished mmproj companion keeps counting toward progress once the caller
+    supplies expected bytes; resolving the variant requirement credits it."""
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -1657,10 +1655,9 @@ def test_download_registry_allows_disjoint_gguf_variant_downloads():
 
 
 def test_download_registry_allows_overlapping_same_transport_variant_downloads():
-    # Vision repos bundle the same mmproj with every quant, so two variants share
-    # a blob. They still download together on one transport: the shared blob is
-    # serialized by huggingface_hub's per-blob lock and prepare_cache_for_transport
-    # never purges a blob a peer is actively writing.
+    # Two variants sharing one mmproj blob still download together on one
+    # transport: huggingface_hub's per-blob lock serializes the shared write and
+    # prepare_cache_for_transport never purges a blob a peer is writing.
     registry = download_registry.DownloadRegistry()
 
     claimed, state = registry.claim(
@@ -1825,10 +1822,9 @@ def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
 
 
 def test_finalize_worker_exit_never_kills_a_healthy_worker(monkeypatch, tmp_path):
-    # No stall watchdog: finalize_worker_exit relies solely on the worker's exit
-    # code and NEVER kills a live process. huggingface_hub already bounds reads
-    # with timeouts and raises a clean resumable error, so a liveness kill could
-    # only false-cancel a healthy download.
+    # finalize_worker_exit relies solely on the worker's exit code and never kills
+    # a live process: huggingface_hub already bounds reads with timeouts, so a
+    # liveness kill could only false-cancel a healthy download.
     import inspect
     import io
     import logging
@@ -2555,13 +2551,9 @@ def test_scan_folder_rejects_credential_directories(tmp_path):
 
 
 def _build_variant_cache_repo(repo_dir, blob_specs, snapshot_links):
-    """Create a HF cache repo dir with blobs + snapshot symlinks.
-
-    blob_specs: {blob_name: bytes_payload}
-    snapshot_links: list of (revision, filename, blob_name)
-    Returns a fake CachedRepoInfo whose files carry file_path/blob_path so the
-    per-variant deletion path can be exercised against a real filesystem.
-    """
+    """Build a HF cache repo dir with blobs + snapshot symlinks for the
+    per-variant deletion path. blob_specs: {blob_name: bytes_payload};
+    snapshot_links: list of (revision, filename, blob_name)."""
     blobs_dir = repo_dir / "blobs"
     blobs_dir.mkdir(parents = True)
     for blob_name, payload in blob_specs.items():
@@ -2600,8 +2592,8 @@ def _patch_variant_delete_side_effects(monkeypatch):
 
 
 def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
-    """Accounting must exclude superseded-revision blobs and count an in-progress
-    blob only when its hash belongs to the target."""
+    """Exclude superseded-revision blobs; count an in-progress blob only when its
+    hash belongs to the target."""
     entry = tmp_path / "datasets--Org--Data"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -2701,8 +2693,8 @@ def test_expected_files_from_snapshot_dir_records_relative_paths_and_sizes(tmp_p
 
 def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypatch, tmp_path):
     """A finished snapshot whose only manifest was synthesized from on-disk files
-    must still verify as complete, so a restart/refresh finalizes it instead of
-    capping at 99% and evicting it as gone."""
+    still verifies as complete, so a refresh finalizes it instead of capping at
+    99% and evicting it as gone."""
     entry = tmp_path / "models--Org--Model"
     blobs = entry / "blobs"
     snap = entry / "snapshots" / "rev0"
@@ -2756,8 +2748,8 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
 
 
 def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_path):
-    """A blob still referenced by a non-target snapshot symlink must survive so
-    that symlink doesn't dangle (which the scanner reports as partial)."""
+    """A blob still referenced by a non-target snapshot symlink survives so that
+    symlink doesn't dangle (which the scanner reports as partial)."""
     repo_dir = tmp_path / "models--Org--Repo-GGUF"
     repo = _build_variant_cache_repo(
         repo_dir,

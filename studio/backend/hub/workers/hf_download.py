@@ -86,10 +86,9 @@ def _parent_poll_seconds() -> float:
 
 
 def _protected_blob_hashes() -> frozenset[str]:
-    """Blob hashes a concurrent same-repo peer is writing (passed by the
-    backend). Excluded from this worker's purge so a shared ``.incomplete``
-    (e.g. a bundled mmproj) is never deleted out from under the peer. Carried
-    as a plain env list, no filesystem locks."""
+    """Blob hashes a concurrent same-repo peer is writing (passed by the backend
+    as a plain env list). Excluded from this worker's purge so a shared
+    ``.incomplete`` (e.g. a bundled mmproj) is never deleted under the peer."""
     raw = os.environ.get("UNSLOTH_PROTECTED_BLOB_HASHES", "")
     return frozenset(h for h in raw.split(",") if h)
 
@@ -247,12 +246,11 @@ def _verify_completed_download(
     *,
     metadata_unavailable: bool = False,
 ) -> None:
-    """Walk the manifest and verify every expected file is on disk at the
-    declared size. Exit nonzero with a diagnostic stderr message if not.
+    """Verify every manifest file is on disk at its declared size; exit nonzero
+    with a diagnostic if not.
 
-    No-op when no manifest exists: the manifest write is best-effort (metadata
-    fetch or disk write may have failed), so absence means "verification
-    unavailable, trust snapshot_download's exit code" (the pre-fix behavior).
+    No-op when no manifest exists: the manifest write is best-effort, so absence
+    means "verification unavailable, trust snapshot_download's exit code".
     """
     from hub.utils import download_manifest
 
@@ -298,11 +296,9 @@ def _verify_completed_download(
 
 
 def _preflight_disk_space(repo_type: str, repo_id: str, expected_files: list) -> None:
-    """Fail fast with a clear message when the active HF cache filesystem can't
-    hold what's left to download. Best-effort and fail-open: any inability to
-    size the work or read free space skips the check, so a real download is
-    never blocked by an estimation gap (the mid-write ENOSPC path still applies
-    and its partial blobs resume on retry)."""
+    """Fail fast when the active HF cache filesystem can't hold what's left to
+    download. Fail-open: any inability to size the work or read free space skips
+    the check, so a real download is never blocked by an estimation gap."""
     import shutil
 
     from hub.utils.download_registry import existing_blob_bytes
@@ -397,26 +393,22 @@ def _recover_manifest_after_download(
 ) -> None:
     """Best-effort manifest write for a download whose metadata was unavailable
     at start: re-fetch and record the expected files, else fall back to the
-    on-disk file list so completion/partial detection still works. Shared by the
-    model and dataset workers (differing only in the metadata fetch,
-    expected-files extraction, and log label).
+    on-disk file list. Shared by the model and dataset workers.
 
-    A pre-existing manifest is authoritative (a prior attempt recorded the true
-    expected set) and is preserved untouched. This is load-bearing: when access
-    is lost on resume (token revoked/changed on a gated/private repo),
-    snapshot_download returns the cached partial snapshot WITHOUT downloading, so
-    rebuilding the manifest from the on-disk files would record the partial set
-    as expected and let _verify_completed_download certify a half-finished
-    download as complete.
+    A pre-existing manifest is authoritative and is preserved untouched. This is
+    load-bearing: when access is lost on resume (token revoked/changed on a
+    gated/private repo), snapshot_download returns the cached partial snapshot
+    WITHOUT downloading, so rebuilding the manifest from on-disk files would record
+    the partial set as expected and let _verify_completed_download certify a
+    half-finished download as complete.
 
-    The same hazard exists with NO prior manifest (metadata also unavailable on
-    the first attempt). When metadata is still unavailable here, leftover
-    ``.incomplete`` blobs prove a cached partial was returned without
-    downloading, so we fail (exit 1) instead of deriving a self-certifying
-    manifest, leaving the partial intact for a later resume. That signal misses
-    a file that never started (no ``.incomplete``), so a kill between files is
-    accepted optimistically from the on-disk subset; a later metadata-bearing
-    attempt writes the true manifest and verification catches any shortfall."""
+    The same hazard exists with NO prior manifest. When metadata is still
+    unavailable here, leftover ``.incomplete`` blobs prove a cached partial was
+    returned without downloading, so we fail (exit 1) instead of deriving a
+    self-certifying manifest, leaving the partial intact for a later resume. That
+    signal misses a file that never started (no ``.incomplete``), so a kill
+    between files is accepted optimistically from the on-disk subset; a later
+    metadata-bearing attempt writes the true manifest and catches any shortfall."""
     from hub.utils import download_manifest
     from hub.utils.hf_cache_state import has_active_incomplete_blobs
 

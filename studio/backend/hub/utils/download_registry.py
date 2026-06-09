@@ -234,18 +234,16 @@ def _settle_orphaned_download(
     variant: Optional[str],
     transport: Optional[str],
 ) -> None:
-    """Persist a cancel marker for a reaped orphan whose download was still in
-    progress, so the next launch settles it to a resumable "cancelled" state
-    (Continue for HTTP / Retry for XET) instead of a phantom-running row that
-    freezes then silently disappears.
+    """Persist a cancel marker for a reaped orphan still mid-download so the next
+    launch settles it to a resumable "cancelled" state instead of a phantom-running
+    row.
 
     Gated on surviving partial state and on the recorded manifest not already
-    verifying against any active snapshot, so a download that finished before
-    its breadcrumb was cleaned up is never mislabeled cancelled. For a GGUF
-    variant manifest with blob hashes, the partial-state check is scoped to
-    those hashes so a sibling variant cannot contaminate this orphan's state.
-    The recorded transport is preserved so the resume affordance stays
-    accurate, and a fresh attempt clears the marker either way."""
+    verifying against an active snapshot, so a download that finished before its
+    breadcrumb was cleaned up is never mislabeled cancelled. For a GGUF variant
+    manifest with blob hashes, the partial-state check is scoped to those hashes so
+    a sibling variant cannot contaminate this orphan's state. The recorded
+    transport is preserved so the resume affordance stays accurate."""
     if repo_type not in ("model", "dataset") or not repo_id:
         return
     from hub.utils import download_manifest
@@ -320,9 +318,7 @@ def _purge_incomplete_blobs(
     protected_hashes: Optional[frozenset[str]] = None,
 ) -> int:
     """Delete matching ``*.incomplete`` blobs beneath *entry*; return the count
-    removed. Per-file failures are swallowed (a stuck partial shouldn't block
-    the new download; the downloader errors out clearly if it's truly
-    unreadable).
+    removed. Per-file failures are swallowed.
 
     ``only_hashes`` whitelists which partials may be purged; ``None`` means
     every partial (full-repo snapshot/dataset). ``protected_hashes`` is honoured
@@ -350,9 +346,8 @@ def _purge_incomplete_blobs(
             blob.unlink()
             removed += 1
         except OSError:
-            # Swallow (e.g. permission denied on a stale partial); the
-            # downstream snapshot_download surfaces a precise error if it
-            # actually can't proceed.
+            # Swallow; downstream snapshot_download surfaces a precise error if
+            # it actually can't proceed.
             continue
     return removed
 
