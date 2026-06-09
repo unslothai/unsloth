@@ -48,9 +48,7 @@ def _safe_version(raw):
         return _PkgVersion(match.group(0))
 
 
-# ===========================================================================
 # protobuf
-# ===========================================================================
 
 
 def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
@@ -73,9 +71,7 @@ def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     assert has_get_prototype or has_get_message_class
 
 
-# ===========================================================================
 # datasets
-# ===========================================================================
 
 
 def test_datasets_version_not_in_broken_recursion_range():
@@ -92,9 +88,7 @@ def test_datasets_version_not_in_broken_recursion_range():
     )
 
 
-# ===========================================================================
 # trl
-# ===========================================================================
 
 
 def test_trl_is_x_available_returns_bool_not_tuple():
@@ -165,9 +159,7 @@ def test_trl_cached_available_flags_are_not_tuples():
         )
 
 
-# ===========================================================================
 # transformers
-# ===========================================================================
 
 
 def test_pretrained_model_enable_input_require_grads_uses_old_pattern():
@@ -234,9 +226,7 @@ def test_transformers_is_causal_conv1d_available_symbol_present():
         )
 
 
-# ===========================================================================
 # transformers + accelerate (wandb checkers)
-# ===========================================================================
 
 
 def test_transformers_and_accelerate_is_wandb_available_callable():
@@ -266,9 +256,7 @@ def test_transformers_and_accelerate_is_wandb_available_callable():
     )
 
 
-# ===========================================================================
 # peft
-# ===========================================================================
 
 
 def test_peft_transformers_weight_conversion_importable_and_signature():
@@ -298,9 +286,7 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
     )
 
 
-# ===========================================================================
 # triton
-# ===========================================================================
 
 
 def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
@@ -335,9 +321,7 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
     )
 
 
-# ===========================================================================
 # torch + torchvision pairing table
-# ===========================================================================
 
 
 # Mirrors TORCH_TORCHVISION_COMPAT in torchvision_compatibility_check
@@ -401,9 +385,7 @@ def test_installed_torch_torchvision_pair_is_compatible():
     )
 
 
-# ===========================================================================
 # vllm
-# ===========================================================================
 
 
 def test_vllm_guided_decoding_params_or_structured_outputs_present():
@@ -447,9 +429,7 @@ def test_vllm_aimv2_ovis_config_is_past_fix_version():
         )
 
 
-# ===========================================================================
 # huggingface_hub
-# ===========================================================================
 
 
 def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
@@ -477,9 +457,7 @@ def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     )
 
 
-# ===========================================================================
 # torch
-# ===========================================================================
 
 
 def test_torch_nn_init_trunc_normal_exists():
@@ -494,9 +472,7 @@ def test_torch_nn_init_trunc_normal_exists():
     )
 
 
-# ===========================================================================
 # xformers
-# ===========================================================================
 
 
 def test_xformers_is_post_num_splits_key_fix_or_not_installed():
@@ -515,9 +491,7 @@ def test_xformers_is_post_num_splits_key_fix_or_not_installed():
         )
 
 
-# ===========================================================================
 # transformers (PreTrainedModel base import sanity)
-# ===========================================================================
 
 
 def test_transformers_pretrained_model_has_get_input_embeddings():
@@ -533,18 +507,14 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
     )
 
 
-# ===========================================================================
 # accelerate -- ``is_X_available`` API stability used across the fixes
-# ===========================================================================
 
 
-# ===========================================================================
 # transformers LOSS_MAPPING -- patch_loss_functions() coverage
 # Regression for https://github.com/unslothai/unsloth/issues/4188:
 # Qwen3_5ForConditionalGeneration has loss_type='ForConditionalGeneration',
 # a separate LOSS_MAPPING key that was never patched, leaving the model with
 # the stock ForCausalLMLoss which does logits.float() and OOMs on <=24 GB GPUs.
-# ===========================================================================
 
 
 def _reset_loss_mapping(mapping, saved):

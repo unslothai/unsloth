@@ -147,19 +147,11 @@ DISABLE_SDPA_MODEL_NAMES = [
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
-    Transformers v5 initializes models on the meta device, then
-    _move_missing_keys_from_meta_to_device() (modeling_utils.py) replaces ALL
-    non-persistent buffers with torch.empty_like() -- uninitialized memory.
-
-    Vanilla transformers restores inv_freq via _init_weights() which checks for
-    hasattr(module, "original_inv_freq"). Unsloth's LlamaRotaryEmbedding and
-    subclasses do not have this attribute, so inv_freq stays corrupted. This
-    produces wrong positional encodings and causes 5-11x higher training loss.
-
-    This function recomputes inv_freq from the stored base and dim, applies
-    any model-specific scaling, and rebuilds the cos/sin caches.
-
-    Only runs on transformers >= 5.0.0. No-op on v4.
+    v5 inits on meta then replaces all non-persistent buffers with uninitialized
+    memory. Vanilla restores inv_freq via _init_weights() (needs original_inv_freq),
+    but Unsloth rotary classes lack that attr, so inv_freq stays corrupted -> wrong
+    positional encodings and 5-11x higher training loss. Here we recompute inv_freq
+    from base/dim, apply scaling, and rebuild cos/sin caches. No-op on v4.
     """
     if not _NEEDS_ROPE_FIX:
         return model

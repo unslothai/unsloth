@@ -27,22 +27,16 @@ class GaLoreProjector:
     """Low-rank gradient projector with optional INT4/INT8 quantized projection
     matrices and layer-adaptive subspace update scheduling.
 
-    The projector computes an SVD of the gradient to obtain an orthogonal basis
-    for the top-``rank`` subspace.  Gradients are projected into this subspace
-    for the optimizer step, then projected back to full rank for the weight
-    update.
+    SVD of the gradient gives an orthogonal basis for the top-``rank`` subspace.
+    Gradients are projected in for the optimizer step, then back to full rank for
+    the weight update. Two Q-GaLore innovations:
 
-    Two key Q-GaLore innovations are implemented:
-
-    1. **Quantized projection matrices** — when ``quant=True``, the orthogonal
-       matrix is stored in INT4/INT8, reducing the memory cost of keeping the
-       projector state.
-
-    2. **Layer-adaptive update scheduling** — a rolling queue of cosine
-       similarities between consecutive orthogonal vectors is maintained.  When
-       the average exceeds ``cos_threshold``, ``update_proj_gap`` is multiplied
-       by ``gamma_proj``, effectively reducing the frequency of expensive SVD
-       recomputations for layers whose subspace has stabilized.
+    1. Quantized projection matrices: with ``quant=True`` the orthogonal matrix
+       is stored in INT4/INT8 to cut projector-state memory.
+    2. Layer-adaptive update scheduling: when the rolling-average cosine
+       similarity of consecutive orthogonal vectors exceeds ``cos_threshold``,
+       ``update_proj_gap`` is multiplied by ``gamma_proj`` to recompute SVD less
+       often for stabilized layers.
 
     Args:
         rank: Target rank for the low-rank projection.

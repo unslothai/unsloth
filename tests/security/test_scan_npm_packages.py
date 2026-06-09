@@ -46,14 +46,9 @@ def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedPr
 
 
 def test_malicious_lockfile_exits_1():
-    """Structural IOCs alone must fail the scanner.
-
-    `structural_only_lockfile.json` contains: (a) a non-registry
-    `resolved` URL (filev2.getsession.org), (b) an entry missing
-    its `integrity` field. Both are caught in `parse_lockfile()`
-    before any tarball download attempt -- so the test is fully
-    offline.
-    """
+    """Structural IOCs alone must fail the scanner. The fixture has a
+    non-registry `resolved` URL and a missing `integrity` field, both caught in
+    `parse_lockfile()` before any tarball download, so the test is offline."""
     fixture = FIXTURES / "structural_only_lockfile.json"
     assert fixture.is_file(), fixture
     proc = _run_scanner(fixture)
@@ -166,12 +161,8 @@ def test_blocked_npm_versions_complete():
     reason = "Fork 1 (BLOCKED_NPM_VERSIONS pre-fetch hook) not merged yet",
 )
 def test_blocked_npm_versions_short_circuits_download():
-    """With Fork 1's pre-fetch hook, the malicious tanstack entry
-    must produce a `blocked-known-malicious` finding without ever
-    calling out to the npm registry. The full malicious fixture
-    contains the tanstack entry; the test asserts exit 1 and that
-    the new finding pattern appears in scanner output.
-    """
+    """The pre-fetch hook must flag the malicious tanstack entry as
+    `blocked-known-malicious` (exit 1) without hitting the npm registry."""
     fixture = FIXTURES / "malicious_lockfile.json"
     proc = _run_scanner(fixture, timeout = 10)
     assert proc.returncode == 1
@@ -203,10 +194,8 @@ def _extract_pkg_with_ioc(ioc: str, tmp_path: Path) -> Path:
 
 
 def test_every_known_ioc_string_caught(tmp_path):
-    """For every entry in `KNOWN_IOC_STRINGS`, embed the IOC in a
-    one-file package tree and confirm `scan_extracted_tree()`
-    surfaces it. Guards against silent regex / table drift.
-    """
+    """Embed each `KNOWN_IOC_STRINGS` entry in a one-file package tree and
+    confirm `scan_extracted_tree()` surfaces it. Guards against table drift."""
     iocs = snp.KNOWN_IOC_STRINGS
     assert iocs, "KNOWN_IOC_STRINGS unexpectedly empty"
 
@@ -234,10 +223,8 @@ def test_every_known_ioc_string_caught(tmp_path):
 
 
 def test_parse_lockfile_structural_findings():
-    """`parse_lockfile()` returns (entries, structural_findings). The
-    structural-only fixture should produce 2 structural findings and
-    0 entries (because both bad entries are `continue`d).
-    """
+    """The structural-only fixture yields 2 structural findings and 0 entries
+    (both bad entries are `continue`d in `parse_lockfile()`)."""
     entries, struct = snp.parse_lockfile(FIXTURES / "structural_only_lockfile.json")
     assert entries == []
     patterns = {f.pattern for f in struct}

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Path utilities for model and dataset handling
-"""
+"""Path utilities for model and dataset handling."""
 
 from .path_utils import (
     normalize_path,
@@ -46,8 +44,8 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
-# Re-export shim: name-load the project-path helpers so the import-hoist
-# safety net sees them used here, not just listed in __all__ as strings.
+# Re-export shim: mark project-path helpers as used so the import-hoist
+# safety net does not flag them as unused.
 _REEXPORTED = (documents_root, project_workspaces_root)
 
 __all__ = [

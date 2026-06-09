@@ -10,9 +10,8 @@ from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
-# We need to be able to import the module under test.  The studio backend
-# uses relative-style imports (``from utils.…``), so we add the backend
-# directory to *sys.path* if it is not already there.
+# The studio backend uses relative-style imports (``from utils.…``), so
+# add the backend directory to *sys.path* if not already present.
 # ---------------------------------------------------------------------------
 import sys
 
@@ -20,8 +19,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the custom logger before importing the module under test so it
-# doesn't fail on the ``from loggers import get_logger`` line.
+# Stub the custom logger before import so ``from loggers import
+# get_logger`` doesn't fail.
 import types as _types
 
 _loggers_stub = _types.ModuleType("loggers")
@@ -90,7 +89,7 @@ class TestResolveBaseModel:
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
         result = _resolve_base_model(str(tmp_path))
-        # Should fall through, not return the self-referencing path
+        # Falls through; does not return the self-referencing path.
         assert result == str(tmp_path)
 
     def test_no_config_files(self, tmp_path: Path):
@@ -174,7 +173,7 @@ class TestNeedsTransformers5:
 
     def test_llama_does_not_need_v5(self):
         """Standard models should not trigger v5."""
-        # Patch network call to avoid real fetch
+        # Patch network call to avoid a real fetch.
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5",
             return_value = False,
@@ -182,13 +181,12 @@ class TestNeedsTransformers5:
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
 
     def test_local_checkpoint_resolved_via_config(self, tmp_path: Path):
-        """A local checkpoint with config.json pointing to Qwen3.5 should need v5."""
+        """Local checkpoint with config.json pointing to Qwen3.5 needs v5."""
         config_cfg = {"model_name": "Qwen/Qwen3.5-9B"}
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
-        # _resolve_base_model is called by ensure_transformers_version,
-        # but needs_transformers_5 just does substring matching.
-        # We test the full resolution chain here:
+        # needs_transformers_5 only does substring matching, so test the
+        # full resolution chain via _resolve_base_model here.
         resolved = _resolve_base_model(str(tmp_path))
         assert needs_transformers_5(resolved) is True
 
@@ -230,7 +228,7 @@ class TestCheckConfigNeeds550:
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
-        # Patch network call to avoid real fetch
+        # Patch network call to avoid a real fetch.
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_550(str(tmp_path)) is False
@@ -311,8 +309,7 @@ class TestGetTransformersTier:
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
 
     def test_550_checked_before_530(self):
-        """Ensure 5.5.0 is checked first — a model matching both should get 550."""
-        # This shouldn't happen in practice, but verifies priority
+        """5.5.0 is checked first — a model matching both gets 550."""
         assert get_transformers_tier("gemma-4-model") == "550"
 
     def test_needs_transformers_5_compat(self):

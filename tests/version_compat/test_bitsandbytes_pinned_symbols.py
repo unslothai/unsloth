@@ -36,11 +36,8 @@ BNB_TAGS = [
 ]
 
 
-# -------------------------------------------------------------------------
-# bnb.functional: dequantize_4bit / quantize_4bit are the public 4-bit
-# surface unsloth's compiled kernels and unsloth-zoo's vllm_utils
-# bnb-loader patches all call into.
-# -------------------------------------------------------------------------
+# bnb.functional: dequantize_4bit / quantize_4bit are the public 4-bit surface
+# unsloth's compiled kernels and unsloth-zoo's vllm_utils bnb-loader call into.
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
@@ -59,10 +56,8 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # bnb.nn.Linear4bit / Params4bit: the two classes peft and unsloth
 # isinstance-check against. Renaming either silently breaks 4-bit LoRA.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
@@ -89,16 +84,12 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# =========================================================================
-# Coverage extension (added 2026-05): every bnb symbol unsloth +
-# unsloth-zoo touch, derived from a full grep of both repos.
-# =========================================================================
+# Coverage extension (added 2026-05): every bnb symbol unsloth + unsloth-zoo
+# touch, derived from a full grep of both repos.
 
 
-# -------------------------------------------------------------------------
 # Top-level convenience export. unsloth/kernels/utils.py + unsloth-zoo
 # vllm_utils.py call `bnb.matmul_4bit(x, w, bias=, quant_state=)`.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
