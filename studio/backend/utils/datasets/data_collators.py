@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Data collators for dataset processing.
-
-Custom training collators, particularly for VLM/OCR processing.
-"""
+"""Custom training data collators, particularly for VLM/OCR processing."""
 
 from dataclasses import dataclass
 from typing import Any, List, Optional, Union
@@ -44,13 +40,10 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
 @dataclass
 class DeepSeekOCRDataCollator:
-    """
-    Data collator for DeepSeek OCR VLM training.
+    """Data collator for DeepSeek OCR VLM training.
 
-    Handles:
-    - Image processing via processor
-    - Text tokenization
-    - Proper label masking for instruction fine-tuning
+    Handles image processing, text tokenization, and label masking for
+    instruction fine-tuning.
     """
 
     processor: Any  # Qwen2VLProcessor or similar
@@ -70,7 +63,6 @@ class DeepSeekOCRDataCollator:
         """
         from PIL import Image
 
-        # Extract messages and images.
         all_messages = []
         all_images = []
 
@@ -78,7 +70,6 @@ class DeepSeekOCRDataCollator:
             messages = sample["messages"]
             all_messages.append(messages)
 
-            # Extract PIL images from content.
             for msg in messages:
                 content = msg.get("content", [])
                 if isinstance(content, list):
@@ -88,9 +79,7 @@ class DeepSeekOCRDataCollator:
                             if img is not None and hasattr(img, "size"):  # PIL Image
                                 all_images.append(img)
 
-        # Process with the VL processor.
         try:
-            # Qwen2VL-style processing.
             texts = [
                 self.processor.apply_chat_template(
                     msgs, tokenize = False, add_generation_prompt = False
@@ -98,7 +87,6 @@ class DeepSeekOCRDataCollator:
                 for msgs in all_messages
             ]
 
-            # Process with images.
             inputs = self.processor(
                 text = texts,
                 images = all_images if all_images else None,
@@ -108,10 +96,7 @@ class DeepSeekOCRDataCollator:
                 max_length = self.max_length,
             )
 
-            # Create labels (mask input, keep output).
             labels = inputs["input_ids"].clone()
-
-            # Mask padding tokens.
             labels[labels == self.processor.tokenizer.pad_token_id] = self.ignore_index
 
             inputs["labels"] = labels
@@ -125,14 +110,7 @@ class DeepSeekOCRDataCollator:
 
 @dataclass
 class VLMDataCollator:
-    """
-    Generic VLM data collator that works with various processors.
-
-    Supports:
-    - Qwen2VL
-    - LLaVA
-    - Other VL models with compatible processors
-    """
+    """Generic VLM data collator for various processors (Qwen2VL, LLaVA, etc.)."""
 
     processor: Any
     max_length: int = 2048
@@ -140,9 +118,7 @@ class VLMDataCollator:
     mask_input_tokens: bool = True  # Mask user tokens in labels
 
     def __call__(self, batch: List[dict]) -> dict:
-        """
-        Collate a batch of VLM samples.
-        """
+        """Collate a batch of VLM samples."""
         all_messages = []
         all_images = []
 
@@ -150,7 +126,6 @@ class VLMDataCollator:
             messages = sample.get("messages", [])
             all_messages.append(messages)
 
-            # Extract images.
             for msg in messages:
                 content = msg.get("content", [])
                 if isinstance(content, list):
@@ -160,13 +135,11 @@ class VLMDataCollator:
                             if img is not None:
                                 all_images.append(img)
 
-        # Apply chat template.
         texts = [
             self.processor.apply_chat_template(msgs, tokenize = False, add_generation_prompt = False)
             for msgs in all_messages
         ]
 
-        # Process inputs.
         inputs = self.processor(
             text = texts,
             images = all_images if all_images else None,
@@ -176,7 +149,6 @@ class VLMDataCollator:
             max_length = self.max_length,
         )
 
-        # Create labels.
         labels = inputs["input_ids"].clone()
 
         # Mask padding.

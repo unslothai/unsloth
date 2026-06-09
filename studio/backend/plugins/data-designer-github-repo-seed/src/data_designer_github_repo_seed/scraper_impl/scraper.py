@@ -49,9 +49,9 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # light=True uses trimmed GraphQL queries (no reviewThreads,
-        # reviews, commits, timelineItems, files) so PR pages can be larger
-        # without hitting GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries (no reviewThreads/reviews/
+        # commits/timelineItems/files) so PR pages can be larger without
+        # hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
@@ -115,9 +115,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Light query skips heavy nested fields; safe at 50 per page.
-        # Clamp by trial_limit so e.g. limit=1 asks GitHub for first:1
-        # instead of fetching a full 50-item page and discarding 49.
+        # Light query skips heavy nested fields; safe at 50/page. Clamp by
+        # trial_limit so limit=1 asks for first:1, not a full 50-item page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -223,10 +222,9 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Heavy nested PR query is capped at 3 per page (GitHub node-count
-        # ceiling); light query skips reviewThreads/reviews/commits/etc and
-        # goes to 25 per page. Clamp by trial_limit so limit=1 does not
-        # fetch a whole 25-item page.
+        # Heavy nested PR query caps at 3/page (GitHub node-count ceiling);
+        # light query skips nested fields and goes to 25/page. Clamp by
+        # trial_limit so limit=1 does not fetch a whole 25-item page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap

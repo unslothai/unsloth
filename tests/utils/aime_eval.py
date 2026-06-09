@@ -1,7 +1,5 @@
 """
-AIME Dataset Evaluation Module
-
-This module provides functions to evaluate language models on the combined AIME dataset
+Evaluate language models on the combined AIME dataset
 (test2024 + test2025-I + test2025-II).
 """
 
@@ -27,7 +25,6 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
     os.makedirs(data_dir, exist_ok = True)
     combined_filepath = os.path.join(data_dir, "aime.jsonl")
 
-    # Check if combined file already exists
     if os.path.exists(combined_filepath):
         print(f"Combined AIME dataset already exists at {combined_filepath}")
         return combined_filepath
@@ -44,12 +41,11 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
             response = requests.get(url)
             response.raise_for_status()
 
-            # Parse each line and add source information
+            # Parse each line and tag with source + global ID
             for line_num, line in enumerate(response.text.strip().split("\n")):
                 if line.strip():
                     try:
                         data = json.loads(line)
-                        # Add source dataset information and global ID
                         data["source_dataset"] = dataset_name
                         data["original_id"] = data.get("id", line_num)
                         data["global_id"] = global_id
@@ -65,7 +61,6 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
             print(f"    Error downloading {dataset_name}: {e}")
             continue
 
-    # Write combined dataset
     if all_problems:
         with open(combined_filepath, "w", encoding = "utf-8") as f:
             for problem in all_problems:
@@ -74,7 +69,6 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
         print(f"✅ Combined {len(all_problems)} problems from {len(datasets)} datasets")
         print(f"   Saved to: {combined_filepath}")
 
-        # Print summary by dataset
         for dataset_name in datasets.keys():
             count = sum(1 for p in all_problems if p["source_dataset"] == dataset_name)
             print(f"   {dataset_name}: {count} problems")
@@ -88,7 +82,6 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
 def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
     """Load combined AIME dataset and format for evaluation"""
 
-    # Download and combine if needed
     filepath = download_and_combine_aime_datasets(data_dir)
 
     examples = []
@@ -99,7 +92,6 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
                 try:
                     data = json.loads(line)
 
-                    # Format as expected by our evaluation
                     formatted_example = {
                         "global_id": data.get("global_id", line_num),
                         "original_id": data.get("original_id", data.get("id", line_num)),
@@ -128,7 +120,6 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
 
     print(f"Loaded {len(examples)} problems from combined AIME dataset")
 
-    # Print breakdown by source
     source_counts = {}
     for example in examples:
         source = example["source_dataset"]
@@ -143,8 +134,7 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
 def extract_aime_answer(response: str) -> str:
     """Extract numerical answer from AIME response"""
 
-    # AIME answers are integers from 0-999
-    # Look for patterns like "The answer is 123" or just standalone numbers
+    # AIME answers are integers 0-999; match "The answer is 123" etc.
     patterns = [
         r"(?:the )?(?:final )?answer is (\d{1,3})",
         r"(?:therefore|thus|so),?\s*(?:the )?(?:final )?answer is (\d{1,3})",
@@ -159,19 +149,18 @@ def extract_aime_answer(response: str) -> str:
     for pattern in patterns:
         matches = re.findall(pattern, response_lower, re.MULTILINE | re.IGNORECASE)
         if matches:
-            # Get the last match (most likely to be final answer)
-            answer = matches[-1]
+            answer = matches[-1]  # last match is most likely the final answer
             try:
                 num = int(answer)
-                if 0 <= num <= 999:  # AIME answers are in range 0-999
+                if 0 <= num <= 999:
                     return str(num)
             except ValueError:
                 continue
 
-    # If no clear pattern found, try to extract any 1-3 digit number
+    # Fallback: any 1-3 digit number, scanning from the end
     numbers = re.findall(r"\b(\d{1,3})\b", response)
     if numbers:
-        for num_str in reversed(numbers):  # Check from end
+        for num_str in reversed(numbers):
             try:
                 num = int(num_str)
                 if 0 <= num <= 999:
@@ -208,7 +197,6 @@ def evaluate_model_aime(
     print(f"Combined Dataset: test2024 + test2025-I + test2025-II")
     print(f"{'='*70}")
 
-    # Load combined AIME dataset
     try:
         eval_dataset = load_aime_dataset()
     except Exception as e:
@@ -219,7 +207,6 @@ def evaluate_model_aime(
         print("No examples found in dataset")
         return None
 
-    # Initialize tracking variables
     records = {}
     input_tokens = []
     output_tokens = []
@@ -268,11 +255,9 @@ def evaluate_model_aime(
     try:
         print(f"\n🚀 Evaluating {len(eval_dataset)} problems...")
 
-        # Main evaluation loop
         with tqdm(total = len(eval_dataset), desc = "Processing AIME problems", unit = "problem") as pbar:
             for task_id, item in enumerate(eval_dataset):
                 try:
-                    # Prepare prompt
                     prompt_text = tokenizer.apply_chat_template(
                         item["prompt"], add_generation_prompt = True, tokenize = False
                     )
@@ -287,17 +272,15 @@ def evaluate_model_aime(
                         use_tqdm = False,
                     )[0].outputs
 
-                    # Process all generated responses
                     responses = [output.text for output in outputs]
                     extracted_answers = [extract_aime_answer(response) for response in responses]
 
-                    # Calculate total output tokens
                     total_output_tokens = sum(
                         get_num_tokens(response, tokenizer) for response in responses
                     )
                     output_tokens.append(total_output_tokens)
 
-                    # Check if any answer is correct
+                    # Correct if any sample matches ground truth
                     ground_truth = item["answer"]
                     correct_responses = [ans == ground_truth for ans in extracted_answers]
                     is_correct = any(correct_responses)
@@ -306,7 +289,6 @@ def evaluate_model_aime(
                         correct_answers += 1
                         source_stats[item["source_dataset"]]["correct"] += 1
 
-                    # Store detailed record
                     records[task_id] = {
                         "global_id": item["global_id"],
                         "original_id": item["original_id"],
@@ -325,7 +307,6 @@ def evaluate_model_aime(
                         "url": item.get("url", ""),
                     }
 
-                    # Update progress
                     current_accuracy = correct_answers / (task_id + 1) * 100
                     pbar.set_postfix(
                         {
@@ -355,11 +336,10 @@ def evaluate_model_aime(
         for logger_name, level in original_levels.items():
             logging.getLogger(logger_name).setLevel(level)
 
-    # Calculate metrics
     total_problems = len(eval_dataset)
     accuracy = correct_answers / total_problems * 100
 
-    # Calculate Pass@k (probability that at least one of k samples is correct)
+    # Pass@k: probability at least one of k samples is correct
     pass_at_k_scores = []
     for record in records.values():
         if "n_correct" in record and "n_total" in record:
@@ -372,7 +352,7 @@ def evaluate_model_aime(
 
     pass_at_k = sum(pass_at_k_scores) / len(pass_at_k_scores) if pass_at_k_scores else 0
 
-    # Calculate per-source accuracies
+    # Per-source accuracies
     source_accuracies = {}
     for source, stats in source_stats.items():
         source_accuracies[source] = (
@@ -399,12 +379,10 @@ def evaluate_model_aime(
         "max_output_tokens": max(output_tokens) if output_tokens else 0,
     }
 
-    # Save results
     filename = f"aime_eval_combined_{model_type}_t{temperature}_n{n_sampling}.json"
     with open(filename, "w", encoding = "utf-8") as f:
         json.dump({"results": results, "records": records}, f, indent = 4)
 
-    # Print comprehensive summary
     print(f"\n{'='*70}")
     print(f"📊 AIME EVALUATION RESULTS - {model_type.upper()}")
     print(f"{'='*70}")

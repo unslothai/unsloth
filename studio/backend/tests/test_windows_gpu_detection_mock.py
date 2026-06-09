@@ -34,12 +34,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy deps only if they fail to import -- unconditional stubs
-# would shadow the real module for sibling tests here. Use try-import,
-# not find_spec: loggers/__init__.py re-exports handlers.get_logger,
-# which does `from fastapi import Request, Response` at load. find_spec
-# returns a spec even without fastapi, but the import then raises. CI has
-# fastapi, so this is dev-machine ergonomics only.
+# Stub heavy deps only if they fail to import (unconditional stubs would shadow
+# the real module for sibling tests). Use try-import, not find_spec: loggers
+# imports fastapi at load, so find_spec succeeds but the import then raises.
 import importlib as _importlib  # noqa: E402
 
 
@@ -131,9 +128,7 @@ REAL_PIP_NVIDIA_WHEEL_LAYOUTS = {
 
 
 def _populate_studio_venv(prefix: Path) -> None:
-    """Lay out fake nvidia + torch wheels in <prefix>/Lib/site-packages
-    matching real win_amd64 layouts. Contents are stub bytes; only
-    directory structure matters."""
+    """Lay out fake nvidia + torch wheels matching real win_amd64 layouts (stub bytes)."""
     site = prefix / "Lib" / "site-packages"
     for rel, dlls in REAL_PIP_NVIDIA_WHEEL_LAYOUTS.items():
         d = site / Path(rel)
@@ -147,8 +142,7 @@ def _populate_studio_venv(prefix: Path) -> None:
 
 
 def _populate_studio_install(install_dir: Path, runtime: str = "13.1") -> None:
-    """Lay out install_dir/build/bin/Release/ as #5322 leaves it: main
-    archive payload + cudart bundle overlay."""
+    """Lay out install_dir/build/bin/Release/ as #5322 leaves it: payload + cudart overlay."""
     rel = install_dir / "build" / "bin" / "Release"
     rel.mkdir(parents = True, exist_ok = True)
     for fn in (
@@ -172,9 +166,7 @@ def _build_path_dirs_like_start_llama_server(
     prefix: Path,
     cuda_path: str = "",
 ) -> list[str]:
-    """Path-friendly wrapper around _build_windows_path_dirs. Asserting
-    against the real staticmethod (not a hand-copy) is the point: if the
-    win32 PATH order drops _windows_pip_nvidia_dll_dirs, tests fail."""
+    """Wrapper around the real _build_windows_path_dirs staticmethod."""
     return LlamaCppBackend._build_windows_path_dirs(str(binary_dir), str(prefix), cuda_path)
 
 

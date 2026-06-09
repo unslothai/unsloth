@@ -27,9 +27,7 @@ def main_module():
     return _main
 
 
-# =====================================================================
 # MaxBodyMiddleware
-# =====================================================================
 
 
 def _make_protected_app(
@@ -205,9 +203,7 @@ class TestMaxBodyMiddleware:
         assert "Content-Length" in r.json()["detail"]
 
 
-# =====================================================================
 # SecurityHeadersMiddleware / CSP
-# =====================================================================
 
 
 def _make_csp_app(main_module, attach_nonce: str | None = None):
@@ -301,9 +297,7 @@ class TestSecurityHeadersMiddleware:
             assert any(src == host for src in img_sources)
 
 
-# =====================================================================
 # /api/health auth gate
-# =====================================================================
 
 
 @pytest.fixture

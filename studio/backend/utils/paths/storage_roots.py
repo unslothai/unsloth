@@ -182,7 +182,7 @@ def lmstudio_model_dirs() -> list[Path]:
             seen.add(resolved)
             dirs.append(p)
 
-    # 1. LM Studio settings.json custom downloads folder
+    # LM Studio settings.json custom downloads folder
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
@@ -194,10 +194,10 @@ def lmstudio_model_dirs() -> list[Path]:
         except Exception:
             pass
 
-    # 2. LM Studio current default models directory (all platforms)
+    # LM Studio default models directory (all platforms)
     _add(Path.home() / ".lmstudio" / "models")
 
-    # 3. Legacy LM Studio cache location
+    # Legacy LM Studio cache location
     _add(Path.home() / ".cache" / "lm-studio" / "models")
 
     return dirs
@@ -232,7 +232,7 @@ def well_known_model_dirs() -> list[Path]:
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
-    # Deduplicate while preserving order; keep only extant dirs
+    # Dedupe preserving order; keep only extant dirs
     out: list[Path] = []
     seen: set[str] = set()
     for p in candidates:
@@ -249,15 +249,11 @@ def well_known_model_dirs() -> list[Path]:
 
 
 def _setup_cache_env() -> None:
-    """Set cache environment variables for HuggingFace, uv, and vLLM.
+    """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Respects the standard HF cache resolution chain: explicit ``HF_HOME``
-    / ``HF_HUB_CACHE`` win, then ``XDG_CACHE_HOME``, then the platform
-    default (``~/.cache/huggingface``). The legacy Unsloth cache is still
-    *scanned* for models but never set as the active download target.
-
-    Only sets variables not already set by the user, so explicit overrides
-    (e.g. HF_HOME=/data/hf) are respected. Works on Linux, macOS, Windows.
+    Respects the standard HF cache chain (explicit HF_HOME / HF_HUB_CACHE,
+    then XDG_CACHE_HOME, then ~/.cache/huggingface) and only sets vars the
+    user hasn't, so explicit overrides are honored.
     """
     root = cache_root()
     xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()

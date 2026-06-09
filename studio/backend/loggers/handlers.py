@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Logging handlers and middleware for structured logging.
+"""Structured logging handlers and middleware.
 
-FastAPI middleware + structlog processors for:
-- Request/response logging with timing
-- Sensitive data filtering
-- Structured logging config
-- Error handling with context
-
-Key components:
-- LoggingMiddleware: request/response logging
-- filter_sensitive_data: structlog processor for sanitization
-- get_logger: factory for structured loggers
+LoggingMiddleware (request/response logging with timing),
+filter_sensitive_data (structlog processor for sanitization), and
+get_logger (factory for structured loggers).
 """
 
 import re
@@ -107,8 +100,5 @@ def filter_sensitive_data(logger, method_name, event_dict):
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    """Get a bound structured logger for a module.
-    Args:
-        name: Usually __name__ of the module
-    """
+    """Get a bound structured logger for a module (name is usually __name__)."""
     return structlog.get_logger(name)

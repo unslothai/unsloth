@@ -121,8 +121,8 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
 def _patch_local_providers(recipe: dict[str, Any]) -> None:
     """Strip is_local and fill a dummy endpoint so validation doesn't choke.
 
-    Strict `is True` check matches _inject_local_providers in jobs.py:
-    truthy but non-boolean is_local values are not treated as local.
+    Strict `is True` matches _inject_local_providers: truthy non-boolean values
+    aren't treated as local.
     """
     for provider in recipe.get("model_providers", []):
         if not isinstance(provider, dict):
@@ -150,13 +150,10 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep. Static validation
-            # passed; live access + full config validation are deferred to
-            # run start (per _GITHUB_VALIDATE_NOTE), so a missing optional
-            # import here should not block the recipe. Restrict the bypass to
-            # the data_designer module so other ImportErrors (broken internal
-            # imports, missing transitive deps after an upgrade) still surface
-            # as validation failures instead of being swallowed.
+            # data_designer is an optional runtime dep; static validation passed
+            # and full validation is deferred to run start, so a missing import
+            # shouldn't block the recipe. Restrict the bypass to data_designer so
+            # other ImportErrors still surface as failures.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(

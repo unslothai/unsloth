@@ -40,11 +40,9 @@ IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
-# torchcodec ships wheels only for manylinux_2_28_x86_64,
-# macosx_12_0_arm64, and win_amd64 (per the 0.10.0 PyPI page). Installing
-# on any other host fails the whole extras-no-deps step. `unsloth studio
-# update` has no --no-torch flag, so on these hosts the audio extras must
-# be filtered out regardless of the NO_TORCH env var.
+# torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64,
+# and win_amd64. On other hosts the audio extras must be filtered out (the
+# extras-no-deps step would otherwise fail), regardless of NO_TORCH.
 PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
     or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
@@ -83,8 +81,7 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
-# AMD Windows ROCm wheels — repo.amd.com (arch-specific pip index).
-# Format: https://repo.amd.com/rocm/whl/{arch_family}/
+# AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR") or "https://repo.amd.com/rocm/whl"
@@ -119,11 +116,9 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "download/continuous-release_main/"
         "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
     ),
-    # Windows ROCm wheel — ships libbitsandbytes_rocm{VER}.dll.
-    # BNB auto-detects HIP version from torch.version.hip, which may not match
-    # the DLL suffix in this prerelease wheel (e.g. torch 7.13 with a rocm72
-    # DLL). We scan the installed wheel for the real DLL name and set
-    # BNB_ROCM_VERSION accordingly in _install_bnb_windows_rocm() and worker.py.
+    # Windows ROCm wheel ships libbitsandbytes_rocm{VER}.dll. BNB's HIP
+    # auto-detect may mismatch the DLL suffix, so we scan the wheel and set
+    # BNB_ROCM_VERSION in _install_bnb_windows_rocm() and worker.py.
     "win_amd64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
         "download/continuous-release_main/"
@@ -144,7 +139,6 @@ def _bnb_rocm_prerelease_url() -> str | None:
 
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
-    # Check /opt/rocm/.info/version or ROCM_PATH equivalent
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     for path in (
         os.path.join(rocm_root, ".info", "version"),

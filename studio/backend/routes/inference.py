@@ -107,12 +107,10 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
-# Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Import backend functions
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (

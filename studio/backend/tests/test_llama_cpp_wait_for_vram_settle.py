@@ -19,10 +19,7 @@ from unittest.mock import patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Same external-dep stubs as the other llama_cpp tests so this module imports
-# without httpx / structlog / loggers installed.
-# ---------------------------------------------------------------------------
+# External-dep stubs so this module imports without httpx / structlog / loggers.
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -34,8 +31,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
-# Set get_logger even if a prior test inserted a bare ``structlog`` stub
-# via ``setdefault``.
+# Set get_logger even if a prior test inserted a bare ``structlog`` stub.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
@@ -265,9 +261,7 @@ def test_tolerance_two_percent_for_large_cards():
 
 def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
     """Pin the call site: outside Phase 3 lock, gated on the timestamp, no
-    ``had_live_process`` in-band flag regression. Mirrors the
-    ``inspect.getsource`` pattern from ``test_llama_cpp_no_context_shift``.
-    """
+    ``had_live_process`` in-band flag regression."""
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)

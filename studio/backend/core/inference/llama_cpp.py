@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-llama-server inference backend for GGUF models.
+"""llama-server inference backend for GGUF models.
 
-Manages a llama-server subprocess and proxies chat completions through
-its OpenAI-compatible /v1/chat/completions endpoint.
+Manages a llama-server subprocess and proxies chat completions through its
+OpenAI-compatible /v1/chat/completions endpoint.
 """
 
 import atexit
@@ -79,17 +78,13 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
-# Without max_tokens, llama-server defaults n_predict = n_ctx (up to
-# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
-# fails. t_max_predict_ms is an unconditional wall-clock backstop, but the
-# llama.cpp README notes it ONLY fires after a newline -- a model stuck in
-# a long non-newline sequence is unbounded by it. So we keep a token cap
-# as the front-line limiter.
-#
-# The cap is the model's effective context length when known, else a
-# generous floor. 4096 was too low: Qwen3 / gpt-oss reasoning traces
-# exceed it, and any OpenAI-API caller omitting max_tokens (langchain,
-# llama-index, raw curl) sees responses truncated mid-sentence.
+# Without max_tokens, llama-server defaults n_predict = n_ctx (up to 262144 for
+# Qwen3.5), causing many-minute zombie decodes when cancel fails.
+# t_max_predict_ms is a wall-clock backstop but per the llama.cpp README only
+# fires after a newline, so we keep a token cap as the front-line limiter.
+# The cap is the effective context length when known, else this floor. 4096 was
+# too low: Qwen3 / gpt-oss reasoning traces and max_tokens-omitting OpenAI-API
+# callers (langchain, llama-index, curl) got truncated mid-sentence.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
@@ -123,8 +118,8 @@ _SWA_CACHE_LOCK = threading.Lock()
 
 
 def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
-    """Quick DNS check on a daemon thread, so concurrent sockets in the
-    same process aren't affected by socket.setdefaulttimeout."""
+    """Quick DNS check on a daemon thread, so concurrent sockets aren't
+    affected by socket.setdefaulttimeout."""
     result: list[Optional[bool]] = [None]
 
     def _probe() -> None:
@@ -143,9 +138,9 @@ def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
 
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead():
-    """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co
-    fails. Restores the env on exit so a transient resolver hiccup can't
-    quarantine the whole process. No-op if the user already set it."""
+    """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
+    restores env on exit so a transient hiccup can't quarantine the process.
+    No-op if the user already set it."""
     if "HF_HUB_OFFLINE" in os.environ:
         yield False
         return
@@ -200,8 +195,7 @@ def _save_swa_cache(cache: dict) -> None:
 
 
 def _period_from_layer_types(layer_types: list) -> Optional[int]:
-    """Smallest period N where `(i+1) % N != 0` matches the SWA mask, or
-    None if no fixed period fits."""
+    """Smallest period N where `(i+1) % N != 0` matches the SWA mask, else None."""
     if not layer_types:
         return None
     is_swa = ["full" not in str(t).lower() for t in layer_types]
@@ -368,7 +362,6 @@ def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
 
 
 # Lazy import to avoid pulling transformers in at module level.
-# See PR description for the full explanation.
 def _extract_model_size_b(model_id: str):
     from utils.models import extract_model_size_b
     return extract_model_size_b(model_id)
@@ -589,8 +582,7 @@ def _backfill_usage_from_timings(usage, timings):
 
 
 class LlamaCppBackend:
-    """
-    Manages a llama-server subprocess for GGUF model inference.
+    """Manages a llama-server subprocess for GGUF model inference.
 
     Lifecycle:
         1. load_model() — start llama-server with the GGUF file
@@ -622,11 +614,10 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
-        # Canonical UI-facing mode the user requested:
-        # ``auto``/``mtp``/``ngram``/``mtp+ngram``/``off``/``ngram-simple``.
-        # Round-tripped through the status API so the dropdown reflects the
-        # picked mode, not the resolved internal flag set (auto on a 27B MTP
-        # GGUF resolves to draft-mtp but the dropdown still reads "Auto").
+        # Canonical UI-facing mode the user requested
+        # (auto/mtp/ngram/mtp+ngram/off/ngram-simple). Round-tripped through the
+        # status API so the dropdown reflects the picked mode, not the resolved
+        # flag set (auto on a 27B MTP GGUF resolves to draft-mtp but reads "Auto").
         self._requested_spec_mode: Optional[str] = None
         # User --spec-draft-n-max override (None = platform default).
         self._spec_draft_n_max: Optional[int] = None
@@ -654,14 +645,13 @@ class LlamaCppBackend:
         # MTP head count (llama.cpp #22673); >0 enables --spec-type draft-mtp.
         self._nextn_predict_layers: Optional[int] = None
         self._lock = threading.Lock()
-        # Wraps load_model() end-to-end so concurrent loads serialise and
-        # never coexist as two llama-server processes (#5401).
+        # Wraps load_model() end-to-end so concurrent loads serialise and never
+        # coexist as two llama-server processes (#5401).
         self._serial_load_lock = threading.Lock()
-        # Last extra_args / requested n_ctx, preserved across unload so the
-        # chat UI's /unload+/load Apply path can inherit them (#5401).
-        # ``_extra_args_source`` records the (model_identifier, hf_variant)
-        # the stored args came from so the route can refuse cross-model
-        # inheritance.
+        # Last extra_args / requested n_ctx, preserved across unload so the chat
+        # UI's /unload+/load Apply path can inherit them (#5401).
+        # ``_extra_args_source`` records the (model_identifier, hf_variant) the
+        # stored args came from so the route can refuse cross-model inheritance.
         self._extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
         self._requested_n_ctx: int = 0
@@ -742,12 +732,10 @@ class LlamaCppBackend:
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
-        The UI's "safe zone" warning threshold. If the weights fit on some
-        GPU subset, it's the binary-search cap from ``_fit_context_to_vram``
-        for that subset; if they exceed 90% of every subset, it's the 4096
-        fallback (the spec's default when the model won't fit). The UI
-        slider ceiling is ``native_context_length``; dragging above
-        ``max_context_length`` triggers the "might be slower" warning.
+        The UI's "safe zone" warning threshold: the ``_fit_context_to_vram``
+        binary-search cap for the best GPU subset, or the 4096 fallback if the
+        weights exceed 90% of every subset. The slider ceiling is
+        ``native_context_length``; dragging above this triggers the warning.
         """
         return self._max_context_length or self._context_length
 
@@ -759,16 +747,11 @@ class LlamaCppBackend:
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
-        While llama-server warms up, its process is typically in kernel
-        state D (disk sleep) mmap'ing weight shards into page cache before
-        pushing layers to VRAM. During that window
-        ``/api/inference/status`` only reports ``loading``, so the UI has
-        nothing but a spinner that looks stuck for minutes on large MoEs.
-
-        Samples ``/proc/<pid>/status VmRSS`` against the sum of GGUF shard
-        sizes so the UI can render a real bar and compute rate / ETA.
-        Returns ``None`` when no load is in flight (no process, or already
-        healthy).
+        During warm-up llama-server mmaps weight shards into page cache before
+        pushing layers to VRAM, a window where status only reports ``loading``
+        and the UI spinner looks stuck for minutes on large MoEs. Samples
+        ``/proc/<pid>/status VmRSS`` against the sum of GGUF shard sizes for a
+        real progress bar. Returns ``None`` when no load is in flight.
 
         Shape::
 
@@ -779,8 +762,7 @@ class LlamaCppBackend:
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
             }
 
-        Linux-only for now; returns ``None`` where ``/proc/<pid>/status``
-        is unavailable (macOS/Windows would need a different API).
+        Linux-only; returns ``None`` where ``/proc/<pid>/status`` is unavailable.
         """
         proc = self._process
         if proc is None:
@@ -799,8 +781,7 @@ class LlamaCppBackend:
                     bytes_total += primary.stat().st_size
             except OSError:
                 pass
-            # Extra shards share the primary's prefix before the shard
-            # index (e.g. ``-00001-of-00004.gguf``).
+            # Extra shards share the primary's prefix before the shard index.
             try:
                 parent = primary.parent
                 stem = primary.name
@@ -1209,10 +1190,9 @@ class LlamaCppBackend:
     @staticmethod
     def _amd_apu_wants_unified_memory() -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system
-        RAM. False for discrete AMD, NVIDIA, CPU and macOS (the env hurts
-        discrete GPUs). ROCm reuses torch.cuda.*; gcnArchName suffix is
-        stripped."""
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
+        False elsewhere (the env hurts discrete GPUs). ROCm reuses torch.cuda.*;
+        gcnArchName suffix is stripped."""
         try:
             import torch
 
@@ -1266,11 +1246,9 @@ class LlamaCppBackend:
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
                 if cvd is not None:
                     try:
-                        # `if x.strip()` filters trailing-comma masks like
-                        # "0,1," that would raise ValueError on an empty
-                        # token. An empty mask (CVD="") yields an empty
-                        # `allowed` set so all GPUs are filtered out, per
-                        # the codebase convention.
+                        # `if x.strip()` filters trailing-comma masks ("0,1,").
+                        # Empty mask (CVD="") yields an empty set -> all GPUs
+                        # filtered out, per codebase convention.
                         allowed = set(int(x.strip()) for x in cvd.split(",") if x.strip())
                     except ValueError:
                         pass
@@ -1283,8 +1261,7 @@ class LlamaCppBackend:
                         if allowed is not None and idx not in allowed:
                             continue
                         gpus.append((idx, free_mib))
-                # Match the docstring's sort-by-id guarantee; nvidia-smi
-                # output is usually sorted but driver order isn't guaranteed.
+                # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
                     return gpus
@@ -1299,19 +1276,14 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
-            # torch.cuda enumerates GPUs RELATIVE to the visibility mask
-            # (CUDA_VISIBLE_DEVICES on NVIDIA; HIP_VISIBLE_DEVICES, or
-            # ROCR_VISIBLE_DEVICES if HIP unset, on AMD ROCm). We feed
-            # these IDs back into the subprocess as CVD, so visible
-            # ordinals must be translated to physical indices first;
-            # otherwise ``CUDA_VISIBLE_DEVICES=2,3`` gets rewritten to
-            # ``0,1`` and targets the wrong GPUs.
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask. We
+            # feed these IDs back into the subprocess as CVD, so visible ordinals
+            # must be translated to physical indices first; otherwise CVD=2,3
+            # gets rewritten to 0,1 and targets the wrong GPUs.
             physical_ids: Optional[list[int]] = None
-            # Match ``utils/hardware/hardware.py::
-            # _get_parent_visible_gpu_spec``: treat an empty mask
-            # (``HIP_VISIBLE_DEVICES=""``) as "no GPUs" rather than falling
-            # through to the next var. ``or`` would coerce "" to falsy and
-            # promote the wrong source.
+            # Match utils/hardware/hardware.py::_get_parent_visible_gpu_spec:
+            # treat an empty mask (HIP_VISIBLE_DEVICES="") as "no GPUs" rather
+            # than falling through. ``or`` would coerce "" to the wrong source.
             if getattr(torch.version, "hip", None) is not None:
                 hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
                 rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
@@ -1326,9 +1298,8 @@ class LlamaCppBackend:
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
             if cvd is not None:
                 try:
-                    # Empty mask (CVD="") yields an empty list so the loop
-                    # produces no GPUs, consistent with the nvidia-smi path
-                    # and utils/hardware/hardware.py.
+                    # Empty mask (CVD="") yields an empty list -> no GPUs,
+                    # consistent with the nvidia-smi path.
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
                     physical_ids = None
@@ -1361,16 +1332,14 @@ class LlamaCppBackend:
         """Poll ``_get_gpu_free_memory`` until free VRAM stabilises.
 
         The driver reclaims a dead process's allocations asynchronously, so
-        sampling free memory in the kill-to-spawn window reads artificially
-        low and pushes ``_select_gpus`` / ``_fit_context_to_vram`` toward
-        needless CPU offload -- on a tight VRAM card, the Apply-reload OOM
-        that bare-shell launches with the same flags never see.
+        sampling free memory in the kill-to-spawn window reads artificially low
+        and pushes GPU selection toward needless CPU offload (the Apply-reload
+        OOM bare-shell launches never see).
 
-        Short-circuits on cold start (``since_kill`` zero), stale kill
-        (older than ``_VRAM_SETTLE_WINDOW_S``), CPU-only hosts (empty
-        probe), probe exceptions, and GPU-set changes. ``max_wait`` is a
-        wall-clock bound including probe time, so a wedged ``nvidia-smi``
-        cannot extend the reload.
+        Short-circuits on cold start, stale kill (older than
+        ``_VRAM_SETTLE_WINDOW_S``), CPU-only hosts, probe exceptions, and GPU-set
+        changes. ``max_wait`` bounds wall-clock time so a wedged ``nvidia-smi``
+        can't extend the reload.
         """
         now = time.monotonic()
         if since_kill <= 0.0:
@@ -1406,8 +1375,7 @@ class LlamaCppBackend:
                     stable = False
                     break
                 prev_free = prev_map[idx]
-                # Adaptive: 2% of the larger sample dominates the 256 MiB
-                # floor on large-VRAM cards.
+                # Adaptive: 2% of the larger sample dominates the 256 MiB floor.
                 per_gpu_tol = max(tolerance_mib, int(max(free, prev_free) * 0.02))
                 if abs(free - prev_free) >= per_gpu_tol:
                     stable = False
@@ -1418,34 +1386,25 @@ class LlamaCppBackend:
 
     # Free-VRAM fraction at which Studio pins the GPU directly instead of
     # deferring to ``--fit on``. 5% headroom covers CUDA context + compute
-    # buffers; 0.90 was too conservative, dropping 91-94% fits to CPU
-    # offload (#5106). --fit on still catches the truly-too-large case.
+    # buffers; 0.90 dropped 91-94% fits to CPU offload (#5106).
     _GPU_PIN_VRAM_FRACTION = 0.95
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
         ``<prefix>/Lib/site-packages/`` so llama-server.exe can load
-        ``cudart64_X.dll`` / ``cublas64_X.dll`` without a system CUDA
-        toolkit. Mirrors the Linux ``nvidia/cu*/lib`` LD_LIBRARY_PATH block,
-        with parity for the Windows wheel layouts seen in the wild:
-          * ``nvidia/<pkg>/bin`` -- legacy modular wheels
-            (``nvidia-cuda-runtime-cu12``, ``nvidia-cublas-cu12``, etc.).
-          * ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- current
-            CUDA 13 layout for the unsuffixed ``nvidia-cuda-runtime`` /
-            ``nvidia-cublas`` packages (under ``nvidia/cu13/bin/x86_64/``)
-            (#5106).
-          * ``nvidia/<pkg>/Library/bin`` (and arch subdirs) -- conda-style
-            wheel repacks.
-          * ``torch/lib`` -- PyTorch's CUDA-bundled Windows wheel can ship
-            ``cudart64_*.dll`` here instead of as separate ``nvidia-*``
-            wheels. The install-side ``python_runtime_dirs`` in
-            ``install_llama_prebuilt.py`` covers this for the same reason.
+        ``cudart64_X.dll`` / ``cublas64_X.dll`` without a system CUDA toolkit.
+        Mirrors the Linux ``nvidia/cu*/lib`` LD_LIBRARY_PATH block, covering the
+        Windows wheel layouts seen in the wild:
+          * ``nvidia/<pkg>/bin`` -- legacy modular wheels.
+          * ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- CUDA 13 layout
+            for unsuffixed packages (#5106).
+          * ``nvidia/<pkg>/Library/bin`` (and arch subdirs) -- conda repacks.
+          * ``torch/lib`` -- PyTorch's CUDA-bundled wheel can ship
+            ``cudart64_*.dll`` here; mirrors install_llama_prebuilt.py.
 
-        Walks the tree with ``Path.iterdir`` rather than ``glob.glob`` so
-        it's safe against Windows paths containing ``[`` or ``]`` (valid in
-        usernames; otherwise read as a glob character class, silently
-        missing existing dirs)."""
+        Walks with ``Path.iterdir`` not ``glob.glob`` so it's safe against
+        Windows paths containing ``[`` or ``]`` (valid in usernames)."""
         site_packages = Path(prefix) / "Lib" / "site-packages"
         out: list[str] = []
         seen: set[str] = set()
@@ -1464,8 +1423,8 @@ class LlamaCppBackend:
             for pkg_dir in nvidia_root.iterdir():
                 if not pkg_dir.is_dir():
                     continue
-                # Order matters: arch-specific subdirs first so the explicit
-                # cudart64_X.dll location wins over an empty sibling ``bin``.
+                # Arch-specific subdirs first so the explicit cudart64_X.dll
+                # location wins over an empty sibling ``bin``.
                 for sub in (
                     pkg_dir / "bin" / "x86_64",
                     pkg_dir / "bin" / "x64",
@@ -1480,11 +1439,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _build_windows_path_dirs(binary_dir: str, prefix: str, cuda_path: str) -> list[str]:
-        """Ordered PATH entries the win32 branch of start_llama_server
-        prepends so llama-server.exe resolves cudart / cublas DLLs:
-        binary_dir, pip nvidia wheels, CUDA_PATH/bin, CUDA_PATH/bin/x64.
-        Extracted so test_windows_gpu_detection_mock asserts against the
-        production logic, not a hand-copy. #5106."""
+        """Ordered PATH entries prepended so llama-server.exe resolves cudart /
+        cublas DLLs: binary_dir, pip nvidia wheels, CUDA_PATH/bin, .../bin/x64.
+        Extracted so test_windows_gpu_detection_mock tests the real logic. #5106."""
         path_dirs = [binary_dir]
         path_dirs.extend(LlamaCppBackend._windows_pip_nvidia_dll_dirs(prefix))
         if cuda_path:
@@ -1547,10 +1504,10 @@ class LlamaCppBackend:
         """True if we have enough GGUF metadata to estimate KV cache size."""
         if self._n_layers is None:
             return False
-        # MLA: kv_lora_rank suffices (K-only cache)
+        # MLA: kv_lora_rank suffices (K-only cache).
         if self._kv_lora_rank is not None:
             return True
-        # New-style: need explicit key AND value dimensions
+        # New-style: need explicit key AND value dimensions.
         if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
         # Legacy: need embedding_length + a head count (scalar or per-layer).
@@ -1585,20 +1542,14 @@ class LlamaCppBackend:
           5. Legacy   -- fallback using embed // n_heads
 
         Server-flag knobs (mirror llama-server's CLI):
-          swa_full        -- ``--swa-full``: force SWA layers to cache the
-                             full ``n_ctx`` (collapses path 3 to path 4
-                             for SWA layers).
-          n_parallel      -- ``--parallel``: server slots. Verified against
-                             llama-server: non-SWA layers stay constant
-                             (cells split across slots), SWA layers scale
-                             linearly (per-slot window).
-          kv_unified      -- ``--kv-unified`` (default on): kept for API
-                             forward-compat. A no-op for memory math; the
-                             unified buffer total matches per-slot buffers
-                             in measured cases.
-          ctx_checkpoints -- ``--ctx-checkpoints``: SWA snapshots per slot
-                             (PR #15293). Each stores one sliding-window of
-                             state per SWA layer.
+          swa_full        -- ``--swa-full``: force SWA layers to cache full
+                             ``n_ctx`` (collapses path 3 to path 4 for them).
+          n_parallel      -- ``--parallel`` slots: non-SWA layers stay constant
+                             (cells split across slots), SWA layers scale linearly.
+          kv_unified      -- ``--kv-unified`` (default on): no-op for memory math;
+                             kept for API forward-compat.
+          ctx_checkpoints -- ``--ctx-checkpoints`` (PR #15293): N SWA snapshots
+                             per slot, one sliding-window of state per SWA layer.
 
         Returns 0 if metadata is insufficient.
         """
@@ -1606,9 +1557,8 @@ class LlamaCppBackend:
             return 0
 
         n_layers = self._n_layers  # type: ignore[assignment]
-        # Gemma 3n / Gemma 4 reuse earlier layers' KV in the last
-        # ``shared_kv_layers`` blocks -- those allocate no cache. Floor at 1
-        # so a misconfigured GGUF can't zero out KV.
+        # Gemma 3n / Gemma 4 reuse earlier KV in the last ``shared_kv_layers``
+        # blocks (no cache). Floor at 1 so a bad GGUF can't zero out KV.
         shared = self._shared_kv_layers or 0
         n_layers_kv = max(1, n_layers - shared)
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
@@ -1629,11 +1579,10 @@ class LlamaCppBackend:
         slots = max(1, n_parallel)
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
-        # Stores one compressed KV latent per token/layer (shared across
-        # heads); V is reconstructed from the latent, no separate V cache.
-        # key_length = kv_lora_rank + rope_dim (full compressed rep).
-        # MLA GGUFs set head_count_kv=1; default to 1 if absent to avoid
-        # falling back to n_heads (e.g. 128 for DeepSeek-V3) which 128x's.
+        # One compressed KV latent per token/layer (shared across heads); V is
+        # reconstructed from it, no separate V cache. key_length = kv_lora_rank
+        # + rope_dim. MLA GGUFs set head_count_kv=1; default to 1 if absent to
+        # avoid falling back to n_heads (e.g. 128 for DeepSeek-V3) which 128x's.
         if self._kv_lora_rank is not None:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
@@ -1644,7 +1593,7 @@ class LlamaCppBackend:
         val_len = self._kv_value_length
 
         # Path 2: Hybrid Mamba/Attention (Qwen3.5-27B, Qwen3.5-35B-A3B)
-        # Only 1 in N layers is attention; rest are Mamba (no KV cache).
+        # Only 1 in N layers is attention; the rest are Mamba (no KV cache).
         if self._ssm_inner_size is not None and self._full_attention_interval is not None:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
@@ -1654,18 +1603,14 @@ class LlamaCppBackend:
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
-        # Pattern filled in by the resolver at parse time; if absent, falls
-        # through to the legacy 1/4-global heuristic below.
-        # Per-layer-type ``--parallel N`` accounting (verified against
-        # ``llama-server``):
-        #   * non-SWA layers:    total cells = n_ctx, partitioned across
-        #                         slots -> total memory CONSTANT in slots.
-        #   * SWA layers:         per-slot cells = 2 * sliding_window
-        #                         (capped at n_ctx and at per_slot_ctx when
-        #                         ctx is split among slots) -> total memory
-        #                         grows LINEARLY in slots.
-        # ``--swa-full`` forces full n_ctx for SWA layers instead.
-        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer per slot.
+        # Pattern filled by the resolver at parse time; if absent, falls through
+        # to the legacy 1/4-global heuristic below. Per-layer-type --parallel N
+        # accounting (verified against llama-server):
+        #   * non-SWA layers: total cells = n_ctx split across slots -> CONSTANT.
+        #   * SWA layers:     per-slot cells = 2*sliding_window (capped at n_ctx
+        #                     and per_slot_ctx) -> grows LINEARLY in slots.
+        # --swa-full forces full n_ctx for SWA layers; --ctx-checkpoints N adds
+        # N snapshots per SWA layer per slot.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1674,11 +1619,9 @@ class LlamaCppBackend:
         ):
             swa = self._sliding_window
             per_slot_ctx = max(1, n_ctx // slots)
-            # ``--swa-full`` makes SWA layers cache the full context like
-            # non-SWA: cells partitioned across slots, so per-slot cells =
-            # per_slot_ctx and slots*per-slot collapses to the constant
-            # ``n_ctx`` total. Otherwise SWA caches 2*sliding_window per
-            # slot, clamped at the per-slot ctx.
+            # --swa-full caches full context like non-SWA (per-slot cells =
+            # per_slot_ctx, collapsing to constant n_ctx total); otherwise SWA
+            # caches 2*sliding_window per slot, clamped at per-slot ctx.
             swa_cells_per_slot = per_slot_ctx if swa_full else min(n_ctx, 2 * swa, per_slot_ctx)
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
@@ -1686,8 +1629,8 @@ class LlamaCppBackend:
                 global_bytes = 0.0  # constant across slots
                 swa_bytes_per_slot = 0.0  # multiplied by slots
                 checkpoint_extra_per_slot = 0.0
-                # Only layers that allocate their own KV; trailing ``shared``
-                # layers reuse earlier caches.
+                # Only layers that allocate their own KV; trailing shared layers
+                # reuse earlier caches.
                 for layer_idx in range(n_layers_kv):
                     layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                     is_swa = (
@@ -1748,20 +1691,15 @@ class LlamaCppBackend:
         """Return the largest context length that fits in GPU VRAM.
 
         Uses 90% of available VRAM as the ctx-fit budget -- tighter than
-        ``_GPU_PIN_VRAM_FRACTION`` on purpose: over-promising context OOMs
-        at runtime, while pinning conservatively just defers to --fit on. If
-        the weights alone don't fit, returns ``requested_ctx`` unchanged.
+        ``_GPU_PIN_VRAM_FRACTION`` on purpose (over-promising context OOMs at
+        runtime). If the weights alone don't fit, returns ``requested_ctx``.
 
-        ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False the
-        KV cache lives in CPU RAM and doesn't compete with weights for VRAM;
-        the requested context is honored verbatim. Other keyword args mirror
-        ``_estimate_kv_cache_bytes``.
+        ``kv_on_gpu`` mirrors ``--kv-offload`` (default on); when False the KV
+        cache lives in CPU RAM and the requested context is honored verbatim.
+        Other keyword args mirror ``_estimate_kv_cache_bytes``.
 
-        ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV
-        cache + compute graph buffers. llama.cpp's MTP path keeps a
-        secondary cache sized off the target's KV; on tight VRAM tiers
-        (e.g. 32 GB) auto-fit at native context would otherwise spill and
-        force a slower partial-offload path.
+        ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
+        compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
         if not self._can_estimate_kv():
             logger.debug(
@@ -1792,8 +1730,7 @@ class LlamaCppBackend:
         if model_footprint + kv <= budget_bytes:
             return requested_ctx
 
-        # Weights alone exceed budget -- reducing ctx can't help. Return
-        # requested_ctx unchanged; --fit will handle VRAM management.
+        # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
@@ -1886,16 +1823,13 @@ class LlamaCppBackend:
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
     def _drain_stdout(self):
-        """
-        Read subprocess stdout lines in a background thread.
+        """Read subprocess stdout lines in a background thread.
 
-        Prevents a pipe-buffer deadlock on Windows (default buffer ~4 KB):
-        without draining, llama-server blocks on writes and never becomes
-        healthy.
-
+        Prevents a pipe-buffer deadlock on Windows (~4 KB buffer): without
+        draining, llama-server blocks on writes and never becomes healthy.
         Each line is also teed to ``self._llama_log_fh`` when set, so a
-        post-mortem (especially in CI) has the full output even if the crash
-        predates the drain-thread join in ``_wait_for_health``.
+        post-mortem has the full output even if the crash predates the
+        drain-thread join in ``_wait_for_health``.
         """
         try:
             for line in self._process.stdout:
@@ -1912,7 +1846,7 @@ class LlamaCppBackend:
                             # Log file closed under us; tee silently.
                             pass
         except (ValueError, OSError):
-            # Pipe closed -- process terminating
+            # Pipe closed -- process terminating.
             pass
 
     # GGUF KV type sizes for fast skipping
@@ -2486,13 +2420,13 @@ class LlamaCppBackend:
     # ── Lifecycle ─────────────────────────────────────────────────
 
     # GGUF ``general.architecture`` values for diffusion / image models.
-    # llama.cpp proper has no such architectures, so loading one as a chat
-    # model dies with "unknown model architecture: '<arch>'". These match
-    # the patched stable-diffusion.cpp / ComfyUI-GGUF enums (LLM_ARCH_FLUX,
-    # LLM_ARCH_QWEN_IMAGE, ...). Unsloth publishes FLUX and Qwen-Image GGUFs
-    # under https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
-    # Matched exactly (not a substring) so a chat arch merely containing a
-    # short token like "wan"/"sd1" (e.g. "taiwan") isn't misrouted to Images.
+    # llama.cpp has no such architectures, so loading one as a chat model dies
+    # with "unknown model architecture: '<arch>'". These match the patched
+    # stable-diffusion.cpp / ComfyUI-GGUF enums. Unsloth publishes FLUX and
+    # Qwen-Image GGUFs under
+    # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
+    # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
+    # (e.g. "taiwan") isn't misrouted to Images.
     _DIFFUSION_ARCHES = frozenset(
         (
             "qwen_image",
@@ -2517,12 +2451,10 @@ class LlamaCppBackend:
         """Explain *why* llama-server failed to start, from its output.
 
         Several distinct failures otherwise collapse into the same opaque
-        "invalid GGUF or out of memory" message. Worst case: a diffusion /
-        image GGUF (FLUX, Qwen-Image, ...) loaded as a chat model -- the
-        file is valid and memory is plentiful, but llama.cpp has no such
-        architecture, so the user is told to free memory that was never the
-        problem (issue #5842). Pick the most specific message the captured
-        output supports.
+        "invalid GGUF or out of memory" message. Worst case: a diffusion GGUF
+        loaded as a chat model -- valid file, plenty of memory, but llama.cpp
+        has no such architecture, so the user is told to free memory that was
+        never the problem (#5842). Pick the most specific message we can.
         """
         lowered = (output or "").lower()
 
@@ -2606,25 +2538,19 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
     ) -> bool:
-        """
-        Start llama-server with a GGUF model.
+        """Start llama-server with a GGUF model.
 
         Two modes:
         - Local: ``gguf_path="/path/to/model.gguf"`` → uses ``-m``
-        - HF:    ``hf_repo="unsloth/gemma-3-4b-it-GGUF", hf_variant="Q4_K_M"`` → uses ``-hf``
+        - HF:    ``hf_repo="...-GGUF", hf_variant="Q4_K_M"`` → uses ``-hf``
 
-        In HF mode, llama-server handles download, caching, and auto-loading
-        mmproj files for vision models.
-
-        Returns True if the server started and health check passed.
+        Returns True if the server started and the health check passed.
         """
         # Serialise the whole load so concurrent /load calls never leave two
-        # llama-server processes alive (#5401 / #5161). Doesn't block
-        # /unload, /status, /load-progress.
+        # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
-            # Duplicate /load that raced past the route-level check (first
-            # one hadn't published _healthy=True yet). If the live server
-            # already satisfies this request, do nothing.
+            # Duplicate /load that raced past the route check: do nothing if the
+            # live server already satisfies this request.
             if self._already_in_target_state(
                 gguf_path = gguf_path,
                 model_identifier = model_identifier,
@@ -2721,13 +2647,12 @@ class LlamaCppBackend:
             else:
                 raise ValueError("Either gguf_path or hf_repo must be provided")
 
-            # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
+            # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
 
-            # Read GGUF metadata (context_length, chat_template); fast, header only
+            # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
 
-            # Check cancel after download
             if self._cancel_event.is_set():
                 logger.info("Load cancelled after download phase")
                 return False
@@ -2779,12 +2704,10 @@ class LlamaCppBackend:
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
                     max_available_ctx = self._context_length or effective_ctx
 
-                    # Will MTP engage on this load? If so, auto-fit must
-                    # reserve extra VRAM for the draft model's KV cache +
-                    # compute graph. Mirrors _build_speculative_flags'
-                    # canonical-mode resolver: forced mtp / mtp+ngram always
-                    # engage; auto only on an MTP GGUF >= 3B (sub-3B auto
-                    # falls back to ngram-mod, no headroom needed); ngram /
+                    # Will MTP engage on this load? If so, auto-fit reserves
+                    # extra VRAM for the draft model. Mirrors
+                    # _build_speculative_flags' resolver: forced mtp / mtp+ngram
+                    # always engage; auto only on an MTP GGUF >= 3B; ngram /
                     # ngram-simple / off never engage MTP.
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
@@ -2805,16 +2728,13 @@ class LlamaCppBackend:
                         )
                     )
 
-                    # Auto-cap context to fit GPU VRAM and select GPUs.
-                    # Two policies by whether the user set n_ctx:
-                    #
-                    # Explicit n_ctx: honor it. Try the full requested context
-                    #   with _select_gpus (uses as many GPUs as needed); only
-                    #   cap if it doesn't fit on any GPU combination.
-                    #
-                    # Auto n_ctx=0 (native context): prefer fewer GPUs with
-                    #   reduced context, since multi-GPU is slower and the user
-                    #   didn't ask for a specific length.
+                    # Auto-cap context to fit GPU VRAM and select GPUs. Two
+                    # policies by whether the user set n_ctx:
+                    #   Explicit n_ctx: honor it. Try the full context with
+                    #     _select_gpus (as many GPUs as needed); cap only if it
+                    #     doesn't fit on any combination.
+                    #   Auto n_ctx=0 (native): prefer fewer GPUs with reduced
+                    #     context, since multi-GPU is slower.
                     gpu_indices, use_fit = None, True
                     explicit_ctx = requested_ctx > 0
 
@@ -2846,21 +2766,15 @@ class LlamaCppBackend:
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                             else:
-                                # Weights exceed 90% of every GPU subset's free
-                                # memory, so no context fits. Anchor the UI's
-                                # "safe zone" threshold at 4096 (the spec's
-                                # default when the model can't fit) so the ctx
-                                # slider shows the "might be slower" warning as
-                                # soon as the user drags above the fallback.
+                                # Weights exceed 90% of every GPU subset, so no
+                                # context fits. Anchor the UI "safe zone" at 4096
+                                # so the slider warns above the fallback.
                                 max_available_ctx = min(4096, native_ctx_for_cap)
 
                         if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
-                            # pin GPUs and skip --fit; if not, ship
-                            # -c <user_ctx> --fit on and let llama-server flex
-                            # -ngl (CPU layer offload). The UI should have
-                            # surfaced the "might be slower" warning before a
-                            # ctx above the fit ceiling was submitted.
+                            # pin GPUs and skip --fit; else ship -c <ctx> --fit
+                            # on and let llama-server flex -ngl (CPU offload).
                             requested_total = model_size + self._estimate_kv_cache_bytes(
                                 effective_ctx, cache_type_kv, n_parallel = n_parallel
                             )
@@ -2893,9 +2807,8 @@ class LlamaCppBackend:
                                     break
                             else:
                                 # Native ctx doesn't fit. Drop to 4096 and
-                                # re-check before deferring to --fit on: a model
-                                # that overflows at 131k may pin comfortably
-                                # with a 4096 KV cache (#5106).
+                                # re-check before --fit on: a model overflowing
+                                # at 131k may pin fine with a 4096 KV (#5106).
                                 effective_ctx = min(4096, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus in range(1, len(ranked) + 1):
@@ -2913,18 +2826,16 @@ class LlamaCppBackend:
                                             break
 
                     elif gpus:
-                        # Can't estimate KV -- file-size-only check. Without KV
-                        # estimation we can't prove a hardware cap, so keep the
-                        # ceiling at the native context (already the default).
+                        # Can't estimate KV -- file-size-only check; keep the
+                        # ceiling at native context (already the default).
                         logger.debug(
                             "Falling back to file-size-only GPU selection",
                             model_size_gb = round(model_size / (1024**3), 2),
                         )
                         gpu_indices, use_fit = self._select_gpus(model_size, gpus)
                         if use_fit and not explicit_ctx:
-                            # Weights don't fit on any subset. Default the UI to
-                            # 4096 so the slider doesn't land on an unusable
-                            # native context; --fit on flexes -ngl at runtime.
+                            # Weights don't fit on any subset; default UI to 4096
+                            # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
                     if effective_ctx < original_ctx:
@@ -3036,29 +2947,8 @@ class LlamaCppBackend:
                 else:
                     self._cache_type_kv = None
 
-                # Speculative decoding (n-gram self-speculation, zero VRAM).
-                # ngram-mod: ~16 MB shared hash pool, constant memory/
-                # complexity, variable draft lengths. Helps most when the
-                # model repeats existing text (code refactor, summarization,
-                # reasoning); for low-repetition chat, overhead is ~5 ms.
-                #
-                # Benchmarks from upstream llama.cpp speculative-decoding PRs:
-                #   Scenario                        | Without | With    | Speedup
-                #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
-                #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
-                #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
-                #
-                # Params from llama.cpp server README:
-                #   --spec-ngram-mod-n-match 24 (lookup length)
-                #   --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
-                #   (MoEs need long drafts; dense models can reduce these)
-                # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
-                # ref: https://github.com/ggml-org/llama.cpp/pull/19164
-                # ref: https://github.com/ggml-org/llama.cpp/pull/18471
-                # draft-mtp: MTP heads on Unsloth's *-MTP GGUFs
-                # (llama.cpp #22673). Auto-enabled via nextn_predict_layers,
-                # fallback to -MTP in name. GPU: MTP-only. CPU/Mac: chain with
-                # ngram-mod. See unsloth.ai/docs/models/qwen3.6#mtp-guide.
+                # Speculative decoding. See _build_speculative_flags for the
+                # mode resolution, benchmarks, and llama.cpp references.
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -3097,9 +2987,9 @@ class LlamaCppBackend:
                     cmd.extend(["--chat-template-file", self._chat_template_file.name])
                     logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
 
-                # For reasoning models, set default thinking mode. Qwen3.5/3.6
-                # below 9B (0.8B, 2B, 4B) disable thinking by default; 9B+
-                # enable it. Always-on templates ignore the kwarg, so skip.
+                # Default thinking mode for reasoning models. Qwen3.5/3.6 below
+                # 9B disable thinking by default; 9B+ enable it. Always-on
+                # templates ignore the kwarg, so skip.
                 if self._supports_reasoning and not self._reasoning_always_on:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
@@ -3132,10 +3022,9 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # User pass-through args go last so llama.cpp's last-wins
-                # parsing lets the user override Studio's auto-set tier-2 flags
-                # (e.g. --cache-type-k, --spec-type). The route layer already
-                # validated this list via validate_extra_args().
+                # User pass-through args go last so llama.cpp's last-wins parsing
+                # lets the user override Studio's auto-set flags. Already
+                # validated by the route via validate_extra_args().
                 if extra_args:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
@@ -3147,7 +3036,7 @@ class LlamaCppBackend:
                         _log_cmd[_ki] = "<redacted>"
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
-                # Set library paths so llama-server finds its shared libs and CUDA DLLs
+                # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 import os
                 import sys
 
@@ -3170,14 +3059,11 @@ class LlamaCppBackend:
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
 
-                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
-                    # but NOT the Tensile kernel files it needs
-                    # (rocblas/library/TensileLibrary*.dat + *.hsaco). The
-                    # bundled DLL searches relative to its own location
-                    # (<binary_dir>/rocblas/library/), which doesn't exist ->
-                    # silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install where the kernel
-                    # files actually are.
+                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
+                    # searches <binary_dir>/rocblas/library/ which doesn't exist
+                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
+                    # repoints that search at the ROCm install.
                     _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
                     if _hip_path:
                         _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
@@ -3191,10 +3077,9 @@ class LlamaCppBackend:
                     lib_dirs = [binary_dir]
                     _arch = platform.machine()  # x86_64, aarch64, etc.
 
-                    # Pip-installed nvidia CUDA runtime libs (e.g. torch's
-                    # bundled cuda-bindings). The prebuilt llama.cpp binary
-                    # links against libcudart.so.13 / libcublas.so.13 which
-                    # live here, not in /usr/local/cuda.
+                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
+                    # binary links libcudart.so.13 / libcublas.so.13 which live
+                    # here, not in /usr/local/cuda.
                     import glob as _glob
 
                     for _nv_pattern in [
@@ -3246,10 +3131,9 @@ class LlamaCppBackend:
                     new_ld = ":".join(lib_dirs)
                     env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
-                # Pin to selected GPU(s). On ROCm, llama-server (and any torch
-                # in the subprocess) honors HIP_VISIBLE_DEVICES /
-                # ROCR_VISIBLE_DEVICES; narrowing only CUDA_VISIBLE_DEVICES
-                # leaves an AMD child seeing the full HIP/ROCR set inherited.
+                # Pin to selected GPU(s). On ROCm, narrowing only
+                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
+                # HIP/ROCR set, so set those too.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -3261,18 +3145,14 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
-                # Defensive kill: if a concurrent load slipped past Phase 1
-                # (its `self._process` was None then) and already stored a
-                # Popen handle here, drop that orphan before we overwrite the
-                # reference. See issue #5161.
+                # Defensive kill: drop an orphan Popen a concurrent load may
+                # have stored before we overwrite the reference (#5161).
                 self._kill_process()
 
                 self._stdout_lines = []
                 # Tee llama-server output to a dedicated log file so a
-                # post-mortem in CI (or after a remote-debug session) has the
-                # full subprocess trail even when the parent only kept the last
-                # 50 lines. Path lives under the studio home alongside other
-                # Studio logs.
+                # post-mortem has the full trail even when the parent only kept
+                # the last 50 lines. Path is under the studio home.
                 self._llama_log_fh = None
                 try:
                     log_dir = _swa_cache_path().parent / "logs" / "llama-server"
@@ -3306,10 +3186,9 @@ class LlamaCppBackend:
                 )
                 self._stdout_thread.start()
 
-                # Store the resolved on-disk path, not the caller's kwarg. In
-                # HF mode the caller passes gguf_path=None and ``model_path``
-                # is what llama-server actually mmap's. Downstream consumers
-                # (load_progress, log lines, etc.) need the real on-disk path.
+                # Store the resolved on-disk path, not the caller's kwarg: in
+                # HF mode gguf_path is None and ``model_path`` is what
+                # llama-server mmap's, which downstream consumers need.
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
                 # For local GGUF files, extract variant from filename if absent
@@ -3326,9 +3205,8 @@ class LlamaCppBackend:
                 self._is_vision = effective_is_vision
                 self._model_identifier = model_identifier
 
-                # Store the effective (possibly capped) context separately. Do
-                # NOT overwrite _context_length -- it holds the native context
-                # length from GGUF metadata, used for display/info.
+                # Store the effective (possibly capped) context separately; do
+                # NOT overwrite _context_length (the native length for display).
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
@@ -3349,11 +3227,10 @@ class LlamaCppBackend:
 
                 self._healthy = True
 
-                # Commit caller intent only after _healthy=True so a failed
-                # startup can't poison the next inheritance check. None keeps
-                # prior, [] clears, list sets. Source records the caller's
-                # hf_variant (None for local files) so the route's same_source
-                # check stays symmetric.
+                # Commit caller intent only after _healthy=True so a failed start
+                # can't poison the next inheritance check. None keeps prior, []
+                # clears, list sets. Source records hf_variant for the route's
+                # same_source check.
                 if extra_args is not None:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
@@ -3454,6 +3331,10 @@ class LlamaCppBackend:
           gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
           Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
           gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+        Refs: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+              https://github.com/ggml-org/llama.cpp/pull/19164
+              https://github.com/ggml-org/llama.cpp/pull/18471
+              MTP guide: unsloth.ai/docs/models/qwen3.6#mtp-guide
 
         Sub-3B dense MTP regresses vs spec-off: the draft head's per-token
         cost exceeds the acceptance savings at this scale. Q4_K_XL clean
@@ -3472,10 +3353,8 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
 
-        # Canonical UI-facing requested mode: auto / mtp / ngram /
-        # mtp+ngram / off / ngram-simple. Legacy values mapped via
-        # _canonicalize_spec_mode (default->auto, draft-mtp->mtp,
-        # ngram-mod->ngram, "ngram-mod,draft-mtp"->mtp+ngram).
+        # Canonical UI-facing requested mode (legacy values mapped via
+        # _canonicalize_spec_mode).
         canonical_mode = _canonicalize_spec_mode(speculative_type)
         is_mtp_model = bool(self._nextn_predict_layers) or (
             _is_mtp_model_name(model_identifier, model_path)
@@ -3485,9 +3364,8 @@ class LlamaCppBackend:
         _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 3.0
 
         if user_owns_spec_type:
-            # User --spec-type in extra_args wins outright; suppress
-            # auto-emit to avoid a duplicate / conflicting spec block.
-            # Record requested mode as None.
+            # User --spec-type wins outright; suppress auto-emit to avoid a
+            # duplicate spec block.
             self._requested_spec_mode = None
             return flags
 
@@ -3685,10 +3563,8 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Compare on the canonical UI-facing requested mode. When extra_args
-        # carries --spec-type, the route layer bypasses the dropdown and the
-        # backend stores _requested_spec_mode = None; the request mirrors
-        # that by canonicalising to None.
+        # Compare on the canonical requested mode. With --spec-type in
+        # extra_args the backend stores None; mirror that here.
         if _extra_args_set_spec_type(extra_args):
             req_mode = None
         else:
@@ -3697,10 +3573,9 @@ class LlamaCppBackend:
         if req_mode != backend_mode:
             return False
 
-        # spec_draft_n_max only matters when an MTP variant is engaged.
-        # Compare on the resolved spec, not the requested mode, so an Auto
-        # request that auto-promoted to draft-mtp still bounces a reload
-        # when the user changes n_max.
+        # spec_draft_n_max only matters when an MTP variant is engaged. Compare
+        # on the resolved spec so an Auto request promoted to draft-mtp still
+        # bounces a reload when n_max changes.
         if (
             self._speculative_type == "draft-mtp"
             and spec_draft_n_max is not None
@@ -3727,9 +3602,8 @@ class LlamaCppBackend:
         GPU detected, no buffer-size lines, etc.)."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one ``... model buffer size = N MiB`` line per
-        # backend buffer; CUDA0 / ROCm0 / Metal / Vulkan0 / OpenCL0 / SYCL0
-        # are GPU, CPU / CPU_Mapped are not.
+        # llama-server logs one "model buffer size = N MiB" line per backend
+        # buffer; CUDA/ROCm/Metal/Vulkan/OpenCL/SYCL are GPU, CPU* are not.
         gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
         saw_buffer_line = False
         saw_gpu_buffer = False
@@ -3828,13 +3702,11 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._process = None
-            # Clear healthy so a /load arriving during the replacement
-            # server's warm-up window can't short-circuit against the
-            # previous server's health (#5401).
+            # Clear healthy so a /load during the replacement's warm-up can't
+            # short-circuit against the previous server's health (#5401).
             self._healthy = False
-            # Drives _wait_for_vram_settle in the next load_model; set in
-            # finally so both in-process and frontend /unload+/load Apply
-            # paths record the kill.
+            # Drives _wait_for_vram_settle in the next load_model; set in finally
+            # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
@@ -3863,10 +3735,8 @@ class LlamaCppBackend:
         """
         try:
             # -- Build the ownership allowlist --------------------------------
-            # Two match kinds:
-            #   exact_binaries  -- env var overrides (exact path match only)
-            #   install_roots   -- Studio-owned dir trees (binary must be
-            #                      *under* one of these)
+            # exact_binaries -- env var overrides (exact path match).
+            # install_roots  -- Studio-owned dir trees (binary must be under one).
             install_roots: list[Path] = []
 
             # Env-mode custom root (mirrors _find_llama_server_binary).
@@ -3885,9 +3755,8 @@ class LlamaCppBackend:
             except (ImportError, OSError, ValueError):
                 pass
 
-            # Primary install dir (default mode only). Env-mode skips this so
-            # a custom-root Studio can't kill a concurrent default-install
-            # Studio's llama-server (same OS user, different install).
+            # Primary install dir (default mode only). Env-mode skips this so a
+            # custom-root Studio can't kill a default-install Studio's server.
             if not _is_custom_root:
                 install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
@@ -3947,8 +3816,7 @@ class LlamaCppBackend:
 
                         exe_path = Path(exe).resolve()
 
-                        # Ownership: exact binary match OR binary under a
-                        # known install root (proper ancestry, not substring).
+                        # Ownership: exact match OR binary under a known root.
                         is_ours = exe_path in exact_binaries or any(
                             exe_path.is_relative_to(root) for root in resolved_roots
                         )
@@ -3987,10 +3855,9 @@ class LlamaCppBackend:
                     if pid == my_pid:
                         continue
 
-                    # Resolve the actual executable. /proc/<pid>/exe is a
-                    # symlink to the real binary and avoids cmdline-parsing
-                    # ambiguities (spaces in paths, argv rewriting). Fall back
-                    # to the first cmdline token when /proc is unavailable.
+                    # /proc/<pid>/exe symlinks the real binary, avoiding
+                    # cmdline-parsing ambiguities; fall back to the first
+                    # cmdline token when /proc is unavailable.
                     proc_exe = Path(f"/proc/{pid}/exe")
                     try:
                         binary = proc_exe.resolve(strict = True)
@@ -4026,11 +3893,7 @@ class LlamaCppBackend:
         timeout: float = 120.0,
         interval: float = 0.5,
     ) -> bool:
-        """
-        Poll llama-server's /health endpoint until it responds 200.
-
-        Also monitors the subprocess for early exit/crash.
-        """
+        """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
         url = f"http://127.0.0.1:{self._port}/health"
 
@@ -4054,10 +3917,8 @@ class LlamaCppBackend:
             except (
                 httpx.ConnectError,
                 httpx.TimeoutException,
-                # ReadError covers TCP RST mid-read while llama-server is
-                # still binding the port (Windows: WinError 10054). The
-                # crash branch above catches a real exit; this keeps a
-                # transient socket close from masking it.
+                # ReadError covers TCP RST mid-read while still binding the port
+                # (Windows: WinError 10054); the crash branch catches real exits.
                 httpx.ReadError,
                 httpx.RemoteProtocolError,
                 httpx.WriteError,
@@ -4079,12 +3940,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _build_openai_messages(messages: list[dict], image_b64: Optional[str] = None) -> list[dict]:
-        """
-        Build OpenAI-format messages, optionally injecting an image_url
-        content part into the last user message for vision models.
-
-        Returns messages as-is if no image is provided.
-        """
+        """Build OpenAI-format messages, optionally injecting an image_url part
+        into the last user message for vision models. As-is if no image."""
         if not image_b64:
             return messages
 
@@ -4115,13 +3972,10 @@ class LlamaCppBackend:
     def _iter_text_cancellable(
         response: "httpx.Response", cancel_event: Optional[threading.Event] = None
     ) -> Generator[str, None, None]:
-        """Iterate over an httpx streaming response with cancel support.
+        """Iterate an httpx streaming response with cancel support.
 
-        Checks cancel_event between chunks and on ReadTimeout. The cancel
-        watcher in _stream_with_retry also calls response.close() on cancel,
-        unblocking iter_text() once the response exists. During normal
-        streaming llama-server sends tokens frequently, so the between-chunk
-        check is the primary mechanism.
+        Checks cancel_event between chunks and on ReadTimeout; the
+        _stream_with_retry watcher also closes the response on cancel.
         """
         text_iter = response.iter_text()
         while True:
@@ -4149,18 +4003,11 @@ class LlamaCppBackend:
     ):
         """Open an httpx streaming POST with cancel support.
 
-        Sends the request once with a long read timeout (120 s) so prefill
-        (prompt processing) can finish without a retry storm. The previous
-        0.5 s timeout caused duplicate POSTs every half second, forcing
-        llama-server to restart processing each time.
-
-        A background watcher thread cancels by closing the response when
-        cancel_event is set. Limitation: httpx can't interrupt a blocked
-        read from another thread before the response object exists, so
-        cancel during the initial header wait (prefill) only takes effect
-        once headers arrive; after that response.close() unblocks reads
-        promptly. Prefill is 1-5 s for typical prompts, during which cancel
-        is deferred -- still much better than the old retry storm.
+        Sends once with a long read timeout (120 s) so prefill finishes without
+        a retry storm (the old 0.5 s timeout caused duplicate POSTs every half
+        second). A watcher thread cancels by closing the response. httpx can't
+        interrupt a blocked read before the response exists, so cancel during
+        the header wait (1-5 s prefill) is deferred until headers arrive.
         """
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit

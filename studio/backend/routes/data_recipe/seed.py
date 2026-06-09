@@ -581,8 +581,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
-    # Legacy single-file unstructured path supports only .txt/.md;
-    # PDF/DOCX extraction uses the multi-file upload endpoint instead
+    # Legacy single-file path is .txt/.md only; PDF/DOCX use multi-file upload
     _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":
         if ext not in _LEGACY_UNSTRUCTURED_EXTS:

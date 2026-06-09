@@ -69,8 +69,7 @@ class TestClientIp:
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
         )
-        # Proxy header can be spoofed; without the opt-in, trust only the
-        # direct connection.
+        # Proxy header is spoofable; without the opt-in, trust the direct connection.
         assert _client_ip(req) == "127.0.0.1"
 
     def test_honours_first_xff_when_trust_on(self, env_trust_proxy):
@@ -123,8 +122,8 @@ class TestClientIp:
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
         from routes.auth import _client_ip
 
-        # Multi-element Forwarded must pick the first element only, else suffix
-        # variations create attacker-controlled buckets.
+        # Pick the first Forwarded element only, else suffix variations create
+        # attacker-controlled buckets.
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": "for=198.51.100.42, for=10.0.0.1;proto=https"},
@@ -189,9 +188,7 @@ class TestBucketKeyAndBlocking:
         req = _FakeRequest("203.0.113.10")
         for idx in range(5):
             auth_routes._record_login_failure(auth_routes._unknown_user_key(req))
-            # A different "username" each attempt wouldn't throttle under
-            # per-(ip,username) only; the IP aggregate must.
-        # The next missing-user attempt is blocked.
+            # Per-(ip,username) alone wouldn't throttle distinct usernames; the IP aggregate must.
         assert auth_routes._login_blocked(auth_routes._unknown_user_key(req)) > 0
 
     def test_unknown_user_bucket_is_single_sentinel(self, env_no_proxy):
@@ -202,8 +199,7 @@ class TestBucketKeyAndBlocking:
         unknown_key = auth_routes._unknown_user_key(req)
         for _ in range(20):
             auth_routes._record_login_failure(unknown_key)
-        # Account bucket cardinality stays at exactly one sentinel entry for
-        # this IP regardless of how many distinct usernames sprayed.
+        # Exactly one sentinel bucket for this IP regardless of usernames sprayed.
         ip_keys = [k for k in auth_routes._LOGIN_BUCKETS if k[0] == "203.0.113.11"]
         assert len(ip_keys) == 1
         assert ip_keys[0][1].startswith("\x00")

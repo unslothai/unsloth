@@ -206,7 +206,7 @@ def test_walkback_skips_explicitly_consumed_tool_call_id():
 
 def test_walkback_handles_malformed_function_string():
     """A tool_call with ``function`` as a string (provider quirk) must not
-    raise; resolution falls back to fallback id selection."""
+    raise; resolution falls back to id selection."""
     req = _req(
         [
             {

@@ -75,8 +75,7 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "assistant":
-            # Assistant content carries text + tool_use; images aren't
-            # part of Anthropic's assistant content model.
+            # Assistant content: text + tool_use only (no images in Anthropic's model).
             text_parts: list[str] = []
             tool_calls: list[dict] = []
             for block in content:
@@ -104,9 +103,7 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "user":
-            # Ordered part list to preserve text/image interleaving (e.g.
-            # [text, image, text, image]). tool_result blocks become their
-            # own OpenAI "tool" role messages.
+            # Ordered parts preserve text/image interleaving; tool_result -> own "tool" messages.
             user_parts: list[dict] = []
             has_image = False
             tool_results: list[dict] = []
@@ -137,8 +134,7 @@ def anthropic_messages_to_openai(
             if has_image:
                 result.append({"role": "user", "content": user_parts})
             else:
-                # No images: collapse text parts to a plain string so
-                # text-only callers keep their simple shape.
+                # No images: collapse text parts to a plain string.
                 text = "\n".join(p["text"] for p in user_parts)
                 if text:
                     result.append({"role": "user", "content": text})
@@ -317,11 +313,9 @@ class AnthropicStreamEmitter:
             return self._tool_arguments_delta(args)
 
         events = []
-        # Close current text block if open.
         if self._text_block_open:
             events.append(self._close_block())
-        # Defensive: if a different tool_start arrives while a tool_use
-        # block is open, close the stale block before starting another.
+        # Defensive: close a stale open tool_use block before starting another.
         elif self._open_tool_call_id is not None:
             events.append(self._close_block())
             self._open_tool_call_id = None

@@ -1,29 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for the safetensors agentic tool loop.
+"""Tests for the safetensors agentic tool loop.
 
-Covers the shared ``tool_call_parser`` helpers and the cumulative-text state
-machine in ``safetensors_agentic.run_safetensors_tool_loop``. The loop runs
-against hand-crafted fake single-turn generators, so no model load is needed;
-the tests finish in CI within a few seconds.
-
-Edge cases covered:
-* Plain answers (no tool calls) flush full content.
-* Single ``<tool_call>{json}</tool_call>`` triggers the tool and re-enters.
-* Single ``<function=name>...`` XML form triggers the same path.
-* Truncated unclosed ``<tool_call>`` is still parsed.
-* Tool result is fed back as ``role=tool`` for the next iteration.
-* Bad JSON inside ``<tool_call>`` does not raise and (when healed) routes as a
-  ``{"query": ...}`` web search call.
-* Duplicate tool calls produce a synthetic "do not repeat" result the 2nd time.
-* ``__IMAGES__`` sentinel is stripped before the model sees the result.
-* Tool execution errors are tagged so the model gets a nudge but the loop keeps
-  streaming.
-* Cancel is honoured between iterations.
-* ``max_tool_iterations`` cap is respected and a final-answer attempt closes the
-  stream cleanly.
+Covers the ``tool_call_parser`` helpers and the cumulative-text state machine in
+``run_safetensors_tool_loop``, run against fake single-turn generators (no model
+load). Edge cases: plain answers, JSON and XML tool-call forms, truncated/unclosed
+calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
+``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
 import threading
@@ -85,9 +69,8 @@ class TestParser:
         assert "ls -la" in result[0]["function"]["arguments"]
 
     def test_code_with_embedded_xml(self):
-        # A code parameter contains the literal </parameter>. Must not truncate
-        # the value: the parser uses end-of-body as the only boundary for
-        # single-parameter calls.
+        # A code parameter with a literal </parameter> must not truncate: the
+        # parser uses end-of-body as the only boundary for single-param calls.
         text = (
             "<function=python><parameter=code>html = '<a></a>'\n"
             "print('hi')</parameter></function>"
@@ -266,13 +249,13 @@ class TestLoopBasic:
     def test_single_tool_then_answer(self):
         loop, exec_fn = _make_loop(
             turns = [
-                # : tool call only.
+                # Tool call only.
                 [
                     '<tool_call>{"name":"web_search",',
                     '"arguments":{"query":"weather"}}',
                     "</tool_call>",
                 ],
-                # : final answer.
+                # Final answer.
                 ["The ", "weather is ", "sunny."],
             ],
             exec_results = ["Sunny and 22C"],
@@ -411,13 +394,10 @@ class TestLoopBasic:
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
     def test_bad_json_healed_to_query(self):
-        # Tool call with non-JSON string arguments. With auto_heal_tool_calls,
-        # the string routes as {"query": ...}.
+        # Non-JSON string arguments heal to {"query": ...} under auto_heal_tool_calls.
         loop, exec_fn = _make_loop(
             turns = [
-                # JSON inside the tool call is well-formed, but ``arguments`` is
-                # a string that ``_coerce_arguments`` cannot parse as JSON, so
-                # the heal path runs.
+                # ``arguments`` is a string _coerce_arguments can't parse, so heal runs.
                 ['<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'],
                 ["ok"],
             ],
@@ -430,8 +410,8 @@ class TestLoopBasic:
 
 class TestLoopBehaviour:
     def test_duplicate_tool_call_synthetic_result(self):
-        # Two identical successful calls in a row: the second is short-circuited
-        # with a "do not repeat" message and execute_tool runs only once.
+        # Two identical calls in a row: the second short-circuits with a "do not
+        # repeat" message; execute_tool runs once.
         loop, exec_fn = _make_loop(
             turns = [
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
@@ -448,9 +428,8 @@ class TestLoopBehaviour:
         assert "do not repeat" in tool_end_events[1]["result"].lower()
 
     def test_image_sentinel_stripped_from_model_feed(self):
-        # The tool result's frontend image sentinel must be stripped before
-        # being fed into the next turn, BUT the tool_end event still carries the
-        # raw result for the UI.
+        # The image sentinel is stripped before the next turn, but tool_end still
+        # carries the raw result for the UI.
         loop, exec_fn = _make_loop(
             turns = [
                 ['<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'],
@@ -556,8 +535,7 @@ class TestLoopControl:
     def test_cancel_event_breaks_loop(self):
         cancel = threading.Event()
         cancel.set()
-        # Even with a fake stream that emits tool calls, the loop must bail
-        # before invoking execute_tool when cancel is set.
+        # With cancel set, the loop bails before invoking execute_tool.
         exec_fn = FakeExecuteTool([])
         events = list(
             run_safetensors_tool_loop(
@@ -578,9 +556,9 @@ class TestLoopControl:
         # asking for tools, then emits a final-attempt round.
         loop, exec_fn = _make_loop(
             turns = [
-                # : tool call (executes once)
+                # Tool call (executes once).
                 ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
-                # : model gives a final answer when nudged.
+                # Model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
             exec_results = ["result"],
@@ -613,16 +591,13 @@ class TestStatusFormatting:
 
 class TestProseMentioningToolCall:
     def test_assistant_prose_with_literal_tool_call_text_survives(self):
-        # Regression: if assistant text legitimately mentions ``<tool_call>`` as
-        # a literal string and the parser finds no actual call, the loop must
-        # surface the full content instead of stripping everything past the
-        # literal marker.
+        # Regression: prose that mentions a literal ``<tool_call>`` (no real call)
+        # must surface in full, not be stripped past the marker.
         loop, exec_fn = _make_loop(
             turns = [
-                # : a real tool call so the loop moves to
-                # .
+                # A real tool call so the loop advances a turn.
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                # : prose that mentions the literal text.
+                # Prose that mentions the literal text.
                 ["the docs say <tool_call> means an LLM tool call wrapper"],
             ],
             exec_results = ["result"],
@@ -636,9 +611,8 @@ class TestProseMentioningToolCall:
         ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
-        # Tool result text contains the literal ``<tool_call>`` string. The loop
-        # must parse only the MODEL output, not the tool result, so we see
-        # exactly one call.
+        # A literal ``<tool_call>`` in the tool result must not re-trigger: the
+        # loop parses only model output, so exactly one call.
         loop, exec_fn = _make_loop(
             turns = [
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],

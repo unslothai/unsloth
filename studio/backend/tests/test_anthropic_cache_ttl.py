@@ -3,14 +3,9 @@
 
 """Unit tests for prompt_cache_ttl threading on the Anthropic path.
 
-Anthropic accepts an optional ``ttl`` on each ``cache_control`` marker:
-default is the 5-minute ephemeral pool; ``ttl:"1h"`` writes into the
-1-hour pool. The 1h pool fits conversations spanning short bursts more
-than 5 minutes apart -- 1h writes bill at 2x base input vs 1.25x for 5m,
-but reads stay at 0.1x for both, so one extra read pays the premium.
-
-These tests pin the outbound body shape: prompt_cache_ttl="1h" puts
-``ttl:"1h"`` on both markers; default omits the field (5m pool); garbage
+Anthropic's ``cache_control`` marker takes an optional ``ttl``: default 5m
+pool, ``ttl:"1h"`` the 1h pool. These tests pin the outbound body shape:
+"1h" puts ``ttl:"1h"`` on both markers; default omits the field; garbage
 values are silently dropped.
 """
 
@@ -127,11 +122,8 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
 
 
 def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    # The `extended-cache-ttl-2025-04-11` beta header that originally gated
-    # 1h cache TTL is now GA: verified live against api.anthropic.com on
-    # 2026-05-22 -- a request with `cache_control:{type:"ephemeral",
-    # ttl:"1h"}` and NO beta header returns 200 and populates
-    # `ephemeral_1h_input_tokens`. Pin the contract so a regression that
+    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live
+    # 2026-05-22); 1h TTL works with no beta header. Pin so a regression that
     # re-adds the header surfaces here.
     captured = _capture(monkeypatch, ttl = "1h")
     beta = captured["headers"].get("anthropic-beta", "")
@@ -153,8 +145,7 @@ def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
-        # Bogus TTLs must NOT round-trip; marker stays at the default
-        # (no `ttl` key = 5m pool upstream).
+        # Bogus TTLs must not round-trip; marker stays at default (no ttl = 5m).
         assert cc == {"type": "ephemeral"}, cc
 
 

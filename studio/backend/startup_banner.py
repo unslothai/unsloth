@@ -34,7 +34,7 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
 
 
 def print_studio_stop_hint() -> None:
-    """Print the trailing stop hint + closing divider. Separate from the
+    """Print the trailing stop hint + closing divider, separate from the
     banner so callers can interleave content (e.g. a reachability check)."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"

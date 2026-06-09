@@ -3,27 +3,14 @@
 
 """Regression tests for the offline GGUF cache fallback path (#5505).
 
-Three failure modes hit users when ``huggingface.co`` is unreachable but the
-requested GGUF repo is fully cached locally:
+When ``huggingface.co`` is unreachable but the repo is cached, three failures
+hit: ``list_gguf_variants`` 500'd (empty dropdown), ``detect_gguf_model_remote``
+returned None (GGUF-only repo misrouted), and ``_download_gguf`` synthesised a
+name absent from cache. Follow-ups: the cache filter matches the snapshot-relative
+path (subdir layouts findable), and DNS auto-detect scopes ``HF_HUB_OFFLINE`` to
+one load so a transient hiccup can't pin the singleton offline.
 
-* ``list_gguf_variants`` raised ``HTTPException(500)`` so the variant
-  dropdown sat empty.
-* ``detect_gguf_model_remote`` returned ``None`` so a GGUF-only repo was
-  misrouted into the transformers/Unsloth backend (a hardware error on macOS).
-* ``_download_gguf`` fell back to a synthetic ``{repo}-{variant}.gguf`` name
-  absent from cache when the in-repo filename did not echo the repo name
-  (e.g. ``unsloth/Qwen3.6-27B-MTP-GGUF`` ships
-  ``Qwen3.6-27B-UD-Q4_K_XL.gguf`` with no ``MTP`` token).
-
-Two follow-up regressions also covered:
-
-* P1 #1: the cache-side variant filter must match the snapshot-relative path,
-  not just the basename, so subdir layouts like ``BF16/foo.gguf`` are findable.
-* P1 #2: the DNS auto-detect must scope ``HF_HUB_OFFLINE`` to one load via
-  try/finally so a transient resolver hiccup cannot lock the long-lived
-  ``LlamaCppBackend`` singleton offline forever.
-
-No GPU, no network, no subprocess. Linux, macOS, Windows compatible.
+No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
 """
 
 from __future__ import annotations
@@ -269,10 +256,8 @@ class TestDetectGgufFromCache:
         assert _detect_gguf_from_hf_cache("unsloth/a") == "a-UD-Q4_K_XL.gguf"
 
     def test_subdir_only_quant_resolves(self, hf_cache):
-        """P1 #1 regression: ``BF16/foo.gguf`` (quant only in directory).
-        The pre-fix cache scan matched on basename, missing this layout
-        and falling through to the synthetic ``{repo}-{variant}.gguf``
-        heuristic."""
+        """Regression: ``BF16/foo.gguf`` (quant only in directory). The pre-fix
+        cache scan matched on basename and missed this layout."""
         _build_cache(
             hf_cache,
             "unsloth/gpt-oss-20b-BF16",
@@ -440,9 +425,8 @@ class TestHfOfflineIfDnsDead:
 
 
 class TestExtractQuantLabelSubdir:
-    """``_extract_quant_label`` must consider parent directories when the
-    basename has no quant token. Subdir layouts like ``BF16/foo.gguf`` are
-    documented here and surface through the cache scan."""
+    """``_extract_quant_label`` must consider parent dirs when the basename has
+    no quant token (subdir layouts like ``BF16/foo.gguf``)."""
 
     def test_quant_in_basename_unchanged(self):
         assert _extract_quant_label("BF16/foo-BF16.gguf") == "BF16"
@@ -455,15 +439,13 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("UD-Q4_K_XL/weight.gguf") == "UD-Q4_K_XL"
 
     def test_deeper_nesting_picks_nearest_quant_dir(self):
-        # When multiple parent segments match, prefer the innermost (closest
-        # to the file), matching repos like ``models/MXFP4_MOE/foo.gguf``.
+        # Multiple matching parents: prefer the innermost (closest to the file).
         assert _extract_quant_label("models/MXFP4_MOE/foo.gguf") == "MXFP4_MOE"
 
 
 class TestDownloadMmprojOfflineCacheFallback:
-    """``LlamaCppBackend._download_mmproj`` must resolve cached mmproj GGUFs
-    offline, same shape as ``_download_gguf``. Without this the offline vision
-    GGUF load path returns ``None`` even when the mmproj is cached."""
+    """``_download_mmproj`` must resolve cached mmproj GGUFs offline, like
+    ``_download_gguf``; else the offline vision load returns None despite a cache hit."""
 
     def test_cache_lookup_returns_cached_mmproj_when_list_repo_files_fails(self, hf_cache):
         _build_cache(
@@ -667,9 +649,8 @@ class TestDetectGgufFromCacheExcludesMmproj:
 
 
 class TestProbeDnsDeadNoGlobalTimeoutMutation:
-    """``_probe_dns_dead`` must not change ``socket.setdefaulttimeout``
-    process-wide -- concurrent sockets without an explicit timeout would
-    inherit it for the probe window."""
+    """``_probe_dns_dead`` must not change ``socket.setdefaulttimeout`` process-wide;
+    concurrent sockets would inherit it during the probe window."""
 
     def test_default_timeout_unchanged_when_dns_up(self, monkeypatch):
         import socket as _socket
@@ -712,9 +693,8 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
 
 class TestWaitForHealthRetriesOnReadError:
-    """A TCP RST mid-read while llama-server is still binding the port
-    (Windows: WinError 10054) must not abort the health-poll loop -- that
-    masks a legitimate 'still warming up' state as a fatal load."""
+    """A TCP RST mid-read while llama-server is still binding (Windows: WinError
+    10054) must not abort the health-poll loop and mask warmup as a fatal load."""
 
     def test_read_error_then_success(self, monkeypatch):
         import httpx

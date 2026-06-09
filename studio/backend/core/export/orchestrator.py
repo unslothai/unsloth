@@ -28,9 +28,7 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
-# Max captured log lines kept in memory per export orchestrator;
-# scrollback for the live export log panel. 4000 lines is ~1 MB
-# worst-case at 256 chars/line.
+# Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
 
 
@@ -44,13 +42,10 @@ class ExportOrchestrator:
     """
 
     def __init__(self):
-        # Subprocess state.
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        # Serializes export ops (load_checkpoint, export_*, cleanup) so
-        # concurrent HTTP requests can't interleave commands on the
-        # subprocess queue.
+        # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
         # Local state mirrors (updated from subprocess responses).
@@ -58,25 +53,15 @@ class ExportOrchestrator:
         self.is_vision: bool = False
         self.is_peft: bool = False
 
-        # ── Live log capture ─────────────────────────────────────
-        # Thread-safe ring buffer of log lines from the worker
-        # subprocess. Powers the GET /api/export/logs/stream SSE
-        # endpoint the export dialog consumes.
+        # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
-        # Monotonic sequence number. Never reset across operations, so
-        # SSE clients can use it as a stable cursor even if clear_logs()
-        # runs mid-session.
+        # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
         self._log_seq: int = 0
-        # Snapshot of _log_seq at the start of the current run (set by
-        # clear_logs()). The SSE endpoint defaults its cursor here so a
-        # client connecting AFTER the worker's first lines still sees the
-        # full run. Lines in the current run have seq > _run_start_seq;
-        # prior-run lines have seq <= it.
+        # _log_seq snapshot at the current run's start; SSE defaults its cursor here so a
+        # late-connecting client still sees the full run. Current run has seq > this.
         self._run_start_seq: int = 0
-        # True while an export op (load/export/cleanup) is running. The
-        # SSE endpoint ends the stream 1s after this flips False to drain
-        # trailing log lines.
+        # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
 
         atexit.register(self._cleanup)
@@ -87,12 +72,7 @@ class ExportOrchestrator:
     # ------------------------------------------------------------------
 
     def _append_log(self, entry: Dict[str, Any]) -> None:
-        """Append a worker-subprocess log line to the buffer.
-
-        Entries look like {"type": "log", "stream": "stdout"|"stderr",
-        "line": "...", "ts": ...}. Each gets a monotonic seq number so
-        SSE clients can cursor through new lines.
-        """
+        """Append a worker log line to the buffer, stamped with a monotonic seq."""
         line = entry.get("line")
         if not line:
             return
@@ -108,17 +88,10 @@ class ExportOrchestrator:
             )
 
     def clear_logs(self) -> None:
-        """Drop buffered log lines from a previous operation.
+        """Drop buffered log lines from a previous op so the UI shows only this run.
 
-        Called at the start of each export op so the UI shows only the
-        current run. The seq counter is NOT reset, so an SSE client that
-        captured the cursor before clear_logs() still sees new lines
-        (with strictly greater seq).
-
-        Also snapshots the current seq into ``_run_start_seq`` so the SSE
-        endpoint can anchor its default cursor at this run's start.
-        Anything appended after has seq > the snapshot, reachable via
-        ``get_logs_since(get_run_start_seq())``.
+        The seq counter is NOT reset (clients keep a stable cursor); the current seq
+        is snapshotted into ``_run_start_seq`` to anchor the SSE default cursor.
         """
         with self._log_lock:
             self._log_buffer.clear()
@@ -138,12 +111,7 @@ class ExportOrchestrator:
             return self._log_seq
 
     def get_run_start_seq(self) -> int:
-        """Return the seq captured at the start of the current run.
-
-        The SSE endpoint uses this as the default cursor so a client
-        connecting AFTER the worker started emitting still sees every
-        line from the current run.
-        """
+        """Return the seq captured at the current run's start (SSE default cursor)."""
         with self._log_lock:
             return self._run_start_seq
 
@@ -187,22 +155,19 @@ class ExportOrchestrator:
             self._proc = None
             return
 
-        # 1. Drain stale responses.
         self._drain_queue()
 
-        # 2. Send shutdown command.
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             pass
 
-        # 3. Wait for graceful shutdown.
         try:
             self._proc.join(timeout = timeout)
         except Exception:
             pass
 
-        # 4. Force kill if still alive.
+        # Force kill if still alive.
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
@@ -272,7 +237,6 @@ class ExportOrchestrator:
             resp = self._read_resp(timeout = min(remaining, 2.0))
 
             if resp is None:
-                # Check subprocess health.
                 if not self._ensure_subprocess_alive():
                     raise RuntimeError("Export subprocess crashed during wait")
                 continue
@@ -294,9 +258,7 @@ class ExportOrchestrator:
             if rtype == "status":
                 message = resp.get("message", "")
                 logger.info("Export subprocess status: %s", message)
-                # Surface status in the live log panel too so users see
-                # high-level progress (e.g. "Importing Unsloth...",
-                # "Loading checkpoint: ...") alongside subprocess output.
+                # Surface status in the live log panel for high-level progress.
                 if message:
                     self._append_log(
                         {
@@ -477,13 +439,10 @@ class ExportOrchestrator:
         )
 
     def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
-        """Send an export command to the subprocess and wait for result.
+        """Send an export command and wait for the result.
 
-        Returns ``(success, message, output_path)``. ``output_path`` is
-        the resolved on-disk dir the worker wrote to (None when the
-        export only pushed to Hub or failed before writing). Surfaced via
-        the export route's ``details.output_path`` so the dialog's success
-        screen shows where the model landed.
+        Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
+        dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -517,7 +476,6 @@ class ExportOrchestrator:
         """Cleanup export-related models from memory."""
         with self._lock:
             if not self._ensure_subprocess_alive():
-                # No subprocess — clear local state.
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False

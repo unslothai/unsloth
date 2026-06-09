@@ -59,8 +59,7 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
 }
 
 # (full_ft_multiplier, lora_multiplier) — fraction of num_layers.
-# LoRA: frozen base layers skip activation storage, but ~1 layer is always
-# in flight during backprop recomputation.
+# LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
     "true": (2.0, 1.0),
@@ -181,8 +180,7 @@ def _max_scalar(value):
 def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
     """Layer indices that use dense MLP instead of MoE. Position matters."""
     # Exaone-MoE / Laguna / Hy_v3 / GLM-MoE-DSA / GLM4-MoE-Lite / Ernie4_5_VL_MoE
-    # prefer per-position `mlp_layer_types` over prefix-style
-    # `first_k_dense_replace` and may omit `decoder_sparse_step` entirely.
+    # prefer per-position `mlp_layer_types` over prefix `first_k_dense_replace`.
     layer_types = getattr(text_config, "mlp_layer_types", None)
     if layer_types:
         return tuple(
@@ -197,10 +195,9 @@ def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
         moe_indices = {int(i) for i in llama4_moe_layers}
         return tuple(i for i in range(total_layers) if i not in moe_indices)
 
-    # ERNIE 4.5 MoE / ERNIE 4.5 VL MoE declare MoE layers via
-    # moe_layer_start_index / moe_layer_end_index / moe_layer_interval; the
-    # per-layer guard is `(layer_idx + 1) % interval == 0` with
-    # start <= layer_idx <= end (modeling_ernie4_5_moe.py).
+    # ERNIE 4.5 (VL) MoE: layers via moe_layer_start/end_index + interval;
+    # per-layer guard `(layer_idx+1) % interval == 0` within [start, end]
+    # (modeling_ernie4_5_moe.py).
     moe_start = getattr(text_config, "moe_layer_start_index", None)
     moe_interval = getattr(text_config, "moe_layer_interval", None)
     if moe_start is not None and moe_interval is not None and int(moe_interval) > 0:
@@ -296,9 +293,8 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     shared_expert_intermediate_size = _moe_attr("shared_expert_intermediate_size")
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
-    # DBRX exposes moe_top_k; Hunyuan-V1-MoE exposes moe_topk (can be a
-    # per-layer list). _max_scalar normalizes lists to the worst case so
-    # int(...) below cannot crash on the canonical attribute_map path.
+    # DBRX moe_top_k; Hunyuan-V1-MoE moe_topk (may be a per-layer list).
+    # _max_scalar normalizes lists to the worst case so int(...) can't crash.
     num_experts_per_tok = (
         _max_scalar(_moe_attr("num_experts_per_tok"))
         or _max_scalar(_moe_attr("top_k_experts"))
@@ -312,9 +308,8 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         dense_layer_indices = _compute_dense_layer_indices(text_config, num_layers)
     num_dense_layers = len(dense_layer_indices)
 
-    # Llama4 dense layers use intermediate_size_mlp; routed/shared experts use
-    # intermediate_size. Llama4TextMoe builds one shared_expert per MoE layer
-    # (modeling_llama4.py).
+    # Llama4 dense layers use intermediate_size_mlp; experts use
+    # intermediate_size. One shared_expert per MoE layer (modeling_llama4.py).
     intermediate_size_mlp_raw = _first_scalar(_moe_attr("intermediate_size_mlp"))
     dense_intermediate_size = (
         int(intermediate_size_mlp_raw) if intermediate_size_mlp_raw is not None else None
@@ -458,10 +453,8 @@ def _per_layer_input_norm_elements(arch: ModelArchConfig) -> int:
 
 
 def _per_layer_input_lora_params(arch: ModelArchConfig, r: int, target_modules) -> int:
-    # Unsloth's get_peft_regex (unsloth_zoo/peft_utils.py) requires module
-    # names to contain a component tag (mlp/attn/...); PLE names lack any tag,
-    # so all-linear does NOT attach LoRA to them. Only count PLE LoRA when the
-    # user explicitly names PLE modules.
+    # get_peft_regex requires a component tag (mlp/attn/...); PLE names lack
+    # one, so all-linear skips them. Count PLE LoRA only when named explicitly.
     pli = arch.hidden_size_per_layer_input
     if pli <= 0:
         return 0
@@ -541,18 +534,16 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
     if alias_parts[0] == "layers":
         return skip_parts == alias_parts
     if len(skip_parts) <= len(alias_parts):
-        # BNB quantizer suffix-matches short skip entries like ["q_proj"] /
-        # ["lm_head"] against full paths, so a skip shorter than the alias is
-        # a tail match.
+        # BNB suffix-matches short skip entries (["q_proj"], ["lm_head"]) so a
+        # skip shorter than the alias is a tail match.
         return alias_parts[-len(skip_parts) :] == skip_parts
     if skip_parts[-len(alias_parts) :] != alias_parts:
         return False
     prefix_parts = skip_parts[: len(skip_parts) - len(alias_parts)]
     if not prefix_parts:
         return True
-    # Bound the prefix to known text-tower roots so VLM skip names like
-    # vision_tower.model.layers.<i>.self_attn.q_proj don't shadow the text
-    # alias model.layers.<i>.self_attn.q_proj.
+    # Bound the prefix to text-tower roots so VLM skips like
+    # vision_tower.model.layers... don't shadow the text alias.
     return ".".join(prefix_parts) in _SKIP_MODULE_TEXT_PREFIXES
 
 
@@ -585,9 +576,8 @@ def _build_text_module_elements(arch: ModelArchConfig) -> tuple[Dict[str, int], 
         mlp_dims = {name: dim for name, dim in dims.items() if name in MLP_TARGET_MODULES}
 
         if is_mla:
-            # _text_linear_dims uses (hd, hd) for q/o; MLA splits into
-            # q_a/q_b/kv_a/kv_b, so emit a single self_attn aggregate at the
-            # authoritative MLA per-layer total.
+            # MLA splits q/o into q_a/q_b/kv_a/kv_b; emit a single self_attn
+            # aggregate at the authoritative MLA per-layer total.
             layer_modules["self_attn"] = _compute_attn_elements(arch)
         else:
             for name, (in_dim, out_dim) in attn_dims.items():
@@ -605,17 +595,13 @@ def _build_text_module_elements(arch: ModelArchConfig) -> tuple[Dict[str, int], 
                 layer_modules["mlp.experts"] = _compute_routed_moe_elements(arch)
                 shared_moe = _compute_shared_moe_elements(arch)
                 if shared_moe:
-                    # Qwen3.5-MoE exposes shared expert as mlp.shared_expert;
-                    # Exaone-MoE/Laguna/GLM-style use mlp.shared_experts.
-                    # Register both names so child-path llm_int8_skip_modules
-                    # entries match the right shared block.
+                    # Qwen3.5-MoE: mlp.shared_expert; Exaone-MoE/Laguna/GLM:
+                    # mlp.shared_experts. Register both so skip_modules match.
                     layer_modules["mlp.shared_expert"] = shared_moe
                 if arch.moe_has_dense_mlp:
-                    # enable_moe_block runs the dense MLP and MoE experts in
-                    # parallel; register both for skip matching. Non-structured
-                    # _text_linear_dims returns mlp_size from _get_mlp_size
-                    # (prefers moe_intermediate_size), so rebuild dense dims
-                    # from arch.intermediate_size directly.
+                    # enable_moe_block runs dense MLP and experts in parallel;
+                    # register both. Non-structured _get_mlp_size prefers
+                    # moe_intermediate_size, so rebuild dense dims directly.
                     if _uses_structured_layer_shapes(arch):
                         dense_dims = mlp_dims
                     else:
@@ -648,10 +634,9 @@ def _build_text_module_elements(arch: ModelArchConfig) -> tuple[Dict[str, int], 
             for name, value in layer_modules.items()
             if name == "self_attn" or name.startswith("self_attn.")
         )
-        # gemma4 enable_moe_block puts routed experts at the sibling
-        # layers.<i>.experts attribute, not under self.mlp; the layer's "mlp"
-        # aggregate must reflect only the dense MLP path so a skip module
-        # `model.layers.0.mlp` doesn't over-skip into the experts block.
+        # gemma4 enable_moe_block puts routed experts at sibling
+        # layers.<i>.experts, not under self.mlp; keep the "mlp" aggregate to
+        # the dense path so a `model.layers.0.mlp` skip doesn't over-skip.
         is_sibling_experts = bool(arch.moe_has_dense_mlp)
         mlp_total = sum(
             value
@@ -681,12 +666,10 @@ def _build_text_module_elements(arch: ModelArchConfig) -> tuple[Dict[str, int], 
             elements[canonical] = value
             _add_module_aliases(aliases, canonical, canonical.removeprefix("text."))
             if name == "mlp.experts" and arch.moe_has_dense_mlp:
-                # gemma4 enable_moe_block exposes routed experts at
-                # layers.<i>.experts (sibling of self.mlp), not under mlp.
+                # gemma4: routed experts at sibling layers.<i>.experts, not mlp.
                 _add_module_aliases(aliases, canonical, f"layers.{layer_idx}.experts")
             elif name == "mlp.shared_expert":
-                # Exaone-MoE / Laguna / GLM-style use the plural
-                # `shared_experts` attribute name; register both spellings.
+                # Exaone-MoE/Laguna/GLM use plural `shared_experts`; add both.
                 _add_module_aliases(
                     aliases,
                     canonical,
@@ -780,9 +763,7 @@ def _compute_shared_moe_elements(arch: ModelArchConfig) -> int:
     hd = arch.hidden_size
     shared_size = _shared_expert_size(arch)
     total = hd * shared_size * 3 * arch.n_shared_experts
-    # Only Qwen2-MoE / Qwen3.5-MoE define a shared_expert_gate Linear
-    # (hidden_size->1); other families (Exaone-MoE, HY-V3, GLM4-MoE-Lite,
-    # Laguna) have shared_experts without a gate.
+    # Only Qwen2/Qwen3.5-MoE add a shared_expert_gate Linear (hidden_size->1);
     # shared_expert_intermediate_size is the Qwen-style discriminator.
     if arch.shared_expert_intermediate_size:
         total += arch.n_shared_experts * hd
@@ -1078,17 +1059,16 @@ def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
     is_moe_layer = n_experts > 1 and not _is_dense_mlp_layer(arch, layer_idx)
     if _uses_structured_layer_shapes(arch):
         q_size, kv_size, _has_k, _has_v = _layer_attention_dims(arch, layer_idx)
-        # KV-shared layers (Gemma4/Gemma3n) drop k_proj/v_proj WEIGHTS but the
-        # donor layer's K/V tensors stay alive across the shared range, so
-        # activation memory still pays kv_size; only the weight path uses
-        # has_k/has_v.
+        # KV-shared layers (Gemma4/Gemma3n) drop k/v WEIGHTS but the donor's
+        # K/V tensors stay alive, so activations still pay kv_size; only the
+        # weight path uses has_k/has_v.
         layer_type = _layer_types(arch)[layer_idx]
         use_alt_attention = arch.attention_k_eq_v and layer_type != "sliding_attention"
         kv_count = 1 if use_alt_attention else 2
         qkv_size = q_size + kv_size * kv_count
         if is_moe_layer:
-            # Each token routes through `num_experts_per_tok` experts; their
-            # gate/up/down intermediates are all live during MLP forward.
+            # Each token routes through num_experts_per_tok experts; all their
+            # gate/up/down intermediates are live during MLP forward.
             mlp_size = _get_mlp_size(arch) * arch.num_experts_per_tok
             if arch.n_shared_experts:
                 mlp_size += _shared_expert_size(arch) * arch.n_shared_experts
@@ -1116,9 +1096,8 @@ def _per_layer_activation_bytes(
     activation_qkv = seq_len * batch_size * qkv_size
     residual_memory = (seq_len * batch_size) * 2
     activation_mlp = seq_len * batch_size * (mlp_size + mlp_size)
-    # per_layer_input_gate (hd-sized) and per_layer_projection (pli-sized)
-    # outputs materialize once per decoder layer when
-    # hidden_size_per_layer_input is set; see gemma4/modular_gemma4.py:1141-1145.
+    # PLE gate (hd) + projection (pli) outputs materialize once per decoder
+    # layer when hidden_size_per_layer_input is set (gemma4 modular:1141-1145).
     pli = arch.hidden_size_per_layer_input
     activation_ple = seq_len * batch_size * (arch.hidden_size + pli) if pli > 0 else 0
     return int((activation_qkv + residual_memory + activation_mlp + activation_ple) * 2 * 1.25)

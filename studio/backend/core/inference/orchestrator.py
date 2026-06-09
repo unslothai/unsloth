@@ -59,16 +59,15 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        self._cancel_event: Any = None  # mp.Event — set to cancel generation instantly
+        self._cancel_event: Any = None  # mp.Event — set to cancel generation
         self._lock = threading.Lock()
-        self._gen_lock = threading.Lock()  # Serializes generation — one request at a time
+        self._gen_lock = threading.Lock()  # Serializes generation
 
-        # Dispatcher state — for compare mode (adapter-controlled requests).
-        # These bypass _gen_lock: they send commands directly and read from
-        # per-request mailboxes. A dispatcher thread routes resp_queue events
-        # by request_id.
+        # Dispatcher state for compare mode (adapter-controlled requests):
+        # bypass _gen_lock, send commands directly, read from per-request
+        # mailboxes routed by a dispatcher thread on request_id.
         self._mailboxes: dict[str, queue.Queue] = {}
-        self._mailbox_lock = threading.Lock()  # Protects _mailboxes dict
+        self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
         self._dispatcher_stop = threading.Event()
 
@@ -84,13 +83,11 @@ class InferenceOrchestrator:
         self._top_hub_cache: Optional[list[str]] = None
         self._top_models_ready = threading.Event()
 
-        # Version tracking for subprocess reuse
         self._current_transformers_major: Optional[str] = None  # "4" or "5"
 
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        # Background fetch of top models from HF
         threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
 
     # ------------------------------------------------------------------
@@ -99,13 +96,13 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        # Wait up to 5s for background HF fetch to finish
+        # Wait up to 5s for background HF fetch
         self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Curated static defaults first (editorial picks), then HF
-        # download-ranked models to backfill. Send extras so the frontend
-        # still has 4 per category after removing downloaded ones.
+        # Curated static defaults first, then HF download-ranked to backfill.
+        # Send extras so the frontend keeps 4 per category after removing
+        # downloaded ones.
         result: list[str] = []
         seen: set[str] = set()
         for m in self._static_models + top_gguf + top_hub:
@@ -130,8 +127,7 @@ class InferenceOrchestrator:
             )
             if resp.status_code == 200:
                 models = resp.json()
-                # Top 40 GGUFs - frontend pages through them via infinite
-                # scroll, so send a deep pool.
+                # Top 40 GGUFs (deep pool for frontend infinite scroll)
                 gguf_ids = [m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")][
                     :40
                 ]
@@ -189,14 +185,14 @@ class InferenceOrchestrator:
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
         """Gracefully shut down the inference subprocess."""
-        self._stop_dispatcher()  # Stop dispatcher before killing subprocess
+        self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
             return
 
         # 1. Cancel any ongoing generation first (instant via mp.Event)
         self._cancel_generation()
-        time.sleep(0.5)  # Brief wait for generation to stop
+        time.sleep(0.5)
 
         # 2. Drain stale responses
         self._drain_queue()
@@ -416,8 +412,8 @@ class InferenceOrchestrator:
                     mbox.put(resp)
                     continue
 
-            # No matching mailbox — maybe for a _gen_lock reader or orphaned.
-            # Can't un-get from mp.Queue, so just log a warning.
+            # No matching mailbox (a _gen_lock reader or orphaned). Can't
+            # un-get from mp.Queue, so just log.
             if rtype not in ("status",):
                 logger.debug(
                     "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
@@ -446,13 +442,9 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
-        Uses a per-request mailbox for tokens, so two compare-mode requests
-        can be queued in the subprocess at once, avoiding the
-        inter-generation round-trip overhead.
-
-        The subprocess runs commands sequentially from its cmd_queue, so
-        generation stays serialized at the GPU level — this only avoids
-        orchestrator-level lock contention.
+        Uses a per-request mailbox for tokens so two compare-mode requests can
+        be queued at once. The subprocess still runs commands sequentially, so
+        GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
             yield "Error: Inference subprocess is not running"
@@ -528,7 +520,6 @@ class InferenceOrchestrator:
                     # Cancel from route (e.g. SSE connection closed)
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_generation()
-                        # Drain remaining events for this request
                         self._drain_mailbox(mailbox, timeout = 5.0)
                         return
                     yield resp.get("text", "")
@@ -611,9 +602,8 @@ class InferenceOrchestrator:
     ) -> bool:
         """Load a model for inference.
 
-        Always spawns a fresh subprocess per load for a clean interpreter —
-        no stale unsloth patches, torch.compile caches, or
-        inspect.getsource() failures from a previous model.
+        Always spawns a fresh subprocess per load for a clean interpreter (no
+        stale unsloth patches, torch.compile caches, or getsource failures).
         """
         from utils.transformers_version import needs_transformers_5
 
@@ -643,15 +633,13 @@ class InferenceOrchestrator:
             sub_config["gpu_selection"] = gpu_selection
 
             # Always kill the existing subprocess and spawn fresh: reusing one
-            # after unsloth patches torch internals causes
-            # inspect.getsource() failures on the next load.
+            # after unsloth patches torch internals breaks getsource on reload.
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
                 time.sleep(0.3)
                 self._shutdown_subprocess()
 
             elif self._proc is not None:
-                # Dead subprocess — clean up
                 self._shutdown_subprocess(timeout = 2)
 
             disable_xet = sub_config.get("disable_xet", False) or (
@@ -673,7 +661,7 @@ class InferenceOrchestrator:
                 try:
                     resp = self._wait_response("loaded")
                 except DownloadStallError:
-                    # First stall with Xet enabled -> retry with Xet disabled
+                    # First stall with Xet on -> retry with Xet disabled
                     if attempt == 0 and not disable_xet:
                         logger.warning(
                             "Download stalled for '%s' -- retrying with HF_HUB_DISABLE_XET=1",
@@ -682,14 +670,13 @@ class InferenceOrchestrator:
                         self._shutdown_subprocess(timeout = 5)
                         disable_xet = True
                         continue
-                    # Second stall (or xet already disabled) -> give up
+                    # Second stall (or xet already off) -> give up
                     self._shutdown_subprocess(timeout = 5)
                     raise RuntimeError(
                         f"Download stalled for '{model_name}' even with "
                         f"HF_HUB_DISABLE_XET=1 -- check your network connection"
                     )
 
-                # Got a response — check success
                 if resp.get("success"):
                     self._current_transformers_major = needed_major
                     model_info = resp.get("model_info", {})
@@ -703,8 +690,8 @@ class InferenceOrchestrator:
                         "audio_type": model_info.get("audio_type"),
                         "has_audio_input": model_info.get("has_audio_input", False),
                     }
-                    # Mirror chat_template_info so routes can classify
-                    # capabilities without re-entering the subprocess.
+                    # Mirror chat_template_info so routes can classify caps
+                    # without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
                     if isinstance(_tpl_info, dict):
                         self.models[self.active_model_name]["chat_template_info"] = _tpl_info
@@ -789,14 +776,12 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
-        Optional ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
-        ``preserve_thinking`` kwargs are forwarded to the worker so
-        ``tokenizer.apply_chat_template`` can render tool schemas and
-        reasoning controls when the template supports them.
+        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
+        ``preserve_thinking`` are forwarded so the template can render tool
+        schemas and reasoning controls.
 
         ``stats_holder``: caller-owned dict; on gen_done its "stats" key gets
-        the worker's usage/timings. Request-scoped so concurrent streams cannot
-        read each other's stats.
+        the worker's usage/timings. Request-scoped to avoid cross-stream reads.
         """
         yield from self._generate_inner(
             messages = messages,
@@ -840,12 +825,11 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         **_unused,
     ):
-        """Run the safetensors agentic tool loop in this (parent) process,
-        calling the worker for each generation turn.
+        """Run the safetensors agentic tool loop in the parent process,
+        calling the worker for each turn.
 
         Yields the same event dicts as the GGUF tool loop so the route layer
-        can stream both backends through one helper. See
-        ``safetensors_agentic.run_safetensors_tool_loop`` for the protocol.
+        can stream both backends through one helper.
         """
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
@@ -853,8 +837,7 @@ class InferenceOrchestrator:
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
 
         def _single_turn(conv: list):
-            # ``conv`` already carries any system message: the loop appends
-            # to a list seeded with system+user above.
+            # ``conv`` already carries any system message.
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -870,7 +853,7 @@ class InferenceOrchestrator:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                # last turn wins, same as the GGUF tool loop's metadata
+                # last turn wins, like the GGUF tool loop
                 stats_holder = stats_holder,
             )
             if use_adapter is not None:
@@ -949,14 +932,11 @@ class InferenceOrchestrator:
             yield "Error: No active model"
             return
 
-        # If the dispatcher is running (from a previous compare-mode request),
-        # wait for dispatched requests to finish then stop it, so we can read
-        # from resp_queue directly.
+        # Drain any prior compare-mode dispatcher so we can read resp_queue.
         self._wait_dispatcher_idle()
 
-        # Serialize generation — single GPU, one generation at a time. Without
-        # this lock, two concurrent readers on the same resp_queue can consume
-        # and drop each other's token events.
+        # Serialize generation: two concurrent readers on resp_queue would
+        # consume and drop each other's token events.
         with self._gen_lock:
             yield from self._generate_locked(
                 messages = messages,
@@ -1020,8 +1000,7 @@ class InferenceOrchestrator:
 
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
-        # Only forward template kwargs the caller set, so older workers that
-        # ignore unknown keys still work.
+        # Only forward template kwargs the caller set, for older worker compat.
         if tools is not None:
             cmd["tools"] = tools
         if enable_thinking is not None:
@@ -1037,8 +1016,7 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Yield tokens from response queue — we are the only reader since
-        # _gen_lock is held.
+        # We are the only resp_queue reader (under _gen_lock).
         while True:
             resp = self._read_resp(timeout = 30.0)
 
@@ -1065,9 +1043,8 @@ class InferenceOrchestrator:
                 # Cancel from route (e.g. SSE connection closed)
                 if cancel_event is not None and cancel_event.is_set():
                     self._cancel_generation()
-                    # Wait for the subprocess to ack cancellation
-                    # (gen_done/gen_error) so stale events don't leak into
-                    # the next generation request.
+                    # Wait for the cancel ack so stale events don't leak into
+                    # the next request.
                     self._drain_until_gen_done(timeout = 5.0)
                     return
                 yield resp.get("text", "")
@@ -1301,9 +1278,7 @@ class InferenceOrchestrator:
         img,
         max_size: int = 800,
     ):
-        """Resize image preserving aspect ratio.
-        No ML imports — runs locally in the parent process.
-        """
+        """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
         if img.size[0] > max_size or img.size[1] > max_size:
@@ -1340,8 +1315,7 @@ class InferenceOrchestrator:
         return False
 
     def _is_gpt_oss_model(self, model_name: str = None) -> bool:
-        """Parent-side gpt-oss detection so the safetensors route can run the
-        same guard without an IPC round-trip to the subprocess."""
+        """Parent-side gpt-oss detection so the route avoids an IPC round-trip."""
         from utils.datasets import is_gpt_oss_model_name
         return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 

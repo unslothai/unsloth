@@ -370,9 +370,8 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
 
     args = run_mock.call_args[0][0]
     assert "--no-deps" in args
-    # einops is declared by fla-core; packaging and triton are added
-    # because fla/utils.py imports them at load but neither is in
-    # fla-core's METADATA (an upstream FLA gap).
+    # packaging and triton are added because fla/utils.py imports them at load
+    # but neither is in fla-core's METADATA (an upstream FLA gap).
     assert "einops" in args
     assert "packaging" in args
     assert "triton" in args
@@ -491,14 +490,10 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
 def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     """Repair path issues TWO pip calls:
 
-    Call 1 (repair): `--force-reinstall --no-deps apache-tvm-ffi==0.1.9`
-      — downgrades only the broken package. `--no-deps` is REQUIRED so
-      --force-reinstall doesn't cascade through apache-tvm-ffi's dep
-      graph and replace torch / the CUDA stack.
-
-    Call 2 (install): plain `apache-tvm-ffi==0.1.9 tilelang==0.1.8`
-      — resolves missing transitive deps (z3-solver, ml-dtypes) without
-      --force-reinstall, so it never replaces correct packages.
+    1 (repair): --force-reinstall --no-deps apache-tvm-ffi -- downgrades only
+      the broken package; --no-deps stops the cascade through its deps to torch.
+    2 (install): plain apache-tvm-ffi + tilelang -- resolves missing transitive
+      deps without --force-reinstall, so it never replaces correct packages.
     """
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
@@ -633,12 +628,9 @@ def test_tilelang_backend_swallows_install_failure(monkeypatch):
     assert any("failed" in s.lower() for s in statuses)
 
 
-# ───────────────────────────────────────────────────────────────────
-# Runtime hook on `is_flash_linear_attention_available` /
-# `is_causal_conv1d_available` — the primary gate in normal operation.
-# The substring tests above cover the
-# UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 fallback.
-# ───────────────────────────────────────────────────────────────────
+# Runtime hook on is_flash_linear_attention_available /
+# is_causal_conv1d_available -- the primary gate in normal operation. The
+# substring tests above cover the SKIP_FAST_PATH_HOOKS=1 fallback.
 
 
 class _FakeQueue(list):
@@ -840,10 +832,9 @@ def test_hook_clears_lru_cache_before_first_check(monkeypatch):
 
 
 def test_hook_rewrites_previously_imported_module_bindings(monkeypatch):
-    """Modeling files bind `is_flash_linear_attention_available` locally
-    via `from ... import is_X`. Reassigning the attribute on
-    transformers.utils.import_utils alone misses those local bindings;
-    the hook installer sweeps sys.modules and rebinds them.
+    """Modeling files bind is_flash_linear_attention_available locally via
+    `from ... import is_X`. Reassigning the attribute on import_utils alone
+    misses those; the hook installer sweeps sys.modules and rebinds them.
     """
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = True)
@@ -905,8 +896,7 @@ def test_substring_fallback_unchanged_when_hook_skipped(monkeypatch):
     assert install_mock.call_count == 1
 
 
-# ───────────────────────────────────────────────────────────────────
-# Regression tests for the 10-reviewer findings:
+# Regression tests for the reviewer findings:
 #   1. tilelang Qwen-guard on hook path (non-Qwen FLA models)
 #   2. tilelang repair must not replace torch / CUDA stack
 #   3. hook must trust installer's bool, not transformers metadata
@@ -915,7 +905,6 @@ def test_substring_fallback_unchanged_when_hook_skipped(monkeypatch):
 #   6. tilelang skipped when FLA was skipped / failed
 #   7. tilelang repair runs when FLA is already True
 #   8. older FLA detected as stale and reinstalled
-# ───────────────────────────────────────────────────────────────────
 
 
 def test_hook_does_not_install_tilelang_for_model_outside_allowlist(monkeypatch):
@@ -1006,18 +995,9 @@ def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
 
 
 def test_hook_trusts_installer_bool_not_metadata(monkeypatch):
-    """Finding #3: if pip exits 0 but deep imports fail, the installer
-    returns False; the hook must propagate False even if the underlying
-    `original()` gate (metadata-only) returns True after pip succeeds.
-
-    Mirrors the real bug:
-      1. Pre-install: gate=False (FLA absent) → wrapper triggers install.
-      2. Installer's `_flash_linear_attention_importable` post-probe fails,
-         so it returns False. (pip exited 0 but `import fla.modules` raised
-         due to a missing transitive dep.)
-      3. Post-install: gate would return True (metadata sees fla-core) — but
-         the wrapper must IGNORE that and use the installer's False so
-         transformers takes the torch fallback.
+    """Finding #3: if pip exits 0 but deep imports fail, the installer returns
+    False; the hook must propagate that False even if the metadata-only gate
+    returns True after pip succeeds, so transformers takes the torch fallback.
     """
     # Gate flips True after install (simulating "metadata sees fla").
     fla_gate = _make_fake_gate(initial_return = False)
@@ -1158,14 +1138,10 @@ def test_fla_installer_force_reinstalls_when_older_version_present(monkeypatch):
 
 
 def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
-    """Finding #4: SSM modeling files use `lazy_load_kernel("causal-conv1d")`
-    and never call `is_causal_conv1d_available()`, so the hook won't fire
-    for them. The orchestrator must always run the eager substring
-    installer regardless of hook mode.
-
-    Reads the worker source rather than running the full orchestrator
-    (which needs a configured training config), asserting the eager
-    install is OUTSIDE the if/else hook branch.
+    """Finding #4: SSM modeling files use lazy_load_kernel and never call
+    is_causal_conv1d_available(), so the hook won't fire; the orchestrator must
+    always run the eager installer regardless of hook mode. Reads the worker
+    source and asserts the eager install is OUTSIDE the if/else hook branch.
     """
     import inspect
 
@@ -1184,13 +1160,10 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     )
 
 
-# ───────────────────────────────────────────────────────────────────
-# HIP / ROCm regression coverage (h34v3nzc0dex Strix Halo report).
+# HIP / ROCm regression coverage (Strix Halo report).
 # tilelang 0.1.8 has no HIP GEMM backend; FLA's TileLang dispatch crashes
-# mid-backward on AMD with "Unsupported target for gemm: hip". Fix: skip
-# install on HIP-built torch AND setdefault FLA_TILELANG=0 so an
-# already-installed tilelang isn't used either.
-# ───────────────────────────────────────────────────────────────────
+# mid-backward on AMD ("Unsupported target for gemm: hip"). Fix: skip install on
+# HIP torch AND setdefault FLA_TILELANG=0 so an existing tilelang isn't used.
 
 
 def test_tilelang_platform_unsupported_on_hip_torch(monkeypatch):
@@ -1420,16 +1393,12 @@ def test_model_wants_tilelang_normalizes_separators(monkeypatch):
         assert worker._model_wants_tilelang(variant) is True, variant
 
 
-# ────────────────────────────────────────────────────────────────────
-# HIP source-build gcc-install-dir coverage (h34v3nzc0dex Strix Halo).
-# Ubuntu 24.04 ships gcc-14's runtime dir without /usr/include/c++/14, so
-# ROCm clang-20 picks it and fails with 'cstdlib' file not found when
-# building causal-conv1d (or any HIP source fallback).
-# _hipcc_gcc_install_dir() finds a gcc dir with both halves; the
-# _install_package_wheel_first HIP branch passes it to clang via
-# HIPCC_COMPILE_FLAGS_APPEND. Parallel to bbf004c's setup.sh fix for the
-# llama.cpp HIP build (PR #5301).
-# ────────────────────────────────────────────────────────────────────
+# HIP source-build gcc-install-dir coverage (Strix Halo).
+# Ubuntu 24.04 ships gcc-14's runtime dir without /usr/include/c++/14, so ROCm
+# clang-20 picks it and fails ('cstdlib' not found) building causal-conv1d.
+# _hipcc_gcc_install_dir() finds a gcc dir with both halves; the HIP branch of
+# _install_package_wheel_first passes it via HIPCC_COMPILE_FLAGS_APPEND.
+# Parallels bbf004c's setup.sh fix for the llama.cpp HIP build (PR #5301).
 
 
 def _isdir_for_layout(*existing: str):

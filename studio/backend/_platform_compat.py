@@ -5,16 +5,15 @@
 Compatibility shim for Anaconda/conda-forge Python builds.
 
 Anaconda puts distributor metadata between pipes in sys.version, e.g.
-'3.12.4 | packaged by Anaconda, Inc. | (main, ...) [MSC ...]'. The hardcoded
-regex in platform._sys_version() can't parse this and raises ValueError;
-CPython closed it as "not planned" (cpython#102396).
+'3.12.4 | packaged by Anaconda, Inc. | (main, ...) [MSC ...]'. The regex in
+platform._sys_version() can't parse this and raises ValueError (cpython#102396,
+closed as "not planned").
 
 We seed platform._sys_version_cache so the stdlib parser never sees the bad
 string, fixing the import chain:
     structlog -> rich.pretty -> attrs._compat -> platform.python_implementation()
 
-Import before any library that may trigger that chain. Idempotent (no-op if the
-cache is already seeded or there are no pipes).
+Import before any library that may trigger that chain. Idempotent.
 """
 
 import platform
@@ -23,14 +22,13 @@ import sys
 
 
 def _seed_sys_version_cache() -> None:
-    """One-shot cache prime: parse a cleaned sys.version and seed the cache."""
+    """Parse a cleaned sys.version and seed the cache once."""
     raw = sys.version
 
     # Strip paired |...| segments (Anaconda, conda-forge metadata)
     cleaned = re.sub(r"\s*\|[^|]*\|\s*", " ", raw).strip()
 
-    # Format B: "ver (build) | label | (build_dup) \n[compiler]" leaves two
-    # consecutive (...) groups after pipe-strip; drop the second.
+    # Pipe-strip can leave two consecutive (...) groups; drop the second.
     cleaned = re.sub(r"(\([^)]*\))\s+\([^)]*\)", r"\1", cleaned)
 
     if "|" in cleaned:
@@ -43,7 +41,6 @@ def _seed_sys_version_cache() -> None:
     if cleaned == raw:
         return  # Nothing to fix
 
-    # Parse the cleaned string through the real stdlib parser
     try:
         result = platform._sys_version(cleaned)
     except ValueError:

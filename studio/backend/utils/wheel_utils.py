@@ -24,16 +24,12 @@ FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/rele
 
 @functools.lru_cache(maxsize = 1)
 def has_blackwell_gpu() -> bool:
-    """Return True if any visible NVIDIA GPU has compute capability >= 10.0
-    (Blackwell: sm_100, sm_120, sm_121, ...).
+    """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
 
-    Dao-AILab publishes no prebuilt flash-attention wheels for these archs,
-    and older-arch wheels fail to load on Blackwell, so callers use this gate
-    to skip the flash-attn install/upgrade path.
-
-    Cached for the process lifetime since GPU hardware doesn't change. Tests
-    that mock subprocess/nvidia-smi must call
-    ``has_blackwell_gpu.cache_clear()`` before each invocation.
+    Dao-AILab ships no flash-attention wheels for these archs and older-arch wheels
+    fail to load, so callers use this to skip the flash-attn install path. Cached
+    for the process lifetime; tests mocking nvidia-smi must call
+    ``has_blackwell_gpu.cache_clear()`` first.
     """
     exe = shutil.which("nvidia-smi")
     if not exe:

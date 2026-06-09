@@ -156,15 +156,7 @@ async def get_current_subject_allow_password_change(
 async def _get_current_subject(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
-    """
-    FastAPI dependency: validate the JWT and return the subject.
-
-    Use as a dependency on protected routes, e.g.:
-
-        @router.get("/secure")
-        async def secure_endpoint(current_subject: str = Depends(get_current_subject)):
-            ...
-    """
+    """FastAPI dependency: validate the JWT and return the subject. Use on protected routes."""
     token = credentials.credentials
 
     # --- API key path (sk-unsloth-...) ---

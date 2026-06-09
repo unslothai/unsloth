@@ -26,30 +26,29 @@ _bootstrap_password: Optional[str] = None
 def generate_bootstrap_password() -> str:
     """Generate a 4-word diceware passphrase and persist it to disk.
 
-    Written to ``_BOOTSTRAP_PW_PATH`` so it survives restarts (the DB only
-    stores the *hash*). Later calls / restarts return the persisted value.
+    Persisted (the DB stores only the hash) so it survives restarts; later
+    calls return the persisted value.
     """
     global _bootstrap_password
 
-    # 1. Already cached in this process?
+    # Cached in this process?
     if _bootstrap_password is not None:
         return _bootstrap_password
 
-    # 2. Already persisted from a previous run?
+    # Persisted from a previous run?
     if _BOOTSTRAP_PW_PATH.is_file():
         _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
         if _bootstrap_password:
             return _bootstrap_password
 
-    # 3. First-ever startup — generate a fresh passphrase.
+    # First startup: generate a fresh passphrase.
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
         options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
     )
 
-    # Persist so the *same* passphrase is reused if the server restarts
-    # before the user changes the password.
+    # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
     _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
     try:
@@ -87,17 +86,10 @@ def clear_bootstrap_password() -> None:
 def _hash_token(token: str) -> str:
     """SHA-256 hash helper for refresh token storage.
 
-    Plain SHA-256 is intentional: refresh tokens are high-entropy random
-    strings from ``secrets.token_urlsafe(48)`` (384 bits), so a slow KDF
-    (Argon2 / bcrypt / PBKDF2) adds zero security (2^384 is unbruteforceable
-    regardless of hash speed) while costing tens of ms per refresh. See the
-    OWASP Password Storage Cheat Sheet on hashing high-entropy inputs.
-
-    API keys use the separate ``_pbkdf2_api_key`` helper (PBKDF2-HMAC-SHA256
-    with a persistent server-side salt) — not for crypto reasons (128-bit
-    random tokens don't need slow hashing) but because CodeQL's
-    ``py/weak-sensitive-data-hashing`` query mislabels them as passwords and
-    demands a KDF.
+    Plain SHA-256 is intentional: refresh tokens are 384-bit random strings, so
+    a slow KDF adds no security while costing per-refresh latency. API keys use
+    the separate ``_pbkdf2_api_key`` helper, only to satisfy CodeQL's
+    ``py/weak-sensitive-data-hashing`` query, not for crypto reasons.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -182,9 +174,8 @@ _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     """Return the persistent API-key PBKDF2 salt, generating it once if missing.
 
-    Stored as a hex-encoded 32-byte random value in ``app_secrets`` under key
-    ``"api_key_pbkdf2_salt"``. Regenerated only when the row is missing (fresh
-    install, or operator deleted it and accepts invalidating existing keys).
+    Hex-encoded 32-byte random value in ``app_secrets``. Regenerated only when
+    the row is missing (fresh install, or operator deleted it).
     """
     global _api_key_pbkdf2_salt_cache
     if _api_key_pbkdf2_salt_cache is not None:
@@ -226,18 +217,10 @@ _DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 def _pbkdf2_api_key(raw_key: str) -> str:
     """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt.
 
-    For API-key storage ONLY, not refresh tokens. Matches the PBKDF2 algorithm
-    + iteration count used by the password hasher in ``auth/hashing.py`` so
-    the codebase is consistent on its credential-storage KDF.
-
-    The slow KDF here is *only* a CodeQL appeasement, not a crypto
-    requirement: API keys are random 128-bit tokens (``secrets.token_hex``),
-    so brute force against 2^128 is infeasible regardless of hash speed.
-    CodeQL's ``py/weak-sensitive-data-hashing`` query mislabels them as
-    "password" data and demands a KDF from its allowlist (Argon2 / scrypt /
-    bcrypt / PBKDF2); we use PBKDF2 per its recommendation page. The salt is
-    still loaded from ``app_secrets`` so dumping the ``api_keys`` table alone
-    can't derive hashes for candidate tokens without the salt row.
+    For API-key storage ONLY, not refresh tokens. The slow KDF is only to
+    appease CodeQL's ``py/weak-sensitive-data-hashing`` query, not a crypto
+    requirement (API keys are random 128-bit tokens). The salt lives in
+    ``app_secrets`` so dumping ``api_keys`` alone can't derive hashes.
     """
     salt = _get_or_create_api_key_pbkdf2_salt()
     dk = hashlib.pbkdf2_hmac(
@@ -502,7 +485,7 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
     token_hash = _hash_token(token)
     conn = get_connection()
     try:
-        # Clean up any expired tokens while we're here
+        # Opportunistically clean up expired tokens
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
             (datetime.now(timezone.utc).isoformat(),),

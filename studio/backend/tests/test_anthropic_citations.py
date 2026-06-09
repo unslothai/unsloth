@@ -126,8 +126,7 @@ def _joined(lines: list[str]) -> str:
 
 
 def test_no_citations_stream_unchanged(monkeypatch):
-    """Plain text streams pass through with no inline markers and no
-    document_citations tool_event."""
+    """Plain text passes through with no inline markers or document_citations."""
     lines = _capture(
         monkeypatch,
         [

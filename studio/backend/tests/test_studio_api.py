@@ -65,17 +65,17 @@ import urllib.request
 from pathlib import Path
 
 
-# ── Configuration ────────────────────────────────────────────────────
+# Configuration
 
 DEFAULT_MODEL = "unsloth/Qwen3-1.7B-GGUF"
 DEFAULT_VARIANT = "UD-Q4_K_XL"
 PORT = 18222  # high port unlikely to collide
 HOST = "127.0.0.1"
-STARTUP_TIMEOUT = 120  # seconds to wait for banner
+STARTUP_TIMEOUT = 120  # seconds
 LOG_FILE = Path(__file__).resolve().parent.parent.parent.parent / "temp" / "test_studio_api.log"
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
+# Helpers
 
 
 def _http(
@@ -125,7 +125,7 @@ def _stream_http(
         return exc.code, []
 
 
-# ── Test functions ───────────────────────────────────────────────────
+# Test functions
 
 
 def test_help_output():
@@ -265,19 +265,13 @@ def test_curl_with_tools(base_url: str, api_key: str):
     print(f"  PASS  curl with tools: {len(chunks)} chunks, {len(full)} chars content")
 
 
-# ── Standard OpenAI function-calling pass-through tests ─────────────
+# Standard OpenAI function-calling pass-through tests.
 #
-# Regression coverage for unslothai/unsloth#4999: Studio's
-# /v1/chat/completions used to silently strip standard OpenAI `tools` and
-# `tool_choice` fields, so clients (opencode, Claude Code, Cursor,
-# Continue, ...) never got structured tool_calls back. These tests exercise
-# the client-side pass-through path that forwards those fields to
-# llama-server verbatim.
-#
-# They require a tool-capable GGUF (``supports_tools=True`` — e.g. Qwen3,
-# Qwen2.5-Coder, Llama-3.1-Instruct). The default test model
-# ``unsloth/Qwen3-1.7B-GGUF`` advertises tool support via its chat template
-# metadata.
+# Regression coverage for unslothai/unsloth#4999: /v1/chat/completions used
+# to strip standard OpenAI `tools`/`tool_choice`, so clients never got
+# structured tool_calls back. These exercise the pass-through that forwards
+# those fields to llama-server verbatim. Require a tool-capable GGUF
+# (supports_tools=True); the default unsloth/Qwen3-1.7B-GGUF qualifies.
 
 _WEATHER_TOOL = {
     "type": "function",
@@ -532,7 +526,7 @@ def test_no_key_rejected(base_url: str):
     print(f"  PASS  no API key rejected ({status})")
 
 
-# ── Anthropic SSE helper ─────────────────────────────────────────────
+# Anthropic SSE helper
 
 
 def _stream_anthropic_http(
@@ -580,7 +574,7 @@ def _collect_anthropic_text(events: list[tuple[str, dict]]) -> str:
     return "".join(parts)
 
 
-# ── Anthropic /v1/messages test functions ────────────────────────────
+# Anthropic /v1/messages test functions
 
 
 def test_anthropic_basic(base_url: str, api_key: str):
@@ -763,7 +757,7 @@ def test_anthropic_tool_choice_any(base_url: str, api_key: str):
     )
 
 
-# ── Server lifecycle ─────────────────────────────────────────────────
+# Server lifecycle
 
 
 def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, str]:
@@ -837,7 +831,7 @@ def _kill_server(proc: subprocess.Popen):
         proc.wait(timeout = 5)
 
 
-# ── Main ─────────────────────────────────────────────────────────────
+# Main
 
 
 def main():
@@ -870,11 +864,11 @@ def main():
             failed += 1
             print(f"  ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
 
-    # ── 1. --help (no server needed) ────────────────────────────
+    # 1. --help (no server needed)
     print("\n[1/16] Testing --help output")
     run_test(test_help_output)
 
-    # ── 2-16. Start server and run API tests ─────────────────────────
+    # 2-16. Start server and run API tests
     print(f"\nStarting server: {args.model} (variant={args.gguf_variant}) on port {PORT}...")
     proc = None
     try:
@@ -929,14 +923,14 @@ def main():
 
     except RuntimeError as exc:
         print(f"\nFATAL: Server failed to start: {exc}")
-        failed += 16  # count remaining tests as failed
+        failed += 16  # remaining tests count as failed
     finally:
         if proc:
             print("\nStopping server...")
             _kill_server(proc)
             print("Server stopped.")
 
-    # ── Summary ──────────────────────────────────────────────────────
+    # Summary
     total = passed + failed
     print(f"\n{'=' * 40}")
     print(f"Results: {passed}/{total} passed, {failed} failed")

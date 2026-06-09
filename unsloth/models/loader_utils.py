@@ -49,7 +49,7 @@ BAD_MAPPINGS = {
 
 
 def _get_torchao_fp8_config(fp8_mode):
-    # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
+    # Lazy import so a broken optional vLLM install doesn't break `import unsloth`.
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
     return _impl(fp8_mode)
 
@@ -126,10 +126,8 @@ def __get_model_name(
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
-        # Mapper didn't find a pre-quantized model.
-        # For vllm >= 0.12.0, we can quantize the model to FP8 on the fly,
-        # so just return the original model name. Older vllm versions will
-        # fall through to offline quantization via _offline_quantize_to_fp8.
+        # No pre-quantized model found. vllm >= 0.12.0 quantizes to FP8 on the
+        # fly (return original name); older vllm falls through to offline quant.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
             if Version(vllm.__version__) >= Version("0.12.0"):
@@ -160,8 +158,7 @@ def __get_model_name(
         return new_model_name
 
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
-        # Support returning original full -bnb-4bit name if specified specifically
-        # since we'll map it to the dynamic version instead
+        # Keep an explicit -bnb-4bit name; otherwise map to the dynamic version.
         if lower_model_name.endswith("-bnb-4bit"):
             return model_name
 
@@ -232,8 +229,7 @@ def get_model_name(
         float_to_int = FLOAT_TO_INT_MAPPER,
         map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
-    # In the rare case, we convert bad model names to other names
-    # For eg too large dynamic quants or MoEs
+    # Remap "bad" names (e.g. oversized dynamic quants or MoEs)
     if (
         new_model_name is not None
         and type(new_model_name) is str
@@ -269,16 +265,10 @@ def get_model_name(
 
 
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
-    """
-    Quantizes the model to fp8 using torchao and saving the quantized model to a
-    temporary location. Return the path to the quantized model.
+    """Quantize the model to fp8 via torchao, save to a temp dir, return its path.
 
-    Note: For vllm >= 0.12.0, we should dynamically quantize the model in vllm instead:
-
-      llm = LLM(
-        ...
-        hf_overrides={"quantization_config_file": "torchao_config.json"},
-      )
+    For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via
+    hf_overrides={"quantization_config_file": "torchao_config.json"}).
     """
     temp_dir = tempfile.gettempdir()
     new_model_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
@@ -322,9 +312,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
-    """
-    Tag a model with a `TorchAOConfig` so downstream callers will know what to do with it.
-    """
+    """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
@@ -384,16 +372,9 @@ def _get_fp8_mode_and_check_settings(
     load_in_8bit: bool = False,
     load_in_16bit: bool = False,
 ) -> str:
-    """
-    Assuming `load_in_fp8` is enabled, raise appropriate errors on incompatible settings
-    and environment. Currently this feature requires:
-
-    1. H100 GPUs or after
-    2. torchao 0.15.0+ (or nightly)
-    3. torch 2.9.0+
-    4. If fbgemm_gpu_genai is installed, require 1.4.1+
-
-    Returns the fp8 mode, one of "row" or "block".
+    """Validate `load_in_fp8` settings/environment and return the fp8 mode
+    ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and
+    fbgemm_gpu_genai 1.4.1+ if installed.
     """
     assert load_in_fp8 is not False
     if load_in_fp8 is True:

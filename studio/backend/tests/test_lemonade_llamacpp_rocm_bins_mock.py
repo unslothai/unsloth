@@ -89,9 +89,7 @@ def _lookup_family(gfx: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # GPU family mapping
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -113,9 +111,7 @@ def test_unknown_gpu_not_in_families():
     assert _lookup_family("gfx999") is None
 
 
-# ---------------------------------------------------------------------------
 # Asset resolution - hits real lemonade GitHub API
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -145,11 +141,9 @@ def test_unknown_gpu_falls_through_to_upstream():
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Simple-policy dispatcher must plan a lemonade ROCm attempt for AMD-only hosts.
-# This is the path setup.sh actually invokes (via --simple-policy), so the
-# lemonade integration is useless if it isn't wired in here.
-# ---------------------------------------------------------------------------
+# This is the path setup.sh invokes (via --simple-policy), so the lemonade
+# integration is useless if it isn't wired in here.
 
 direct_linux_release_plan = getattr(_mod, "direct_linux_release_plan", None)
 direct_upstream_release_plan = getattr(_mod, "direct_upstream_release_plan", None)

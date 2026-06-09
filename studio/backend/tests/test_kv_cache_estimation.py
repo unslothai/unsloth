@@ -19,10 +19,8 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Stub heavy / unavailable deps before importing the module under test.
 # Same pattern as test_native_context_length.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -37,10 +35,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- only stub when the real library isn't installed. Stubbing
-# unconditionally shadows ``HTTPError`` / ``Response`` etc. that
-# ``huggingface_hub.errors`` imports at load time, making the transformers
-# introspection tier silently return None in the test process.
+# httpx -- only stub when the real library is missing. Unconditional stubbing
+# shadows HTTPError/Response that huggingface_hub.errors imports at load time,
+# silently breaking the transformers introspection tier.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -76,9 +73,7 @@ except ImportError:
 
 from core.inference.llama_cpp import LlamaCppBackend
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
@@ -154,9 +149,7 @@ def _backend_from_gguf(
         os.unlink(path)
 
 
-# ---------------------------------------------------------------------------
 # A. GGUF Parser Tests
-# ---------------------------------------------------------------------------
 
 
 class TestGGUFParserNewFields:
@@ -704,9 +697,7 @@ class TestGGUFParserReset:
         assert b._n_layers == 64
 
 
-# ---------------------------------------------------------------------------
 # B. _can_estimate_kv Gate Tests
-# ---------------------------------------------------------------------------
 
 
 class TestCanEstimateKV:
@@ -764,9 +755,7 @@ class TestCanEstimateKV:
         assert not b._can_estimate_kv()
 
 
-# ---------------------------------------------------------------------------
 # C. Path 1: MLA Estimation
-# ---------------------------------------------------------------------------
 
 
 class TestMLAEstimation:
@@ -835,9 +824,7 @@ class TestMLAEstimation:
         assert result_q4 == int(61 * 1000 * 1 * 576 * 0.5625)
 
 
-# ---------------------------------------------------------------------------
 # D. Path 2: Hybrid Mamba Estimation
-# ---------------------------------------------------------------------------
 
 
 class TestHybridMambaEstimation:
@@ -895,9 +882,7 @@ class TestHybridMambaEstimation:
         assert result == expected
 
 
-# ---------------------------------------------------------------------------
 # E. Path 3: Sliding Window Estimation
-# ---------------------------------------------------------------------------
 
 
 class TestSlidingWindowEstimation:
@@ -993,9 +978,7 @@ class TestSlidingWindowEstimation:
         assert b._estimate_kv_cache_bytes(1000, "f16") == expected
 
 
-# ---------------------------------------------------------------------------
 # F. Path 4: Standard GQA Estimation
-# ---------------------------------------------------------------------------
 
 
 class TestStandardGQAEstimation:
@@ -1039,9 +1022,7 @@ class TestStandardGQAEstimation:
         assert gqa_result > legacy_result  # key_length (128) > head_dim (64)
 
 
-# ---------------------------------------------------------------------------
 # G. Path 5: Legacy Fallback Estimation
-# ---------------------------------------------------------------------------
 
 
 class TestLegacyEstimation:
@@ -1085,9 +1066,7 @@ class TestLegacyEstimation:
         assert b._estimate_kv_cache_bytes(n_ctx, "f16") == old_formula
 
 
-# ---------------------------------------------------------------------------
 # H. Path Priority (selection order)
-# ---------------------------------------------------------------------------
 
 
 class TestPathPriority:
@@ -1182,9 +1161,7 @@ class TestPathPriority:
         assert len(set(values)) == 5, f"Expected 5 distinct values, got {values}"
 
 
-# ---------------------------------------------------------------------------
 # I. KV Cache Quantization
-# ---------------------------------------------------------------------------
 
 
 class TestQuantization:
@@ -1219,9 +1196,7 @@ class TestQuantization:
         assert result == expected
 
 
-# ---------------------------------------------------------------------------
 # J. Edge Cases
-# ---------------------------------------------------------------------------
 
 
 class TestEdgeCases:
@@ -1282,10 +1257,8 @@ class TestEdgeCases:
         assert result == expected
 
 
-# ---------------------------------------------------------------------------
 # J2. Server-flag knobs (--swa-full, --kv-unified/--parallel,
 #     --ctx-checkpoints, --kv-offload)
-# ---------------------------------------------------------------------------
 
 
 class TestServerFlags:
@@ -1563,9 +1536,7 @@ class TestServerFlags:
         assert fitted_full < ctx
 
 
-# ---------------------------------------------------------------------------
 # J2.5. --parallel N memory accounting (per-layer-type scaling rule)
-# ---------------------------------------------------------------------------
 
 
 class TestParallelSWAScaling:
@@ -1772,9 +1743,7 @@ class TestParallelSWAScaling:
             ), f"slots={slots}: got {got_mib} MiB, expected {expected_mib} MiB"
 
 
-# ---------------------------------------------------------------------------
 # J3. shared_kv_layers (Gemma 3n / Gemma 4)
-# ---------------------------------------------------------------------------
 
 
 class TestSharedKVLayers:
@@ -1952,9 +1921,7 @@ class TestSharedKVLayers:
         assert b._shared_kv_layers is None
 
 
-# ---------------------------------------------------------------------------
 # K. Lifecycle Tests
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycle:

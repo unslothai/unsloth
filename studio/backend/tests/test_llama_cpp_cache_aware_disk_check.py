@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the cache-aware disk-space preflight in
-``LlamaCppBackend.load_model``.
+"""Tests for the cache-aware disk-space preflight in ``LlamaCppBackend.load_model``.
 
-The preflight used to compare the repo's total GGUF download size against
-free disk without accounting for bytes already in the Hugging Face cache.
-That made re-loading a cached large model (e.g. ``unsloth/MiniMax-M2.7-GGUF``
-at 131 GB) fail cold whenever free disk was below the full weight footprint,
-even though nothing needed downloading.
-
-These tests exercise the preflight arithmetic in isolation by driving
-``get_paths_info`` and ``try_to_load_from_cache`` through ``mock.patch``.
-No network, GPU, or subprocess use. Cross-platform: Linux, macOS, Windows, WSL.
+The preflight used to compare the repo's total GGUF size against free disk
+without counting bytes already in the HF cache, so re-loading a cached large
+model failed cold even though nothing needed downloading. These tests exercise
+the preflight arithmetic in isolation (no network/GPU/subprocess).
 """
 
 from __future__ import annotations
@@ -25,10 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy / unavailable external deps before importing the module under
-# test. Same pattern as test_kv_cache_estimation.py.
-# ---------------------------------------------------------------------------
+# Stub heavy / unavailable deps before importing the module under test.
+# Same pattern as test_kv_cache_estimation.py.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -96,12 +88,11 @@ def _preflight(
     hf_repo = "unsloth/Example-GGUF",
     hf_token = None,
 ):
-    """Run the preflight arithmetic as in llama_cpp.py; return the decision
-    outcome as a dict.
+    """Run the llama_cpp.py preflight arithmetic; return the decision as a dict.
 
     ``repo_files``: list of (filename, remote_bytes).
-    ``cached_files``: dict {filename: on_disk_bytes} for files already cached.
-    ``free_bytes``: value returned by shutil.disk_usage(cache_dir).free.
+    ``cached_files``: {filename: on_disk_bytes} for files already cached.
+    ``free_bytes``: shutil.disk_usage(cache_dir).free.
     """
     import os
     import shutil
@@ -109,8 +100,8 @@ def _preflight(
     path_infos = [_FakePathInfo(name, size) for name, size in repo_files]
 
     with tempfile.TemporaryDirectory() as tmp:
-        # SPARSE files for the cached ones so os.path.exists / os.path.getsize
-        # pass without allocating bytes on disk -- critical for multi-GB models.
+        # Sparse files so exists/getsize pass without allocating bytes on disk
+        # (critical for multi-GB models).
         cache_paths = {}
         for name, sz in cached_files.items():
             p = Path(tmp) / name.replace("/", "_")
@@ -122,8 +113,7 @@ def _preflight(
         def fake_try_to_load_from_cache(repo_id, filename):
             return cache_paths.get(filename)
 
-        # Mirror the real code's variable names and control flow so behavioral
-        # drift is caught immediately.
+        # Mirror the real code's names and control flow so drift is caught.
         total_bytes = sum((p.size or 0) for p in path_infos)
         already_cached_bytes = 0
         for p in path_infos:

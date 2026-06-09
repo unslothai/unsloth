@@ -73,10 +73,9 @@ _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 # run_training_process() and isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
-# Worker subprocesses inherit the parent env but not its os.add_dll_directory
-# registrations. Replicate main.py's Windows ROCm DLL setup at module load so
-# the first `import torch` finds amdhip64.dll even when HIP_PATH\bin is not on
-# PATH. Handles retained at module scope so they aren't GC'd.
+# Subprocesses don't inherit os.add_dll_directory registrations. Replicate
+# main.py's Windows ROCm DLL setup so the first `import torch` finds
+# amdhip64.dll. Handles retained at module scope so they aren't GC'd.
 _ROCM_DLL_HANDLES: list = []
 if sys.platform == "win32":
 
@@ -91,7 +90,7 @@ if sys.platform == "win32":
         )
 
         def _ver_key(name: str) -> tuple:
-            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            # Numeric tuple key so "10.0" sorts after "7.0".
             parts = []
             for chunk in name.split("."):
                 try:
@@ -143,21 +142,13 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
 
 
 def _hipcc_gcc_install_dir() -> str | None:
-    """Return the highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has
-    BOTH the gcc runtime dir AND ``/usr/include/c++/<N>`` C++ headers, or
-    ``None`` if no match (or non-Linux / non-x86_64).
+    """Highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has BOTH the
+    gcc runtime dir AND ``/usr/include/c++/<N>`` headers, or None.
 
-    Ubuntu 24.04 ships gcc-14 runtime objects but not ``/usr/include/c++/14`` in
-    its default apt set (libstdc++ headers come from ``libstdc++-13-dev``). ROCm
-    clang-20 picks the highest-numbered runtime dir, finds no ``<cstdlib>``, and
-    the HIP source build fails with::
-
-        /opt/rocm-X.Y/lib/llvm/lib/clang/20/include/__clang_hip_runtime_wrapper.h:112:10:
-          fatal error: 'cstdlib' file not found
-
-    Returning a path lets the caller pass ``--gcc-install-dir=<path>`` to clang
-    via ``HIPCC_COMPILE_FLAGS_APPEND``. Mirrors the loop ``bbf004c`` added to
-    ``studio/setup.sh`` for the llama.cpp HIP build (PR #5301).
+    Ubuntu 24.04 ships gcc-14 runtime but not ``/usr/include/c++/14``; ROCm
+    clang-20 picks the highest runtime dir, finds no ``<cstdlib>``, and the HIP
+    build fails. The returned path is passed to clang via
+    ``--gcc-install-dir``. Mirrors bbf004c in studio/setup.sh (PR #5301).
     """
     if not sys.platform.startswith("linux"):
         return None
@@ -307,15 +298,10 @@ def _install_package_wheel_first(
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
-        # On Ubuntu 24.04 + ROCm clang-20, the HIP source build (causal-conv1d,
-        # mamba-ssm / flash-attn source fallbacks) defaults to
-        # /usr/lib/gcc/x86_64-linux-gnu/14/ which has the runtime dir but no
-        # /usr/include/c++/14 headers, and dies at:
-        #   __clang_hip_runtime_wrapper.h:112:10:
-        #     fatal error: 'cstdlib' file not found
-        # Inject --gcc-install-dir for a gcc whose C++ headers exist. Respect any
-        # pre-existing --gcc-install-dir in HIPCC_COMPILE_FLAGS_APPEND; else
-        # append. Mirrors fix bbf004c in studio/setup.sh (llama.cpp HIP, PR #5301).
+        # On Ubuntu 24.04 + ROCm clang-20 the HIP source build dies on a missing
+        # <cstdlib> (gcc-14 runtime dir lacks C++ headers). Inject
+        # --gcc-install-dir for a gcc whose headers exist, respecting any
+        # pre-existing one. Mirrors bbf004c in studio/setup.sh (PR #5301).
         _existing_flags = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
         if "--gcc-install-dir" not in _existing_flags:
             _gcc_dir = _hipcc_gcc_install_dir()
@@ -851,16 +837,16 @@ def _ensure_tilelang_backend(event_queue: Any, model_name: str) -> None:
 
 # ── Fast-path hooks ──
 # Wrap transformers' is_{flash_linear_attention,causal_conv1d}_available so the
-# first call (at modeling import) drives the install. Models that query the gate
-# get the install; those that never query it (Llama, Gemma, dense Qwen) pay nothing.
-# UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the legacy substring path.
+# first call (at modeling import) drives the install. Models that never query
+# the gate (Llama, Gemma, dense Qwen) pay nothing.
+# UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
 
 
 def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj: Any) -> int:
-    """Rebind `attr_name -> new_obj` in every module that already imported `old_obj`.
+    """Rebind `attr_name -> new_obj` in every module that imported `old_obj`.
 
     `from X import Y` creates a local binding that reassigning X.Y won't reach.
-    Uses `__dict__.get` (not `getattr`) to skip lazy `__getattr__` aliases.
+    Uses `__dict__.get` to skip lazy `__getattr__` aliases.
     """
     count = 0
     missing = object()
@@ -1753,10 +1739,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         config: Training config dict with all parameters.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+    os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
-    # Scoped to this subprocess (orchestrator spawns a fresh one).
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
         import threading as _threading
@@ -1801,8 +1786,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     model_name = config["model_name"]
 
     # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
-    # Apple Silicon uses MLXTrainer directly -- skip transformers version
-    # activation, causal-conv1d install, and torch imports.
+    # Apple Silicon uses MLXTrainer directly -- skip torch imports / installs.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -1855,10 +1839,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
-    # NemotronH has transformers config-parsing bugs needing trust_remote_code=True
-    # as a workaround. Other transformers 5.x models (Qwen3.5, Gemma 4, etc.) are
-    # native and do NOT need it — enabling it bypasses the compiler (disabling fused CE).
-    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    # NemotronH needs trust_remote_code=True to work around config-parsing bugs.
+    # Other 5.x models are native and don't need it (it bypasses the compiler,
+    # disabling fused CE). Must NOT match Llama-Nemotron (standard Llama arch).
     _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
     _lowered = model_name.lower()
     if (
@@ -1873,18 +1856,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
-    #
-    # 1) causal-conv1d ALWAYS runs eagerly via the substring path. Some SSM
-    #    modeling files (nemotron_h, falcon_h1, granitemoehybrid) call
-    #    `lazy_load_kernel("causal-conv1d")` directly and never call
-    #    `is_causal_conv1d_available()`, so the runtime hook wouldn't fire.
-    # 2) FLA + tilelang: primary gate is the runtime hook on
-    #    `is_flash_linear_attention_available`. Architectures that query it
-    #    auto-trigger the install; others never pay. `_install_fast_path_hooks`
-    #    also wraps `is_causal_conv1d_available` as defence in depth.
-    # 3) mamba-ssm + flash-attn keep their existing substring / size gates.
-    # 4) `UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1` falls back to the substring
-    #    path for FLA / tilelang.
+    # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM
+    #    modeling files lazy_load it without calling is_causal_conv1d_available.
+    # 2) FLA + tilelang: gated by the runtime hook on
+    #    is_flash_linear_attention_available (hooks also wrap causal-conv1d).
+    # 3) mamba-ssm + flash-attn keep their substring / size gates.
+    # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
     try:
         _ensure_causal_conv1d_fast_path(event_queue, model_name)
         if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
@@ -1915,11 +1892,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1c. Set fork start method so dataset.map() can multiprocess ──
-    # Parent launched us via spawn, but the compiled SFTTrainer checks
-    # get_start_method() and disables num_proc if not "fork". Linux only: fork
-    # is the default and safe here (no CUDA context yet). macOS defaults to spawn
-    # since Python 3.8 (fork unsafe with Metal/MPS, CoreFoundation) -- do NOT
-    # override there. Windows has no fork.
+    # The compiled SFTTrainer disables num_proc if start method isn't "fork".
+    # Linux only and safe here (no CUDA context yet); macOS/Windows excluded.
     if sys.platform == "linux":
         import multiprocessing as _mp
         try:
@@ -1940,17 +1914,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
 
     # ── 1d. Stub torchao on Windows ROCm ──
-    # Shared with the export worker; see core/_torchao_stub.py for the full
-    # rationale (torchao -> torch.distributed._functional_collectives crashes on
-    # Windows ROCm: no RCCL backend). No-op off Windows ROCm. Must run before any
-    # import of transformers / unsloth_zoo.
+    # See core/_torchao_stub.py for the rationale (no RCCL backend on Windows
+    # ROCm). No-op elsewhere. Must run before importing transformers/unsloth_zoo.
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
 
     # ── 1e. Ensure torch.distributed helper attrs are present ──
-    # Single-GPU training never inits the process group, so these helpers are
-    # never called — but transformers/trl import them unconditionally.
+    # Single-GPU never inits the process group, but transformers/trl import
+    # these unconditionally.
     _td_stubs = {
         "is_initialized": lambda: False,
         "is_available": lambda: False,
@@ -1978,32 +1950,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # ── 1f. Windows ROCm runtime patches ──
     # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm ≤ 7.12 Windows),
-    # causing 0xC0000005 (access violation) during training.
-    #
-    # Root cause: JitDecomp autograd decomposition (NOT torch.compile) dispatches
-    # _grouped_mm → _fused_adagrad_ → _grouped_mm HIP → null crash.
-    # TORCHDYNAMO_DISABLE=1 stops the compiler frontend but not JitDecomp, so we
-    # also override the CUDA dispatch key for _grouped_mm with a Python fallback.
-    #
-    # Fixed in torch==2.11.0+rocm7.13.0: the 3-D batch and grouped (with offs)
-    # variants now have working HIP kernels on gfx1200. We gate the override on
-    # HIP < 7.13 so the fixed wheel uses the real GPU kernel.
-    #
-    # Verified: null on torch==2.10.0+rocm7.12.0; fixed on torch==2.11.0+rocm7.13.0.
-    #
-    # Schema: _grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None,
-    #                     Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
-    #   offs: optional group-split offsets (MoE-style variable-size batches)
-    #
-    # torch is already in sys.modules from section 1e. Module-level
-    # _WINDOWS_ROCM_GROUPED_MM_LIB keeps the registration alive past return / GC.
+    # causing 0xC0000005 during training. Root cause: JitDecomp (not
+    # torch.compile) dispatches _grouped_mm → null crash; TORCHDYNAMO_DISABLE
+    # doesn't cover JitDecomp, so we also override the CUDA dispatch key with a
+    # Python fallback. Fixed in torch==2.11.0+rocm7.13.0, so gate on HIP < 7.13.
+    # Schema: _grouped_mm(self, mat2, offs=None, bias=None, out_dtype=None);
+    #   offs: optional group-split offsets (MoE-style variable-size batches).
+    # _WINDOWS_ROCM_GROUPED_MM_LIB keeps the registration alive past return/GC.
     global _WINDOWS_ROCM_GROUPED_MM_LIB
     if sys.platform == "win32":
         _torch_for_rocm = sys.modules.get("torch")
-        # Broad check: torch.version.hip OR "rocm" in torch.__version__. AMD SDK /
-        # Radeon Windows wheels don't always populate torch.version.hip; without
-        # the broad check the BNB version pin, dynamo-disable, and _grouped_mm
-        # fallback below silently skip (matches the torchao stub gate and main.py).
+        # Broad check (torch.version.hip OR "rocm" in __version__): AMD SDK /
+        # Radeon wheels don't always set torch.version.hip, and without it the
+        # BNB pin, dynamo-disable, and _grouped_mm fallback would silently skip.
         _build_version_for_rocm = (
             getattr(_torch_for_rocm, "__version__", "").lower()
             if _torch_for_rocm is not None
@@ -2017,19 +1976,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         )
         if _is_win_rocm_torch:
-            # Disable dynamo (belt-and-suspenders; the JitDecomp patch below is
-            # the real fix, but dynamo off avoids any other compile paths).
+            # Disable dynamo (belt-and-suspenders; the JitDecomp patch is the
+            # real fix, but this avoids other compile paths).
             if "TORCHDYNAMO_DISABLE" not in os.environ:
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # BNB auto-detects the HIP version from torch.version.hip to pick a
-            # DLL (e.g. "7.13" → rocm713.dll). AMD's Windows BNB prerelease wheel
-            # ships only one rocm DLL whose version suffix may not match the torch
-            # HIP version (e.g. torch==2.11.0+rocm7.13.0 ships HIP 7.13, but the
-            # BNB wheel still ships rocm72.dll). Detect the actual DLL name from
-            # the installed package and override auto-detection. "72" is a safe
-            # fallback if detection fails. Callers may override by pre-setting the var.
+            # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
+            # wheel may ship a DLL whose suffix doesn't match. Detect the actual
+            # DLL name and override; "72" is a safe fallback. Callers may
+            # pre-set the var to override.
             if "BNB_ROCM_VERSION" not in os.environ:
                 _bnb_rocm_ver = None
                 try:
@@ -2050,9 +2006,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                 )
                                 if _m:
                                     _all_vers.append(_m.group(1))
-                        # Pick the highest numeric suffix so "713" wins over
-                        # "72" when both are present. Glob order isn't guaranteed,
-                        # so always sort rather than take the first match.
+                        # Highest numeric suffix wins (glob order isn't sorted).
                         if _all_vers:
                             _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
@@ -2066,11 +2020,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _bnb_rocm_ver,
                 )
 
-            # Parse HIP version for the kernel-fix gate below. torch.version.hip
-            # can be "7.13.99004", "7.2.0", etc. AMD SDK / Radeon wheels may leave
-            # it unset and encode the ROCm version in torch.__version__ instead
-            # (e.g. "2.11.0+rocm7.13.0" or "2.9.0+rocmsdk20251116"); fall back to
-            # that string when version.hip is missing.
+            # Parse HIP version for the kernel-fix gate below, falling back to
+            # the rocm version embedded in torch.__version__ when version.hip is
+            # unset (AMD SDK / Radeon wheels).
             def _hip_ver_at_least(major: int, minor: int) -> bool:
                 _hip_str = getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
                 if not _hip_str:
@@ -2081,13 +2033,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             int(_ver_match.group(1)),
                             int(_ver_match.group(2)),
                         ) >= (major, minor)
-                    # AMD SDK / Radeon Windows wheels encode the build as
-                    # "+rocmsdk<date>" (e.g. "2.9.0+rocmsdk20251116") with no
-                    # explicit rocmX.Y. The rocmsdk format postdates the gfx120X
-                    # null-kernel fix (ROCm 7.13), so any such wheel has working
-                    # HIP kernels. Treat as >= 7.13 rather than returning False
-                    # and installing the Python workaround on a wheel that
-                    # doesn't need it.
+                    # "+rocmsdk<date>" wheels postdate the gfx120X null-kernel
+                    # fix (ROCm 7.13), so treat them as >= 7.13 (no workaround).
                     if "rocmsdk" in _build_version_for_rocm:
                         logger.debug(
                             "Windows ROCm: AMD SDK wheel detected (%r); "
@@ -2121,9 +2068,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                     return False
 
-            # _grouped_mm HIP kernel was null on gfx1200 in ROCm ≤ 7.12 (causing
-            # 0xC0000005); fixed in ROCm 7.13 (torch 2.11+). Install the Python
-            # fallback only on affected versions so 7.13+ gets the real GPU kernel.
+            # Install the Python fallback only on affected versions (ROCm ≤ 7.12)
+            # so 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
                     import warnings as _warnings
@@ -2140,9 +2086,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
                         _t = _torch_for_rocm
                         if offs is None:
-                            # No offsets: match the real op — (M, K) x (K, N) ->
-                            # mm, or 3-D batched -> bmm. An unconditional torch.mm
-                            # previously raised "self must be a matrix" on 3-D MoE.
+                            # No offsets: 2-D -> mm, 3-D batched -> bmm
+                            # (unconditional mm broke 3-D MoE).
                             if self.dim() == 3 and mat2.dim() == 3:
                                 result = _t.bmm(self.contiguous(), mat2.contiguous())
                             elif self.dim() == 3 and mat2.dim() == 2:
@@ -2154,8 +2099,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             else:
                                 result = _t.mm(self.contiguous(), mat2.contiguous())
                         else:
-                            # Grouped: offs[i] is the exclusive end-row of group
-                            # i in `self`; mat2 may be 3-D or 2-D.
+                            # Grouped: offs[i] is the exclusive end-row of group i.
                             offs_list = offs.tolist()
                             pieces = []
                             prev = 0
@@ -2216,17 +2160,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
 
     # ── 1g. ROCm OOM guard ──
-    # On RDNA 4 (gfx1200/gfx1201) and other ROCm GPUs, exhausting VRAM can hang
-    # the HIP driver and freeze the whole system instead of raising. So
-    # set_per_process_memory_fraction caps the HIP allocator and PyTorch raises
-    # OutOfMemoryError before the hardware limit, giving the UI a clean error.
-    # ROCm only -- NVIDIA CUDA has a graceful OOM path.
-    # Unified-memory APUs (gfx1150 Strix Point / gfx1151 Strix Halo) share GPU
-    # and system RAM in one pool: 0.90 of 128 GB starves the OS, so use 0.80.
-    # Primary classifier: gcnArchName (stable within a product family,
-    # naming-independent). AMD SDK / Radeon wheels may omit it or use a variant
-    # spelling, so try several attrs then fall back to device-name markers.
-    # Non-fatal: silently skipped if torch is not importable.
+    # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
+    # set_per_process_memory_fraction caps the allocator so PyTorch raises
+    # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
+    # Unified-memory APUs (gfx1150/gfx1151) share GPU+system RAM, so use 0.80
+    # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
+    # Non-fatal: skipped if torch is not importable.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
@@ -2356,9 +2295,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     stop_thread.start()
 
     # ── 4. Execute the training pipeline ──
-    # Order: detect → dataset → model → prepare → train. Dataset processing
-    # (incl. LLM-assisted detection) runs BEFORE model loading so both never
-    # occupy VRAM at once.
+    # Order: detect → dataset → model → prepare → train. Dataset processing runs
+    # BEFORE model loading so both never occupy VRAM at once.
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
@@ -2402,25 +2340,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         else:
             dataset = dataset_result
             eval_dataset = None
-
-        # [DEBUG] Print first sample before model is loaded
-        # dataset is a dict {"dataset": <Dataset>, "detected_format": ..., ...}
-        # or a raw Dataset for audio paths
-        # try:
-        #     ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
-        #     print(
-        #         f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}",
-        #         flush = True,
-        #     )
-        #     print(f"[DEBUG] Columns: {ds.column_names}", flush = True)
-        #     sample = ds[0]
-        #     preview = {k: str(v)[:300] for k, v in sample.items()}
-        #     print(f"[DEBUG] First sample: {preview}\n", flush = True)
-        # except Exception as e:
-        #     print(
-        #         f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}",
-        #         flush = True,
-        #     )
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)

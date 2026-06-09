@@ -5,24 +5,14 @@
 
 Guards two regressions in ``LlamaCppBackend.load_model``:
 
-1. **Auto mode on weights-exceed-VRAM** (``n_ctx == 0``): when weights
-   alone exceed 90% of every GPU subset's free memory, the auto-pick loop
-   used to exit without matching, leaving ``effective_ctx`` at the native
-   context (e.g. 196608 for MiniMax-M2.7). Studio's UI spec wants 4096 so
-   the slider lands on a usable value; the user can still drag higher and
-   trigger ``--fit on`` with a warning.
+1. Auto mode (``n_ctx == 0``) when weights exceed every GPU subset's free
+   memory: auto-pick should fall back to 4096 (a usable slider value) rather
+   than leaving native ctx. User can still drag higher onto ``--fit on``.
+2. Explicit ctx must never be silently shrunk: when KV overflows fittable
+   weights, honor the explicit ctx with ``--fit on`` flexing ``-ngl``.
 
-2. **Explicit ctx silently shrunk when KV overflows**: with fittable
-   weights but a ctx whose KV cache pushes total memory over 90% of VRAM,
-   the old code binary-searched a smaller ctx and emitted ``-c <capped>
-   -ngl -1`` without telling the caller. The UI already showed its "might
-   be slower" warning and expects the explicit ctx honored with ``--fit
-   on`` flexing ``-ngl`` instead.
-
-Avoids GPU probing, subprocess spawning, and GGUF I/O by driving the
-post-metadata decision block directly against a stubbed instance.
-
-No GPU, network, or libraries beyond pytest. Cross-platform.
+Drives the post-metadata decision block against a stubbed instance: no GPU,
+network, subprocess, or GGUF I/O. Cross-platform.
 """
 
 from __future__ import annotations
@@ -34,24 +24,20 @@ from pathlib import Path
 import pytest
 
 # ---------------------------------------------------------------------------
-# Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
+# Stub heavy/unavailable deps before importing the module under test.
 # ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -101,8 +87,7 @@ def _make_backend(
     kv_key_length = 128,
     kv_value_length = 128,
 ):
-    """LlamaCppBackend with GGUF metadata fields set and the decision
-    block's helpers stubbed out."""
+    """LlamaCppBackend with GGUF metadata set and decision helpers stubbed."""
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._context_length = native_ctx
     inst._n_layers = n_layers
@@ -134,8 +119,8 @@ def _drive(
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
-    Mirrors the decision block at llama_cpp.py:1137-1296 to assert the
-    command that would be built, without subprocesses or GPU probes.
+    Mirrors llama_cpp.py:1137-1296 to assert the built command, without
+    subprocesses or GPU probes.
     """
     inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
@@ -152,8 +137,7 @@ def _drive(
     inst._can_estimate_kv = lambda: can_estimate_kv
 
     context_length = inst._context_length
-    # Use the production helper, not a local reimplementation: a local copy
-    # would test the test's own logic, not production's, and hide drift.
+    # Use the production helper, not a reimplementation, to avoid testing our own logic.
     ctx_override = parse_ctx_override(extra_args)
     requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
 
@@ -491,9 +475,8 @@ class TestTightFitPinsToGPU:
 
 @pytest.mark.parametrize("platform_tag", ["linux", "windows", "mac", "rocm"])
 def test_identical_decision_across_platforms(platform_tag):
-    """The decision takes ``[(gpu_idx, free_mib), ...]`` regardless of the
-    source (nvidia-smi / nvidia-smi.exe / Metal / rocm-smi). Identical
-    inputs must yield identical plans."""
+    """Decision takes ``[(gpu_idx, free_mib), ...]`` regardless of source;
+    identical inputs must yield identical plans."""
     plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag

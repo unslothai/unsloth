@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Authentication API routes
-"""
+"""Authentication API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
@@ -43,17 +41,12 @@ router = APIRouter()
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
-    Prefer the ABSOLUTE path to this install's ``unsloth`` launcher (sibling of
-    the running interpreter) so the hint works even when the launcher's dir
-    isn't on PATH -- e.g. a terminal opened before install, a stale Windows
-    PATH, or ``~/.local/bin`` not on PATH (the macOS default) -- regardless of
-    the cwd.
+    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of
+    the running interpreter) so the hint works even when its dir isn't on PATH.
 
-    On POSIX the path is shell-quoted to handle spaces. On Windows we use the
-    bare absolute path only when it has no spaces, since a quoted path needs
-    different syntax in cmd (``"..."``) vs PowerShell (``& "..."``); with a
-    space we fall back to the PATH-based form to stay unambiguous across shells.
-    We also fall back to the PATH form if the launcher can't be located.
+    POSIX paths are shell-quoted. On Windows we use the bare absolute path only
+    when it has no spaces (a quoted path differs between cmd and PowerShell);
+    otherwise, or if the launcher can't be located, fall back to the PATH form.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))

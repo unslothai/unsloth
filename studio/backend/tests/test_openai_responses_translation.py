@@ -193,7 +193,7 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
     lines = _drive(run())
 
-    # Drop empty / non-data lines for assertion clarity.
+    # Keep only data lines for assertion clarity.
     data_lines = [line for line in lines if line.startswith("data:")]
     payloads = []
     for line in data_lines:

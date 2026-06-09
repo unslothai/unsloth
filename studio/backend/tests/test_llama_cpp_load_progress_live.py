@@ -3,18 +3,10 @@
 
 """Live, no-mock integration test for ``LlamaCppBackend.load_progress()``.
 
-The companion files (``test_llama_cpp_load_progress.py`` and
-``test_llama_cpp_load_progress_matrix.py``) patch ``builtins.open`` to feed
-synthetic VmRSS values. This file is the opposite: it uses **real**
-subprocesses, **real** file sizes, and the **real** ``/proc`` interface,
-checking that the contract from the mocked tests still maps to what the kernel
-returns on a live Linux system.
-
-Why both: the mocked tests can be fooled by an implementation that parses
-``/proc`` in a format the kernel no longer uses, or assumes ``Path.stat()`` vs
-``os.path.getsize``. This file hits the real APIs so format drift gets caught.
-
-Skipped cleanly on non-Linux (no ``/proc``).
+The companion mocked tests patch ``builtins.open`` for synthetic VmRSS values;
+this one uses real subprocesses, file sizes, and ``/proc`` so format drift the
+mocks can't see (kernel ``/proc`` layout, stat vs getsize) gets caught. Skipped
+on non-Linux (no ``/proc``).
 """
 
 from __future__ import annotations
@@ -28,10 +20,7 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Same stubs as the matrix file (self-contained so this file runs standalone
-# and via the full suite).
-# ---------------------------------------------------------------------------
+# Same stubs as the matrix file (self-contained for standalone + full-suite runs).
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:

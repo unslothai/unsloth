@@ -26,9 +26,8 @@ logger = get_logger(__name__)
 # can take 15-25 s on cold hardware. Linux is consistently < 2 s.
 _AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-# Circuit breaker: stop calling amd-smi after this many consecutive failures.
-# On Windows, each failed call spawns a process that may show a UAC/DiskPart
-# elevation prompt. Once we know amd-smi doesn't work, stop polling it.
+# Circuit breaker: stop polling amd-smi after this many consecutive failures
+# (each Windows failure may pop a UAC/DiskPart elevation prompt).
 _AMD_SMI_FAILURE_LIMIT = 3
 _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
@@ -50,8 +49,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
-            # amd-smi ships with Adrenalin, not the HIP SDK -- absence is
-            # expected on HIP SDK-only Windows setups. Log at debug only.
+            # amd-smi ships with Adrenalin, not the HIP SDK; absence is expected
+            # on HIP SDK-only Windows setups.
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)
@@ -74,9 +73,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        # amd-smi exited 0 but produced no output (e.g. no GPUs visible on
-        # this query, or a version that emits nothing for --json). Not a tool
-        # failure, so don't count against the circuit breaker.
+        # Exit 0 with no output (no GPUs visible, or a version emitting nothing
+        # for --json). Not a tool failure, so don't trip the circuit breaker.
         logger.debug("amd-smi exited 0 but returned no output")
         return None
     _amd_smi_consecutive_failures = 0  # reset on success
@@ -132,8 +130,8 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if num is None:
         return None
 
-    # Unit conversion -- GPU tools (incl. amd-smi) use binary units even when
-    # labeled "GB" or "MB", so treat GB/GiB and MB/MiB the same.
+    # GPU tools use binary units even when labeled "GB"/"MB", so treat GB/GiB
+    # and MB/MiB the same.
     if "gib" in unit or "gb" in unit:
         return num * 1024
     if "mib" in unit or "mb" in unit:
@@ -144,12 +142,9 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         # Plain bytes
         return num / (1024 * 1024)
 
-    # No explicit unit -- default to MB, the amd-smi convention for bare
-    # numeric values. A previous heuristic assumed values above ~10M were
-    # bytes, but that misclassifies small VRAM allocations (e.g. 5 MB =
-    # 5,242,880 reported without a unit) as ~5 TB. Modern amd-smi always
-    # ships explicit units, so the heuristic only fired for legacy output
-    # where MB was already the convention.
+    # No explicit unit: default to MB (the amd-smi convention for bare numbers).
+    # A bytes-above-~10M heuristic was dropped because it misclassified small
+    # VRAM allocations; modern amd-smi always ships explicit units.
     return num
 
 
@@ -162,9 +157,8 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     else:
         gpu_util = _parse_numeric(usage)
 
-    # Temperature -- try keys in priority order. dict.get() returns "N/A"
-    # strings rather than falling through, so try each key and check it
-    # parses to a real number.
+    # Temperature: try keys in priority order, checking each parses to a real
+    # number (dict.get() can return "N/A" strings rather than falling through).
     temp_data = gpu_data.get("temperature", {})
     temp = None
     if isinstance(temp_data, dict):
@@ -189,10 +183,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
         power_draw = None
         power_limit = None
 
-    # VRAM -- unit-aware parsing for varying amd-smi output formats.
-    # Newer versions may return {"value": 192, "unit": "GiB"} and use
-    # "mem_usage" with "total_vram" / "used_vram" keys; older versions use
-    # "vram" or "fb_memory_usage" with "used" / "total".
+    # VRAM: unit-aware parsing across amd-smi formats. Newer versions use
+    # "mem_usage" with "total_vram"/"used_vram"; older use "vram" or
+    # "fb_memory_usage" with "used"/"total".
     vram_data = gpu_data.get(
         "mem_usage",
         gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
@@ -235,12 +228,11 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
 
 
 def _has_real_metrics(metrics: dict[str, Any]) -> bool:
-    """Return True when ``metrics`` contains at least one non-None value.
+    """Return True when ``metrics`` has at least one non-None value.
 
-    ``amd-smi`` can return a zero-exit JSON envelope missing every expected
-    field (error response, unsupported card, hipless container). Then
-    ``_extract_gpu_metrics`` produces an all-``None`` dict -- callers must
-    surface this as ``available: False``, not ``available: True`` with empty data.
+    amd-smi can return a zero-exit envelope missing every field (error,
+    unsupported card, hipless container), yielding an all-None dict; callers must
+    surface that as ``available: False``.
     """
     return any(value is not None for value in metrics.values())
 
@@ -252,9 +244,8 @@ def get_physical_gpu_count() -> Optional[int]:
         return None
     if isinstance(data, list):
         return len(data)
-    # Some versions return a dict with a "gpu" / "gpus" key. Guard .get()
-    # with isinstance so a malformed scalar/string response cannot raise
-    # AttributeError.
+    # Some versions return a dict with a "gpu"/"gpus" key; guard with isinstance
+    # so a malformed scalar/string response can't raise AttributeError.
     if not isinstance(data, dict):
         return None
     gpus = data.get("gpu", data.get("gpus", []))
@@ -282,10 +273,8 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
         raw = raw.strip()
         if raw == "" or raw == "-1":
             return None
-        # Drop empty tokens after splitting. Tolerates minor typos like
-        # ``HIP_VISIBLE_DEVICES=",1"`` (leading comma, clearly meant device 1)
-        # while still falling through to the next env var when every token is
-        # empty (e.g. ``,,,``).
+        # Drop empty tokens, tolerating typos like ``",1"`` while still falling
+        # through to the next env var when every token is empty (``,,,``).
         tokens = [t.strip() for t in raw.split(",") if t.strip()]
         if tokens:
             return tokens[0]
@@ -316,9 +305,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
     metrics = _extract_gpu_metrics(gpu_data)
     if not _has_real_metrics(metrics):
-        # JSON envelope with no usable fields (error response or unsupported
-        # card). Surface as unavailable rather than available-with-empty-data
-        # so the UI does not render a ghost device.
+        # Envelope with no usable fields: surface as unavailable so the UI
+        # doesn't render a ghost device.
         return {"available": False}
     metrics["available"] = True
     return metrics
@@ -347,14 +335,11 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    # Extract a device list from amd-smi's envelope. Newer versions return a
-    # JSON array directly; older versions wrap the list in a dict under
-    # "gpus" / "gpu". Guard non-dict / non-list envelopes (scalar/string
-    # fallbacks from malformed output) so .get() cannot raise AttributeError.
+    # Extract a device list across envelope shapes: a JSON array, a dict under
+    # "gpu_data"/"gpus"/"gpu", or a guarded scalar/string fallback.
     if isinstance(data, list):
         gpu_list = data
     elif isinstance(data, dict):
-        # Newer amd-smi wraps output in {"gpu_data": [...]}
         gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
     else:
         gpu_list = [data]
@@ -363,15 +348,11 @@ def get_visible_gpu_utilization(
 
     devices = []
     for fallback_idx, gpu_data in enumerate(gpu_list):
-        # Skip non-dict entries: a scalar inside the "gpus" array (seen on
-        # some malformed output) would make _extract_gpu_metrics raise
-        # AttributeError on the first .get() call.
+        # Skip non-dict entries (a scalar in the array would raise AttributeError).
         if not isinstance(gpu_data, dict):
             continue
-        # Use AMD-reported GPU ID when available, else the enumeration index.
-        # Newer amd-smi wraps scalars as ``{"value": 0, "unit": "none"}``, so
-        # route raw_id through ``_parse_numeric`` which handles bare ints,
-        # floats, strings, and that dict shape uniformly.
+        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
+        # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
         raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
@@ -395,9 +376,8 @@ def get_visible_gpu_utilization(
             continue
         metrics = _extract_gpu_metrics(gpu_data)
         if not _has_real_metrics(metrics):
-            # Skip ghost entries: a dict response with no usable fields
-            # (error envelope, etc.) would otherwise show up as a device row
-            # with all-None numbers in the UI.
+            # Skip ghost entries (no usable fields) so the UI doesn't show an
+            # all-None device row.
             continue
         metrics["index"] = idx
         metrics["index_kind"] = "physical"

@@ -3,24 +3,20 @@
 
 """Tool-call XML parsing and stripping helpers.
 
-Extracted verbatim from studio/backend/core/inference/llama_cpp.py so
-external inference servers (llama-server wrappers, llama-swap, custom
-shims) can reuse the logic without importing the inference orchestrator,
-structlog, httpx, or the rest of the studio backend.
+Extracted verbatim from studio/backend/core/inference/llama_cpp.py so external
+inference servers can reuse the logic without importing the inference
+orchestrator, structlog, httpx, or the rest of the studio backend.
 
-Regexes and function bodies are byte-for-byte identical to the original
-inline implementation in llama_cpp.py; any change must preserve that
-equivalence. tests/python/test_tool_healing_extraction_is_exact.py
-verifies it with AST comparison.
+Regexes and bodies are byte-for-byte identical to the original; any change must
+preserve that. test_tool_healing_extraction_is_exact.py verifies via AST.
 """
 
 import json
 import re
 
-# Pre-compiled patterns for tool XML stripping. The hyphen in the
-# function/parameter name char-class tracks OpenAI's allowed set so MCP
-# tool names (mcp__srv__list-issues) and parameter names (`issue-number`)
-# with dashes parse alongside the built-ins.
+# Pre-compiled patterns for tool XML stripping. The hyphen in the name
+# char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
+# issue-number) parse alongside the built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
@@ -51,8 +47,8 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
     """
     tool_calls = []
 
-    # Pattern 1: JSON inside <tool_call> tags. Balanced-brace extraction
-    # that skips braces inside JSON strings.
+    # Pattern 1: JSON inside <tool_call> tags. Balanced-brace extraction that
+    # skips braces inside JSON strings.
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1  # position of the opening {
         depth, i = 0, brace_start
@@ -93,18 +89,16 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 pass
 
     # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
-    # All closing tags optional -- models frequently omit </parameter>,
-    # </function>, and/or </tool_call>.
+    # All closing tags optional; models frequently omit them.
     if not tool_calls:
-        # Step 1: Find all <function=name> positions and extract bodies.
-        # Use only </tool_call> or the next <function= as hard boundaries;
-        # </function> is avoided since code values can contain it. Trim a
-        # trailing </function> afterwards if present.
+        # Step 1: Find <function=name> positions and extract bodies. Use only
+        # </tool_call> or the next <function= as hard boundaries (</function>
+        # can appear in code values); trim a trailing </function> afterwards.
         func_starts = list(_TC_FUNC_START_RE.finditer(content))
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
             body_start = fm.end()
-            # Hard boundaries: next <function= tag or </tool_call>
+            # Boundaries: next <function= tag or </tool_call>
             next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
             end_tag = _TC_END_TAG_RE.search(content[body_start:])
             if end_tag:
@@ -113,18 +107,16 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            # Trim the real closing </function> tag if present
-            body = _TC_FUNC_CLOSE_RE.sub("", body)
+            body = _TC_FUNC_CLOSE_RE.sub("", body)  # trim closing </function>
 
             # Step 2: Extract parameters from body. For single-parameter
-            # functions (the common code/command/query case), use body end
-            # as the only boundary to avoid matching </parameter> inside
-            # code strings.
+            # functions, use body end as the only boundary to avoid matching
+            # </parameter> inside code strings.
             arguments = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
             if len(param_starts) == 1:
-                # Single parameter: value is everything after the tag to
-                # end of body, trimming any trailing </parameter>.
+                # Value is everything after the tag to end of body, less a
+                # trailing </parameter>.
                 pm = param_starts[0]
                 val = body[pm.end() :]
                 val = _TC_PARAM_CLOSE_RE.sub("", val)
@@ -133,15 +125,14 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 for pidx, pm in enumerate(param_starts):
                     param_name = pm.group(1)
                     val_start = pm.end()
-                    # Value ends at the next <parameter= or end of body
+                    # Value ends at next <parameter= or end of body
                     next_param = (
                         param_starts[pidx + 1].start()
                         if pidx + 1 < len(param_starts)
                         else len(body)
                     )
                     val = body[val_start:next_param]
-                    # Trim trailing </parameter> if present
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)  # trim trailing </parameter>
                     arguments[param_name] = val.strip()
 
             tc = {

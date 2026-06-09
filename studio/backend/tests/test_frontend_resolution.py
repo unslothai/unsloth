@@ -18,8 +18,8 @@ _REPO_STUDIO_DIR = _RUN_PY.parent.parent  # studio/
 
 
 def _load_helpers_only():
-    """Import just the resolver helpers from run.py, skipping the
-    server-side imports (uvicorn, structlog, etc.)."""
+    """Import just the resolver helpers from run.py, skipping server-side
+    imports (uvicorn, structlog, etc.)."""
     source = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     keep = []

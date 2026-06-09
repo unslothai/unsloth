@@ -110,9 +110,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 def get_visible_gpu_utilization(
     parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
-    # parent_visible_ids None (UUID/MIG mask): can't safely map
-    # nvidia-smi rows to visible devices. Return empty rather than
-    # exposing all physical GPUs.
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices, so return empty rather than exposing all physical GPUs.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -196,8 +195,8 @@ def get_visible_gpu_utilization(
 def get_backend_visible_gpu_info(
     parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
 ) -> dict[str, Any]:
-    # parent_visible_ids None (UUID/MIG mask): can't safely map
-    # nvidia-smi rows to visible devices.
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices.
     if parent_visible_ids is None:
         return {
             "available": False,

@@ -293,9 +293,8 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
 
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
-    # _inject_local_providers mints an internal sk-unsloth-* API key (not
-    # a forwarded JWT). The unified API-key path validates as the real
-    # admin user whether the incoming session was desktop or web.
+    # _inject_local_providers mints an internal sk-unsloth-* API key (not a
+    # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -318,8 +317,7 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for
-    # web and desktop tokens; get_current_subject works the same.
+    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)

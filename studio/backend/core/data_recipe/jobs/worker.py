@@ -76,7 +76,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
 
     import warnings
     from loggers.config import LogConfig
@@ -112,8 +112,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner configures root logging in __init__. Attach the queue
-        # logger to `data_designer` directly so parser events survive root resets.
+        # DataDesigner resets root logging in __init__; attach the queue handler
+        # to the named loggers directly so parser events survive.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (

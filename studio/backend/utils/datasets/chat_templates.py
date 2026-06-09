@@ -44,28 +44,25 @@ def _chat_template_kwargs() -> dict:
 
 
 def get_tokenizer_chat_template(tokenizer, model_name):
-    """
-    Get the chat template for a tokenizer based on the model.
-    Uses Unsloth's get_chat_template if the model is in the mapper.
+    """Apply a chat template to the tokenizer, using Unsloth's
+    get_chat_template when the model class name is in the mapper.
 
     Args:
         tokenizer: HuggingFace tokenizer
         model_name: Model class name (e.g., "Gemma3ForCausalLM")
 
     Returns:
-        tokenizer: Tokenizer with the chat template applied
+        tokenizer with the chat template applied
     """
     try:
         from unsloth.chat_templates import get_chat_template
     except ImportError:
-        # Unsloth not available; return tokenizer as-is.
         return tokenizer
 
     model_name_lower = model_name.lower()
 
     matched_template = None
 
-    # Direct match in MODEL_TO_TEMPLATE_MAPPER.
     if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
         matched_template = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
         logger.info(f"📝 Applying Unsloth chat template: {matched_template}")
@@ -79,7 +76,6 @@ def get_tokenizer_chat_template(tokenizer, model_name):
             logger.info(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
             logger.info(f"   Falling back to tokenizer's default chat template")
     else:
-        # Check whether the tokenizer has a chat_template set.
         has_chat_template = (
             hasattr(tokenizer, 'chat_template')
             and tokenizer.chat_template is not None
@@ -87,7 +83,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
         if has_chat_template:
             logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
-            # Base model with no chat template — apply default ChatML.
+            # Base model with no chat template: apply default ChatML.
             logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
@@ -140,8 +136,7 @@ def apply_chat_template_to_dataset(
     num_proc = None,
     progress_callback = None,
 ):
-    """
-    Apply the chat template to a dataset based on its format.
+    """Apply the chat template to a dataset based on its format.
 
     Args:
         dataset_info: Output from format_dataset() with metadata
@@ -164,7 +159,6 @@ def apply_chat_template_to_dataset(
     warnings = list(dataset_info.get("warnings", []))
     errors = []
 
-    # Get EOS token if needed.
     eos_token = ""
     if add_eos_token:
         if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
@@ -174,7 +168,6 @@ def apply_chat_template_to_dataset(
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
-        # Auto-detect if no custom mapping was provided.
         if custom_format_mapping is None and auto_detect_mapping:
             # Skip if format_dataset already tried and failed.
             if not dataset_info.get("auto_detection_attempted", False):
@@ -246,7 +239,6 @@ def apply_chat_template_to_dataset(
 
             try:
                 dataset = dataset.map(_apply_custom_mapping, batched = True, batch_size = batch_size)
-                # Switch to conversations format.
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
                 is_standardized = True
@@ -263,8 +255,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set alpaca chat template on the tokenizer (if unset) so it's
-        # saved with the model for inference.
+        # Set alpaca chat template (if unset) so it's saved for inference.
         if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
             try:
                 from unsloth.chat_templates import get_chat_template
@@ -277,7 +268,6 @@ def apply_chat_template_to_dataset(
             except Exception as e:
                 logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
-        # Use custom template if provided.
         def _format_alpaca_custom(examples):
             texts = []
             for i in range(len(examples["instruction"])):
@@ -392,7 +382,7 @@ def apply_chat_template_to_dataset(
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = f"Applying chat template to {final_format}"
 
-            # Monitor tqdm progress from dataset.map() and relay it.
+            # Monitor dataset.map() tqdm progress and relay it.
             _tqdm_monitor_stop = None
             if progress_callback and not _is_torch_iterable:
                 import threading

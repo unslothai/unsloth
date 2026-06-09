@@ -72,11 +72,9 @@ def _url(path: str) -> str:
 
 
 def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
-    """
-    Read an SSE response, return (assembled_text, saw_done).
+    """Read an SSE response, return (assembled_text, saw_done).
 
-    Each chunk is JSON with choices[0].delta.content; stream ends with
-    `data: [DONE]`.
+    Each chunk is JSON with choices[0].delta.content; stream ends at `data: [DONE]`.
     """
     reply_parts: list[str] = []
     saw_done = False
@@ -110,19 +108,12 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
 
 @pytest.fixture(scope = "session")
 def auth_headers() -> dict[str, str]:
-    """
-    Log in once per session and return auth headers.
+    """Log in once per session and return auth headers.
 
-    On a fresh install the bootstrap password forces a change
-    (must_change_password=True); calls with that token return 403 "Password
-    change required". This fixture detects that, auto-completes the change, and
-    re-logs in so other tests get a usable token.
-
-    The auto-change new password is:
-        STUDIO_TEST_NEW_PASSWORD  (env var, optional)
-        or PASSWORD + "-test"     (derived default)
-
-    On the second run, set STUDIO_TEST_PASSWORD to the new password.
+    On a fresh install the bootstrap password forces a change; this fixture
+    detects must_change_password, auto-completes the change (new password =
+    STUDIO_TEST_NEW_PASSWORD or PASSWORD + "-test"), and re-logs in. On the
+    second run, set STUDIO_TEST_PASSWORD to the new password.
     """
     assert PASSWORD, (
         "STUDIO_TEST_PASSWORD is not set.\n"
@@ -140,8 +131,8 @@ def auth_headers() -> dict[str, str]:
     assert token, "access_token is empty"
 
     if body.get("must_change_password"):
-        # Bootstrap token only works with /api/auth/change-password; auto-complete
-        # the forced change so the rest of the tests get a full token.
+        # Bootstrap token only works with change-password; auto-complete the
+        # forced change so the rest of the tests get a full token.
         new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
         change_resp = requests.post(
             _url("/api/auth/change-password"),
@@ -173,12 +164,10 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
 
 @pytest.fixture(scope = "session")
 def vision_image_data_url() -> str:
-    """
-    Download the sloth image once per session as a base64 data URI.
+    """Download the sloth image once per session as a base64 data URI.
 
-    A data URI sends the image inline to every provider; Gemini's
-    OpenAI-compatible layer does not fetch external HTTP URLs, so raw image_url
-    links silently produce empty Gemini replies.
+    A data URI sends the image inline; Gemini's OpenAI-compatible layer doesn't
+    fetch external HTTP URLs, so raw image_url links give empty Gemini replies.
     """
     resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
     resp.raise_for_status()
@@ -189,11 +178,10 @@ def vision_image_data_url() -> str:
 
 @pytest.fixture(scope = "session")
 def encrypt_key(public_key_pem: str):
+    """Return encrypt_key(plaintext) -> base64 RSA-OAEP ciphertext.
+
+    Uses the backend's RSA public key; mirrors the frontend.
     """
-    Return encrypt_key(plaintext: str) -> str (base64 RSA-OAEP ciphertext).
-    Uses the backend's RSA public key — mirrors the frontend.
-    """
-    # Load RSA public key from PEM
     pem_bytes = public_key_pem.encode("utf-8")
     rsa_pub = serialization.load_pem_public_key(pem_bytes)
 
@@ -554,12 +542,10 @@ class TestVisionInference:
 
 class TestLocalInferenceUnaffected:
     def test_chat_without_provider(self, auth_headers: dict[str, str]):
-        """
-        POST /v1/chat/completions without provider fields must not return 422 or 500.
+        """POST /v1/chat/completions without provider fields must not 422/500.
 
-        200 = local model loaded and responded.
-        503 = no model loaded (expected in test env — fine).
-        Any other 4xx/5xx (except 503) = request-handling regression.
+        200 = local model responded; 503 = no model loaded (fine in tests);
+        any other 4xx/5xx = request-handling regression.
         """
         resp = requests.post(
             _url("/v1/chat/completions"),

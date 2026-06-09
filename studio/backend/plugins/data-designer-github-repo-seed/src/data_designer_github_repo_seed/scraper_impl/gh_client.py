@@ -112,9 +112,8 @@ class GitHubClient:
     def _is_auth_failure(self, r: "requests.Response") -> bool:
         """Tell auth failures apart from rate limiting on 401/403.
 
-        - 401: always an auth failure (invalid / expired / wrong-scope token).
-        - 403: auth failure UNLESS it carries a rate-limit signal (Retry-After,
-          X-RateLimit-Remaining: 0, or secondary / abuse rate-limit text).
+        401 is always auth; 403 is auth unless it carries a rate-limit signal
+        (Retry-After, X-RateLimit-Remaining: 0, or abuse/secondary text).
         """
         if r.status_code == 401:
             return True
@@ -168,7 +167,6 @@ class GitHubClient:
                     timeout = 120,
                 )
                 self.calls_graphql += 1
-                # Update rate info from headers
                 rem = r.headers.get("X-RateLimit-Remaining")
                 rst = r.headers.get("X-RateLimit-Reset")
                 if rem is not None:
@@ -203,7 +201,7 @@ class GitHubClient:
                 r.raise_for_status()
                 data = r.json()
                 if "errors" in data and data["errors"]:
-                    # Surface errors but allow partial data; retry on RATE_LIMITED
+                    # Allow partial data; retry on RATE_LIMITED
                     errs = data["errors"]
                     for e in errs:
                         if e.get("type") == "RATE_LIMITED":
@@ -301,7 +299,6 @@ class GitHubClient:
                 items = items.get("items", [])
             for it in items:
                 yield it
-            # Follow Link header
             link = r.headers.get("Link", "")
             nxt = None
             for part in link.split(","):

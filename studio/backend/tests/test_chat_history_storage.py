@@ -30,8 +30,7 @@ def _reset_studio_db(
 def workspace_projects_home(tmp_path):
     """Projects root outside the platform delete denylist.
 
-    tmp_path resolves under /private/tmp on macOS, which the workspace delete
-    guard refuses by design. Linux/Windows tmp is not denied and is used as-is;
+    macOS tmp_path resolves under /private/tmp, which the delete guard refuses;
     only the denied case falls back to a home subdir.
     """
     candidate = tmp_path / "Projects"

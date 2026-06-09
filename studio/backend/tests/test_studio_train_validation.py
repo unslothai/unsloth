@@ -94,8 +94,7 @@ class TestVisionImageSizeCap:
 
     @pytest.mark.parametrize("value", ["++512", "--256", "+-+512", "+", "-"])
     def test_multi_sign_string_says_integer_not_raw(self, value):
-        # Regression guard: multi-sign strings must not leak int()'s raw
-        # "invalid literal" message; contract is "integer or null".
+        # Regression guard: multi-sign strings say "integer or null", not int()'s raw message.
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)
@@ -103,8 +102,7 @@ class TestVisionImageSizeCap:
 
     @pytest.mark.parametrize("value", ["５１２", "٥١٢", "१०२४"])
     def test_unicode_digit_string_rejected(self, value):
-        # Full-width / Arabic-Indic / Devanagari digits must be rejected so the
-        # value reaching the backend equals the ASCII the user typed.
+        # Reject non-ASCII (full-width/Arabic-Indic/Devanagari) digits.
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)

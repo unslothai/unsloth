@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Dataset format conversion: convert between Alpaca, ShareGPT, and ChatML,
-and standardize chat formats.
-"""
+"""Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
 import os
 
@@ -290,14 +287,11 @@ def convert_to_vlm_format(
     Convert simple {image, text} format to VLM messages format.
 
     Returns a LIST, not a HuggingFace Dataset (to preserve PIL Images).
-
-    For URL-based image datasets, runs a 200-sample parallel probe first
-    to estimate download speed and failure rate, reporting a time
-    estimate or warning via progress_callback before the full conversion.
+    For URL-based datasets, runs a 200-sample parallel probe first to
+    estimate speed/failure rate via progress_callback.
 
     Args:
-        progress_callback: Optional callable(status_message=str) to
-                          report progress to the training overlay.
+        progress_callback: Optional callable(status_message=str) for progress.
 
     Returns:
         list: List of dicts with 'messages' field
@@ -385,9 +379,8 @@ def convert_to_vlm_format(
     first_image = next(iter(dataset))[image_column]
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
-    # ── Bare-filename detection: images stored as filenames (e.g.
-    #    "img_001.png") not present locally. Build a basename→repo_path
-    #    lookup to resolve them via hf_hub_download during conversion.
+    # ── Bare-filename detection: build a basename→repo_path lookup so
+    #    filename-only images resolve via hf_hub_download during conversion.
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (

@@ -43,10 +43,9 @@ def test_detects_gguf_file_normally(tmp_path):
 
 def test_detects_gguf_when_stat_raises_oserror(tmp_path):
     """
-    Regression: on Windows both is_file() and exists() call stat() internally.
-    In the brief lock window after llama-server is killed, stat() raises
-    OSError so both return False. detect_gguf_model must still route to
-    llama-server based on the file extension alone.
+    Regression: on Windows is_file()/exists() call stat(), which raises OSError
+    in the brief lock window after llama-server is killed. detect_gguf_model must
+    still route to llama-server by file extension alone.
     """
     gguf = tmp_path / "gpt-oss-20b-MXFP4.gguf"
     gguf.write_bytes(b"")

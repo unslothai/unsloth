@@ -16,12 +16,11 @@ import asyncio
 from datetime import datetime
 import uuid as _uuid
 
-# Add backend directory to path (same directory structure).
+# Add backend directory to path.
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Import backend functions.
 try:
     from core.training import get_training_backend
     from core.training.resume import (
@@ -33,7 +32,7 @@ try:
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
-    # Fallback: import from the parent directory.
+    # Fallback: parent directory.
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
@@ -121,13 +120,12 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
-        # NOTE: No in-process ensure_transformers_version() call here.
-        # The subprocess (worker.py) activates the correct version in a
-        # fresh Python interpreter before importing any ML libraries.
+        # No in-process ensure_transformers_version(): the subprocess
+        # (worker.py) activates the correct version before importing ML libs.
 
         backend = get_training_backend()
 
-        # Check if training is already active (before mutating state).
+        # Check before mutating state.
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             return TrainingJobResponse(
@@ -140,8 +138,8 @@ async def start_training(
                 error = "Training already active",
             )
 
-        # Job ID — passed to start_training(), which sets it on the backend only
-        # after confirming the old pump thread is dead.
+        # Job ID; start_training() sets it on the backend only after the old
+        # pump thread is dead.
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
         # Validate dataset paths if provided.
@@ -239,9 +237,8 @@ async def start_training(
             "gpu_ids": request.gpu_ids,
         }
 
-        # Training page has no trust_remote_code toggle — the value comes from
-        # YAML model defaults on model select. As a safety net, consult the YAML
-        # directly so models that need it always get it.
+        # Training page has no trust_remote_code toggle; as a safety net consult
+        # YAML model defaults directly so models that need it always get it.
         if not training_kwargs["trust_remote_code"]:
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
@@ -407,10 +404,8 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        # Check if training is active
         is_active = backend.is_training_active()
 
-        # Get progress info from trainer
         try:
             progress = backend.trainer.get_training_progress()
         except Exception:
@@ -421,7 +416,6 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         ) or "Ready to train"
         error_message = getattr(progress, "error", None) if progress else None
 
-        # Check if training was stopped by user
         trainer_stopped = getattr(backend, "_should_stop", False)
 
         # Derive high-level phase
@@ -497,14 +491,12 @@ async def get_training_metrics(current_subject: str = Depends(get_current_subjec
     try:
         backend = get_training_backend()
 
-        # Get metrics from backend
         loss_history = backend.loss_history
         lr_history = backend.lr_history
         step_history = backend.step_history
         grad_norm_history = getattr(backend, "grad_norm_history", [])
         grad_norm_step_history = getattr(backend, "grad_norm_step_history", [])
 
-        # Get current values
         current_loss = loss_history[-1] if loss_history else None
         current_lr = lr_history[-1] if lr_history else None
         current_step = step_history[-1] if step_history else None
@@ -753,8 +745,8 @@ async def stream_training_progress(
                     # No steps yet, but training is active (model loading, etc.).
                     no_update_count += 1
                     if no_update_count % 5 == 0:
-                        # Pull total_steps + status from trainer so the frontend
-                        # can show "Tokenizing…" etc.
+                        # Pull total_steps + status so the frontend can show
+                        # "Tokenizing…" etc.
                         tp_prep = getattr(
                             getattr(backend, "trainer", None),
                             "training_progress",
