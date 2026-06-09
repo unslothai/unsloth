@@ -116,9 +116,18 @@ def _friendly_error(exc: Exception) -> str:
 
 
 def _clamp_finish_reason(value) -> str:
-    """Coerce an upstream finish_reason into the OpenAI Literal values
-    our response models accept (anything else, incl. None, becomes "stop")."""
-    return value if value in ("stop", "length", "tool_calls") else "stop"
+    """Coerce an upstream finish_reason into OpenAI's known chat values.
+
+    Unknown values (including ``None``) become ``"stop"`` so local upstream
+    quirks do not leak into the public API shape.
+    """
+    return value if value in (
+        "stop",
+        "length",
+        "tool_calls",
+        "content_filter",
+        "function_call",
+    ) else "stop"
 
 
 def _normalize_stop_sequences(raw):
@@ -134,10 +143,13 @@ def _normalize_stop_sequences(raw):
 
 
 def _effective_max_tokens(payload):
-    """Resolve the generation cap: OpenAI deprecated ``max_tokens`` in favor of
-    ``max_completion_tokens``, so honor either, preferring the explicit legacy
-    field when both are sent. Used by the audio (TTS / audio-input) paths."""
-    return payload.max_tokens if payload.max_tokens is not None else payload.max_completion_tokens
+    """Resolve the generation cap, preferring OpenAI's replacement field.
+
+    ``max_tokens`` is deprecated in favor of ``max_completion_tokens``; honor
+    either for compatibility, but let the replacement field win when both are
+    supplied.
+    """
+    return payload.max_completion_tokens if payload.max_completion_tokens is not None else payload.max_tokens
 
 
 def _wants_multiple_choices(payload) -> bool:
@@ -254,13 +266,17 @@ def _prompt_tokens_details(upstream):
     return out
 
 
+def _wants_stream_usage(payload) -> bool:
+    return bool((payload.stream_options or {}).get("include_usage"))
+
+
 def _openai_stream_usage_chunk(
     payload, completion_id, created, model_name, stream_usage, stream_timings
 ):
     """Build the final OpenAI-standard usage chunk (choices=[], usage populated)
     for a chat stream. Returns the SSE ``data:`` line, or None when the client
     did not opt in via ``stream_options.include_usage`` (or no usage exists)."""
-    if not (payload.stream_options or {}).get("include_usage"):
+    if not _wants_stream_usage(payload):
         return None
     if not (stream_usage or stream_timings):
         return None
@@ -3785,20 +3801,16 @@ async def openai_chat_completions(
                 # concurrent streams cannot read each other's stats.
                 _stats = _sf_stats_holder.get("stats")
                 if _stats:
-                    _stream_usage = _stats.get("usage") or {}
-                    usage_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [],
-                        usage = CompletionUsage(
-                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get("completion_tokens", 0),
-                            total_tokens = _stream_usage.get("total_tokens", 0),
-                        ),
-                        timings = _stats.get("timings"),
+                    usage_line = _openai_stream_usage_chunk(
+                        payload,
+                        completion_id,
+                        created,
+                        model_name,
+                        _stats.get("usage"),
+                        _stats.get("timings"),
                     )
-                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    if usage_line is not None:
+                        yield usage_line
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -3990,20 +4002,16 @@ async def openai_chat_completions(
                 # read each other's stats.
                 _stats = stats_holder.get("stats")
                 if _stats:
-                    _stream_usage = _stats.get("usage") or {}
-                    usage_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [],
-                        usage = CompletionUsage(
-                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get("completion_tokens", 0),
-                            total_tokens = _stream_usage.get("total_tokens", 0),
-                        ),
-                        timings = _stats.get("timings"),
+                    usage_line = _openai_stream_usage_chunk(
+                        payload,
+                        completion_id,
+                        created,
+                        model_name,
+                        _stats.get("usage"),
+                        _stats.get("timings"),
                     )
-                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    if usage_line is not None:
+                        yield usage_line
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:

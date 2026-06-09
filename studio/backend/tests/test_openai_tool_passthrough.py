@@ -34,13 +34,18 @@ from pydantic import ValidationError
 from models.inference import (
     ChatCompletionRequest,
     ChatMessage,
+    CompletionChoice,
+    CompletionMessage,
 )
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
     _build_passthrough_payload,
+    _clamp_finish_reason,
+    _effective_max_tokens,
     _friendly_error,
+    _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
 )
@@ -626,6 +631,51 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+
+# =====================================================================
+# OpenAI API compatibility helpers — verified spec edge cases
+# =====================================================================
+
+
+class TestOpenAICompatibilityHelpers:
+    def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
+        payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
+        assert _effective_max_tokens(payload) == 64
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        ["stop", "length", "tool_calls", "content_filter", "function_call"],
+    )
+    def test_clamp_finish_reason_preserves_openai_finish_reasons(self, finish_reason):
+        assert _clamp_finish_reason(finish_reason) == finish_reason
+
+    def test_clamp_finish_reason_defaults_unknown_to_stop(self):
+        assert _clamp_finish_reason(None) == "stop"
+        assert _clamp_finish_reason("unexpected") == "stop"
+
+    def test_non_streaming_completion_choice_accepts_tool_calls_finish_reason(self):
+        choice = CompletionChoice(
+            index = 0,
+            message = CompletionMessage(content = ""),
+            finish_reason = "tool_calls",
+        )
+        assert choice.finish_reason == "tool_calls"
+
+    def test_stream_usage_chunk_requires_include_usage(self):
+        usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        payload = SimpleNamespace(stream_options = None)
+        assert _openai_stream_usage_chunk(
+            payload, "chatcmpl-test", 123, "model", usage, None
+        ) is None
+
+        payload.stream_options = {"include_usage": True}
+        line = _openai_stream_usage_chunk(
+            payload, "chatcmpl-test", 123, "model", usage, None
+        )
+        assert line is not None
+        assert '"choices":[]' in line
+        assert '"usage"' in line
 
 
 # =====================================================================

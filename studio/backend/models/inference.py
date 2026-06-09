@@ -1001,12 +1001,17 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
+OpenAIFinishReason = Literal[
+    "stop", "length", "tool_calls", "content_filter", "function_call"
+]
+
+
 class ChunkChoice(BaseModel):
     """A single choice in a streaming chunk."""
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length", "tool_calls"]] = None
+    finish_reason: Optional[OpenAIFinishReason] = None
     logprobs: Optional[dict] = None
 
 
@@ -1038,7 +1043,7 @@ class CompletionChoice(BaseModel):
 
     index: int = 0
     message: CompletionMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: OpenAIFinishReason = "stop"
     logprobs: Optional[dict] = None
 
 
