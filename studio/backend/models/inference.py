@@ -495,7 +495,9 @@ class ChatMessage(BaseModel):
     ``role="tool"`` is resolved at the ``ChatCompletionRequest`` layer.
     """
 
-    role: Literal["system", "user", "assistant", "tool"] = Field(..., description = "Message role")
+    role: Literal["system", "user", "assistant", "tool", "developer"] = Field(
+        ..., description = "Message role"
+    )
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
@@ -589,6 +591,34 @@ class ChatCompletionRequest(BaseModel):
             "OpenAI tool choice: 'auto' | 'required' | 'none' | "
             "{'type': 'function', 'function': {'name': ...}}"
         ),
+    )
+    max_completion_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "OpenAI upper bound on generated tokens (supersedes the deprecated max_tokens).",
+    )
+    n: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 128,
+        description = "Number of chat completion choices to generate.",
+    )
+    logprobs: Optional[bool] = Field(
+        None, description = "Whether to return log probabilities of the output tokens."
+    )
+    top_logprobs: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 20,
+        description = "Number of most likely tokens (0-20) to return per position; requires logprobs=true.",
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None, description = "Whether to enable parallel function calling during tool use."
+    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    stream_options: Optional[dict] = Field(
+        None,
+        description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
     )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
@@ -933,12 +963,16 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
+
+
 class ChunkChoice(BaseModel):
     """A single choice in a streaming chunk."""
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length"]] = None
+    finish_reason: Optional[OpenAIFinishReason] = None
+    logprobs: Optional[dict] = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -961,6 +995,7 @@ class CompletionMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: str
+    refusal: Optional[str] = None
 
 
 class CompletionChoice(BaseModel):
@@ -968,7 +1003,8 @@ class CompletionChoice(BaseModel):
 
     index: int = 0
     message: CompletionMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: OpenAIFinishReason = "stop"
+    logprobs: Optional[dict] = None
 
 
 class CompletionUsage(BaseModel):
@@ -977,6 +1013,17 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
+    )
+    completion_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        }
+    )
 
 
 class ChatCompletion(BaseModel):
@@ -988,6 +1035,7 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+    system_fingerprint: Optional[str] = None
 
 
 # =====================================================================
@@ -1434,6 +1482,8 @@ class AnthropicMessagesRequest(BaseModel):
 
 class AnthropicUsage(BaseModel):
     input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     output_tokens: int = 0
 
 
