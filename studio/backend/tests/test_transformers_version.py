@@ -420,9 +420,9 @@ class TestActivateLoggingClarity:
         text = " ".join(r.getMessage() for r in caplog.records).lower()
         assert "5.5.0" in text, f"version not logged: {text!r}"
         # Must signal this is only a sys.path manipulation, not a confirmed import.
-        assert "sys.path" in text or "path only" in text, (
-            f"early activation log does not clarify it is path-prepend only: {text!r}"
-        )
+        assert (
+            "sys.path" in text or "path only" in text
+        ), f"early activation log does not clarify it is path-prepend only: {text!r}"
 
     def test_activate_530_log_clarifies_path_prepend_only(self, caplog):
         caplog.set_level(logging.INFO)
@@ -448,9 +448,9 @@ class TestActivateLoggingClarity:
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
         assert "5.3.0" in text, f"version not logged: {text!r}"
-        assert "sys.path" in text or "path only" in text, (
-            f"early activation log does not clarify it is path-prepend only: {text!r}"
-        )
+        assert (
+            "sys.path" in text or "path only" in text
+        ), f"early activation log does not clarify it is path-prepend only: {text!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +461,6 @@ class TestActivateLoggingClarity:
 
 
 class TestVenvDirIsValidLogging:
-
     def _make_venv(self, venv_dir: Path, pkg: str, version: str):
         """Create a fake target-dir install of *pkg* at *version*."""
         (venv_dir / pkg).mkdir(parents = True)
@@ -483,9 +482,9 @@ class TestVenvDirIsValidLogging:
             f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}"
         )
         joined = " ".join(r.getMessage() for r in warnings)
-        assert "5.0.0" in joined and "5.3.0" in joined, (
-            f"mismatch log omits the versions: {joined!r}"
-        )
+        assert (
+            "5.0.0" in joined and "5.3.0" in joined
+        ), f"mismatch log omits the versions: {joined!r}"
 
     def test_correct_version_does_not_warn(self, tmp_path: Path, caplog):
         venv_dir = tmp_path / "venv"
@@ -495,9 +494,9 @@ class TestVenvDirIsValidLogging:
         result = _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",))
 
         assert result is True
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
-            "no warning expected when the installed version matches"
-        )
+        assert not [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ], "no warning expected when the installed version matches"
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +507,6 @@ class TestVenvDirIsValidLogging:
 
 
 class TestEnsureVenvDirProgressLogging:
-
     def test_logs_each_package_with_progress(self, tmp_path: Path, caplog):
         installed = []
         caplog.set_level(logging.INFO)
