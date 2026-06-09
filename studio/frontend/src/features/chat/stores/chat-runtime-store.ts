@@ -358,9 +358,12 @@ type ChatRuntimeStore = {
   voiceMode: "off" | "configuring" | "active";
   /** The LoRA/GGUF model ID the user has chosen for the voice slot. Persisted to localStorage. */
   selectedVoiceModelId: string | null;
+  /** Derived orb state written by VoiceToggle; consumed by VoiceOrb. */
+  voiceOrbState: "listening" | "thinking" | "speaking" | null;
   hydratePersistedSettings: () => Promise<void>;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string | null) => void;
+  setVoiceOrbState: (state: "listening" | "thinking" | "speaking" | null) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -687,6 +690,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   voiceMode: "off" as const,
   selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
+  voiceOrbState: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -726,6 +730,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     return settingsHydrationPromise;
   },
   setVoiceMode: (voiceMode) => set({ voiceMode }),
+  setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setSelectedVoiceModelId: (selectedVoiceModelId) =>
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");

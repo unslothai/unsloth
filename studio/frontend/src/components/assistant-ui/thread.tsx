@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { TTS_AUDIO_TYPES, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
+import { VoiceOrb } from "@/components/assistant-ui/voice-orb";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -190,6 +191,7 @@ export const Thread: FC<{
           </ThreadPrimitive.Viewport>
 
           <GeneratedImageViewportOverlay hideComposer={hideComposer} />
+          <VoiceOrb />
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
@@ -302,12 +304,13 @@ const ThreadComposerDock: FC<{
   threadId?: string | null;
 }> = ({ disabled, threadId }) => {
   const { overlay } = useGeneratedImageOverlay();
+  const voiceOrbActive = useChatRuntimeStore((s) => s.voiceOrbState !== null);
 
   return (
     <div
       className={cn(
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
-        overlay ? "z-40" : "z-20",
+        overlay || voiceOrbActive ? "z-40" : "z-20",
       )}
     >
       <div
@@ -1193,6 +1196,15 @@ const VoiceToggle: FC = () => {
   isSpeakingRef.current = isSpeaking;
   const speakRef = useRef(speak);
   speakRef.current = speak;
+
+  // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
+  const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
+  useEffect(() => {
+    if (voiceMode !== "active") { setVoiceOrbState(null); return; }
+    if (isThreadRunning)        { setVoiceOrbState("thinking"); return; }
+    if (isSpeaking)             { setVoiceOrbState("speaking"); return; }
+    setVoiceOrbState("listening");
+  }, [voiceMode, isThreadRunning, isSpeaking, setVoiceOrbState]);
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {
