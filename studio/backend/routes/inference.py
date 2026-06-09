@@ -3146,6 +3146,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 )
 
             _tool_sentinel = object()
@@ -3288,7 +3289,10 @@ async def openai_chat_completions(
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
-        def gguf_generate():
+        def gguf_generate(choice_index: int = 0):
+            _seed = payload.seed
+            if _seed is not None and _seed >= 0 and choice_index:
+                _seed += choice_index
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
                 image_b64 = image_b64,
@@ -3304,7 +3308,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
-                seed = payload.seed,
+                seed = _seed,
             )
 
         _gguf_sentinel = object()
@@ -3438,7 +3442,7 @@ async def openai_chat_completions(
                     full_text = ""
                     completion_usage = None
                     completion_finish = None
-                    for token in gguf_generate():
+                    for token in gguf_generate(_idx):
                         if isinstance(token, dict):
                             if token.get("type") == "metadata":
                                 completion_usage = token.get("usage")
@@ -4571,14 +4575,10 @@ def _build_chat_request(
     chat_tool_choice = _translate_responses_tool_choice_to_chat(payload.tool_choice)
     if chat_tool_choice is not None:
         chat_kwargs["tool_choice"] = chat_tool_choice
+    if payload.parallel_tool_calls is not None:
+        chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
-    req = ChatCompletionRequest(**chat_kwargs)
-    # `parallel_tool_calls` isn't a first-class field on ChatCompletionRequest,
-    # but the model allows extras and _build_openai_passthrough_body forwards
-    # only known fields. Llama-server doesn't implement parallel_tool_calls
-    # semantics, so accept-and-ignore it on the Responses side to avoid breaking
-    # SDK clients that always send it.
-    return req
+    return ChatCompletionRequest(**chat_kwargs)
 
 
 def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
@@ -4727,6 +4727,7 @@ async def _responses_stream(
         )
 
     body = _build_openai_passthrough_body(chat_req, backend_ctx = llama_backend.context_length)
+    body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
@@ -4831,6 +4832,8 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if payload.parallel_tool_calls is False:
+                    _drop_parallel_tool_call_deltas(chunk_data)
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
@@ -6007,6 +6010,7 @@ async def _anthropic_passthrough_stream(
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
+        stream_options = {"include_usage": True},
     )
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens

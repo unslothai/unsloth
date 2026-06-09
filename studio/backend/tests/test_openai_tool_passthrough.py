@@ -12,6 +12,7 @@ mapping. No server or GPU required.
 import os
 import sys
 import asyncio
+import json
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -1015,3 +1016,95 @@ class TestGgufVisionToolRouting:
         assert tool_messages[0]["role"] == "system"
         assert tool_messages[1]["role"] == "user"
         assert tool_messages[1]["content"][1]["type"] == "image_url"
+
+    def test_parallel_tool_calls_false_reaches_gguf_tool_loop(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "done"}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            parallel_tool_calls = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    @pytest.mark.parametrize(
+        ("seed", "expected"),
+        [
+            (41, [41, 42, 43]),
+            (-1, [-1, -1, -1]),
+        ],
+    )
+    def test_gguf_n_choices_vary_explicit_non_negative_seed(
+        self,
+        monkeypatch,
+        seed,
+        expected,
+    ):
+        import routes.inference as inf_mod
+
+        seen_seeds = []
+
+        def _generate(**kwargs):
+            seen_seeds.append(kwargs.get("seed"))
+            yield f"choice-{len(seen_seeds)}"
+            yield {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 7,
+                    "total_tokens": 12,
+                },
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            n = 3,
+            seed = seed,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        body = json.loads(response.body)
+
+        assert seen_seeds == expected
+        assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]

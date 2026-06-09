@@ -6,7 +6,9 @@
 import sys
 import os
 import json
+import threading
 
+import httpx
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -35,6 +37,7 @@ from routes.inference import (
     _normalize_anthropic_openai_images,
     _select_anthropic_server_tools,
     _anthropic_requested_studio_tools,
+    _anthropic_passthrough_stream,
     _anthropic_tool_non_streaming,
     anthropic_messages,
 )
@@ -1076,6 +1079,101 @@ class TestAnthropicPassthroughEmitter:
         parsed = self._parse(events[1])
         assert parsed["content_block"]["name"] == "Read"
         assert parsed["content_block"]["id"].startswith("toolu_")
+
+
+class TestAnthropicPassthroughStreamAdapter:
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    async def _collect(response):
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return chunks
+
+    @staticmethod
+    def _payloads(lines, event_name):
+        prefix = f"event: {event_name}\n"
+        return [
+            json.loads(line.split("data: ", 1)[1].strip())
+            for line in lines
+            if line.startswith(prefix)
+        ]
+
+    def test_stream_requests_usage_for_final_message_delta(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            chunks = [
+                {"choices": [{"delta": {"content": "hi"}}]},
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 4,
+                        "total_tokens": 6,
+                    },
+                },
+            ]
+            content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            content += "data: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(
+                transport = transport,
+                timeout = kwargs.get("timeout", 600),
+            )
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        backend = SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+        )
+
+        async def run():
+            response = await _anthropic_passthrough_stream(
+                self._Request(),
+                threading.Event(),
+                backend,
+                [{"role": "user", "content": "hi"}],
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                0.7,
+                0.95,
+                20,
+                16,
+                "msg_1",
+                "test-model",
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+        message_delta = self._payloads(lines, "message_delta")[0]
+        assert message_delta["usage"]["input_tokens"] == 2
+        assert message_delta["usage"]["output_tokens"] == 4
 
 
 # =====================================================================
