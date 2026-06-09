@@ -2934,9 +2934,7 @@ class LlamaCppBackend:
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * (
-                                    _CTX_FIT_VRAM_FRACTION - _mtp_reserve
-                                ):
+                                if total_mib <= pool_mib * (_CTX_FIT_VRAM_FRACTION - _mtp_reserve):
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap

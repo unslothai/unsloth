@@ -1300,9 +1300,7 @@ async def load_model(
                                 config.gguf_mtp_file, config.gguf_file, "MTP drafter"
                             )
                         except HTTPException as exc:
-                            logger.warning(
-                                "Dropping MTP drafter for native load: %s", exc.detail
-                            )
+                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
