@@ -321,6 +321,13 @@ export interface OpenAIChatCompletionsRequest {
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fast_mode?: boolean | null;
+  /**
+   * Opt into the OpenAI-standard trailing usage chunk on streams
+   * (`choices: []` with `usage` + llama-server `timings` populated). The
+   * backend only emits it when `include_usage` is set; the local chat UI
+   * sends it so the context-usage bar and tok/s readout populate.
+   */
+  stream_options?: { include_usage?: boolean } | null;
 }
 
 export interface OpenAIChatDelta {

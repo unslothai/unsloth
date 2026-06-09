@@ -2155,6 +2155,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            // Opt into the trailing usage chunk so the context-usage bar
+            // and tok/s readout populate (backend gates it on include_usage).
+            stream_options: { include_usage: true },
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
