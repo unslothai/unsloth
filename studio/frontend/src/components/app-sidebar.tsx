@@ -259,7 +259,7 @@ export function AppSidebar() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row
-  // isn't washed out.
+  // isn't washed out (Gemini-style).
   const [canScrollDown, setCanScrollDown] = useState(false);
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
@@ -981,7 +981,8 @@ export function AppSidebar() {
 
       <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
         {/* Fade above the profile box, shown only when there's more list below
-            the fold. right-2 keeps it clear of the 8px scrollbar gutter. */}
+            the fold; at the bottom (or short lists) it fades so the last row
+            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
         <div
           aria-hidden="true"
           className={cn(

@@ -73,7 +73,7 @@ function isInCodeBlock(
   return false;
 }
 
-/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`. */
+/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
 /** Body characters that almost always indicate real LaTeX. */

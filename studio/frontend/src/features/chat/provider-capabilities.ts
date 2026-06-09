@@ -191,7 +191,9 @@ export function providerSupportsBuiltinWebSearch(
   // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on every
   // chat-capable model. Most image-tier ids reject text-tool wiring (the
   // responseModalities path excludes text tools), but Google documents Search
-  // grounding on the Gemini 3 image family, so allow it there and hide on older
+  // grounding on the Gemini 3 image family (gemini-3-pro-image-preview,
+  // gemini-3.1-flash-image-preview, nano-banana-pro), so allow it there and
+  // hide on older
   // image ids. Custom Gemini OpenAI-compat proxies skip the backend's native
   // translator, so native tool envelopes never reach them -- hide the pill.
   if (providerType === "gemini") {

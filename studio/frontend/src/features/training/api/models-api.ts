@@ -92,7 +92,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/** Ask the backend whether a model is a vision model (GET /api/models/check-vision/{name}). */
+/** Ask the backend whether a model is a vision model (GET /api/models/check-vision/{model_name}). */
 export async function checkVisionModel(modelName: string): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
   const response = await authFetch(`/api/models/check-vision/${encoded}`);
@@ -104,7 +104,7 @@ export async function checkVisionModel(modelName: string): Promise<boolean> {
   return data.is_vision;
 }
 
-/** Ask the backend whether a model is an embedding model (GET /api/models/check-embedding/{name}). */
+/** Ask the backend whether a model is an embedding model (GET /api/models/check-embedding/{model_name}). */
 export async function checkEmbeddingModel(
   modelName: string,
 ): Promise<boolean> {

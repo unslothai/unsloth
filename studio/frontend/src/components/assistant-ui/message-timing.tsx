@@ -46,7 +46,7 @@ export const MessageTiming: FC<{
     | undefined;
   const st = custom?.serverTimings;
   // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
-  // cachedTokens from a prior turn.
+  // contextUsage.cachedTokens from a prior turn.
   const cacheHits =
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   // Anthropic-only cache-write count.

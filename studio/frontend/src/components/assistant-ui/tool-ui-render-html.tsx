@@ -17,8 +17,8 @@ import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect } from "react";
 
-// Tool UIs read streaming args via useToolArgsStatus, so render_html need not
-// wait for tool completion.
+// Per Context7 assistant-ui docs: tool UIs read streaming args via
+// useToolArgsStatus, so render_html need not wait for tool completion.
 type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;
   title?: string;

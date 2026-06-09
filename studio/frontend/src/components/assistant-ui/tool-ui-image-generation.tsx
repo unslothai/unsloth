@@ -24,7 +24,8 @@ import {
  * `_stream_openai_responses` when OpenAI's Responses-API `image_generation`
  * tool fires. The backend stashes the base64 image on `image_b64` of the
  * tool_end event (keeping the JSON small); the adapter repackages it into a
- * structured `result` (image_b64, image_mime, size?, quality?, background?).
+ * structured `result` (image_b64, image_mime e.g. "image/png", size? e.g.
+ * "1024x1024", quality?, background?).
  * The `tool_start` carries the revised prompt as `args.prompt` plus
  * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
  * JSON with an empty Result block (the "no image" symptom).

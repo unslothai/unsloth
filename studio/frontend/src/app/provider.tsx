@@ -50,7 +50,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   // Decide first-launch vs restore from the on-disk state file BEFORE touching the
   // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
   // set_size on a hidden window is deferred until show(), so innerSize() reads a
-  // stale value and a baseline fallback would overwrite the queued restore.
+  // stale value and a baseline fallback would overwrite the queued restore. On
+  // macOS the same probe works, hence the inconsistency between prior iterations.
   const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
