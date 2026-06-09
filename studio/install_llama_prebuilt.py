@@ -3892,11 +3892,13 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # AMD Windows hosts should prefer the fork's per-gfx published
-        # windows-rocm bundle when one covers the GPU, but otherwise fall
-        # through to resolve_asset_choice() so the upstream HIP prebuilt is
-        # tried before the CPU fallback. Hard-pinning the published
-        # windows-cpu bundle here would make the HIP path unreachable.
+        # AMD Windows hosts prefer the fork's per-gfx windows-rocm bundle when one
+        # covers the GPU; otherwise fall through to resolve_asset_choice(). Note
+        # that on the fork repo the upstream win-hip archive has no approved hash,
+        # so apply_approved_hashes drops it and an uncovered gfx lands on a HIP
+        # source build (auto-detecting its exact gfx) rather than an upstream
+        # prebuilt. We still avoid hard-pinning windows-cpu here so a CPU bundle
+        # never shadows that ROCm path.
         if host.has_rocm:
             published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
         else:
