@@ -674,12 +674,10 @@ def _ensure_rocm_torch() -> None:
 
     # RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900) cap
     # ─────────────────────────────────────────────────────────────
-    # ROCm 7.x PyTorch builds are unstable on RDNA2: the gfx103x PyTorch wheels
-    # for ROCm 7.x are dev/nightly builds (version suffix .gitXXXXXXXX) that
-    # segfault during unsloth import on these GPUs.  The last stable, tested
-    # PyTorch for RDNA2 is the rocm6.2 wheel.  When the runtime GPU is RDNA2
-    # and the system has ROCm 7.x installed, override the tag selection to
-    # rocm6.2 so users get a stable torch regardless of their ROCm stack version.
+    # ROCm 7.x PyTorch builds are unstable on RDNA2: the gfx103x wheels are
+    # dev/nightly builds (version suffix .gitXXXXXXXX) that segfault during
+    # unsloth import.  Cap to the last stable wheel: rocm6.2 for Python <=3.12,
+    # rocm6.4 for Python 3.13+ (rocm6.2 tops out at cp312).
     _RDNA2_GFX = {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
     _rdna2_cap_tag: "str | None" = None
     if ver >= (7, 0):
