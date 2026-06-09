@@ -119,7 +119,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
           <div className="text-sm text-muted-foreground">
             Retrieved {citations.length} passage
             {citations.length === 1 ? "" : "s"} from {docCount} document
-            {docCount === 1 ? "" : "s"}. See Sources below.
+            {docCount === 1 ? "" : "s"}. See Document Sources below.
           </div>
         ) : result ? (
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
