@@ -118,7 +118,6 @@ def _coerce_arguments(
     return arguments
 
 
-
 def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
