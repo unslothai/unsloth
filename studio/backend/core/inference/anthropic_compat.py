@@ -438,9 +438,7 @@ class AnthropicStreamEmitter:
             events.append(self._close_block())
         # Reuse the id published in content_block_start; fall back to mapping
         # the raw id only if no tool_start preceded this end.
-        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(
-            event.get("tool_call_id", "")
-        )
+        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(event.get("tool_call_id", ""))
         self._open_tool_call_id = None
         self._open_tool_use_id = None
         self._open_tool_args_sent = False
