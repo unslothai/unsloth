@@ -9,7 +9,9 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -255,6 +257,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
+        <DownloadManagerPanel />
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
@@ -272,6 +275,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
+      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen
@@ -308,17 +312,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
-      <TauriWrapper>
-        {children}
-      </TauriWrapper>
-      <Toaster
-        position="top-right"
-        visibleToasts={2}
-        expand={true}
-        closeButton={true}
-        // Clear the chat header buttons on the right.
-        offset={{ top: 12, right: 64 }}
-      />
+      <TooltipProvider>
+        <TauriWrapper>
+          {children}
+        </TauriWrapper>
+        <Toaster
+          position="top-right"
+          visibleToasts={2}
+          expand={true}
+          closeButton={true}
+          // Clear the chat header buttons on the right.
+          offset={{ top: 12, right: 64 }}
+        />
+      </TooltipProvider>
     </ThemeProvider>
   );
 }
