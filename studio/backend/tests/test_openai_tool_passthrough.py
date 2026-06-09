@@ -1062,12 +1062,7 @@ class TestGgufVisionToolRouting:
             (-1, [-1, -1, -1]),
         ],
     )
-    def test_gguf_n_choices_vary_explicit_non_negative_seed(
-        self,
-        monkeypatch,
-        seed,
-        expected,
-    ):
+    def test_gguf_n_choices_vary_explicit_non_negative_seed(self, monkeypatch, seed, expected):
         import routes.inference as inf_mod
 
         seen_seeds = []
