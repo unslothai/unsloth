@@ -27,9 +27,7 @@ def main_module():
     return _main
 
 
-# =====================================================================
 # MaxBodyMiddleware
-# =====================================================================
 
 
 def _make_protected_app(
@@ -109,8 +107,8 @@ class TestMaxBodyMiddleware:
         assert "too large" in r.json()["detail"].lower()
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
-        # Regression: declared-Content-Length-only check could be bypassed
-        # by chunked transfer-encoding.
+        # Regression: declared-Content-Length-only check could be bypassed by
+        # chunked transfer-encoding.
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
 
@@ -205,9 +203,7 @@ class TestMaxBodyMiddleware:
         assert "Content-Length" in r.json()["detail"]
 
 
-# =====================================================================
 # SecurityHeadersMiddleware / CSP
-# =====================================================================
 
 
 def _make_csp_app(main_module, attach_nonce: str | None = None):
@@ -298,9 +294,7 @@ class TestSecurityHeadersMiddleware:
             assert any(src == "https:" for src in directives[name])
 
 
-# =====================================================================
 # /api/health auth gate
-# =====================================================================
 
 
 @pytest.fixture
@@ -329,9 +323,9 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    # Launcher / frontend bootstrap fields are available unauth so the Tauri
-    # watchdog can re-adopt a sibling backend and the SPA can detect chat-only
-    # mode before any token exists. Version / device_type still require a bearer.
+    # Launcher / frontend bootstrap fields are unauth so the Tauri watchdog can
+    # re-adopt a sibling backend and the SPA can detect chat-only mode before
+    # any token exists. Version / device_type still require a bearer.
     LAUNCHER_BITS = (
         "service",
         "studio_root_id",
@@ -358,7 +352,7 @@ class TestHealthAuthGate:
             assert forbidden not in body
 
     def test_invalid_bearer_returns_launcher_bits_only(self, health_app):
-        # Regression: calling the async dep without await made any Bearer header pass.
+        # Regression: calling the async dep without await let any Bearer header pass.
         c = TestClient(health_app)
         r = c.get(
             "/api/health",

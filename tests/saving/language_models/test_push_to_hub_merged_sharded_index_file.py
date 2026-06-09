@@ -131,7 +131,6 @@ trainer = train_on_responses_only(
     response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
 )
 
-# run training
 trainer_stats = trainer.train()
 
 

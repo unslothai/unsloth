@@ -33,12 +33,9 @@ def search_models(
     search_pattern: str = None,
 ) -> list[ModelInfo]:
     """
-    Get model info from the registry.
+    Get model info from the registry. See registry.ModelInfo for more fields.
 
-    See registry.ModelInfo for more fields.
-
-    If search_pattern is provided, the full model path will be matched against the pattern, where the model path is the model_id on huggingface hub.
-
+    search_pattern is matched against the full model path (the HF hub model_id).
     """
     if not _ARE_MODELS_REGISTERED:
         register_models()

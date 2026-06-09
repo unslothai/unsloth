@@ -23,10 +23,10 @@ from tests.utils.cleanup_utils import safe_remove_directory
 
 print("\n📊 Loading and preparing dataset...")
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
-# To select the first 2000 examples
+# First 2000 examples for training
 train_dataset = dataset.select(range(2000))
 
-# To select the next 200 examples for evaluation
+# Next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
 print(f"✅ Dataset loaded successfully!")
@@ -65,8 +65,7 @@ def format_data(sample):
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
-# Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .map convert image to bytes
+# Use a list comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 print("✅ Dataset formatting completed!")

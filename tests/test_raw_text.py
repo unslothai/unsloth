@@ -22,10 +22,10 @@ class MockDataset:
 
     def __getitem__(self, idx):
         if isinstance(idx, str):
-            # Allow accessing columns by name like dataset['text']
+            # Access columns by name, e.g. dataset['text']
             return self.data[idx]
         elif isinstance(idx, int):
-            # Allow accessing individual rows by index
+            # Access individual rows by index
             return {key: values[idx] for key, values in self.data.items()}
         else:
             raise TypeError(f"Invalid index type: {type(idx)}")

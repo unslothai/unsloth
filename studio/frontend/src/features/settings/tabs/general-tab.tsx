@@ -30,15 +30,10 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
 // Keys cleared by "Reset all local preferences".
-//
-// NEVER include auth / session keys here — resetting them would log the user
-// out, which is not what users expect from a "reset preferences" button.
-//
-// Explicitly EXCLUDED:
-//   - "unsloth_auth_token"                 (auth: access token)
-//   - "unsloth_auth_refresh_token"         (auth: refresh token)
-//   - "unsloth_auth_must_change_password"  (auth: forced password change flag)
-//   - "unsloth_onboarding_done"            (session: would force re-onboarding)
+// NEVER include auth/session keys here — clearing them would log the user out
+// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
+// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
+// unsloth_onboarding_done.
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -70,10 +65,8 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
 ];
 
-// Set to true from resetAllPrefs so the unmount-commit effect skips writing
-// back the in-memory draft — otherwise the cleanup would re-persist the old
-// HF token into localStorage after it was just cleared, and the subsequent
-// reload would read the re-written value.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the
+// in-memory draft, else cleanup would re-persist the just-cleared HF token.
 let resetInProgress = false;
 
 function resetAllPrefs() {

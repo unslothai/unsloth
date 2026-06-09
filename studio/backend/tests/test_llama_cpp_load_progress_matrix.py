@@ -3,29 +3,12 @@
 
 """Extended test matrix for ``LlamaCppBackend.load_progress()``.
 
-Companion to ``test_llama_cpp_load_progress.py`` (which pins the basic
-contract). This file widens coverage to the edge cases that bit users
-or were hypothesized to bite them on cross-platform installs:
+Companion to ``test_llama_cpp_load_progress.py`` (basic contract). Covers
+cross-platform edge cases: platform matrix (/proc absence), VmRSS parsing,
+filesystem edges (HF-cache symlinks, broken/missing/relative paths), shard
+aggregation, lifecycle races, concurrent sampling, and fraction bounds.
 
-  * Platform matrix — macOS/Windows simulation via ``/proc`` absence.
-  * ``VmRSS`` parsing — tab vs space delimiter, missing line, malformed
-    integer.
-  * Filesystem edges — HF-cache symlinks, broken symlinks, nonexistent
-    paths, relative paths.
-  * Shard aggregation — partial multi-shard downloads where some shards
-    are still ``.incomplete``, two shard series in the same dir,
-    ``mmproj-*.gguf`` sibling exclusion for non-sharded primaries,
-    single-file models.
-  * Lifecycle races — process set before ``_gguf_path`` is assigned,
-    process dead mid-sample, ``_healthy`` flipped to True.
-  * Concurrent sampling — 10 threads × 50 iterations against a single
-    backend, hitting real ``/proc`` (no mocks — see the note in
-    ``TestConcurrentSampling`` for why).
-  * Fraction bounds — capped at 1.0 when RSS exceeds total; 0.0 when
-    total is zero.
-
-All tests are Linux-only in practice (we stub ``/proc`` where needed).
-The stable subset runs in well under a second.
+Linux-only in practice (``/proc`` stubbed where needed).
 """
 
 from __future__ import annotations
@@ -40,10 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy / unavailable external dependencies before importing the
-# module under test. Same pattern as test_llama_cpp_load_progress.py.
-# ---------------------------------------------------------------------------
+# Stub heavy/unavailable deps before importing the module under test.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -113,7 +93,7 @@ def _sparse(path, size):
 
 
 def _fake_proc_reader(rss_kb):
-    """Return an ``open()`` replacement that fakes /proc reads with a VmRSS line."""
+    """An ``open()`` replacement faking /proc reads with a VmRSS line."""
 
     def fake_open(path, *args, **kwargs):
         if str(path).startswith("/proc/"):
@@ -129,8 +109,8 @@ def _fake_proc_reader(rss_kb):
 
 
 class TestPlatformMatrix:
-    """The method is Linux-first via /proc. On macOS/Windows it must
-    degrade to None rather than crash."""
+    """Linux-first via /proc. On macOS/Windows must degrade to None
+    rather than crash."""
 
     def test_linux_live_proc_is_self_pid(self, tmp_path):
         """Self-pid /proc read uses the real kernel interface."""
@@ -144,7 +124,7 @@ class TestPlatformMatrix:
         assert out is not None
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 1 * 1024**3
-        # Our Python process has some RSS -- just sanity-check positive.
+        # Our process has some RSS -- sanity-check it's positive.
         assert out["bytes_loaded"] > 0
 
     def test_macos_no_proc_returns_none(self, tmp_path):
@@ -199,7 +179,7 @@ class TestVmRSSParsing:
         assert out["bytes_loaded"] == 2 * 1024**3
 
     def test_space_separated_fallback(self, tmp_path):
-        """Some kernels emit single-space rather than tab."""
+        """Some kernels emit a single space, not a tab."""
         gguf = tmp_path / "m.gguf"
         _sparse(gguf, 4 * 1024**3)
         inst = _make()
@@ -235,8 +215,8 @@ class TestVmRSSParsing:
         assert out["fraction"] == 0.0
 
     def test_malformed_vmrss_value(self, tmp_path):
-        """Non-integer VmRSS value should be treated as if the line were
-        absent (early ValueError caught)."""
+        """Non-integer VmRSS is treated like an absent line (ValueError
+        caught)."""
         gguf = tmp_path / "m.gguf"
         _sparse(gguf, 1 * 1024**3)
         inst = _make()
@@ -250,7 +230,7 @@ class TestVmRSSParsing:
 
         with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
-        # The implementation catches ValueError on int() and returns None.
+        # int() ValueError is caught and returns None.
         assert out is None
 
 
@@ -262,7 +242,7 @@ class TestVmRSSParsing:
 class TestFilesystemEdges:
     def test_symlink_primary_follows_to_blob(self, tmp_path):
         """HF cache stores blobs under blobs/ and symlinks them from
-        snapshots/. The method must follow the symlink."""
+        snapshots/. Must follow the symlink."""
         blob = tmp_path / "blob"
         _sparse(blob, 12 * 1024**3)
         snap = tmp_path / "snap"
@@ -300,7 +280,7 @@ class TestFilesystemEdges:
 
     def test_relative_gguf_path(self, tmp_path):
         """Relative paths shouldn't crash; behaviour depends on CWD but
-        the method must not raise."""
+        must not raise."""
         cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
@@ -323,11 +303,11 @@ class TestFilesystemEdges:
 
 class TestShardAggregation:
     def test_partial_multi_shard_download(self, tmp_path):
-        """Primary present but shards 2..N still downloading as
-        ``.incomplete``. Sums only the fully-arrived ``.gguf`` files."""
+        """Primary present but shards 2..N still ``.incomplete``. Sums
+        only the fully-arrived ``.gguf`` files."""
         _sparse(tmp_path / "m-00001-of-00004.gguf", 30 * 1024**3)
         _sparse(tmp_path / "m-00002-of-00004.gguf", 30 * 1024**3)
-        # 3 and 4 still downloading as .incomplete
+        # 3 and 4 still downloading as .incomplete.
         _sparse(tmp_path / "m-00003-of-00004.gguf.incomplete", 5 * 1024**3)
         inst = _make()
         inst._process = _Proc(os.getpid())
@@ -337,8 +317,8 @@ class TestShardAggregation:
         assert out["bytes_total"] == 60 * 1024**3  # only the .gguf siblings
 
     def test_two_shard_series_in_same_dir(self, tmp_path):
-        """Defensive: if two quant series share a dir, prefix filter
-        only sums siblings of the chosen primary."""
+        """Defensive: when two quant series share a dir, the prefix
+        filter sums only siblings of the chosen primary."""
         for i in range(1, 3):
             _sparse(tmp_path / f"m_q4-{i:05d}-of-00002.gguf", 10 * 1024**3)
             _sparse(tmp_path / f"m_q8-{i:05d}-of-00002.gguf", 20 * 1024**3)
@@ -351,7 +331,7 @@ class TestShardAggregation:
 
     def test_mmproj_sibling_not_counted(self, tmp_path):
         """Vision models drop an ``mmproj-*.gguf`` alongside. For a
-        single-file (non-sharded) primary we only count the primary."""
+        single-file (non-sharded) primary, count only the primary."""
         _sparse(tmp_path / "m.gguf", 8 * 1024**3)
         _sparse(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
         inst = _make()
@@ -359,7 +339,7 @@ class TestShardAggregation:
         inst._gguf_path = str(tmp_path / "m.gguf")
         with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
-        # Non-sharded primary: only the primary is counted.
+        # Non-sharded: only the primary is counted.
         assert out["bytes_total"] == 8 * 1024**3
 
     def test_single_file_model(self, tmp_path):
@@ -381,7 +361,7 @@ class TestShardAggregation:
 
 class TestLifecycleRaces:
     def test_process_set_but_gguf_path_not_yet(self, tmp_path):
-        """Moment between Popen and self._gguf_path=model_path."""
+        """Window between Popen and self._gguf_path=model_path."""
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = None
@@ -418,14 +398,10 @@ class TestLifecycleRaces:
 
 class TestConcurrentSampling:
     def test_parallel_invocations_never_raise(self, tmp_path):
-        """Many concurrent samplers hitting the same backend must not raise.
+        """Many concurrent samplers on one backend must not raise.
 
-        We intentionally do NOT patch ``builtins.open`` here because
-        ``unittest.mock.patch`` is not thread-safe: interleaved
-        enter/exit across threads can leak a Mock into ``builtins.open``
-        and poison every subsequent test in the session. Instead, we
-        let each thread hit the real ``/proc/self/status`` of the test
-        process, which is exactly the code path that matters in prod.
+        No ``builtins.open`` patch: ``mock.patch`` isn't thread-safe and could
+        leak a Mock into ``open``. Each thread hits the real ``/proc/self/status``.
         """
         _sparse(tmp_path / "m.gguf", 1 * 1024**3)
         inst = _make()

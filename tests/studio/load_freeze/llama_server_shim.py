@@ -224,8 +224,8 @@ class FakeLlamaServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "FakeLlamaServer":
-        # port=0 lets ThreadingHTTPServer pick a free port atomically
-        # (avoids find-port-then-bind race); read back via server_address[1].
+        # port=0 lets ThreadingHTTPServer pick a free port atomically (no
+        # find-then-bind race); read back via server_address[1].
         self._server = FakeLlamaServer._Server((self.host, self._requested_port), _Handler)
         self._server.config = self.config
         bound_port = self._server.server_address[1]
