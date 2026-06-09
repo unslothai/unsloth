@@ -18,10 +18,9 @@ import {
 interface ShutdownDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called after the shutdown API returns success, right before we replace
-   *  document.body with the "Server stopped" page. Callers use this to remove
-   *  their beforeunload listener — otherwise the browser would prompt
-   *  "Leave site?" when the user tries to close the final tab. */
+  /** Called after shutdown succeeds, before we replace document.body. Lets
+   *  callers remove their beforeunload listener so the browser doesn't prompt
+   *  "Leave site?" when closing the final tab. */
   onAfterShutdown?: () => void;
 }
 
@@ -44,7 +43,7 @@ export function ShutdownDialog({
         return;
       }
     } catch {
-      // Network error — shutdown request never reached the server
+      // Network error: request never reached the server
       toastError("Could not reach server");
       setStopping(false);
       return;

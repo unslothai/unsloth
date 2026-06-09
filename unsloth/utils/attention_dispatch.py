@@ -56,11 +56,9 @@ class AttentionConfig:
     """
     Per-layer attention metadata.
 
-    NOTE(djsaunde): I had originally intended this to be populated once per layer, but
-        we're currently constructing it on every forward pass since it can possibly be
-        invalid from one forward pass to the next (e.g., switching from training to
-        inference). For now, I'm keeping separate from AttentionContext for the sake of
-        better grouping of params.
+    NOTE(djsaunde): Constructed on every forward pass (not once per layer) since
+        it can be invalid across passes (e.g. switching training/inference). Kept
+        separate from AttentionContext to group params.
     """
 
     backend: str
@@ -107,25 +105,18 @@ def run_attention(
     """
     Run attention using config / context info.
 
-    Backend choice is prioritized for speed: FlashAttention when installed
-    (`flash_varlen` for packed/variable-length inputs with `seq_info`, otherwise dense
-    flash), then xFormers if flash is unavailable, with PyTorch SDPA as the final
-    fallback (e.g., CPU or no fused kernels).
-
-    Varlen flash is preferred when packing metadata is present because it avoids padding
-    and keeps peak memory low. xFormers and SDPA can also handle packed batches (we
-    pass a block-diagonal mask into each).
+    Backend priority (speed): FlashAttention if installed (varlen for packed
+    inputs with `seq_info`, else dense), then xFormers, then SDPA as fallback.
+    Varlen flash is preferred for packed batches as it avoids padding; xFormers
+    and SDPA handle packing via a block-diagonal mask.
     """
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
 
-    # [TODO] Flash attention does not support arbitrary attention masks (only
-    # causal via flag). When a padding mask is present (e.g. left-padded
-    # batched generation), fall back to SDPA which consumes attn_mask.
-    # xFormers also does not thread context.attention_mask through, so the
-    # same fallback applies.
+    # [TODO] Flash/xFormers don't support arbitrary attn masks; with a padding
+    # mask present (e.g. left-padded generation), fall back to SDPA.
     if context.attention_mask is not None and backend in (
         FLASH_DENSE,
         FLASH_VARLEN,

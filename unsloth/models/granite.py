@@ -493,10 +493,9 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
 
 def patched_init(original_init):
     def new_init(self, *args, **kwargs):
-        # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
+        # GraniteModel_fast_forward_inference can't reach residual_multiplier/config,
+        # so stash the whole config here to pass it around. See:
         # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
-        # The problem is, we don't have access to either the value or config in GraniteModel_fast_forward_inference
-        # So we need a way to pass this value around. It is probably better to pass on entire config just in case we need it later
         config = kwargs.get("config", args[0] if args else None)
         if config is not None:
             self.config = config

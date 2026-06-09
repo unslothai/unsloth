@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Format conversion utilities for dataset processing.
-
-This module contains functions for converting between dataset formats
-(Alpaca, ShareGPT, ChatML) and standardizing chat formats.
-"""
+"""Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
 import os
 
@@ -36,14 +31,14 @@ def standardize_chat_format(
     num_proc = None,
 ):
     """
-    Our own standardization function that handles BOTH messages and conversations.
-    Converts non-standard role names and keys to standard format.
+    Standardize BOTH messages and conversations: map non-standard role
+    names and keys to the standard format.
     """
     import collections
     import itertools
     from datasets import IterableDataset
 
-    # Check if vision tokenizer is used
+    # Detect a vision tokenizer
     is_vlm = False
     if tokenizer is not None:
         if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
@@ -51,7 +46,7 @@ def standardize_chat_format(
 
     column_names = set(next(iter(dataset)).keys())
 
-    #   Check for both 'conversations' and 'messages'
+    # Find the chat column
     chat_column = None
     if "conversations" in column_names:
         chat_column = "conversations"
@@ -69,7 +64,7 @@ def standardize_chat_format(
         for message in example[chat_column]:
             for key, value in message.items():
                 if type(value) is not str:
-                    continue  # Skip non-string values
+                    continue  # Skip non-strings
                 uniques[key].append(value)
 
     if len(uniques.keys()) != 2:
@@ -79,7 +74,7 @@ def standardize_chat_format(
     length_first = len(set(uniques[keys[0]]))
     length_second = len(set(uniques[keys[1]]))
 
-    # Determine which is role and which is content
+    # Fewer unique values => role; the other => content
     if length_first < length_second:
         role_key = keys[0]
         content_key = keys[1]
@@ -102,18 +97,15 @@ def standardize_chat_format(
         for convo in convos:
             new_convo = []
             for message in convo:
-                # Get original role and content
                 original_role = message.get(role_key, "")
                 original_content = message.get(content_key, "")
 
-                # Map to standard role name
                 standard_role = aliases_mapping.get(original_role, original_role)
 
-                # Handle VLM format
                 if is_vlm:
                     original_content = [{"type": "text", "text": original_content}]
 
-                # Create dict with EXPLICIT ORDER
+                # Keep EXPLICIT key order
                 new_message = {"role": standard_role, "content": original_content}
                 new_convo.append(new_message)
 
@@ -146,8 +138,7 @@ def convert_chatml_to_alpaca(
     num_proc = None,
 ):
     """
-    Converts ChatML format (messages OR conversations) to Alpaca format.
-    Handles both standardized and ShareGPT formats.
+    Convert ChatML (messages OR conversations) to Alpaca format.
 
     Supports:
     - "messages" or "conversations" column
@@ -160,7 +151,7 @@ def convert_chatml_to_alpaca(
         _is_torch_iterable = False
 
     def _convert(examples):
-        # Auto-detect which column name is used
+        # Auto-detect the column name
         chatml_data = (
             examples.get("messages") or examples.get("conversations") or examples.get("texts")
         )
@@ -177,20 +168,20 @@ def convert_chatml_to_alpaca(
             output = ""
 
             for msg in convo:
-                # Handle both standard and ShareGPT formats
+                # Standard and ShareGPT key names
                 role = msg.get("role") or msg.get("from")
                 content = msg.get("content") or msg.get("value")
 
-                # Get first user message as instruction
+                # First user message -> instruction
                 if role in ["user", "human", "input"] and not instruction:
                     instruction = content
-                # Get first assistant message as output
+                # First assistant message -> output
                 elif role in ["assistant", "gpt", "output"] and not output:
                     output = content
                     break  # Stop after first assistant response
 
             instructions.append(instruction)
-            inputs.append("")  # Alpaca typically has empty input
+            inputs.append("")  # Alpaca input usually empty
             outputs.append(output)
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
@@ -220,9 +211,9 @@ def convert_alpaca_to_chatml(
     num_proc = None,
 ):
     """
-    Converts Alpaca format to ChatML format.
+    Convert Alpaca format to ChatML format.
 
-    Output format: Uses 'conversations' column with standard 'role'/'content' structure.
+    Output: 'conversations' column with standard 'role'/'content' dicts.
     """
     try:
         from torch.utils.data import IterableDataset
@@ -238,13 +229,12 @@ def convert_alpaca_to_chatml(
             input_text = examples.get("input", [""] * len(examples["instruction"]))[i]
             output = examples["output"][i]
 
-            # Combine instruction and input (if exists) for user message
+            # User message = instruction + input (if any)
             if input_text and input_text.strip():
                 user_content = f"{instruction}\n\n{input_text}".strip()
             else:
                 user_content = instruction
 
-            # Build conversation in standard ChatML format
             convo = [
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": output},
@@ -294,17 +284,14 @@ def convert_to_vlm_format(
     progress_callback = None,
 ):
     """
-    Converts simple {image, text} format to VLM messages format.
+    Convert simple {image, text} format to VLM messages format.
 
     Returns a LIST, not a HuggingFace Dataset (to preserve PIL Images).
-
-    For URL-based image datasets, runs a 200-sample parallel probe first to
-    estimate download speed and failure rate, then reports time estimate or
-    warning through progress_callback before proceeding with the full conversion.
+    For URL-based datasets, runs a 200-sample parallel probe first to
+    estimate speed/failure rate via progress_callback.
 
     Args:
-        progress_callback: Optional callable(status_message=str) to report
-                          progress to the training overlay.
+        progress_callback: Optional callable(status_message=str) for progress.
 
     Returns:
         list: List of dicts with 'messages' field
@@ -313,11 +300,11 @@ def convert_to_vlm_format(
     from .vlm_processing import generate_smart_vlm_instruction
 
     def _notify(msg):
-        """Send status update to the training overlay if callback is available."""
+        """Send a status update to the training overlay if callback set."""
         if progress_callback:
             progress_callback(status_message = msg)
 
-    # Generate smart instruction if not provided
+    # Generate a smart instruction if none provided
     if instruction is None:
         instruction_info = generate_smart_vlm_instruction(
             dataset,
@@ -342,7 +329,7 @@ def convert_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert a single sample to VLM format."""
-        # Get image (might be PIL Image, local path, URL, or bare filename)
+        # Image may be a PIL Image, local path, URL, or bare filename
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -363,19 +350,18 @@ def convert_to_vlm_format(
             else:
                 image_data = Image.open(image_data).convert("RGB")
 
-        # Get text (if list of strings, pick a random one — e.g. multiple captions)
+        # Text: if a list (e.g. multiple captions), pick one at random
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
             import random
             text_data = random.choice(text_data)
 
-        # Get instruction (static or dynamic)
+        # Instruction: static or dynamic
         if uses_dynamic and instruction_column:
             current_instruction = sample[instruction_column]
         else:
             current_instruction = instruction
 
-        # Build VLM messages - simple structure
         messages = [
             {
                 "role": "user",
@@ -387,16 +373,14 @@ def convert_to_vlm_format(
             {"role": "assistant", "content": [{"type": "text", "text": text_data}]},
         ]
 
-        # Return dict with messages
         return {"messages": messages}
 
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
-    # ── Bare-filename detection: images stored as filenames (e.g. "img_001.png")
-    #    that don't exist locally.  Build a basename→repo_path lookup so we can
-    #    resolve them via hf_hub_download during conversion.
+    # ── Bare-filename detection: build a basename→repo_path lookup so
+    #    filename-only images resolve via hf_hub_download during conversion.
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
@@ -431,7 +415,7 @@ def convert_to_vlm_format(
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
 
-    # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
+    # ── URL probe: 200 parallel samples to estimate speed + failure rate ──
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
@@ -468,7 +452,7 @@ def convert_to_vlm_format(
                 f"{fail_rate:.0%} of the first {PROBE_SIZE} image URLs failed to download ({probe_fail}/{probe_total})",
                 "Images are external URLs, not embedded in the dataset",
             ]
-            # Try LLM-friendly warning
+            # LLM-friendly warning
             friendly = None
             try:
                 from .llm_assist import llm_generate_dataset_warning
@@ -490,7 +474,7 @@ def convert_to_vlm_format(
             _notify(msg)
             raise ValueError(msg)
 
-        # Estimate total time for remaining samples
+        # Estimate time for remaining samples
         remaining = total - PROBE_SIZE
         estimated_seconds = remaining / throughput if throughput > 0 else 0
         eta_str = _format_eta(estimated_seconds)
@@ -546,7 +530,7 @@ def convert_to_vlm_format(
 
             converted_list.extend(r for r in batch_results if r is not None)
 
-            # Progress update every batch
+            # Per-batch progress update
             elapsed = time.time() - start_time
             done = batch_end
             rate = done / elapsed if elapsed > 0 else 0
@@ -558,7 +542,7 @@ def convert_to_vlm_format(
             )
             _notify(progress_msg)
     else:
-        # Sequential conversion for local/embedded images (fast, no I/O bottleneck)
+        # Sequential conversion for local/embedded images (no I/O bottleneck)
         pbar = tqdm(dataset, total = total, desc = "Converting VLM samples", unit = "sample")
         for sample in pbar:
             try:
@@ -576,7 +560,7 @@ def convert_to_vlm_format(
         logger.info(
             f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images"
         )
-        # For datasets that skipped the probe (small URL datasets), check fail rate now
+        # Small URL datasets skip the probe; check fail rate here
         if has_urls and fail_rate >= MAX_FAIL_RATE:
             issues = [
                 f"{fail_rate:.0%} of images failed to download ({failed_count}/{total})",
@@ -629,7 +613,7 @@ def convert_to_vlm_format(
     logger.info(f"✅ Converted {len(converted_list)}/{total} samples")
     _notify(f"Converted {len(converted_list):,}/{total:,} images successfully")
 
-    # Return list, NOT Dataset
+    # Return list, NOT a Dataset
     return converted_list
 
 
@@ -641,8 +625,8 @@ def convert_sharegpt_with_images_to_vlm_format(
     progress_callback = None,
 ):
     """
-    Converts ShareGPT/ChatML datasets that have a separate image column and
-    ``<image>`` placeholders inside the conversation text.
+    Convert ShareGPT/ChatML datasets with a separate image column and
+    ``<image>`` placeholders in the conversation text.
 
     Example input::
 
@@ -672,7 +656,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         if progress_callback:
             progress_callback(status_message = msg)
 
-    # ── Resolve image loading strategy (same 3-tier as convert_to_vlm_format) ──
+    # ── Resolve image loading (same 3-tier as convert_to_vlm_format) ──
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
 
@@ -696,7 +680,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
-            # Also add the full relative paths as keys (for paths like "sam/images/sa_545504.jpg")
+            # Also key by full relative path (e.g. "sam/images/sa_545504.jpg")
             for f in repo_files:
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
                     _image_lookup[f] = f
@@ -714,7 +698,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             _image_lookup = None
 
     def _resolve_image(image_data):
-        """Resolve image data to a PIL Image object."""
+        """Resolve image data to a PIL Image."""
         if hasattr(image_data, "size") and hasattr(image_data, "mode"):
             return image_data  # Already PIL
         if isinstance(image_data, str):
@@ -742,7 +726,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         raise ValueError(f"Cannot resolve image: {type(image_data)}")
 
     def _convert_single_sample(sample):
-        """Convert a single ShareGPT+image sample to standard VLM format."""
+        """Convert one ShareGPT+image sample to standard VLM format."""
         pil_image = _resolve_image(sample[image_column])
         conversation = sample[messages_column]
 
@@ -752,7 +736,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             role = _ROLE_MAP.get(role_raw.lower(), role_raw.lower())
             text = msg.get("value") or msg.get("content") or ""
 
-            # Split on <image> to interleave text and image content blocks
+            # Interleave text and image blocks around <image>
             if "<image>" in text:
                 parts = text.split("<image>")
                 content = []
@@ -762,7 +746,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                         content.append({"type": "text", "text": part})
                     if i < len(parts) - 1:
                         content.append({"type": "image", "image": pil_image})
-                # If <image> was the entire text, content might just be the image
+                # If text was only <image>, content is just the image
                 if not content:
                     content.append({"type": "image", "image": pil_image})
             else:
@@ -804,7 +788,7 @@ def convert_sharegpt_with_images_to_vlm_format(
 
 def convert_llava_to_vlm_format(dataset):
     """
-    Converts Llava format to standard VLM format.
+    Convert Llava format to standard VLM format.
 
     Llava format:
     - messages: [{'content': [{'type': 'image', 'index': 0}, {'type': 'text', 'text': '...'}]}]
@@ -818,23 +802,22 @@ def convert_llava_to_vlm_format(dataset):
     logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
 
     def _convert_single_sample(sample):
-        """Convert a single llava sample to standard VLM format."""
+        """Convert one llava sample to standard VLM format."""
         messages = sample["messages"]
         images = sample.get("images", [])
 
-        # Process each message
         new_messages = []
         for msg in messages:
             new_content = []
 
             for item in msg["content"]:
                 if item["type"] == "image":
-                    # Replace index with actual PIL image
+                    # Replace index with the actual PIL image
                     if "index" in item and item["index"] is not None:
                         img_idx = item["index"]
                         if img_idx < len(images):
                             pil_image = images[img_idx]
-                            # Ensure it's PIL
+                            # Ensure PIL
                             if isinstance(pil_image, str):
                                 pil_image = Image.open(pil_image).convert("RGB")
 
@@ -845,7 +828,7 @@ def convert_llava_to_vlm_format(dataset):
                                 }
                             )
                     else:
-                        # No index, try to use first image
+                        # No index: use the first image
                         if len(images) > 0:
                             pil_image = images[0]
                             if isinstance(pil_image, str):
@@ -854,14 +837,12 @@ def convert_llava_to_vlm_format(dataset):
                             new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
-                    # Keep text as-is (only type + text)
                     new_content.append({"type": "text", "text": item.get("text", "")})
 
             new_messages.append({"role": msg["role"], "content": new_content})
 
         return {"messages": new_messages}
 
-    # Convert using list comprehension
     converted_list = [_convert_single_sample(sample) for sample in dataset]
 
     logger.info(f"✅ Converted {len(converted_list)} samples")

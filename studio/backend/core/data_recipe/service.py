@@ -168,8 +168,7 @@ def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
     # Same gate as the chat MCP path: stdio providers spawn a local subprocess,
-    # so only build them when this host allows it (desktop / explicit opt-in).
-    # Skip them otherwise so a recipe carried onto a hosted host cannot spawn.
+    # so build them only when this host allows it (desktop / explicit opt-in).
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -258,7 +257,7 @@ def build_config_builder(recipe: dict[str, Any]):
     )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
-    # Re-attach explicitly so drop_columns/schema_transform survive API payload.
+    # Re-attach so drop_columns/schema_transform survive the API payload.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -282,9 +281,8 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
-    # DataDesigner requires at least one model provider in its registry even
-    # when the pipeline contains no LLM columns.  Supply a lightweight stub
-    # so sampler/expression-only recipes can run without a real provider.
+    # DataDesigner requires >=1 model provider even with no LLM columns; stub
+    # one so sampler/expression-only recipes run without a real provider.
     if not model_providers:
         from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
         model_providers = [

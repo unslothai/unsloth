@@ -16,12 +16,10 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 
-# Stubs for helpers that the extracted install.sh guard block calls in real
-# installs (`substep` for status output, `_start_studio_venv_replacement` for
-# the rollback-managed move). The tests run the block in isolation, so we
-# stand in a minimal `mv`-based replacement that exercises the same observable
-# effect (venv directory is no longer present at $VENV_DIR after a permitted
-# cleanup) without dragging in install.sh's full rollback machinery.
+# Stubs for helpers the extracted install.sh guard block calls (`substep`,
+# `_start_studio_venv_replacement`). Tests run the block in isolation, so a
+# minimal `mv`-based replacement reproduces the observable effect (venv gone
+# from $VENV_DIR after permitted cleanup) without the full rollback machinery.
 _INSTALL_GUARD_STUBS = (
     "substep() { :; }\n"
     "_start_studio_venv_replacement() {\n"
@@ -623,11 +621,9 @@ def test_tauri_preflight_scrubs_studio_home_env():
     """All three Tauri CLI-spawn sites that lacked the scrub must now
     env_remove UNSLOTH_STUDIO_HOME and STUDIO_HOME, mirroring
     process.rs / install.rs / desktop_auth.rs / update.rs."""
-    # preflight was originally a single .rs file; PR #5341 split it into
-    # a directory of submodules (backend / managed / types / version).
-    # Read whichever shape is on disk so the guard stays valid through
-    # future reorgs as long as the scrub calls live somewhere under
-    # studio/src-tauri/src/preflight*.
+    # preflight was one .rs file; PR #5341 split it into a submodule dir. Read
+    # whichever shape is on disk so the guard survives reorgs, as long as the
+    # scrub calls live under studio/src-tauri/src/preflight*.
     preflight_root = REPO_ROOT / "studio" / "src-tauri" / "src"
     preflight_paths = [
         preflight_root / "preflight.rs",
@@ -908,9 +904,8 @@ def test_install_sh_install_id_survives_symlinked_studio_home(tmp_path):
     # Write a stub install id at the canonical location.
     valid_id = "ab12" * 16
     (studio_home / "share" / "studio_install_id").write_text(valid_id)
-    # Read it back via both the canonical and the symlinked path; both must
-    # see the SAME content (which is what makes install.sh's cat and the
-    # backend's read_text agree without any canonicalization dance).
+    # Read back via canonical and symlinked path; both must see the SAME
+    # content so install.sh's cat and the backend's read_text agree.
     raw_via_link = link / ".unsloth" / "studio" / "share" / "studio_install_id"
     raw_direct = studio_home / "share" / "studio_install_id"
     assert raw_via_link.read_text() == valid_id
