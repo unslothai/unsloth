@@ -257,6 +257,9 @@ class AnthropicStreamEmitter:
         self.block_index: int = 0
         self._text_block_open: bool = False
         self._open_tool_call_id: Optional[str] = None
+        # The mapped Anthropic ``toolu_*`` id published in content_block_start,
+        # reused for the paired tool_result so consumers can correlate them.
+        self._open_tool_use_id: Optional[str] = None
         self._open_tool_args_sent: bool = False
         self._prev_text: str = ""
         self._usage: dict = {}
@@ -320,6 +323,7 @@ class AnthropicStreamEmitter:
         if self._text_block_open or self._open_tool_call_id is not None:
             events.append(self._close_block())
             self._open_tool_call_id = None
+            self._open_tool_use_id = None
             self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
@@ -381,11 +385,13 @@ class AnthropicStreamEmitter:
         elif self._open_tool_call_id is not None:
             events.append(self._close_block())
             self._open_tool_call_id = None
+            self._open_tool_use_id = None
             self._open_tool_args_sent = False
 
         # Open a tool_use block.
         self.block_index += 1
         self._open_tool_call_id = tool_call_id
+        self._open_tool_use_id = anthropic_tool_use_id(tool_call_id)
         self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
@@ -395,7 +401,7 @@ class AnthropicStreamEmitter:
                     "index": self.block_index,
                     "content_block": {
                         "type": "tool_use",
-                        "id": anthropic_tool_use_id(tool_call_id),
+                        "id": self._open_tool_use_id,
                         "name": event.get("tool_name", ""),
                         "input": {},
                     },
@@ -430,7 +436,13 @@ class AnthropicStreamEmitter:
         # Close the tool_use block.
         if self._open_tool_call_id is not None or self._text_block_open:
             events.append(self._close_block())
+        # Reuse the id published in content_block_start; fall back to mapping
+        # the raw id only if no tool_start preceded this end.
+        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(
+            event.get("tool_call_id", "")
+        )
         self._open_tool_call_id = None
+        self._open_tool_use_id = None
         self._open_tool_args_sent = False
         # Emit custom tool_result event (non-standard, ignored by SDKs)
         events.append(
@@ -438,7 +450,7 @@ class AnthropicStreamEmitter:
                 "tool_result",
                 {
                     "type": "tool_result",
-                    "tool_use_id": event.get("tool_call_id", ""),
+                    "tool_use_id": tool_use_id,
                     "content": event.get("result", ""),
                 },
             )

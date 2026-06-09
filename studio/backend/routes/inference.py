@@ -3140,6 +3140,7 @@ async def openai_chat_completions(
                     presence_penalty = payload.presence_penalty,
                     stop = normalized_stop,
                     cancel_event = cancel_event,
+                    seed = payload.seed,
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
@@ -3312,6 +3313,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                seed = payload.seed,
             )
 
         _gguf_sentinel = object()
@@ -5528,6 +5530,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                disable_parallel_tool_use = _disable_parallel,
             )
 
         if payload.stream:
@@ -5654,6 +5657,12 @@ async def _anthropic_tool_stream(
                     ends_on_tool_use = True
                 elif etype == "tool_end":
                     tool_blocks_emitted += 1
+                    # A tool_end means Studio executed the tool server-side, so
+                    # the response no longer ends on a pending client action.
+                    # Without this, a server tool that produces no trailing text
+                    # would be mislabeled stop_reason "tool_use", telling the
+                    # client to run a tool Studio already ran.
+                    ends_on_tool_use = False
                 elif etype == "content" and event.get("text"):
                     ends_on_tool_use = False
                 for line in emitter.feed(event):
@@ -5799,6 +5808,9 @@ async def _anthropic_tool_non_streaming(
     usage = {}
     prev_text = ""
     captured_finish_reason = None
+    # Pending client tool_use; cleared by tool_end (server execution) or
+    # trailing text. See the stop_reason mapping below.
+    ends_on_tool_use = False
 
     events = _collect_anthropic_events(run_gen)
 
@@ -5810,6 +5822,7 @@ async def _anthropic_tool_non_streaming(
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
+                ends_on_tool_use = False
                 if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
                     content_blocks[-1].text += new
                 else:
@@ -5832,8 +5845,11 @@ async def _anthropic_tool_non_streaming(
                 if tool_call_id:
                     tool_blocks_by_id[tool_call_id] = tool_block
                 content_blocks.append(tool_block)
+            ends_on_tool_use = True
         elif etype == "tool_end":
             prev_text = ""
+            # Server-executed: no longer pending a client action (see above).
+            ends_on_tool_use = False
         elif etype == "metadata":
             usage = event.get("usage", {})
             _fr = event.get("finish_reason")
@@ -5853,11 +5869,10 @@ async def _anthropic_tool_non_streaming(
             _capped.append(block)
         content_blocks = _capped
 
-    # tool_use only when the response actually ends on a pending tool_use block
-    # (client must act); tools that ran with text after them are end_turn.
-    ends_on_tool_use = bool(content_blocks) and isinstance(
-        content_blocks[-1], AnthropicResponseToolUseBlock
-    )
+    # stop_reason "tool_use" only when the response still ends on a pending
+    # tool_use (client must act). `ends_on_tool_use` is tracked through the
+    # event stream above: it is True only if the last tool_start had no
+    # following tool_end (server execution) or trailing text.
     stop_reason = openai_finish_to_anthropic_stop(
         captured_finish_reason, had_tool_calls = ends_on_tool_use
     )
@@ -5938,6 +5953,7 @@ def _build_passthrough_payload(
     response_format = None,
     chat_template_kwargs = None,
     backend_ctx = None,
+    seed = None,
 ):
     body = {
         "messages": openai_messages,
@@ -5948,6 +5964,8 @@ def _build_passthrough_payload(
         "top_k": top_k,
         "stream": stream,
     }
+    if seed is not None:
+        body["seed"] = seed
     if stream:
         body["stream_options"] = {"include_usage": True}
     body["max_tokens"] = (
@@ -6520,6 +6538,7 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,
         backend_ctx = backend_ctx,
+        seed = payload.seed,
     )
 
 

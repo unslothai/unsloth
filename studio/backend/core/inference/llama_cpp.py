@@ -4289,6 +4289,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        seed: Optional[int] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -4330,6 +4331,8 @@ class LlamaCppBackend:
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
+        if seed is not None:
+            payload["seed"] = seed
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4474,6 +4477,8 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        seed: Optional[int] = None,
+        disable_parallel_tool_use: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4557,6 +4562,8 @@ class LlamaCppBackend:
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
+            if seed is not None:
+                payload["seed"] = seed
 
             try:
                 _auth_headers = (
@@ -5034,6 +5041,15 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
+                # disable_parallel_tool_use: execute only the first tool call
+                # this turn. Truncate BEFORE building assistant_msg so the
+                # conversation stays consistent (no tool_calls without a
+                # matching tool result) and the extra calls are never executed
+                # -- the route layer only suppressed their stream output, not
+                # their (possibly side-effecting) execution.
+                if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
+                    tool_calls = tool_calls[:1]
+
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
@@ -5244,6 +5260,8 @@ class LlamaCppBackend:
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
+        if seed is not None:
+            stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""
