@@ -808,27 +808,63 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
         return
 
 
-# Appended to tool-use nudge to discourage plan-without-action.
-# Gate render_html guidance to turns where the artifact tool is in the schema;
-# otherwise small local models hallucinate a missing tool call instead of the
-# fenced-HTML fallback prompt.
-_TOOL_ACTION_NUDGE = (
-    " IMPORTANT: Always call tools directly -- never write code yourself."
-    " Never describe what you plan to do -- just call the tool immediately."
-    " For non-artifact code requests, call the python tool when it is available."
-    " For factual questions that require current information, call web_search when it is available."
-    " Do NOT output raw code blocks when an enabled tool can satisfy the request."
+# Centralized local/server tool nudge. Keep render_html guidance gated to turns
+# where the artifact tool is actually present in the tool schema; otherwise
+# small local models can hallucinate a missing tool call instead of following
+# the fenced-HTML fallback prompt.
+_TOOL_BASE_NUDGE = (
+    "Tools are available when they materially improve the answer. Use an enabled "
+    "tool for current facts, calculations, code execution, or artifacts when it "
+    "materially helps; otherwise answer normally and follow the user's requested "
+    "format."
 )
-_ARTIFACT_TOOL_ACTION_NUDGE = (
-    " For HTML, CSS, or JavaScript artifact requests, call render_html once when "
-    "it is available. After render_html succeeds, do not call it again in the "
-    "same response unless the user asks for changes. Future user requests for "
-    "new artifacts may call render_html once."
+_TOOL_WEB_COMPACT_TIP = "When using web_search, do not repeat the same search query."
+_TOOL_WEB_EXPANDED_TIP = (
+    "When using web_search and a result URL is relevant, fetch its full content "
+    "by calling web_search with the url parameter. Do not repeat the same search "
+    "query. If a search returns no useful results, try rephrasing or fetching a "
+    "result URL directly."
+)
+_TOOL_CODE_TIP = (
+    "Use code execution for math, calculations, data processing, or to parse "
+    "and analyze information from tool results."
+)
+_TOOL_ARTIFACT_TIP = (
+    "For HTML, CSS, or JavaScript artifact requests, call render_html once when "
+    "it is available with one complete self-contained HTML document in the code "
+    "argument. After render_html succeeds, do not call it again in the same "
+    "response unless the user asks for changes. Future user requests for new "
+    "artifacts may call render_html once."
 )
 
 
-def _tool_action_nudge(has_artifact: bool) -> str:
-    return _TOOL_ACTION_NUDGE + (_ARTIFACT_TOOL_ACTION_NUDGE if has_artifact else "")
+def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
+    tool_names = {
+        (tool.get("function") or {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    }
+    has_web = "web_search" in tool_names
+    has_code = "python" in tool_names or "terminal" in tool_names
+    has_artifact = "render_html" in tool_names
+    if not (has_web or has_code or has_artifact):
+        return ""
+
+    model_size_b = _extract_model_size_b(model_name)
+    compact_web_tip = model_size_b is not None and model_size_b < 9
+    tool_tip_parts: list[str] = []
+    if has_web:
+        tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
+    if has_code:
+        tool_tip_parts.append(_TOOL_CODE_TIP)
+    if has_artifact:
+        tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
+    return (
+        f"The current date is {_date.today().isoformat()}. "
+        + _TOOL_BASE_NUDGE
+        + " "
+        + " ".join(tool_tip_parts)
+    )
 
 
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
@@ -846,6 +882,15 @@ _TOOL_XML_RE = _re.compile(
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
+
+
+def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
+    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+    if not auto_heal_tool_calls:
+        return text
+    return _TOOL_XML_RE.sub("", text)
+
+
 logger = get_logger(__name__)
 
 
@@ -3055,69 +3100,30 @@ async def openai_chat_completions(
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
-            _tool_names = {t["function"]["name"] for t in tools_to_use}
-            _has_web = "web_search" in _tool_names
-            _has_code = "python" in _tool_names or "terminal" in _tool_names
-            _has_artifact = "render_html" in _tool_names
-
-            _date_line = f"The current date is {_date.today().isoformat()}."
-
-            # Small models (<9B) struggle with multi-step search plans, so
-            # simplify the web tips to avoid plan-then-stall behavior.
-            _model_size_b = _extract_model_size_b(model_name)
-            _is_small_model = _model_size_b is not None and _model_size_b < 9
-
-            if _is_small_model:
-                _web_tips = "Do not repeat the same search query."
-            else:
-                _web_tips = (
-                    "When you search and find a relevant URL in the results, "
-                    "fetch its full content by calling web_search with the url parameter. "
-                    "Do not repeat the same search query. If a search returns "
-                    "no useful results, try rephrasing or fetching a result URL directly."
-                )
-            _code_tips = (
-                "Use code execution for math, calculations, data processing, "
-                "or to parse and analyze information from tool results."
+            _nudge = _build_tool_action_nudge(
+                tools = tools_to_use,
+                model_name = model_name,
             )
-            _artifact_tips = (
-                "Use render_html for HTML, CSS, or JavaScript artifact requests "
-                "with one complete self-contained HTML document in the code argument. "
-                "Call it once, then do not call it again in the same response unless "
-                "the user asks for changes. Future user requests for new artifacts may "
-                "call render_html once."
-            )
-
-            _tool_tip_parts = []
-            if _has_web:
-                _tool_tip_parts.append(_web_tips)
-            if _has_code:
-                _tool_tip_parts.append(_code_tips)
-            if _has_artifact:
-                _tool_tip_parts.append(_artifact_tips)
-
-            if _tool_tip_parts:
-                _nudge = (
-                    _date_line + " "
-                    "You have access to tools. When appropriate, prefer using "
-                    "tools rather than answering from memory. " + " ".join(_tool_tip_parts)
-                )
-            else:
-                _nudge = ""
 
             if _nudge:
-                _nudge += _tool_action_nudge(_has_artifact)
-                # Append nudge to system prompt (preserve the user's prompt)
+                # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
                 gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
 
+            _gguf_auto_heal_tool_calls = (
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+            )
+
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                    _msg["content"] = _strip_tool_xml_for_display(
+                        _msg["content"],
+                        auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    ).strip()
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -3136,9 +3142,7 @@ async def openai_chat_completions(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
-                    auto_heal_tool_calls = payload.auto_heal_tool_calls
-                    if payload.auto_heal_tool_calls is not None
-                    else True,
+                    auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -3222,7 +3226,10 @@ async def openai_chat_completions(
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        clean_cumulative = _strip_tool_xml_for_display(
+                            raw_cumulative,
+                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -3592,60 +3599,21 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
-        _sf_has_web = "web_search" in _sf_tool_names
-        _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
-        _sf_has_artifact = "render_html" in _sf_tool_names
-
-        _sf_date_line = f"The current date is {_date.today().isoformat()}."
-        _sf_model_size_b = _extract_model_size_b(model_name)
-        _sf_is_small_model = _sf_model_size_b is not None and _sf_model_size_b < 9
-
-        if _sf_is_small_model:
-            _sf_web_tips = "Do not repeat the same search query."
-        else:
-            _sf_web_tips = (
-                "When you search and find a relevant URL in the results, "
-                "fetch its full content by calling web_search with the url parameter. "
-                "Do not repeat the same search query. If a search returns "
-                "no useful results, try rephrasing or fetching a result URL directly."
-            )
-        _sf_code_tips = (
-            "Use code execution for math, calculations, data processing, "
-            "or to parse and analyze information from tool results."
+        _sf_nudge = _build_tool_action_nudge(
+            tools = _sf_tools_to_use,
+            model_name = model_name,
         )
-        _sf_artifact_tips = (
-            "Use render_html for HTML, CSS, or JavaScript artifact requests "
-            "with one complete self-contained HTML document in the code argument. "
-            "Call it once, then do not call it again in the same response unless "
-            "the user asks for changes. Future user requests for new artifacts may "
-            "call render_html once."
-        )
-
-        _sf_tool_tip_parts = []
-        if _sf_has_web:
-            _sf_tool_tip_parts.append(_sf_web_tips)
-        if _sf_has_code:
-            _sf_tool_tip_parts.append(_sf_code_tips)
-        if _sf_has_artifact:
-            _sf_tool_tip_parts.append(_sf_artifact_tips)
-
-        if _sf_tool_tip_parts:
-            _sf_nudge = (
-                _sf_date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "tools rather than answering from memory. " + " ".join(_sf_tool_tip_parts)
-            )
-        else:
-            _sf_nudge = ""
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
-            _sf_nudge += _tool_action_nudge(_sf_has_artifact)
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
             else:
                 _sf_system_prompt = _sf_nudge
+
+        _sf_auto_heal_tool_calls = (
+            payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+        )
 
         # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
@@ -3654,7 +3622,10 @@ async def openai_chat_completions(
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                        "content": _strip_tool_xml_for_display(
+                            _msg["content"],
+                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        ).strip(),
                     }
                 )
             else:
@@ -3678,9 +3649,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
-                auto_heal_tool_calls = payload.auto_heal_tool_calls
-                if payload.auto_heal_tool_calls is not None
-                else True,
+                auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -3745,7 +3714,10 @@ async def openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    clean_cumulative = _strip_tool_xml_for_display(
+                        raw_cumulative,
+                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -3832,7 +3804,10 @@ async def openai_chat_completions(
                     if cancel_event.is_set():
                         break
                     if event.get("type") == "content":
-                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                        full_text = _strip_tool_xml_for_display(
+                            event.get("text", ""),
+                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        )
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
@@ -5424,56 +5399,13 @@ async def anthropic_messages(
             payload.enabled_tools,
         )
 
-        # Build tool-use system prompt nudge (same as /chat/completions)
-        _tool_names = {t["function"]["name"] for t in openai_tools}
-        _has_web = "web_search" in _tool_names
-        _has_code = "python" in _tool_names or "terminal" in _tool_names
-        _has_artifact = "render_html" in _tool_names
-
-        _date_line = f"The current date is {_date.today().isoformat()}."
-        _model_size_b = _extract_model_size_b(model_name)
-        _is_small_model = _model_size_b is not None and _model_size_b < 9
-
-        if _is_small_model:
-            _web_tips = "Do not repeat the same search query."
-        else:
-            _web_tips = (
-                "When you search and find a relevant URL in the results, "
-                "fetch its full content by calling web_search with the url parameter. "
-                "Do not repeat the same search query. If a search returns "
-                "no useful results, try rephrasing or fetching a result URL directly."
-            )
-        _code_tips = (
-            "Use code execution for math, calculations, data processing, "
-            "or to parse and analyze information from tool results."
+        # Build tool-use system prompt nudge (same logic as /chat/completions)
+        _nudge = _build_tool_action_nudge(
+            tools = openai_tools,
+            model_name = model_name,
         )
-        _artifact_tips = (
-            "Use render_html for HTML, CSS, or JavaScript artifact requests "
-            "with one complete self-contained HTML document in the code argument. "
-            "Call it once, then do not call it again in the same response unless "
-            "the user asks for changes. Future user requests for new artifacts may "
-            "call render_html once."
-        )
-
-        _tool_tip_parts = []
-        if _has_web:
-            _tool_tip_parts.append(_web_tips)
-        if _has_code:
-            _tool_tip_parts.append(_code_tips)
-        if _has_artifact:
-            _tool_tip_parts.append(_artifact_tips)
-
-        if _tool_tip_parts:
-            _nudge = (
-                _date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "tools rather than answering from memory. " + " ".join(_tool_tip_parts)
-            )
-        else:
-            _nudge = ""
 
         if _nudge:
-            _nudge += _tool_action_nudge(_has_artifact)
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
                 openai_messages[0]["content"] = (
