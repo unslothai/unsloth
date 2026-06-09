@@ -121,9 +121,7 @@ _BLOCKED_COMMANDS = (
 )
 
 
-_SHELL_SEPARATORS = frozenset(
-    {";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"}
-)
+_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords that introduce a new command position (then $cmd, do $cmd, etc.).
 _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
 # Wrappers whose next non-flag argument is itself the command Bash will exec.
@@ -256,9 +254,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
         is_unix_c = tok_lower == "-c" or (
-            tok_lower.startswith("-")
-            and tok_lower.endswith("c")
-            and not tok_lower.startswith("--")
+            tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
         )
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
@@ -370,18 +366,11 @@ def _sandbox_preexec():
         except (ValueError, OSError, AttributeError):
             pass
         try:
-            _resource.setrlimit(
-                _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
-            )
+            _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = (
-                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8"))
-                * 1024
-                * 1024
-                * 1024
-            )
+            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
             _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
@@ -398,9 +387,7 @@ def _sandbox_preexec():
             # value (would otherwise leave NOFILE at the parent's default).
             nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
             _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
-            target = (
-                nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
-            )
+            target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
@@ -421,6 +408,32 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+_PROJECT_SESSION_PREFIX = "project-"
+
+
+def _get_project_workdir(session_id: str) -> str | None:
+    if not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    if not project_id or not _SESSION_ID_RE.match(project_id):
+        return None
+    try:
+        from storage.studio_db import ensure_chat_project_workspace
+        project = ensure_chat_project_workspace(project_id)
+    except Exception:
+        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
+        return None
+    if not project:
+        return None
+    root_path = project.get("rootPath")
+    sandbox_path = project.get("sandboxPath")
+    if not root_path or not sandbox_path:
+        return None
+    root_real = os.path.realpath(root_path)
+    sandbox_real = os.path.realpath(sandbox_path)
+    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+        return None
+    return sandbox_real
 
 
 def _get_workdir(session_id: str | None = None) -> str:
@@ -430,11 +443,16 @@ def _get_workdir(session_id: str | None = None) -> str:
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id and _SESSION_ID_RE.match(session_id):
+        project_workdir = (
+            _get_project_workdir(session_id)
+            if session_id and _SESSION_ID_RE.match(session_id)
+            else None
+        )
+        if project_workdir:
+            workdir = project_workdir
+        elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root, session_id)
-            if not os.path.realpath(workdir).startswith(
-                os.path.realpath(sandbox_root) + os.sep
-            ):
+            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root) + os.sep):
                 workdir = os.path.join(sandbox_root, "_invalid")
         elif session_id:
             workdir = os.path.join(sandbox_root, "_invalid")
@@ -451,6 +469,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             pass
         _workdirs[key] = workdir
     return _workdirs[key]
+
+
+def get_sandbox_workdir(session_id: str | None = None) -> str:
+    return _get_workdir(session_id)
 
 
 WEB_SEARCH_TOOL = {
@@ -514,7 +536,35 @@ TERMINAL_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": (
+            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Call this at most once per assistant response unless the user "
+            "explicitly asks for changes in that response. Future user requests "
+            "for new artifacts may call render_html once. Put the entire document "
+            "in code, including any CSS in <style> tags and JavaScript in <script> tags."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "A complete self-contained HTML document.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short display title for the artifact.",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, RENDER_HTML_TOOL]
 
 
 # OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
@@ -550,9 +600,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         # Same MCP server returning duplicate tool names would also 400
         # OpenAI ("tools[N].function.name duplicates ..."). Drop dupes.
         if name in seen_names:
-            logger.warning(
-                "Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display
-            )
+            logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
         specs.append(
@@ -561,8 +609,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    "parameters": tool.get("inputSchema")
-                    or {"type": "object", "properties": {}},
+                    "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
                 },
             }
         )
@@ -608,6 +655,25 @@ async def get_enabled_mcp_tools() -> list[dict]:
 _TIMEOUT_UNSET = object()
 
 
+def _render_html_result(arguments: dict) -> str:
+    code = arguments.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return "Error: render_html requires a non-empty code string."
+    title = arguments.get("title")
+    if isinstance(title, str) and title.strip():
+        safe_title = title.strip()[:120]
+        return (
+            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            "again in this response unless the user asks for changes. For a later "
+            "user request for a new artifact, call render_html once."
+        )
+    return (
+        "Rendered HTML artifact. Do not call render_html again in this response "
+        "unless the user asks for changes. For a later user request for a new "
+        "artifact, call render_html once."
+    )
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -621,10 +687,10 @@ def execute_tool(
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
     """
-    logger.info(
-        f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
-    )
+    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "render_html":
+        return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -653,13 +719,9 @@ def execute_tool(
             timeout = effective_timeout,
         )
     if name == "python":
-        return _python_exec(
-            arguments.get("code", ""), cancel_event, effective_timeout, session_id
-        )
+        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout, session_id)
     if name == "terminal":
-        return _bash_exec(
-            arguments.get("command", ""), cancel_event, effective_timeout, session_id
-        )
+        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout, session_id)
     return f"Unknown tool: {name}"
 
 
@@ -778,7 +840,9 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
 
 def _fetch_page_text(
-    url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 30
+    url: str,
+    max_chars: int = _MAX_PAGE_CHARS,
+    timeout: int = 30,
 ) -> str:
     """Fetch a URL and return plain text content (HTML tags stripped).
 
@@ -832,9 +896,7 @@ def _fetch_page_text(
                 resp = opener.open(req, timeout = timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return (
-                        f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
-                    )
+                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
                 location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header."
@@ -1099,9 +1161,7 @@ def _check_signal_escape_patterns(code: str):
             if func_name:
                 if func_name in ("signal.signal", "signal"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(
-                            node.args[0], ("SIGALRM", "signal.SIGALRM")
-                        ):
+                        if _ast_name_matches(node.args[0], ("SIGALRM", "signal.SIGALRM")):
                             signal_tampering.append(
                                 {
                                     "type": "signal_handler_override",
@@ -1111,9 +1171,7 @@ def _check_signal_escape_patterns(code: str):
                             )
                 elif func_name in ("signal.setitimer", "setitimer"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(
-                            node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")
-                        ):
+                        if _ast_name_matches(node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")):
                             signal_tampering.append(
                                 {
                                     "type": "timer_manipulation",
@@ -1166,9 +1224,7 @@ def _check_signal_escape_patterns(code: str):
                     else:
                         has_opaque_kwargs = True
 
-                cmd_kw_values = [
-                    v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS
-                ]
+                cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
                 all_call_args = list(node.args) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
@@ -1178,9 +1234,7 @@ def _check_signal_escape_patterns(code: str):
                         {
                             "type": "shell_escape_dynamic",
                             "line": node.lineno,
-                            "description": (
-                                f"{shell_func}() called with dynamic **kwargs"
-                            ),
+                            "description": (f"{shell_func}() called with dynamic **kwargs"),
                         }
                     )
                 elif blocked_in_args:
@@ -1212,8 +1266,7 @@ def _check_signal_escape_patterns(code: str):
                     )
                     shell_node = expanded_kwargs.get("shell")
                     shell_safe = shell_node is None or (
-                        isinstance(shell_node, ast.Constant)
-                        and shell_node.value is False
+                        isinstance(shell_node, ast.Constant) and shell_node.value is False
                     )
                     # Dynamic shell-exec args (chr/format/concat bypasses).
                     if (
@@ -1226,15 +1279,10 @@ def _check_signal_escape_patterns(code: str):
                             if _extract_string_from_node(n) is not None:
                                 return True
                             if isinstance(n, (ast.List, ast.Tuple)):
-                                return all(
-                                    _extract_string_from_node(e) is not None
-                                    for e in n.elts
-                                )
+                                return all(_extract_string_from_node(e) is not None for e in n.elts)
                             return False
 
-                        has_non_literal = any(
-                            not _is_safe_literal(a) for a in all_call_args
-                        )
+                        has_non_literal = any(not _is_safe_literal(a) for a in all_call_args)
                         if has_non_literal:
                             shell_escapes.append(
                                 {
@@ -1493,9 +1541,7 @@ def _check_signal_escape_patterns(code: str):
         "/etc/sudoers",
         "/etc/ssh/",
     )
-    _SENSITIVE_FILE_RE = re.compile(
-        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
-    )
+    _SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
 
     def _normalize_host(host: str) -> str:
         if not host:
@@ -1538,15 +1584,9 @@ def _check_signal_escape_patterns(code: str):
                 return True
             if kw.arg == "data":
                 v = kw.value
-                if (
-                    isinstance(v, ast.Call)
-                    and isinstance(v.func, ast.Name)
-                    and v.func.id == "open"
-                ):
+                if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "open":
                     return True
-                if isinstance(v, ast.Constant) and isinstance(
-                    v.value, (bytes, bytearray)
-                ):
+                if isinstance(v, ast.Constant) and isinstance(v.value, (bytes, bytearray)):
                     return True
         return False
 
@@ -1688,9 +1728,7 @@ def _check_signal_escape_patterns(code: str):
         """Whether the path argument resolves to a sandbox-local literal."""
         if node is None:
             return False
-        if isinstance(node, ast.Constant) and isinstance(
-            node.value, (bytes, bytearray)
-        ):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (bytes, bytearray)):
             return True  # inline bytes, no file access
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return _is_safe_relative_path(node.value)
@@ -1776,11 +1814,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
-            if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "connect"
-                and node.args
-            ):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -1817,9 +1851,7 @@ def _check_signal_escape_patterns(code: str):
                         {
                             "type": "upload_blocked",
                             "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: file upload disallowed in sandbox"
-                            ),
+                            "description": ("Blocked: file upload disallowed in sandbox"),
                         }
                     )
 
@@ -1921,28 +1953,18 @@ def _check_code_safety(code: str) -> str | None:
         if info.get("error"):
             return None
 
-        reasons = [
-            item.get("description", "") for item in info.get("signal_tampering", [])
-        ]
-        shell_reasons = [
-            item.get("description", "") for item in info.get("shell_escapes", [])
-        ]
+        reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
+        shell_reasons = [item.get("description", "") for item in info.get("shell_escapes", [])]
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [
-            item.get("description", "") for item in info.get("network_calls", [])
-        ]
+        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
         all_reasons = [
             r
-            for r in reasons
-            + shell_reasons
-            + exception_reasons
-            + network_reasons
-            + file_reasons
+            for r in reasons + shell_reasons + exception_reasons + network_reasons + file_reasons
             if r
         ]
         if all_reasons:
@@ -1974,7 +1996,11 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
-def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
+def _cancel_watcher(
+    proc,
+    cancel_event,
+    poll_interval = 0.2,
+):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
@@ -2018,9 +2044,7 @@ def _python_exec(
                     except OSError:
                         pass
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            suffix = ".py", prefix = "studio_exec_", dir = workdir
-        )
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
@@ -2081,7 +2105,6 @@ def _python_exec(
                     new_images.append(_name)
             if new_images:
                 import json as _json
-
                 result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
 
         return result

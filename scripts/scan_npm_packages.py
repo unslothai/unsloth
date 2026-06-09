@@ -823,8 +823,7 @@ def download_tarball(
                     written += len(chunk)
                     if written > max_bytes:
                         return dest, (
-                            f"download exceeded cap {max_bytes} bytes "
-                            f"after {written} bytes"
+                            f"download exceeded cap {max_bytes} bytes " f"after {written} bytes"
                         )
                     h.update(chunk)
                     out.write(chunk)
@@ -926,11 +925,7 @@ def safe_extract(
                 # get the generous binary cap. We bound BOTH cases.
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
-                file_cap = (
-                    HARD_MAX_BINARY_FILE_BYTES
-                    if is_binary
-                    else HARD_MAX_TEXT_FILE_BYTES
-                )
+                file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
                 if declared > file_cap:
                     return (
                         f"member {name!r} declared size {declared} > "
@@ -963,7 +958,11 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _evidence(text: str, pat: re.Pattern, max_chars: int = 200) -> str:
+def _evidence(
+    text: str,
+    pat: re.Pattern,
+    max_chars: int = 200,
+) -> str:
     m = pat.search(text)
     if not m:
         return ""
@@ -978,11 +977,7 @@ def _evidence(text: str, pat: re.Pattern, max_chars: int = 200) -> str:
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
-def scan_package_json(
-    pkg: PackageEntry,
-    rel: str,
-    text: str,
-) -> list[Finding]:
+def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     try:
         meta = json.loads(text)
@@ -1056,9 +1051,7 @@ def scan_package_json(
     if isinstance(opt, dict):
         for k, v in opt.items():
             if isinstance(v, str) and (
-                v.startswith("github:")
-                or v.startswith("git+")
-                or v.startswith("git://")
+                v.startswith("github:") or v.startswith("git+") or v.startswith("git://")
             ):
                 findings.append(
                     Finding(
@@ -1117,11 +1110,7 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     return False
 
 
-def scan_text_blob(
-    pkg: PackageEntry,
-    rel: str,
-    text: str,
-) -> list[Finding]:
+def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
 
     # IOC substrings (literal, case-sensitive).
@@ -1190,10 +1179,7 @@ def scan_text_blob(
                 filename = rel,
                 pattern = "js-fetch-eval",
                 evidence = _evidence(text, _JS_FETCH_EVAL),
-                detail = (
-                    "Function/eval against base64-decoded payload "
-                    "(obfuscated dropper shape)"
-                ),
+                detail = ("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
             )
         )
     if _JS_ENV_TOKEN.search(text):
@@ -1247,10 +1233,7 @@ _TEXT_SUFFIXES = (
 )
 
 
-def scan_extracted_tree(
-    pkg: PackageEntry,
-    root: Path,
-) -> list[Finding]:
+def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -1304,10 +1287,7 @@ def scan_extracted_tree(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def scan_one(
-    pkg: PackageEntry,
-    workspace: Path,
-) -> tuple[list[Finding], str | None]:
+def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
     """Download + extract + scan a single package. Cleans up its dir.
 
     Returns (findings, error). `error` is non-None only on hard
@@ -1444,8 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
     if hard_errors or blocking:
         if blocking:
             print(
-                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) "
-                f"at or above {threshold}",
+                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) " f"at or above {threshold}",
                 file = sys.stderr,
             )
         return 1

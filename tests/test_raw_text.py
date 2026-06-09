@@ -45,9 +45,7 @@ sys.modules["datasets"] = datasets_mock
 
 # Import the raw_text module directly to avoid unsloth/__init__.py dependencies
 current_dir = os.path.dirname(__file__)
-raw_text_path = os.path.join(
-    os.path.dirname(current_dir), "unsloth", "dataprep", "raw_text.py"
-)
+raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep", "raw_text.py")
 
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
@@ -66,7 +64,12 @@ def test_raw_text_loader():
             self.eos_token = "</s>"
             self.eos_token_id = 2  # Mock EOS token ID
 
-        def __call__(self, text, return_tensors = None, add_special_tokens = False):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
             words = text.split()
             token_ids = list(range(len(words)))
 
@@ -88,7 +91,11 @@ def test_raw_text_loader():
                 return {"input_ids": [MockTensor(token_ids)]}
             return {"input_ids": token_ids}
 
-        def decode(self, token_ids, skip_special_tokens = False):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
             return " ".join([f"word_{i}" for i in token_ids])
 
     # Create test file
@@ -120,20 +127,14 @@ def test_raw_text_loader():
         # Verify tokenized data structure
         first_sample = tokenized_dataset[0]
         assert isinstance(first_sample["input_ids"], list), "input_ids should be a list"
-        assert isinstance(
-            first_sample["attention_mask"], list
-        ), "attention_mask should be a list"
+        assert isinstance(first_sample["attention_mask"], list), "attention_mask should be a list"
         assert len(first_sample["input_ids"]) == len(
             first_sample["attention_mask"]
         ), "input_ids and attention_mask should have same length"
 
         # Verify labels field exists (for causal LM training)
-        assert (
-            "labels" in tokenized_dataset.column_names
-        ), "Dataset should have 'labels' column"
-        assert (
-            first_sample["labels"] == first_sample["input_ids"]
-        ), "labels should match input_ids"
+        assert "labels" in tokenized_dataset.column_names, "Dataset should have 'labels' column"
+        assert first_sample["labels"] == first_sample["input_ids"], "labels should match input_ids"
 
         # Test constructor validation
         try:
@@ -172,16 +173,14 @@ def test_raw_text_loader():
         ]
         for raw, expected in unicode_whitespace_cases:
             assert preprocessor.clean_text(raw) == expected, (
-                f"Should normalize Unicode/control whitespace to a single space "
-                f"for {raw!r}"
+                f"Should normalize Unicode/control whitespace to a single space " f"for {raw!r}"
             )
 
         # Mixed paragraph + Unicode whitespace realistic input
         mixed = preprocessor.clean_text("Section\u00a01\r\n\r\nBody\ftext\u202fhere")
-        assert mixed == "Section 1\n\nBody text here", (
-            "Should preserve paragraph breaks and normalize Unicode "
-            "whitespace simultaneously"
-        )
+        assert (
+            mixed == "Section 1\n\nBody text here"
+        ), "Should preserve paragraph breaks and normalize Unicode whitespace simultaneously"
 
         # Tabs should collapse to a single space
         assert preprocessor.clean_text("a\tb") == "a b"
