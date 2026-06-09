@@ -57,7 +57,7 @@ type McpPreset = {
 };
 
 // Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Add custom MCP".
+// Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "context7",
@@ -296,7 +296,7 @@ export function McpComposerButton({
                 setDialogOpen(true);
               }}
             >
-              Add custom MCP
+              Manage MCP servers
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -331,7 +331,6 @@ export function McpComposerButton({
           // Resync after managing servers.
           if (!next) void refresh();
         }}
-        openToCreate={true}
       />
     </>
   );
