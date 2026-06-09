@@ -1822,7 +1822,6 @@ def check_dataset_for_missing_videos(
     """
     try:
         from datasets import IterableDataset as _IterableDataset
-
         if isinstance(dataset, _IterableDataset):
             # why safe: iterating a streaming dataset would consume it and leave
             # training with zero samples; warn and skip rather than validate.

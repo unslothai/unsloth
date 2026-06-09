@@ -22,15 +22,17 @@ import pytest
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-def _extract_fns_via_ast(source_path, fn_names, extra_ns = None):
+def _extract_fns_via_ast(
+    source_path,
+    fn_names,
+    extra_ns = None,
+):
     """Parse a set of top-level functions out of a .py file and exec them together
     so intra-module references between them resolve."""
     source = source_path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(source_path))
     wanted = set(fn_names)
-    nodes = [
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted
-    ]
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     missing = wanted - {n.name for n in nodes}
     if missing:
         pytest.fail(f"{sorted(missing)} not found in {source_path}")
@@ -43,7 +45,11 @@ def _extract_fns_via_ast(source_path, fn_names, extra_ns = None):
     return {name: ns[name] for name in fn_names}
 
 
-def _extract_fn_via_ast(source_path, fn_name, extra_ns = None):
+def _extract_fn_via_ast(
+    source_path,
+    fn_name,
+    extra_ns = None,
+):
     return _extract_fns_via_ast(source_path, [fn_name], extra_ns)[fn_name]
 
 
@@ -56,7 +62,6 @@ def check_dataset_for_missing_videos():
     """
     try:
         from unsloth.models.vision import check_dataset_for_missing_videos as fn
-
         return fn
     except Exception:
         pass
@@ -188,9 +193,7 @@ def test_duplicate_paths_deduplicated(check_dataset_for_missing_videos):
 # ── Tests: UnslothVisionDataCollator auto-validation ─────────────────────────
 
 
-def test_collator_raises_on_first_batch_with_missing_video(
-    make_auto_validating_collator,
-):
+def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_collator):
     """
     The collator must raise FileNotFoundError on the first batch if a video path
     is missing — without requiring the user to call check_dataset_for_missing_videos.
@@ -275,9 +278,7 @@ def test_prompt_completion_column_missing_detected(check_dataset_for_missing_vid
                     "content": [{"type": "video", "video": "/nonexistent/p.mp4"}],
                 }
             ],
-            "completion": [
-                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
-            ],
+            "completion": [{"role": "assistant", "content": [{"type": "text", "text": "hi"}]}],
         },
     ]
     with pytest.raises(FileNotFoundError) as exc_info:
@@ -317,9 +318,7 @@ def test_file_uri_percent_encoded(check_dataset_for_missing_videos, tmp_path):
     target = tmp_path / "my video.mp4"
     target.write_bytes(b"x")
     uri = "file://" + str(target).replace(" ", "%20")
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -328,9 +327,7 @@ def test_file_uri_localhost_host(check_dataset_for_missing_videos, tmp_path):
     target = tmp_path / "clip.mp4"
     target.write_bytes(b"x")
     uri = f"file://localhost{target}"
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -339,13 +336,7 @@ def test_checked_set_reused_across_calls(check_dataset_for_missing_videos, tmp_p
     target = tmp_path / "clip.mp4"
     target.write_bytes(b"x")
     shared = set()
-    ds = [
-        {
-            "messages": [
-                {"role": "user", "content": [{"type": "video", "video": str(target)}]}
-            ]
-        }
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": str(target)}]}]}]
     check_dataset_for_missing_videos(ds, checked = shared)
     assert str(target) in shared
     check_dataset_for_missing_videos(ds, checked = shared)
@@ -365,9 +356,7 @@ def test_checked_set_reused_across_calls(check_dataset_for_missing_videos, tmp_p
 def test_non_file_remote_scheme_skipped(check_dataset_for_missing_videos, uri):
     """Any URI scheme other than file:// must be treated as remote and skipped;
     no false FileNotFoundError against os.path.isfile on the raw URI."""
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -378,9 +367,7 @@ def test_file_uri_non_localhost_host_skipped(check_dataset_for_missing_videos):
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "video", "video": "file://nas-server/share/clip.mp4"}
-                    ],
+                    "content": [{"type": "video", "video": "file://nas-server/share/clip.mp4"}],
                 }
             ]
         }
@@ -391,9 +378,7 @@ def test_file_uri_non_localhost_host_skipped(check_dataset_for_missing_videos):
 @pytest.mark.parametrize("uri", ["file://", "file://hostname"])
 def test_degenerate_file_uri_skipped(check_dataset_for_missing_videos, uri):
     """Degenerate file URIs (no path component) must not produce a blank missing entry."""
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -403,9 +388,7 @@ def test_file_uri_double_encoded_percent(check_dataset_for_missing_videos, tmp_p
     target = tmp_path / "clip%20.mp4"
     target.write_bytes(b"x")
     uri = "file://" + str(target).replace("%", "%25")
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -424,18 +407,14 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
         # assertion is that '://' not in the value means the validator must
         # round-trip it unchanged.
         path = str(target)
-    ds = [
-        {"messages": [{"role": "user", "content": [{"type": "video", "video": path}]}]}
-    ]
+    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": path}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
     ds_missing = [
         {
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "video", "video": "C:/definitely/missing.mp4"}
-                    ],
+                    "content": [{"type": "video", "video": "C:/definitely/missing.mp4"}],
                 }
             ]
         }
@@ -448,20 +427,14 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
 def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
     """Passing a streaming IterableDataset must warn and return [] without
     exhausting the iterator."""
-    datasets_mod = pytest.importorskip(
-        "datasets", reason = "real datasets package required"
-    )
+    datasets_mod = pytest.importorskip("datasets", reason = "real datasets package required")
     if not hasattr(datasets_mod, "IterableDataset"):
         pytest.skip("datasets.IterableDataset not available in this environment")
     IterableDataset = datasets_mod.IterableDataset
 
     def gen():
         for p in ("/nonexistent/a.mp4", "/nonexistent/b.mp4"):
-            yield {
-                "messages": [
-                    {"role": "user", "content": [{"type": "video", "video": p}]}
-                ]
-            }
+            yield {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
 
     ds = IterableDataset.from_generator(gen)
     with warnings.catch_warnings(record = True) as caught:
@@ -474,9 +447,7 @@ def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
     assert len(consumed) == 2
 
 
-def test_collator_applies_formatting_func_before_validation(
-    make_auto_validating_collator,
-):
+def test_collator_applies_formatting_func_before_validation(make_auto_validating_collator):
     """
     formatting_func must run before validation so messages it generates are
     checked; the super call must receive the already-formatted examples and
@@ -575,24 +546,18 @@ def _make_real_collator(real_collator_classes, formatting_func = None):
     return collator
 
 
-def test_real_collator_blocks_super_on_missing_video(
-    real_collator_classes, monkeypatch
-):
+def test_real_collator_blocks_super_on_missing_video(real_collator_classes, monkeypatch):
     """A missing path must raise before the base collator __call__ ever runs."""
     _, zoo_base = real_collator_classes
     calls = []
-    monkeypatch.setattr(
-        zoo_base, "__call__", lambda self, examples: calls.append(examples)
-    )
+    monkeypatch.setattr(zoo_base, "__call__", lambda self, examples: calls.append(examples))
     collator = _make_real_collator(real_collator_classes)
     with pytest.raises(FileNotFoundError):
         collator(_batch("/nonexistent/real.mp4"))
     assert calls == []  # base collator was never reached
 
 
-def test_real_collator_calls_super_with_formatting_disabled(
-    real_collator_classes, monkeypatch
-):
+def test_real_collator_calls_super_with_formatting_disabled(real_collator_classes, monkeypatch):
     """
     On a valid batch the base must be called with formatting_func temporarily
     None (so it does not re-apply the formatter) and with already-formatted
@@ -647,9 +612,7 @@ def test_real_collator_restores_formatting_func_when_super_raises(
     monkeypatch.setattr(zoo_base, "__call__", boom)
 
     def fmt(example):
-        return {
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-        }
+        return {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
 
     collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
     with pytest.raises(RuntimeError):
