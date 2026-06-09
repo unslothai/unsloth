@@ -43,7 +43,11 @@ def fetch_text(repo: str, ref: str, path: str) -> str | None:
         pytest.skip(f"GitHub fetch failed ({e}) for {url}")
 
 
-def has_def(src: str, name: str, kind: str = "any") -> bool:
+def has_def(
+    src: str,
+    name: str,
+    kind: str = "any",
+) -> bool:
     """Heuristic AST-equivalent grep for `class Name`, `def name`,
     or `Name = ...` — at any indent level. We avoid a full ast.parse
     so a single non-importable line (e.g. `# type: ignore` after an

@@ -35,14 +35,10 @@ UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
 )
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
-    logging.basicConfig(
-        level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s"
-    )
+    logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.INFO)
 else:
-    logging.basicConfig(
-        level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s"
-    )
+    logging.basicConfig(level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.WARNING)
 
 _AMDGPU_IDS_MISSING_TEXT = "amdgpu.ids: No such file or directory"
@@ -60,7 +56,6 @@ def Version(version):
         return TrueVersion(new_version)
     except:
         from inspect import getframeinfo, stack
-
         caller = getframeinfo(stack()[1][0])
         raise RuntimeError(
             f"Unsloth: Could not get version for `{version}`\n"
@@ -130,7 +125,6 @@ def suppress_cuda_printf():
     finally:
         try:
             import torch
-
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
         except Exception:
@@ -164,15 +158,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Also filter torchao print to stderr about cpp extensions
     sys.stderr.add_filter("Skipping import of cpp extensions")
     # SyntaxWarning: invalid escape sequence '\.'
-    warnings.filterwarnings(
-        "ignore", message = "invalid escape sequence", category = SyntaxWarning
-    )
+    warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
     warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
     # TF32 precision deprecation warning from torch
-    warnings.filterwarnings(
-        "ignore", message = "Please use the new API settings to control TF32"
-    )
+    warnings.filterwarnings("ignore", message = "Please use the new API settings to control TF32")
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
@@ -211,12 +201,8 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
     # Resource warnings from internal socket/file operations
-    warnings.filterwarnings(
-        "ignore", message = r"unclosed.*socket", category = ResourceWarning
-    )
-    warnings.filterwarnings(
-        "ignore", message = r"unclosed file.*dev/null", category = ResourceWarning
-    )
+    warnings.filterwarnings("ignore", message = r"unclosed.*socket", category = ResourceWarning)
+    warnings.filterwarnings("ignore", message = r"unclosed file.*dev/null", category = ResourceWarning)
 
     # torch 2.9+ pin_memory/is_pinned device arg deprecation
     warnings.filterwarnings(
@@ -282,18 +268,14 @@ def fix_message_factory_issue():
             google.protobuf.message_factory.MessageFactory = MessageFactory
         elif (
             hasattr(google.protobuf.message_factory, "MessageFactory")
-            and not hasattr(
-                google.protobuf.message_factory.MessageFactory, "GetPrototype"
-            )
+            and not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype")
             and not hasattr(google.protobuf.message_factory, "GetMessageClass")
         ):
             google.protobuf.message_factory.MessageFactory = MessageFactory
             logger.info("Unsloth: Patching protobuf.MessageFactory as it doesn't exist")
         elif (
             hasattr(google.protobuf.message_factory, "MessageFactory")
-            and not hasattr(
-                google.protobuf.message_factory.MessageFactory, "GetPrototype"
-            )
+            and not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype")
             and hasattr(google.protobuf.message_factory, "GetMessageClass")
         ):
             GetMessageClass = google.protobuf.message_factory.GetMessageClass
@@ -334,9 +316,7 @@ def fix_xformers_performance_issue():
                         f.seek(0)
                         f.write(text)
                         f.truncate()
-                        logger.info(
-                            "Unsloth: Patching Xformers to fix some performance issues."
-                        )
+                        logger.info("Unsloth: Patching Xformers to fix some performance issues.")
         except Exception as e:
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
@@ -359,7 +339,6 @@ def patch_vllm_for_notebooks():
     if ipython is None:
         try:
             import builtins
-
             _get_ipython = getattr(builtins, "get_ipython", None)
             if callable(_get_ipython):
                 ipython = _get_ipython()
@@ -371,9 +350,7 @@ def patch_vllm_for_notebooks():
 
     try:
         shell = ipython.__class__.__name__
-        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
-            type(ipython)
-        )
+        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(type(ipython))
     except Exception:
         return
 
@@ -446,10 +423,7 @@ def fix_vllm_aimv2_issue():
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
-        if (
-            "ALLOWED_LAYER_TYPES" in error_text
-            or "transformers.configuration_utils" in error_text
-        ):
+        if "ALLOWED_LAYER_TYPES" in error_text or "transformers.configuration_utils" in error_text:
             try:
                 vllm_version = importlib_version("vllm")
             except Exception:
@@ -485,9 +459,7 @@ def fix_vllm_guided_decoding_params():
             vllm.sampling_params, "StructuredOutputsParams"
         ):
             raise
-        vllm.sampling_params.GuidedDecodingParams = (
-            vllm.sampling_params.StructuredOutputsParams
-        )
+        vllm.sampling_params.GuidedDecodingParams = vllm.sampling_params.StructuredOutputsParams
 
 
 def fix_trl_vllm_ascend():
@@ -520,7 +492,6 @@ def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
         from huggingface_hub._login import logger as huggingface_hub_logger
-
         huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
         del huggingface_hub_logger
     except:
@@ -555,7 +526,6 @@ def patch_ipykernel_hf_xet():
             "https://github.com/huggingface/xet-core/issues/526"
         )
         from huggingface_hub.utils import disable_progress_bars
-
         disable_progress_bars()
 
 
@@ -577,9 +547,7 @@ def patch_datasets():
         return
 
     datasets_version = Version(importlib_version("datasets"))
-    if (datasets_version <= Version("4.5.0")) and (
-        datasets_version >= Version("4.4.0")
-    ):
+    if (datasets_version <= Version("4.5.0")) and (datasets_version >= Version("4.4.0")):
         raise NotImplementedError(
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
@@ -635,8 +603,7 @@ def patch_enable_input_require_grads():
 
         for module in self.modules():
             if not (
-                isinstance(module, PreTrainedModel)
-                and hasattr(module, "get_input_embeddings")
+                isinstance(module, PreTrainedModel) and hasattr(module, "get_input_embeddings")
             ):
                 continue
 
@@ -655,9 +622,7 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(
-                input_embeddings.register_forward_hook(make_inputs_require_grads)
-            )
+            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
         self._require_grads_hooks = hooks
         if hooks:
@@ -665,9 +630,7 @@ def patch_enable_input_require_grads():
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
-    logger.info(
-        "Unsloth: Patched enable_input_require_grads for vision model compatibility"
-    )
+    logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
 def _is_custom_torch_build(raw_version_str):
@@ -832,9 +795,7 @@ def fix_openenv_no_vllm():
                 f.seek(0)
                 f.write(text)
                 f.truncate()
-                logger.info(
-                    "Unsloth: Patching TRL OpenEnv to fix SamplingParams not defined"
-                )
+                logger.info("Unsloth: Patching TRL OpenEnv to fix SamplingParams not defined")
     except Exception as e:
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
@@ -913,11 +874,8 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
-
     if not hasattr(huggingface_hub, "is_offline_mode"):
-        huggingface_hub.is_offline_mode = (
-            lambda: huggingface_hub.constants.HF_HUB_OFFLINE
-        )
+        huggingface_hub.is_offline_mode = lambda: huggingface_hub.constants.HF_HUB_OFFLINE
 
 
 def fix_triton_compiled_kernel_missing_attrs():
@@ -999,9 +957,7 @@ def patch_trunc_normal_precision_issue():
         if generator is None:
             return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
         try:
-            return original_trunc_normal(
-                target, mean = mean, std = std, a = a, b = b, generator = generator
-            )
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b, generator = generator)
         except TypeError as exc:
             # Older torch versions may not accept a generator keyword argument.
             msg = str(exc).lower()
@@ -1178,9 +1134,7 @@ def fix_vllm_pdl_blackwell():
             )
             return
     except Exception as e:
-        logger.debug(
-            f"Unsloth: vLLM version check failed ({e}), applying PDL workaround."
-        )
+        logger.debug(f"Unsloth: vLLM version check failed ({e}), applying PDL workaround.")
 
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
@@ -1265,11 +1219,8 @@ def patch_openspiel_env_async():
 
         try:
             import nest_asyncio
-
             nest_asyncio.apply()
-            logger.info(
-                "Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility"
-            )
+            logger.info("Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility")
         except ImportError:
             logger.info(
                 "Unsloth: nest_asyncio not installed, OpenEnv async methods may need manual wrapping"
@@ -1282,7 +1233,6 @@ def patch_torchcodec_audio_decoder():
     """Call unsloth_zoo's AudioDecoder patch."""
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
-
         _patch()
     except (ImportError, AttributeError, RuntimeError):
         pass
@@ -1298,7 +1248,6 @@ def disable_torchcodec_if_broken():
     """
     try:
         import importlib.util
-
         if importlib.util.find_spec("torchcodec") is None:
             return  # absent or already disabled
 
@@ -1327,7 +1276,6 @@ def disable_torchcodec_if_broken():
         # datasets >= 4.0: own flag gating audio/video/features/formatters.
         try:
             import datasets.config as datasets_config
-
             if hasattr(datasets_config, "TORCHCODEC_AVAILABLE"):
                 datasets_config.TORCHCODEC_AVAILABLE = False
         except ImportError:
@@ -1377,7 +1325,6 @@ def disable_broken_wandb():
         # Patch transformers' is_wandb_available (used by most trl trainers)
         try:
             import transformers.integrations.integration_utils as tf_integration
-
             tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
@@ -1387,13 +1334,11 @@ def disable_broken_wandb():
         # accelerate.utils, not accelerate.utils.imports.
         try:
             import accelerate.utils.imports as acc_imports
-
             acc_imports.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
         try:
             import accelerate.utils as acc_utils
-
             acc_utils.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
@@ -1500,7 +1445,12 @@ def _install_transformers_core_model_loading_stub():
             raise NotImplementedError
 
     class Concatenate(ConversionOps):
-        def __init__(self, dim = 0, *args, **kwargs):
+        def __init__(
+            self,
+            dim = 0,
+            *args,
+            **kwargs,
+        ):
             self.dim = dim
 
     class MergeModulelist(ConversionOps):
@@ -1508,7 +1458,13 @@ def _install_transformers_core_model_loading_stub():
             pass
 
     class Transpose(ConversionOps):
-        def __init__(self, dim0 = 0, dim1 = 1, *args, **kwargs):
+        def __init__(
+            self,
+            dim0 = 0,
+            dim1 = 1,
+            *args,
+            **kwargs,
+        ):
             self.dim0 = dim0
             self.dim1 = dim1
 
@@ -1641,6 +1597,8 @@ def patch_peft_weight_converter_compatibility():
     except (ImportError, AttributeError):
         return
 
+    _patch_peft_moe_target_conversion(twc)
+
     if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
         return
 
@@ -1660,9 +1618,7 @@ def patch_peft_weight_converter_compatibility():
 
             original_init = conversion_cls.__init__
             params = inspect.signature(original_init).parameters
-            supports_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
+            supports_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
             supports_distributed = "distributed_operation" in params
             supports_quantization = "quantization_operation" in params
             if supports_kwargs or (supports_distributed and supports_quantization):
@@ -1678,13 +1634,9 @@ def patch_peft_weight_converter_compatibility():
             ):
                 unsupported = {}
                 if not __supports_distributed and "distributed_operation" in kwargs:
-                    unsupported["distributed_operation"] = kwargs.pop(
-                        "distributed_operation"
-                    )
+                    unsupported["distributed_operation"] = kwargs.pop("distributed_operation")
                 if not __supports_quantization and "quantization_operation" in kwargs:
-                    unsupported["quantization_operation"] = kwargs.pop(
-                        "quantization_operation"
-                    )
+                    unsupported["quantization_operation"] = kwargs.pop("quantization_operation")
                 result = __original_init(self, *args, **kwargs)
                 for name, value in unsupported.items():
                     if hasattr(self, name):
@@ -1714,6 +1666,47 @@ def patch_peft_weight_converter_compatibility():
 
     twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
     twc._unsloth_weight_converter_compat_patch = True
+
+
+def _patch_peft_moe_target_conversion(twc):
+    """Keep PEFT 0.19 MoE conversion from rewriting explicit Unsloth targets."""
+    if getattr(twc, "_unsloth_moe_target_conversion_patch", False):
+        return
+
+    original_convert_moe = getattr(twc, "_convert_peft_config_moe", None)
+    if original_convert_moe is None:
+        return
+
+    @functools.wraps(original_convert_moe)
+    def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
+        if getattr(peft_config, "target_parameters", None):
+            return
+
+        target_modules = getattr(peft_config, "target_modules", None)
+        if isinstance(target_modules, str):
+            if "." in target_modules:
+                return
+            return original_convert_moe(peft_config, model_type)
+
+        if not target_modules:
+            return original_convert_moe(peft_config, model_type)
+
+        explicit_targets = {
+            target for target in target_modules if isinstance(target, str) and "." in target
+        }
+        if not explicit_targets:
+            return original_convert_moe(peft_config, model_type)
+
+        bare_targets = set(target_modules) - explicit_targets
+        if not bare_targets:
+            return
+
+        peft_config.target_modules = bare_targets
+        original_convert_moe(peft_config, model_type)
+        peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
+
+    twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    twc._unsloth_moe_target_conversion_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False
@@ -1756,9 +1749,7 @@ def _is_rocm_torch_build() -> bool:
     try:
         torch_version_raw = str(importlib_version("torch")).lower()
         if "rocm" in torch_version_raw:
-            _log_rocm_detection(
-                "Unsloth: ROCm detection matched torch version tag (+rocm)."
-            )
+            _log_rocm_detection("Unsloth: ROCm detection matched torch version tag (+rocm).")
             return True
     except Exception:
         pass
@@ -1767,18 +1758,14 @@ def _is_rocm_torch_build() -> bool:
     for key in _ROCM_ENV_HINT_KEYS:
         value = os.environ.get(key, "")
         if isinstance(value, str) and value.strip():
-            _log_rocm_detection(
-                f"Unsloth: ROCm detection matched environment key `{key}`."
-            )
+            _log_rocm_detection(f"Unsloth: ROCm detection matched environment key `{key}`.")
             return True
 
     # Filesystem / driver hints for ROCm stacks.
     for path in _ROCM_PATH_HINTS:
         try:
             if path.exists():
-                _log_rocm_detection(
-                    f"Unsloth: ROCm detection matched filesystem hint `{path}`."
-                )
+                _log_rocm_detection(f"Unsloth: ROCm detection matched filesystem hint `{path}`.")
                 return True
         except Exception:
             continue
@@ -1843,9 +1830,7 @@ def configure_amdgpu_asic_id_table_path():
             if candidate.is_file():
                 os.environ[_AMDGPU_ASIC_ID_TABLE_PATH_ENV] = str(candidate)
                 if UNSLOTH_ENABLE_LOGGING:
-                    logger.info(
-                        f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}"
-                    )
+                    logger.info(f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}")
                 return str(candidate)
         except Exception:
             continue
@@ -1886,9 +1871,7 @@ def _is_broken_causal_conv1d_error(error) -> bool:
             or ("causal_conv1d" in message and "undefined symbol" in message)
         ):
             return True
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
 
 
@@ -1913,9 +1896,7 @@ def _is_broken_vllm_error(error) -> bool:
             "libcudart" in message or "libcublas" in message or "libnvrtc" in message
         ) and "cannot open shared object file" in message:
             return True
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
 
 
@@ -1934,9 +1915,7 @@ def _get_vllm_cuda_mismatch_message(error):
         if match:
             wanted_cuda = match.group(1)
             break
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     if wanted_cuda is None:
         return None
 
@@ -1945,7 +1924,6 @@ def _get_vllm_cuda_mismatch_message(error):
     system_cuda_tag = None  # For wheel URL, e.g. "130"
     try:
         import torch
-
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
@@ -1964,7 +1942,6 @@ def _get_vllm_cuda_mismatch_message(error):
     cpu_arch = "x86_64"
     try:
         import platform
-
         cpu_arch = platform.machine()
     except Exception:
         pass
@@ -1998,7 +1975,12 @@ class _CausalConv1dImportBlockerFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _CAUSAL_CONV1D_BLOCKER_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if not CAUSAL_CONV1D_BROKEN or not _is_causal_conv1d_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
@@ -2027,7 +2009,12 @@ class _VllmImportBlockerFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _VLLM_BLOCKER_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if not VLLM_BROKEN or not _is_vllm_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
@@ -2116,7 +2103,6 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
-
             return False
         except Exception as import_error:
             failure = import_error
@@ -2178,7 +2164,6 @@ def disable_broken_causal_conv1d():
 
     try:
         import causal_conv1d  # noqa: F401
-
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):

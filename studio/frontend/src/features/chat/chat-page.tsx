@@ -389,6 +389,7 @@ const CompareContent = memo(function CompareContent({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -398,11 +399,16 @@ const CompareContent = memo(function CompareContent({
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
   return isLoraCompare ? (
-    <LoraCompareContent pairId={pairId} projectId={projectId} />
+    <LoraCompareContent
+      pairId={pairId}
+      onExitCompare={onExitCompare}
+      projectId={projectId}
+    />
   ) : (
     <GeneralCompareContent
       pairId={pairId}
@@ -413,6 +419,7 @@ const CompareContent = memo(function CompareContent({
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
+      onExitCompare={onExitCompare}
     />
   );
 });
@@ -513,8 +520,13 @@ function CompareShell({
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
+  onExitCompare,
   projectId,
-}: { pairId: string; projectId?: string | null }): ReactElement {
+}: {
+  pairId: string;
+  onExitCompare?: () => void;
+  projectId?: string | null;
+}): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -540,7 +552,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   return (
     <CompareShell
       handlesRef={handlesRef}
-      composer={<SharedComposer handlesRef={handlesRef} />}
+      composer={
+        <SharedComposer
+          handlesRef={handlesRef}
+          onExitCompare={onExitCompare}
+        />
+      }
     >
       <>
         <ComparePane
@@ -640,6 +657,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -649,6 +667,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -713,6 +732,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           handlesRef={handlesRef}
           model1={model1}
           model2={model2}
+          onExitCompare={onExitCompare}
         />
       }
     >
@@ -1092,6 +1112,15 @@ export function ChatPage(): ReactElement {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  // Tracks the latest non-compare view so exiting compare can restore it even
+  // when compare was opened from a path that does not set viewBeforeCompareRef
+  // (e.g. the composer + menu).
+  const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
+  useEffect(() => {
+    if (!search.compare) {
+      lastNonCompareViewRef.current = { ...search };
+    }
+  }, [search]);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -1804,8 +1833,7 @@ export function ChatPage(): ReactElement {
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
-  const { setPinned, isMobile } = useSidebar();
-  const openSidebar = useCallback(() => setPinned(true), [setPinned]);
+  const { isMobile } = useSidebar();
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -1821,8 +1849,14 @@ export function ChatPage(): ReactElement {
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
-    if (!saved) return;
+    // Prefer the explicit save; fall back to the last non-compare view so the
+    // composer + menu path also returns to where the user started.
+    const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
+    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    if (!saved) {
+      navigate({ to: "/chat" });
+      return;
+    }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
     // Restore usage from the last assistant message, but only if it
@@ -2074,7 +2108,6 @@ export function ChatPage(): ReactElement {
         closeModelSelector,
         openSettings,
         closeSettings,
-        openSidebar,
         enterCompare,
         exitCompare,
       }),
@@ -2086,7 +2119,6 @@ export function ChatPage(): ReactElement {
       exitCompare,
       openModelSelector,
       openSettings,
-      openSidebar,
     ],
   );
 
@@ -2333,6 +2365,7 @@ export function ChatPage(): ReactElement {
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
+            onExitCompare={exitCompare}
           />
         )}
 

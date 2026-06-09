@@ -11,9 +11,7 @@ import torch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 RL_SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl.py")
-RL_REPLACEMENTS_SOURCE_PATH = os.path.join(
-    REPO_ROOT, "unsloth", "models", "rl_replacements.py"
-)
+RL_REPLACEMENTS_SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _read(path: str) -> str:
@@ -27,10 +25,7 @@ def _load_local_align_completion_tool_mask():
     for node in tree.body:
         if isinstance(node, ast.If):
             for item in node.body:
-                if (
-                    isinstance(item, ast.FunctionDef)
-                    and item.name == "align_completion_tool_mask"
-                ):
+                if isinstance(item, ast.FunctionDef) and item.name == "align_completion_tool_mask":
                     function_src = ast.get_source_segment(src, item)
                     break
             else:
@@ -41,7 +36,11 @@ def _load_local_align_completion_tool_mask():
 
     calls = []
 
-    def align_logprobs_with_mask(logprob_tensor, completion_mask, pad_value = None):
+    def align_logprobs_with_mask(
+        logprob_tensor,
+        completion_mask,
+        pad_value = None,
+    ):
         calls.append((logprob_tensor, completion_mask, pad_value))
         return torch.tensor(
             [[1, 0, 1], [0, 1, 1]],
@@ -90,9 +89,7 @@ def test_grpo_accumulated_loss_omits_none_tool_mask_for_old_zoo():
     accelerated_loss_start = src.find('if hasattr(self.args, "loss_type"):')
     assert accelerated_loss_start != -1
     accelerated_loss_body = src[
-        accelerated_loss_start : src.find(
-            'if "train" in self._metrics:', accelerated_loss_start
-        )
+        accelerated_loss_start : src.find('if "train" in self._metrics:', accelerated_loss_start)
     ]
     assert "tool_mask = tool_mask" not in accelerated_loss_body
 

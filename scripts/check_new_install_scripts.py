@@ -53,9 +53,7 @@ HIGH = "HIGH"
 class Finding:
     __slots__ = ("severity", "name", "version", "kind", "detail")
 
-    def __init__(
-        self, severity: str, name: str, version: str, kind: str, detail: str
-    ) -> None:
+    def __init__(self, severity: str, name: str, version: str, kind: str, detail: str) -> None:
         self.severity = severity
         self.name = name
         self.version = version
@@ -206,9 +204,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
             continue  # pre-existing install-script dep; not in scope
         name = head[key]
         # key is "name@version"; rsplit("@", 1) handles scoped names.
-        version = (
-            key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
-        )
+        version = key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
         scripts = _fetch_registry_scripts(name, version)
         if scripts:
             detail = "; ".join(f"{h}={cmd!r}" for h, cmd in scripts.items())
@@ -238,8 +234,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description = (
-            "Diff two package-lock.json files and refuse any newly-"
-            "added install-script dep."
+            "Diff two package-lock.json files and refuse any newly-added install-script dep."
         ),
     )
     parser.add_argument(

@@ -94,16 +94,25 @@ function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
+  if (model.is_mlx) tags.push("MLX");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
   if (model.is_audio) tags.push("Audio");
   if (model.has_audio_input) tags.push("Audio Input");
-  if (!model.is_lora && !model.is_vision && !model.is_gguf && !model.is_audio && !model.has_audio_input)
+  if (
+    !model.is_lora &&
+    !model.is_vision &&
+    !model.is_gguf &&
+    !model.is_mlx &&
+    !model.is_audio &&
+    !model.has_audio_input
+  )
     tags.push("Base");
   return tags.join(" · ");
 }
@@ -114,6 +123,7 @@ function toChatModelSummary(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -125,6 +135,7 @@ function toChatModelSummary(model: {
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
     isGguf: Boolean(model.is_gguf),
+    isMlx: Boolean(model.is_mlx),
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
@@ -255,7 +266,8 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+    const signal = options?.signal;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
@@ -263,6 +275,11 @@ export function useChatModelRuntime() {
         getInferenceStatus(),
         listLoras(),
       ]);
+
+      // Cancellation can land while the requests above are in flight (e.g. the
+      // user cancels a load during this refresh). Bail before writing any
+      // backend state back into the store -- cancelLoading already cleared it.
+      if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
@@ -405,6 +422,7 @@ export function useChatModelRuntime() {
         });
       }
     } catch (error) {
+      if (signal?.aborted) return;
       const message =
         error instanceof Error ? error.message : "Failed to load models";
       setModelsError(message);
@@ -761,7 +779,7 @@ export function useChatModelRuntime() {
                 store.setParams({ ...store.params, ...p });
               }
             }
-            await refresh();
+            await refresh({ signal: abortCtrl.signal });
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
@@ -1056,6 +1074,8 @@ export function useChatModelRuntime() {
 
         try {
           await performLoad();
+          // User cancelled mid-refresh; cancelLoading handles teardown.
+          if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
             toast.success(`${toastDisplayName} loaded`, {
               classNames: MODEL_LOADED_TOAST_CLASSNAMES,

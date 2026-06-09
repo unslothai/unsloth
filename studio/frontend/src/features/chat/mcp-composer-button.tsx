@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Cancel01Icon,
-  McpServerIcon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useState } from "react";
+import { CheckIcon } from "lucide-react";
+import { type FC, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -23,7 +20,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 
 import {
   type McpServerConfig,
@@ -33,6 +29,23 @@ import {
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+
+// Matches the Thinking pill chevron so the affordance reads the same.
+const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
+  </svg>
+);
 
 type McpPreset = {
   id: string;
@@ -44,7 +57,7 @@ type McpPreset = {
 };
 
 // Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Add custom MCP".
+// Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "context7",
@@ -76,7 +89,11 @@ function normalizeMcpUrl(url: string): string {
 // Static, so it is not rebuilt on every render.
 const PRESET_URLS = new Set(MCP_PRESETS.map((p) => normalizeMcpUrl(p.url)));
 
-export function McpComposerButton() {
+export function McpComposerButton({
+  side = "bottom",
+}: {
+  side?: "top" | "bottom";
+} = {}) {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -93,32 +110,20 @@ export function McpComposerButton() {
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
 
-  // mcp_enabled only applies on the local tool-capable send path; grey out otherwise.
-  const usable = modelLoaded && supportsTools;
-
-  // Keep the per-chat flag in step with whether any server is enabled. Reads the
-  // store directly so the callback stays stable (no refetch loop on mount).
-  const reconcileFlag = useCallback(
-    (rows: McpServerConfig[]) => {
-      const anyEnabled = rows.some((s) => s.is_enabled);
-      const current = useChatRuntimeStore.getState().mcpEnabledForChat;
-      if (anyEnabled && !current) setMcpEnabledForChat(true);
-      else if (!anyEnabled && current) setMcpEnabledForChat(false);
-    },
-    [setMcpEnabledForChat],
-  );
+  // Grey out only when a loaded model lacks tool support; with no model yet MCP
+  // can still be pre-selected, matching the other composer tools.
+  const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(async () => {
     try {
       const rows = await listMcpServers();
       setServers(rows);
-      reconcileFlag(rows);
     } catch {
       // Keep prior state if the list call fails.
     }
-  }, [reconcileFlag]);
+  }, []);
 
-  // Initial load reconciles the pill with already-enabled servers (also on open).
+  // Load the server list on mount and whenever the menu opens.
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -206,27 +211,12 @@ export function McpComposerButton() {
           ? () => setHintKey((k) => (k === opts.key ? null : k))
           : undefined
       }
-      className={cn(
-        "group/mcp relative flex items-center justify-between gap-2",
-        opts.enabled &&
-          "bg-emerald-500/10 data-[highlighted]:bg-emerald-500/20",
-      )}
+      className={
+        opts.enabled ? "relative text-primary font-medium" : "relative"
+      }
     >
       <span className="truncate">{opts.label}</span>
-      {opts.enabled ? (
-        <span className="flex size-4 shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400">
-          <HugeiconsIcon
-            icon={Tick02Icon}
-            className="size-4 group-data-[highlighted]/mcp:hidden"
-            strokeWidth={2}
-          />
-          <HugeiconsIcon
-            icon={Cancel01Icon}
-            className="hidden size-4 text-foreground group-data-[highlighted]/mcp:block"
-            strokeWidth={2}
-          />
-        </span>
-      ) : null}
+      {opts.enabled ? <CheckIcon className="ml-auto" /> : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
           <TooltipTrigger asChild={true}>
@@ -260,28 +250,21 @@ export function McpComposerButton() {
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-3.5"
+                className="size-[15px]"
                 strokeWidth={2}
               />
               <span>MCP</span>
+              <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-64">
-            <div className="flex items-center justify-between pr-1">
-              <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => setMenuOpen(false)}
-                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Cancel01Icon}
-                  className="size-3.5"
-                  strokeWidth={2}
-                />
-              </button>
-            </div>
+          <DropdownMenuContent
+            side={side}
+            align="start"
+            sideOffset={2}
+            avoidCollisions={true}
+            className="unsloth-plus-menu mcp-menu w-[232px]"
+          >
+            <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
             {MCP_PRESETS.map((preset) => {
               const norm = normalizeMcpUrl(preset.url);
               return renderRow({
@@ -313,7 +296,7 @@ export function McpComposerButton() {
                 setDialogOpen(true);
               }}
             >
-              Add custom MCP
+              Manage MCP servers
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -330,7 +313,7 @@ export function McpComposerButton() {
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-3.5"
+                className="size-[15px]"
                 strokeWidth={2}
               />
               <span>MCP</span>
@@ -348,7 +331,6 @@ export function McpComposerButton() {
           // Resync after managing servers.
           if (!next) void refresh();
         }}
-        openToCreate={true}
       />
     </>
   );
