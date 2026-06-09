@@ -11,22 +11,146 @@ def _keyword_in_column(keyword: str, col_name: str) -> bool:
     return re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE) is not None
 
 
+CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
+_CHATML_KEYS = frozenset({"role", "content"})
+_SHAREGPT_KEYS = frozenset({"from", "value"})
+_TRACE_SUFFIXES = ("__trace", "_trace")
+
+
+def _sample_dataset_rows(dataset, limit: int = 100) -> list[dict]:
+    try:
+        total = min(len(dataset), limit)
+        return [dataset[index] for index in range(total)]
+    except Exception:
+        rows = []
+        try:
+            for index, row in enumerate(dataset):
+                if index >= limit:
+                    break
+                rows.append(row)
+        except Exception:
+            return []
+        return rows
+
+
+def _get_dataset_column_names(dataset, sample: dict) -> list[str]:
+    column_names = getattr(dataset, "column_names", None)
+    if isinstance(column_names, list):
+        return [str(column) for column in column_names]
+    return [str(column) for column in sample.keys()]
+
+
+def _is_trace_conversation_name(column_name: str) -> bool:
+    return column_name.lower().endswith(_TRACE_SUFFIXES)
+
+
+def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | None:
+    turn_keys: set[str] = set()
+    has_chatml = False
+    has_sharegpt = False
+
+    for row in rows:
+        if not isinstance(row, dict) or column_name not in row:
+            continue
+        chat_data = row[column_name]
+        if not isinstance(chat_data, list) or len(chat_data) == 0:
+            continue
+        for turn in chat_data:
+            if not isinstance(turn, dict):
+                continue
+            keys = {str(key) for key in turn.keys()}
+            turn_keys.update(keys)
+            if _SHAREGPT_KEYS.issubset(keys):
+                has_sharegpt = True
+            if _CHATML_KEYS.issubset(keys):
+                has_chatml = True
+
+    if has_sharegpt:
+        return {
+            "format": "sharegpt",
+            "chat_column": column_name,
+            "needs_standardization": True,
+            "sample_keys": sorted(turn_keys),
+        }
+    if has_chatml:
+        return {
+            "format": "chatml",
+            "chat_column": column_name,
+            "needs_standardization": False,
+            "sample_keys": sorted(turn_keys),
+        }
+    if turn_keys:
+        return {
+            "format": "unknown",
+            "chat_column": column_name,
+            "needs_standardization": None,
+            "sample_keys": sorted(turn_keys),
+        }
+    return None
+
+
+def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> dict | None:
+    column_name_set = set(column_names)
+    unknown_exact = None
+    for column_name in CONVERSATION_COLUMNS:
+        if column_name not in column_name_set:
+            continue
+        inspected = _inspect_conversation_column(rows, column_name)
+        if inspected and inspected["format"] in {"sharegpt", "chatml"}:
+            return inspected
+        if inspected and unknown_exact is None:
+            unknown_exact = inspected
+
+    structural_candidates = []
+    for column_name in column_names:
+        if column_name in CONVERSATION_COLUMNS:
+            continue
+        inspected = _inspect_conversation_column(rows, column_name)
+        if inspected and inspected["format"] in {"sharegpt", "chatml"}:
+            structural_candidates.append(inspected)
+
+    trace_candidates = [
+        candidate
+        for candidate in structural_candidates
+        if _is_trace_conversation_name(candidate["chat_column"])
+    ]
+    if len(trace_candidates) == 1:
+        return trace_candidates[0]
+    if len(trace_candidates) > 1:
+        return unknown_exact
+    if len(structural_candidates) == 1:
+        return structural_candidates[0]
+    if unknown_exact is not None:
+        return unknown_exact
+    return None
+
+
 def detect_dataset_format(dataset):
     """Detect dataset format by inspecting structure.
 
     Returns:
         dict: {
             "format": "alpaca" | "sharegpt" | "chatml" | "unknown",
-            "chat_column": "messages" | "conversations" | None,
+            "chat_column": str | None,
             "needs_standardization": bool,
             "sample_keys": list of keys found in messages (for debugging)
         }
     """
-    column_names = set(next(iter(dataset)).keys())
+    sample_rows = _sample_dataset_rows(dataset)
+    if not sample_rows:
+        return {
+            "format": "unknown",
+            "chat_column": None,
+            "needs_standardization": None,
+            "sample_keys": [],
+        }
+
+    column_names = _get_dataset_column_names(dataset, sample_rows[0])
+    column_name_set = set(column_names)
 
     # Alpaca
     alpaca_columns = {"instruction", "output"}
-    if alpaca_columns.issubset(column_names):
+    if alpaca_columns.issubset(column_name_set):
         return {
             "format": "alpaca",
             "chat_column": None,
@@ -34,57 +158,9 @@ def detect_dataset_format(dataset):
             "sample_keys": [],
         }
 
-    # Chat-based formats (messages or conversations)
-    chat_column = None
-    if "messages" in column_names:
-        chat_column = "messages"
-    elif "conversations" in column_names:
-        chat_column = "conversations"
-    elif "texts" in column_names:
-        chat_column = "texts"
-
-    if chat_column:
-        try:
-            sample = next(iter(dataset))
-            chat_data = sample[chat_column]
-
-            if chat_data and len(chat_data) > 0:
-                first_msg = chat_data[0]
-                msg_keys = set(first_msg.keys())
-
-                # ShareGPT: "from"/"value"
-                if "from" in msg_keys or "value" in msg_keys:
-                    return {
-                        "format": "sharegpt",
-                        "chat_column": chat_column,
-                        "needs_standardization": True,
-                        "sample_keys": list(msg_keys),
-                    }
-
-                # ChatML: "role"/"content"
-                elif "role" in msg_keys and "content" in msg_keys:
-                    return {
-                        "format": "chatml",
-                        "chat_column": chat_column,
-                        "needs_standardization": False,
-                        "sample_keys": list(msg_keys),
-                    }
-
-                else:
-                    return {
-                        "format": "unknown",
-                        "chat_column": chat_column,
-                        "needs_standardization": None,
-                        "sample_keys": list(msg_keys),
-                    }
-        except Exception as e:
-            return {
-                "format": "unknown",
-                "chat_column": chat_column,
-                "needs_standardization": None,
-                "sample_keys": [],
-                "error": str(e),
-            }
+    conversation = _detect_conversation_column(sample_rows, column_names)
+    if conversation:
+        return conversation
 
     return {
         "format": "unknown",
