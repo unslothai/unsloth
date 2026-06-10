@@ -97,16 +97,25 @@ function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
+  if (model.is_mlx) tags.push("MLX");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
   if (model.is_audio) tags.push("Audio");
   if (model.has_audio_input) tags.push("Audio Input");
-  if (!model.is_lora && !model.is_vision && !model.is_gguf && !model.is_audio && !model.has_audio_input)
+  if (
+    !model.is_lora &&
+    !model.is_vision &&
+    !model.is_gguf &&
+    !model.is_mlx &&
+    !model.is_audio &&
+    !model.has_audio_input
+  )
     tags.push("Base");
   return tags.join(" · ");
 }
@@ -117,6 +126,7 @@ function toChatModelSummary(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -128,6 +138,7 @@ function toChatModelSummary(model: {
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
     isGguf: Boolean(model.is_gguf),
+    isMlx: Boolean(model.is_mlx),
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
@@ -233,9 +244,8 @@ export function useChatModelRuntime() {
         listLoras(),
       ]);
 
-      // Cancellation can land while the requests above are in flight (e.g. the
-      // user cancels a load during this refresh). Bail before writing any
-      // backend state back into the store -- cancelLoading already cleared it.
+      // Cancellation can land while the requests above are in flight. Bail
+      // before writing backend state back -- cancelLoading already cleared it.
       if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
@@ -436,15 +446,12 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto whenever the user
-            // switches to a different model. Spec strategy is a
-            // per-model decision: a sub-3B non-MTP GGUF that ran with
-            // "Off" should not carry that choice into a 27B MTP GGUF
-            // where Auto would auto-promote to draft-mtp. The user can
-            // still pick a forced mode on the new model; this just
-            // clears the stale prior-model choice so the backend's
-            // platform-aware path runs by default. Same applies to
-            // spec_draft_n_max which is MTP-only.
+            // Reset Speculative Decoding to Auto on model switch: spec
+            // strategy is per-model, so a sub-3B non-MTP GGUF's "Off" must
+            // not carry into a 27B MTP GGUF where Auto auto-promotes to
+            // draft-mtp. Clears the stale prior choice so the backend's
+            // platform-aware path runs by default; same for spec_draft_n_max
+            // (MTP-only). The user can still force a mode on the new model.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
               useChatRuntimeStore.setState({
                 speculativeType: null,
@@ -688,17 +695,15 @@ export function useChatModelRuntime() {
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models (GGUF and non-GGUF).
-        // Then, once the download wraps (or for already-cached models),
-        // poll the llama-server mmap phase so "Starting model..." no
-        // longer looks frozen for several minutes on large MoE models.
+        // Poll download progress for non-cached models, then (after download
+        // or for cached models) poll the llama-server mmap phase so "Starting
+        // model..." doesn't look frozen for minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate / ETA estimation.
-        // Shared across download + mmap phases so the estimator doesn't
-        // reset when the phase flips.
+        // Rolling window of byte samples for rate/ETA estimation, shared
+        // across download + mmap phases so it survives phase flips.
         type Sample = { t: number; b: number };
         const MIN_SAMPLES = 3;
         const MIN_WINDOW = 3_000; // ms

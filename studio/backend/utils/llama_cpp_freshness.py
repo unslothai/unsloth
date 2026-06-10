@@ -38,7 +38,6 @@ def _cache_dir() -> Path:
     """Lazy import so tests can stub storage_roots."""
     try:
         from utils.paths.storage_roots import cache_root
-
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
@@ -46,7 +45,7 @@ def _cache_dir() -> Path:
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json.
-    None means no marker (source build / custom path) or invalid JSON."""
+    None = no marker (source build / custom path) or invalid JSON."""
     if not binary_path:
         return None
     cached = _marker_cache.get(binary_path)
@@ -54,10 +53,7 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
         return cached
     p = Path(binary_path)
     marker: Optional[dict] = None
-    # Cover all _find_llama_server_binary layouts:
-    #   <install>/llama-server                          (1 up)
-    #   <install>/build/bin/llama-server                (3 up, Linux/macOS cmake)
-    #   <install>/build/bin/Release/llama-server.exe   (4 up, Windows cmake)
+    # Cover all _find_llama_server_binary layouts (binary is 1-4 dirs deep):
     for parent in p.parents[:5]:
         candidate = parent / _INSTALL_MARKER_NAME
         if candidate.is_file():
@@ -136,9 +132,7 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     return tag if isinstance(tag, str) and tag else None
 
 
-def latest_published_release(
-    repo: str, *, force_refresh: bool = False
-) -> Optional[str]:
+def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:

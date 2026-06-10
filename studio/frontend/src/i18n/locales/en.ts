@@ -34,6 +34,7 @@ export const en = {
       newChat: "New Chat",
       compare: "Compare",
       search: "Search",
+      hub: "Hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -107,6 +108,16 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a short title from the first message.",
+      helperLlm: {
+        sectionTitle: "Helper LLM",
+        preloadOnStartup: "Pre-cache Helper LLM on startup",
+        preloadOnStartupDescription:
+          "Download and cache the AI Assist helper model in the background when Studio starts. Off by default; AI Assist can still download it on demand when clicked.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
+        loadError: "Failed to load Helper LLM settings.",
+        saveError: "Failed to save Helper LLM settings.",
+      },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:

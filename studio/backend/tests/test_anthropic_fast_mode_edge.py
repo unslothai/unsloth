@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Edge-case coverage for the Anthropic fast-mode + refusal wiring.
+"""Edge-case coverage for Anthropic fast-mode + refusal wiring.
 
-Complements ``test_anthropic_fast_mode_and_refusal.py`` (happy path)
-with dated snapshots, strict opt-in (future Opus families do not
-auto-enable), multi-beta header merging, refusal stream ordering, and
-the non-destruction guarantee for unset/None fast_mode.
+Complements ``test_anthropic_fast_mode_and_refusal.py`` (happy path) with
+dated snapshots, strict opt-in (future Opus families do not auto-enable),
+multi-beta header merging, refusal stream ordering, and the
+non-destruction guarantee for unset/None fast_mode.
 """
 
 import asyncio
@@ -60,7 +60,11 @@ def _refusal_sse(model: str = "claude-opus-4-7") -> bytes:
     )
 
 
-def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
+def _capture(
+    monkeypatch,
+    sse: bytes = b"",
+    **kwargs,
+) -> tuple[dict, list[str]]:
     """Install a MockTransport, drive one streamed call, return body+lines."""
     captured: dict = {}
 
@@ -124,7 +128,7 @@ def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
 
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
 def test_fast_mode_does_not_auto_enable_on_future_opus_4_8(monkeypatch):
-    """Future ``claude-opus-4-8`` must not auto-enable; opt-in per family."""
+    """Future ``claude-opus-4-8`` must not auto-enable; per-family opt-in."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
@@ -244,7 +248,7 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
     _drive(run())
 
     assert cap_none["body"] == captured["body"], (cap_none["body"], captured["body"])
-    # Headers can vary by httpx-injected fields (host, connection); compare
+    # Headers vary by httpx-injected fields (host, connection); compare
     # the load-bearing ones.
     for key in ("anthropic-version", "x-api-key", "content-type"):
         assert cap_none["headers"].get(key) == captured["headers"].get(key), key
@@ -266,9 +270,7 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     """The notice content delta must precede the finish_reason chunk."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
-    filter_idx = next(
-        i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l
-    )
+    filter_idx = next(i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l)
     assert notice_idx < filter_idx, (notice_idx, filter_idx, lines)
 
 
@@ -321,8 +323,7 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     assert notice_chunk is not None, lines
     choice = notice_chunk["choices"][0]
     assert "delta" in choice and "content" in choice["delta"], notice_chunk
-    # Must NOT carry a finish_reason itself -- that comes on the next
-    # chunk.
+    # Must NOT carry a finish_reason itself -- that comes on the next chunk.
     assert choice.get("finish_reason") in (None,), notice_chunk
     # Refusal text is plain-spoken; no embedded sentinel.
     assert "studio:anthropic-refusal" not in choice["delta"]["content"]
@@ -350,7 +351,6 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     """Tuple must exactly match the two families in the upstream docs:
     https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
-
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -421,9 +421,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
 def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "standard"))
     parsed = [
-        json.loads(l[len("data: ") :])
-        for l in lines
-        if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
     ]
     speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]
     assert "standard" in speeds, parsed
@@ -433,9 +431,7 @@ def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
     """Studio must not invent ``usage.speed`` when upstream omits it."""
     _, lines = _capture(monkeypatch)
     parsed = [
-        json.loads(l[len("data: ") :])
-        for l in lines
-        if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
     ]
     for p in parsed:
         usage = p.get("usage") or {}

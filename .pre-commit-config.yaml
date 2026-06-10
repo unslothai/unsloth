@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.15
+    rev: v0.15.16
     hooks:
       - id: ruff
         args:
@@ -14,5 +14,8 @@ repos:
         entry: scripts/run_ruff_format.py
         language: python
         types: [python]
+        # Mirror ruff's [tool.ruff] extend-exclude so this hook does not
+        # half-process files ruff itself skips (which produced churn).
+        exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$'
         additional_dependencies:
           - ruff==0.6.9
