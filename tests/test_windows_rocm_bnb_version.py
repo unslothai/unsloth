@@ -186,6 +186,36 @@ def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_
     assert os.environ["BNB_ROCM_VERSION"] == "999"
 
 
+def test_opt_out_unseats_sitecustomize_seeded_value(import_fixes, clean_env):
+    # The opt-out must also drop a default our own sitecustomize block seeded,
+    # so bitsandbytes never sees the override the user disabled.
+    clean_env.setenv("BNB_ROCM_VERSION", "72")
+    clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
+    clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
+    assert "BNB_ROCM_VERSION" not in os.environ
+    assert "UNSLOTH_BNB_ROCM_VERSION_SOURCE" not in os.environ
+
+
+def test_opt_out_keeps_explicit_user_value(import_fixes, clean_env):
+    # Opt-out must never remove a value the user set themselves (no marker).
+    clean_env.setenv("BNB_ROCM_VERSION", "999")
+    clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
+    assert os.environ["BNB_ROCM_VERSION"] == "999"
+
+
+def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env):
+    # "" counts as present: without the sitecustomize marker it is not ours
+    # to overwrite.
+    clean_env.setenv("BNB_ROCM_VERSION", "")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
+    assert os.environ["BNB_ROCM_VERSION"] == ""
+
+
 # ---------------------------------------------------------------------------
 # _is_hip_torch_build (the strict gate -- regression for the HIP-SDK-on-a-
 # CUDA-box false positive: env hints like HIP_PATH must NOT count)

@@ -2251,6 +2251,12 @@ def maybe_set_windows_rocm_bnb_version():
     if sys.platform != "win32":
         return None
     if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
+        # Make the opt-out real even when Studio's sitecustomize.py already
+        # seeded the var: drop our managed default so bitsandbytes never sees
+        # it. Explicit user values carry no marker and are left alone.
+        if os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize":
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop("UNSLOTH_BNB_ROCM_VERSION_SOURCE", None)
         return None
     if "BNB_ROCM_VERSION" in os.environ and (
         os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") != "sitecustomize"
