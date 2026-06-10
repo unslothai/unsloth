@@ -139,7 +139,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
+                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.1]",
               )}
             >
               <HugeiconsIcon
@@ -234,7 +234,7 @@ export function DownloadManagerPanel() {
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
             >
               <HugeiconsIcon
                 icon={ArrowDown01Icon}

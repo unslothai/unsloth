@@ -666,7 +666,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
                 <QuantBadge
@@ -723,7 +723,7 @@ export function GgufDownloadCard({
           <PopoverContent
             align="start"
             side="bottom"
-            sideOffset={8}
+            sideOffset={0}
             avoidCollisions={false}
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
