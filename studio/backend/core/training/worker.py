@@ -2052,6 +2052,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
+            # bitsandbytes' import-time get_rocm_gpu_arch() probe runs
+            # `hipinfo.exe` from PATH; the AMD torch wheel ships it in the venv
+            # Scripts dir, which is on PATH only for activated venvs. Prepend
+            # it so the probe succeeds instead of logging a scary (harmless)
+            # "Could not detect ROCm GPU architecture" ERROR on every import.
+            # Normally inherited from main.py's env, but workers can also be
+            # spawned standalone (tests, CLI) -- keep the guard here too.
+            _scripts_dir = os.path.dirname(sys.executable)
+            if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
+                import shutil as _shutil
+                if not _shutil.which("hipinfo.exe"):
+                    os.environ["PATH"] = (
+                        _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+                    )
+
             # BNB auto-detects the HIP version from torch.version.hip and uses
             # it to choose which DLL to load (e.g. "7.13" → rocm713.dll).
             # AMD's Windows BNB prerelease wheel ships only one rocm DLL, and its
@@ -2279,10 +2294,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 if _is_unified and not _gcn_arch:
                     logger.debug(
                         "ROCm OOM guard: gcnArchName absent -- inferred "
-                        "unified memory from device name %r; applying 0.80 cap",
+                        "unified memory from device name %r; applying unified cap",
                         _dev_name,
                     )
-                _mem_fraction = 0.80 if _is_unified else 0.90
+                # Unified hosts on native Windows: mem_get_info's total is the
+                # WDDM budget the driver grants HIP (BIOS carve + ~half of the
+                # remaining RAM) -- the OS share is already outside it, so the
+                # Linux 0.80 starve-protection double-taxes (48.49 GiB budget →
+                # 38.79 allowed) and blocks loads that fit in free memory.
+                # 1.0 removes the double-tax. Current AMD Windows wheels only
+                # enforce sub-1.0 fractions (measured on gfx1151: 0.5 caps,
+                # 1.0 still allocates past the budget via WDDM overcommit), so
+                # 1.0 behaves like torch's uncapped default, with WDDM
+                # arbitrating residency; on wheels that do enforce it, it caps
+                # at exactly the driver-granted budget. On Linux the total
+                # spans nearly all RAM, so keep the 0.80 OS headroom there.
+                if _is_unified:
+                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
+                else:
+                    _mem_fraction = 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
                     "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
@@ -2292,6 +2322,27 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _dev_name,
                     _gcn_arch or "unknown arch",
                 )
+                # Unified Windows APUs: the WDDM budget is user-raisable, but
+                # nothing on the box says so -- users see "48 GB VRAM" on a
+                # 96 GB machine and assume a Studio bug. Say where the limit
+                # comes from and how to raise it.
+                if _is_unified and sys.platform == "win32":
+                    try:
+                        import psutil as _psutil
+                        _phys = _psutil.virtual_memory().total
+                        _granted = _torch_mem.cuda.mem_get_info(0)[1]
+                        if _granted < 0.75 * _phys:
+                            logger.info(
+                                "Windows grants the GPU %.1f GiB of %.1f GiB "
+                                "system RAM (driver/WDDM budget). To raise it: "
+                                "increase the BIOS UMA frame buffer size, or "
+                                "AMD Software > Performance > Tuning > "
+                                "Variable Graphics Memory.",
+                                _granted / 1024**3,
+                                _phys / 1024**3,
+                            )
+                    except Exception:
+                        pass
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 

@@ -11,12 +11,15 @@ Covers the three classification paths:
 Regression for: Strix Halo (gfx1151) misclassified as discrete on AMD SDK /
 Radeon wheels that populate props.name = "Radeon 8060S Graphics" but do NOT
 set any gcnArchName attribute.  Without the 8060s/8050s name patterns the
-fallback returned is_unified=False, applying the 0.90 fraction instead of
-0.80 and leaving only ~12.8 GiB OS headroom on a 128 GiB unified-memory pool.
+fallback returned is_unified=False, applying the discrete 0.90 fraction
+instead of the unified cap (0.80 on Linux, where mem_get_info spans nearly
+all RAM; budget-exact 1.0 on native Windows, where the total is already the
+WDDM grant and the OS share lives outside it).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -172,3 +175,35 @@ class TestDeviceNameFallback:
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is False
+
+
+# ── Fraction selection (source-pinned) ───────────────────────────────────────
+
+
+_WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
+
+
+class TestMemFractionSelection:
+    """Pin the per-platform fraction policy in worker.py section 1g.
+
+    On native Windows, torch.cuda.mem_get_info's total is the WDDM budget
+    the driver grants HIP -- the OS share of RAM is already outside it, so
+    a 0.80 cap double-taxes (field report: 48.49 GiB budget -> '38.79 GiB
+    allowed' OOM denying a 47.29 GiB load that fit in free memory). 1.0
+    removes the double-tax; current AMD Windows wheels enforce only
+    sub-1.0 fractions, so it behaves like torch's uncapped default with
+    WDDM arbitrating residency (measured on gfx1151)."""
+
+    def test_unified_win32_uses_budget_exact_fraction(self) -> None:
+        source = _WORKER_PY.read_text(encoding = "utf-8")
+        assert '1.0 if sys.platform == "win32" else 0.80' in source
+
+    def test_discrete_keeps_090(self) -> None:
+        source = _WORKER_PY.read_text(encoding = "utf-8")
+        assert "_mem_fraction = 0.90" in source
+
+    def test_win32_unified_logs_vgm_hint(self) -> None:
+        """Users must learn the WDDM budget is raisable (BIOS UMA / AMD
+        Software Variable Graphics Memory) instead of assuming a bug."""
+        source = _WORKER_PY.read_text(encoding = "utf-8")
+        assert "Variable Graphics Memory" in source

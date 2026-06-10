@@ -581,6 +581,18 @@ def _install_bnb_windows_rocm() -> bool:
     if "BNB_ROCM_VERSION" not in os.environ:
         _ver = _detect_bnb_rocm_dll_ver() or "72"
         os.environ["BNB_ROCM_VERSION"] = _ver
+    # Make hipInfo.exe (shipped into the venv Scripts dir by the AMD torch
+    # wheel) resolvable via PATH for this process and every child python the
+    # installer spawns (import checks, precompile): bitsandbytes runs
+    # `hipinfo.exe` at import time to detect the GPU arch and logs a scary
+    # (harmless) ERROR + WARNING on every import when it is missing. The venv
+    # Scripts dir is on PATH only when the venv is activated, which neither
+    # Studio nor the installer's child processes ever do.
+    _scripts_dir = os.path.dirname(sys.executable)
+    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")) and not shutil.which(
+        "hipinfo.exe"
+    ):
+        os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
     return True
 
 

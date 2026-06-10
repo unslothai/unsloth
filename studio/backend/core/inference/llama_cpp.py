@@ -3297,51 +3297,92 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
-                # Defensive kill: if a concurrent load slipped past Phase 1
-                # (because its `self._process` was None at the time) and
-                # already stored a Popen handle here, drop that orphan
-                # before we overwrite the reference. See issue #5161.
-                self._kill_process()
+                # One-shot --fit off retry: recent llama.cpp runs a "fitting
+                # params to device memory" step by default (--fit defaults to
+                # 'on') even when -ngl is explicit. That step has aborted on
+                # some ROCm hosts (ggml-cuda.cu ROCm error during worst-case
+                # estimation, e.g. MTP + mmproj models on gfx1151). When
+                # Studio's own VRAM math already placed the model
+                # (use_fit=False), the step is redundant second-guessing --
+                # retry once with --fit off before declaring the load failed.
+                # Never retry when fit was requested (use_fit) or the caller
+                # passed an explicit fit flag via extra args.
+                _fit_retry_allowed = self._fit_off_retry_eligible(cmd, use_fit)
+                for _spawn_attempt in (0, 1):
+                    # Defensive kill: if a concurrent load slipped past Phase 1
+                    # (because its `self._process` was None at the time) and
+                    # already stored a Popen handle here, drop that orphan
+                    # before we overwrite the reference. See issue #5161.
+                    # Also reaps the crashed first attempt on the retry pass.
+                    self._kill_process()
 
-                self._stdout_lines = []
-                # Tee llama-server output to a dedicated log file so a
-                # post-mortem in CI (or after a remote-debug session)
-                # has the full subprocess trail even when the parent
-                # only stored the last 50 lines. Path lives under the
-                # studio home so it ships in the same place all other
-                # Studio logs live.
-                self._llama_log_fh = None
-                try:
-                    log_dir = _swa_cache_path().parent / "logs" / "llama-server"
-                    log_dir.mkdir(parents = True, exist_ok = True)
-                    self._llama_log_path = (
-                        log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+                    self._stdout_lines = []
+                    # Tee llama-server output to a dedicated log file so a
+                    # post-mortem in CI (or after a remote-debug session)
+                    # has the full subprocess trail even when the parent
+                    # only stored the last 50 lines. Path lives under the
+                    # studio home so it ships in the same place all other
+                    # Studio logs live.
+                    self._llama_log_fh = None
+                    try:
+                        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                        log_dir.mkdir(parents = True, exist_ok = True)
+                        self._llama_log_path = (
+                            log_dir
+                            / f"llama-{int(time.time())}-port-{self._port}.log"
+                        )
+                        self._llama_log_fh = open(
+                            self._llama_log_path,
+                            "w",
+                            encoding = "utf-8",
+                            buffering = 1,
+                        )
+                        logger.info(
+                            f"llama-server stdout/stderr -> {self._llama_log_path}"
+                        )
+                    except OSError as e:
+                        # Best-effort; never block the load on logging.
+                        logger.debug(f"Could not open llama-server log file: {e}")
+                        self._llama_log_path = None
+                    self._process = subprocess.Popen(
+                        cmd,
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.STDOUT,
+                        text = True,
+                        env = env,
+                        **_windows_hidden_subprocess_kwargs(),
                     )
-                    self._llama_log_fh = open(
-                        self._llama_log_path,
-                        "w",
-                        encoding = "utf-8",
-                        buffering = 1,
-                    )
-                    logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-                except OSError as e:
-                    # Best-effort; never block the load on logging.
-                    logger.debug(f"Could not open llama-server log file: {e}")
-                    self._llama_log_path = None
-                self._process = subprocess.Popen(
-                    cmd,
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.STDOUT,
-                    text = True,
-                    env = env,
-                    **_windows_hidden_subprocess_kwargs(),
-                )
 
-                # Start background thread to drain stdout and prevent pipe deadlock
-                self._stdout_thread = threading.Thread(
-                    target = self._drain_stdout, daemon = True, name = "llama-stdout"
-                )
-                self._stdout_thread.start()
+                    # Start background thread to drain stdout and prevent pipe deadlock
+                    self._stdout_thread = threading.Thread(
+                        target = self._drain_stdout, daemon = True, name = "llama-stdout"
+                    )
+                    self._stdout_thread.start()
+                    if self._wait_for_health(timeout = 600.0):
+                        break
+                    _startup_crashed = (
+                        self._process.poll() is not None
+                        and self._process.returncode != 0
+                    )
+                    if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
+                        logger.warning(
+                            "llama-server crashed during startup (exit code %s) "
+                            "with the default memory-fit step enabled; Studio "
+                            "already verified the model fits, retrying once "
+                            "with --fit off. Crash log: %s",
+                            self._process.returncode,
+                            self._llama_log_path,
+                        )
+                        cmd = [*cmd, "--fit", "off"]
+                        continue
+                    self._kill_process()
+                    raise RuntimeError(
+                        self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            model_identifier,
+                        )
+                    )
 
                 # Store the resolved on-disk path, not the caller's kwarg. In
                 # HF mode the caller passes gguf_path=None and the real path
@@ -3374,17 +3415,7 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                # Wait for llama-server to become healthy
-                if not self._wait_for_health(timeout = 600.0):
-                    self._kill_process()
-                    raise RuntimeError(
-                        self._classify_llama_start_failure(
-                            "\n".join(self._stdout_lines[-50:]),
-                            gguf_path,
-                            self._model_identifier,
-                        )
-                    )
-
+                # Health was confirmed inside the spawn/retry loop above.
                 self._healthy = True
 
                 # Commit caller intent only after _healthy=True so a
@@ -4067,6 +4098,23 @@ class LlamaCppBackend:
         """atexit handler to ensure llama-server is terminated."""
         self._kill_process()
 
+    @staticmethod
+    def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
+        """Whether a llama-server startup crash may be retried with --fit off.
+
+        Only when Studio's own VRAM math placed the model (use_fit=False)
+        and nothing on the command line set the fit mode explicitly
+        (-fit / --fit, space- or equals-form). --fit-ctx / --fit-target /
+        -fitc / -fitt tune the fit step but do not select the mode, so
+        they do not block the retry.
+        """
+        if use_fit:
+            return False
+        for a in cmd:
+            if a in ("-fit", "--fit") or a.startswith(("-fit=", "--fit=")):
+                return False
+        return True
+
     def _wait_for_health(
         self,
         timeout: float = 120.0,
@@ -4087,9 +4135,17 @@ class LlamaCppBackend:
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
+                # Keep the TAIL: crash details (abort reason, ROCm/CUDA error
+                # text) print last, after the long startup banner. Head
+                # truncation has cut off exactly the diagnostic line before.
+                _log_hint = (
+                    f" Full log: {self._llama_log_path}"
+                    if getattr(self, "_llama_log_path", None)
+                    else ""
+                )
                 logger.error(
                     f"llama-server exited with code {self._process.returncode}. "
-                    f"Output: {output[:2000]}"
+                    f"Output (tail): {output[-2000:]}{_log_hint}"
                 )
                 return False
 

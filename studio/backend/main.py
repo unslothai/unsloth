@@ -61,6 +61,23 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
+    # ── Windows AMD ROCm: make hipInfo.exe resolvable for subprocess probes ──
+    # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via PATH at import
+    # time; the AMD torch wheel ships it in the venv Scripts dir, which is on
+    # PATH only when the venv is activated -- Studio launches python directly.
+    # Without this, every bitsandbytes import logs a scary (but harmless)
+    # "Could not detect ROCm GPU architecture: [WinError 2]" ERROR + WARNING.
+    # Gated on the file existing: only AMD ROCm wheels ship hipInfo.exe, so
+    # NVIDIA/CPU hosts are untouched. os.add_dll_directory above does not help
+    # here -- subprocess PATH resolution ignores DLL search directories.
+    _scripts_dir = os.path.dirname(sys.executable)
+    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
+        import shutil as _shutil
+        if not _shutil.which("hipinfo.exe"):
+            os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+        del _shutil
+    del _scripts_dir
+
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
     # bitsandbytes on Windows ROCm tries to load libbitsandbytes_rocm<ver>.dll
     # where <ver> comes from torch.version.hip (e.g. "7.13..." → "713").

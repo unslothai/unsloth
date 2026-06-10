@@ -2432,6 +2432,38 @@ class TestServerStartupRocmFixes:
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         assert '"BNB_ROCM_VERSION" not in os.environ' in source
 
+    # ── hipInfo.exe PATH prepend (bitsandbytes arch-probe fix) ────────────────
+    # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via subprocess PATH
+    # at import time. The AMD torch wheel ships hipInfo.exe in the venv
+    # Scripts dir, which is on PATH only for activated venvs -- Studio and the
+    # installer launch python directly, so without the prepend every bnb
+    # import logs "Could not detect ROCm GPU architecture: [WinError 2]".
+
+    def test_main_py_prepends_hipinfo_dir_to_path(self):
+        """main.py must make hipInfo.exe resolvable before bnb imports."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert "hipInfo.exe" in source
+        # The prepend must come before the BNB_ROCM_VERSION block (both run
+        # pre-import; order documents that bnb sees the fixed PATH).
+        assert source.find("hipInfo.exe") < source.find("BNB_ROCM_VERSION")
+
+    def test_main_py_hipinfo_prepend_gated_on_file_presence(self):
+        """Only AMD ROCm wheels ship hipInfo.exe; NVIDIA/CPU hosts must be
+        untouched, so the prepend must check the file exists first."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert 'os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe"))' in source
+
+    def test_worker_py_prepends_hipinfo_dir_to_path(self):
+        """worker.py must mirror the prepend for standalone-spawned workers."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "hipInfo.exe" in source
+
+    def test_install_stack_prepends_hipinfo_dir_to_path(self):
+        """install_python_stack.py must prepend so the installer's child
+        import checks inherit a PATH where bnb's probe succeeds."""
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        assert "hipInfo.exe" in source
+
     # ── torch._C._distributed_c10d stubs in hardware.py ──────────────────────
 
     def test_hardware_py_injects_distributed_c10d_stub(self):
