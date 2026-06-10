@@ -333,7 +333,9 @@ verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NP
 # avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     substep "installing bun..."
-    if run_maybe_quiet npm install -g bun && command -v bun &>/dev/null; then
+    # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
+    # postinstall fetches its binary; without it the install is a broken stub.
+    if run_maybe_quiet npm install -g bun --allow-scripts=bun && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
