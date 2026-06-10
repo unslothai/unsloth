@@ -1049,7 +1049,11 @@ def patch_dgx_spark_runtime_defaults():
     _frac = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")
     if _frac:
         try:
-            torch.cuda.set_per_process_memory_fraction(float(_frac))
+            # Only (0, 1] is a usable cap: 0 would make EVERY allocation OOM
+            # and values > 1 are rejected by torch. Out-of-range = no cap.
+            _frac_val = float(_frac)
+            if 0.0 < _frac_val <= 1.0:
+                torch.cuda.set_per_process_memory_fraction(_frac_val)
         except Exception:
             pass
 

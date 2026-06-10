@@ -703,6 +703,36 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     return gcn_arch, is_unified
 
 
+def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
+    """Classify an NVIDIA device as Spark-class unified-memory or discrete.
+
+    Returns ``(marker, is_unified)``:
+    - ``marker``: the signal that matched (``"is_integrated"`` or the matching
+      device-name token), else ``""``.
+    - ``is_unified``: ``True`` for Spark-class parts that share one memory pool
+      with the OS (DGX Spark / GB10, N1X "RTX Spark", Grace-Blackwell desksides)
+      — these need the same lower ``set_per_process_memory_fraction`` cap as the
+      ROCm APUs: exhausting the shared pool can stall the whole box instead of
+      raising a catchable OutOfMemoryError.
+
+    Classification priority:
+    1. ``is_integrated`` device property (authoritative on native Linux).
+    2. Device-name token match — WSL2's GPU paravirtualization masks
+       ``is_integrated`` to 0 and renames the device (the N1X reports
+       ``JMJWOA-Generic-GPU`` with ``is_integrated == 0``, verified on
+       hardware), so the property alone misses Spark-under-WSL. Tokens mirror
+       ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated
+       because this guard runs before any ML import).
+    """
+    if getattr(props, "is_integrated", 0):
+        return "is_integrated", True
+    name_upper = (getattr(props, "name", "") or "").upper()
+    for token in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK"):
+        if token in name_upper:
+            return token, True
+    return "", False
+
+
 def _tilelang_platform_supported() -> bool:
     """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
 
@@ -2191,6 +2221,48 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _dev_name,
                     _gcn_arch or "unknown arch",
                 )
+        except Exception as _oom_guard_err:
+            logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
+
+    # ── 1h. NVIDIA Spark-class unified-memory OOM guard ──
+    # Same failure mode as the ROCm APU guard above, NVIDIA flavor: Spark-class
+    # parts (DGX Spark / GB10, N1X "RTX Spark") share one memory pool with the
+    # OS, so over-allocation can stall the whole box instead of raising a
+    # catchable OutOfMemoryError. Cap the allocator at 0.80 like Strix Halo —
+    # the pool is shared with the host OS and page cache, so 20% headroom stays
+    # with the system. UNSLOTH_SPARK_MEM_FRACTION overrides the cap; any value
+    # outside (0, 1] disables the guard. Discrete NVIDIA GPUs are untouched
+    # (they already raise a graceful OOM). The generic OOM handler in the
+    # training loop surfaces the resulting OutOfMemoryError with remediation.
+    else:
+        try:
+            import torch as _torch_mem
+            if _torch_mem.cuda.is_available():
+                _props = _torch_mem.cuda.get_device_properties(0)
+                _marker, _is_spark_uma = _nvidia_classify_spark_unified_memory(_props)
+                if _is_spark_uma:
+                    _mem_fraction = 0.80
+                    _frac_env = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")
+                    if _frac_env:
+                        try:
+                            _mem_fraction = float(_frac_env)
+                        except ValueError:
+                            _mem_fraction = 0.80
+                    if 0.0 < _mem_fraction <= 1.0:
+                        _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
+                        logger.info(
+                            "Spark unified-memory OOM guard: "
+                            "set_per_process_memory_fraction(%.2f) — %s (matched %s)",
+                            _mem_fraction,
+                            _props.name,
+                            _marker,
+                        )
+                    else:
+                        logger.info(
+                            "Spark unified-memory OOM guard disabled "
+                            "(UNSLOTH_SPARK_MEM_FRACTION=%s)",
+                            _frac_env,
+                        )
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 
