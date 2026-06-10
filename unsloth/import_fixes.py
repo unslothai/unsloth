@@ -1831,9 +1831,9 @@ def configure_amdgpu_asic_id_table_path():
 # WARNING, ROCM_GPU_ARCH becomes "unknown", and warp size defaults to 64:
 # wrong on RDNA (wave 32), breaking 4-bit blocksizes and
 # ALLOW_PREQUANTIZED_MODELS. Upstream fix unmerged (bitsandbytes#1969), so a
-# one-shot MetaPathFinder swaps both helpers for torch-device-props-first
-# versions right after bitsandbytes.cuda_specs executes, before cextension
-# reads them. Must run before `import unsloth_zoo` (imports bnb on ROCm).
+# MetaPathFinder swaps both helpers for torch-device-props-first versions
+# right after bitsandbytes.cuda_specs executes, before cextension reads
+# them. Must run before `import unsloth_zoo` (imports bnb on ROCm).
 # ---------------------------------------------------------------------------
 
 _BNB_CUDA_SPECS_MODULE = "bitsandbytes.cuda_specs"
@@ -2023,15 +2023,6 @@ def _patch_bnb_cuda_specs_module(module):
     return patched
 
 
-def _remove_bnb_rocm_fix_finder():
-    for finder in list(sys.meta_path):
-        if getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
-            try:
-                sys.meta_path.remove(finder)
-            except ValueError:
-                pass
-
-
 class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
     __slots__ = ("_loader",)
 
@@ -2046,13 +2037,13 @@ class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._loader.exec_module(module)
-        # Patch after the module body ran, before cextension calls it.
+        # Patch after the module body ran, before cextension calls it. The
+        # finder stays on sys.meta_path (same lifecycle as the blockers
+        # above) so importlib.reload(bitsandbytes.cuda_specs) re-patches.
         try:
             _patch_bnb_cuda_specs_module(module)
         except Exception as e:
             _log_rocm_detection(f"Unsloth: bitsandbytes ROCm detection patch failed: {e}")
-        # One-shot; kept armed if exec_module raised so a retry is patched.
-        _remove_bnb_rocm_fix_finder()
 
     def __getattr__(self, name):
         # Delegate get_source / get_filename etc. so introspection works.
