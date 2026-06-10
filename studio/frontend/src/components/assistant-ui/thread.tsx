@@ -13,6 +13,7 @@ import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
   thinkEffortAriaLabel,
@@ -22,6 +23,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -34,6 +36,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,14 +49,28 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import {
+  listPromptEntries,
+  type PromptEntry,
+} from "@/features/chat/api/prompts-api";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
+import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -76,11 +93,13 @@ import {
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -93,7 +112,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -118,23 +136,110 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
 
-// True while a file is dragged anywhere over the chat page (not just the
-// composer), so the composer can show its "Drop files here" affordance.
+// True while a file is dragged anywhere over the chat page, so the composer
+// can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
+
+// Single-chat prompt queue. State lives at module level so it survives the
+// Composer remount when the first queued message creates a new thread, and
+// detection subscribes to the store's runningByThreadId rather than
+// aui.thread() (unbound on the welcome screen).
+
+import { create as _createZustand } from "zustand";
+
+// Module-level Zustand so ComposerRightControls re-renders across Composer mounts.
+interface _QueueUIState { isRunning: boolean; current: number; total: number; }
+const _useQueueUI = _createZustand<_QueueUIState>(() => ({
+  isRunning: false, current: 0, total: 0,
+}));
+
+let _qItems: string[] = [];
+let _qIndex = 0;
+let _qIsRunning = false;
+let _qPrevStoreRunning = false;
+let _qStoreUnsub: (() => void) | null = null;
+
+// Points to the current Composer's aui (updated every render), so it stays valid
+// after a remount.
+let _qGetAui: () => ReturnType<typeof useAui> = () => {
+  throw new Error("aui not initialised");
+};
+
+function _qStopSubscription() {
+  if (_qStoreUnsub) { _qStoreUnsub(); _qStoreUnsub = null; }
+  _qPrevStoreRunning = false;
+}
+
+function _qAdvance() {
+  const nextIndex = _qIndex + 1;
+  if (nextIndex >= _qItems.length) {
+    _qIsRunning = false;
+    _qItems = [];
+    _qIndex = 0;
+    _qStopSubscription();
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    toast.success("Prompt queue complete");
+    return;
+  }
+  _qIndex = nextIndex;
+  _useQueueUI.setState({ current: nextIndex + 1, total: _qItems.length });
+  const next = _qItems[nextIndex];
+  toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
+    description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+  });
+  _qPrevStoreRunning = false; // catch the next run
+  setTimeout(() => {
+    _qGetAui().thread().append({
+      role: "user",
+      content: [{ type: "text", text: next }],
+      createdAt: new Date(),
+    } as never);
+  }, 100);
+}
+
+function _qStartSubscription() {
+  _qStopSubscription();
+  // runningByThreadId tracks the actual thread (not aui.thread()), so detection
+  // survives navigation.
+  _qStoreUnsub = useChatRuntimeStore.subscribe((state) => {
+    if (!_qIsRunning) { _qStopSubscription(); return; }
+    const isRunning = Object.keys(state.runningByThreadId).length > 0;
+    const wasRunning = _qPrevStoreRunning;
+    _qPrevStoreRunning = isRunning;
+    if (wasRunning && !isRunning) {
+      _qAdvance();
+    }
+  });
+}
+
+interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
+const PromptQueueContext = createContext<_QueueCallbacks>({
+  startQueue: () => {}, stopQueue: () => {},
+});
+
+// Gap (px) between last message and floating composer; bottom spacer tracks
+// composer height plus this gap so chat can scroll fully above the composer.
+const COMPOSER_SCROLL_GAP_PX = 24;
+// The scroll-to-bottom footer sits 10px below the spacer top.
+const FOOTER_GAP_BELOW_SPACER_PX = 10;
+// Window after a run start during which composer shrinks apply immediately:
+// the run-start pin owns the bottom, so the clamp is the intended glide.
+// Covers instant responses where isRunning is already false by resize time.
+const RUN_SHRINK_WINDOW_MS = 1000;
 
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = ({ hideComposer, hideWelcome, targetThreadId }) => {
-  // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
-  // to prevent the streaming-mutation race that makes the viewport snap
-  // back to the bottom while the user is scrolling up (see the hook for
-  // the full explanation).
+  // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
+  // prevent the streaming-mutation race that snaps the viewport back to the
+  // bottom while the user scrolls up (see the hook for the full explanation).
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
@@ -143,12 +248,155 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
-
-  // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
-  // just on the composer) attaches it and shows the composer drop affordance.
-  // The composer's own dropzone still handles drops on the box itself; its
-  // handler calls preventDefault, so the page handler skips them (no double-add).
   const aui = useAui();
+
+  // Measured height of the floating composer dock (null until measured).
+  // Drives the bottom spacer and the scroll-to-bottom footer offset.
+  const [composerHeight, setComposerHeight] = useState<number | null>(null);
+  const footerBottomPx =
+    composerHeight == null
+      ? null
+      : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
+
+  // Viewport element is owned by the autoscroll hook; mirror it locally for
+  // the spacer clamp math. State, not a ref: the keyed provider remounts the
+  // viewport on thread switches and the scroll listener must re-attach.
+  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const composedViewportRef = useCallback(
+    (node: HTMLElement | null) => {
+      setViewportEl(node);
+      viewportRef(node);
+    },
+    [viewportRef],
+  );
+
+  // Bottom spacer sizing. Invariant: chat never moves on its own on composer
+  // resize.
+  // - Grow (attachment added, multiline): grow at once; growth below the
+  //   scroll position is invisible and only adds room.
+  // - Shrink (attachment removed): shrinking scrollHeight near the bottom
+  //   clamps scrollTop and yanks the chat down. Defer until invisible (user
+  //   scrolled up) or a bottom-pinning moment.
+  // Applied imperatively so a remounted spacer can be sized from refs even
+  // when composerHeight did not change (e.g. thread switch).
+  const spacerElRef = useRef<HTMLDivElement | null>(null);
+  const desiredSpacerPxRef = useRef<number | null>(null);
+  const appliedSpacerPxRef = useRef<number | null>(null);
+
+  const applySpacerPx = useCallback((px: number) => {
+    appliedSpacerPxRef.current = px;
+    const node = spacerElRef.current;
+    if (node) {
+      node.style.height = `${px}px`;
+    }
+  }, []);
+
+  // Release any deferred shrink; used at moments that pin to the bottom
+  // anyway, where the clamp is the intended motion.
+  const releaseSpacerExcess = useCallback(() => {
+    const desired = desiredSpacerPxRef.current;
+    const applied = appliedSpacerPxRef.current;
+    if (desired != null && applied != null && applied > desired) {
+      applySpacerPx(desired);
+    }
+  }, [applySpacerPx]);
+
+  const spacerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      spacerElRef.current = node;
+      // Fresh mounts (thread switch, first message) start at desired size;
+      // deferral state from a previous mount is moot.
+      const desired = desiredSpacerPxRef.current;
+      if (node && desired != null) {
+        applySpacerPx(desired);
+      }
+    },
+    [applySpacerPx],
+  );
+
+  const prevComposerHeightRef = useRef<number | null>(null);
+  // Set on thread.runStart; see RUN_SHRINK_WINDOW_MS.
+  const runStartAtRef = useRef(0);
+  useLayoutEffect(() => {
+    const prev = prevComposerHeightRef.current;
+    prevComposerHeightRef.current = composerHeight;
+    if (composerHeight == null || hideComposer) {
+      desiredSpacerPxRef.current = null;
+      appliedSpacerPxRef.current = null;
+      spacerElRef.current?.style.removeProperty("height");
+      return;
+    }
+    const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
+    desiredSpacerPxRef.current = desired;
+    const applied = appliedSpacerPxRef.current;
+    if (applied == null || desired >= applied) {
+      applySpacerPx(desired);
+    } else {
+      const distance = viewportEl
+        ? viewportEl.scrollHeight - viewportEl.scrollTop - viewportEl.clientHeight
+        : Number.POSITIVE_INFINITY;
+      const runOwnsBottom =
+        aui.thread().getState().isRunning ||
+        performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
+      // At the bottom the shrink only drops blank spacer, so apply it now
+      // rather than strand dead space until the next pin.
+      if (
+        runOwnsBottom ||
+        distance >= applied - desired ||
+        autoScrollContext.getIsAtBottom()
+      ) {
+        applySpacerPx(desired);
+      }
+      // else: deferred; released on scroll or a bottom-pinning event.
+    }
+    if (prev != null && composerHeight > prev) {
+      // Chat is now above the new bottom. Detach as if the user scrolled up
+      // so no later signal re-pins and shoves the chat up (scrolling back
+      // down re-attaches; explicit pins still work). Skip mid-run: that
+      // growth is tool-status rows, not the user, and detaching would break
+      // streaming autoscroll.
+      if (!aui.thread().getState().isRunning) {
+        autoScrollContext.detachFromBottom();
+      }
+    }
+  }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
+
+  // Drop deferred spacer excess once the user has scrolled far enough above
+  // the bottom that the shrink cannot clamp scrollTop. Keyed on viewportEl
+  // so the listener follows viewport remounts.
+  useEffect(() => {
+    const el = viewportEl;
+    if (!el) {
+      return;
+    }
+    const onScroll = () => {
+      const desired = desiredSpacerPxRef.current;
+      const applied = appliedSpacerPxRef.current;
+      if (desired == null || applied == null || applied <= desired) {
+        return;
+      }
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distance >= applied - desired) {
+        applySpacerPx(desired);
+      }
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [viewportEl, applySpacerPx]);
+
+  // These pin to the bottom, so releasing the excess here is invisible.
+  // runStart also opens the shrink window for the send-clears-chips case.
+  useAuiEvent("thread.runStart", () => {
+    runStartAtRef.current = performance.now();
+    releaseSpacerExcess();
+  });
+  useAuiEvent("thread.initialize", releaseSpacerExcess);
+  useAuiEvent("threadListItem.switchedTo", releaseSpacerExcess);
+
+  // Page-wide drag-and-drop: dropping a file anywhere on the chat page
+  // attaches it and shows the composer drop affordance. The composer's own
+  // dropzone handles drops on the box and calls preventDefault, so the page
+  // handler skips them (no double-add).
   const [pageDragging, setPageDragging] = useState(false);
   const dragDepth = useRef(0);
   const hasFiles = (e: ReactDragEvent) =>
@@ -174,8 +422,8 @@ export const Thread: FC<{
     // Compare panes hide this composer and use the shared composer's own
     // dropzone, so don't capture drops into a hidden composer here.
     if (hideComposer) return;
-    // Drops on the composer box are handled by its own dropzone, which calls
-    // preventDefault; skip those here so the file isn't added twice.
+    // Drops on the composer box are handled by its dropzone (preventDefault);
+    // skip those here so the file isn't added twice.
     if (e.defaultPrevented) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
@@ -207,7 +455,7 @@ export const Thread: FC<{
       >
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
-            ref={viewportRef}
+            ref={composedViewportRef}
             autoScroll={false}
             scrollToBottomOnRunStart={false}
             scrollToBottomOnInitialize={false}
@@ -233,13 +481,20 @@ export const Thread: FC<{
               }}
             />
 
-            {/* Bottom slack so the last message has breathing room above the
-            sticky scroll-to-bottom button (and the floating composer in
-            single mode). Without this, content would butt against the
-            sticky footer and feel cramped. */}
+            {/* Bottom slack so the last message has room above the sticky
+            scroll-to-bottom button (and floating composer in single mode),
+            instead of butting against the footer. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
-                className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
+                ref={spacerRef}
+                className={cn(
+                  "shrink-0",
+                  hideComposer
+                    ? "h-16"
+                    : composerHeight == null
+                      ? "h-40"
+                      : undefined,
+                )}
                 aria-hidden={true}
               />
             </AuiIf>
@@ -249,34 +504,50 @@ export const Thread: FC<{
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
                   // 150px (was 140px) to add a small gap above the composer
-                  hideComposer ? "bottom-3" : "bottom-[150px]",
+                  hideComposer
+                    ? "bottom-3"
+                    : footerBottomPx == null
+                      ? "bottom-[150px]"
+                      : undefined,
                 )}
+                style={
+                  !hideComposer && footerBottomPx != null
+                    ? { bottom: footerBottomPx }
+                    : undefined
+                }
               >
                 <ThreadScrollToBottom />
               </ThreadPrimitive.ViewportFooter>
             </AuiIf>
           </ThreadPrimitive.Viewport>
 
-          <GeneratedImageViewportOverlay hideComposer={hideComposer} />
+          <GeneratedImageViewportOverlay
+            hideComposer={hideComposer}
+            bottomOffsetPx={footerBottomPx}
+          />
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
+                onHeightChange={setComposerHeight}
               />
             </AuiIf>
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
+      {/* Document preview, opened by citation badges. */}
+      <DocumentPreviewMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
 };
 
-const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
-  hideComposer,
-}) => {
+const GeneratedImageViewportOverlay: FC<{
+  hideComposer?: boolean;
+  bottomOffsetPx?: number | null;
+}> = ({ hideComposer, bottomOffsetPx }) => {
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
 
   useEffect(() => {
@@ -301,8 +572,17 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
       <section
         className={cn(
           "pointer-events-none absolute inset-x-5 top-[48px] flex flex-col items-center",
-          hideComposer ? "bottom-4" : "bottom-[150px]",
+          hideComposer
+            ? "bottom-4"
+            : bottomOffsetPx == null
+              ? "bottom-[150px]"
+              : undefined,
         )}
+        style={
+          !hideComposer && bottomOffsetPx != null
+            ? { bottom: bottomOffsetPx }
+            : undefined
+        }
         aria-label="Generated image preview"
       >
         <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
@@ -369,11 +649,29 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+  onHeightChange?: (height: number | null) => void;
+}> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
+
+  // Report dock height so the viewport reserves matching scroll space when
+  // attachments or multiline input grow the composer.
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el || !onHeightChange) return;
+    const measure = () => onHeightChange(el.offsetHeight);
+    measure();
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(el);
+    return () => {
+      resizeObserver.disconnect();
+      onHeightChange(null);
+    };
+  }, [onHeightChange]);
 
   return (
     <div
+      ref={dockRef}
       className={cn(
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
         overlay ? "z-40" : "z-20",
@@ -401,12 +699,12 @@ const ThreadComposerDock: FC<{
 };
 
 const ThreadScrollToBottom: FC = () => {
-  // State and action both come from our IntentAwareScrollProvider (scoped
-  // per Thread, so compare panes are independent). We deliberately
-  // avoid `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to
-  // stay off assistant-ui's internal autoscroll path — see the hook
-  // for why. The button stays mounted and toggles via CSS; unmounting
-  // would trip the hook's MutationObserver as a content change.
+  // State and action both come from our IntentAwareScrollProvider (per-Thread
+  // scope, so compare panes are independent). We avoid
+  // `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to stay off
+  // assistant-ui's internal autoscroll path (see the hook). The button stays
+  // mounted and toggles via CSS; unmounting would trip the hook's
+  // MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
   return (
@@ -427,9 +725,9 @@ const ThreadScrollToBottom: FC = () => {
 const pickRandom = <T,>(arr: T[]): T =>
   arr[Math.floor(Math.random() * arr.length)];
 
-// Each greeting carries the sloth picture that best fits it, so a given line
-// always shows the same mascot. Greeting varies by local time; name-bearing
-// lines drop the name when none is set.
+// Each greeting carries its matching sloth picture so a line always shows the
+// same mascot. Greeting varies by local time; name-bearing lines drop the
+// name when none is set.
 type Welcome = { text: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
   text: "What’s on your mind today?",
@@ -438,9 +736,8 @@ const DEFAULT_WELCOME: Welcome = {
 
 function buildWelcome(hour: number, name: string): Welcome {
   const g = (text: string, sloth: string): Welcome => ({ text, sloth });
-  // Use the name on roughly a third of the lines per time of day: only the
-  // direct salutations where it reads most naturally. Everything else stays
-  // name-free so the greeting doesn't feel repetitive.
+  // Use the name on ~a third of lines (only direct salutations where it reads
+  // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
     g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
     g("Ready when you are.", "large sloth thumbs.png"),
@@ -489,7 +786,7 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
-          {/* Center the whole greeting (sloth + title) over the composer. */}
+          {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
             <img
               src={currentEmojiSrc}
@@ -577,10 +874,13 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Search and Code always show; Images, Canvas and MCP are conditional.
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const ragToolAvailable = useRagToolAvailable();
+  // More than 4 pills: collapse to icons only. Search and Code always show;
+  // Images, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
+      (ragEnabled && ragToolAvailable ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -595,7 +895,7 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Cache line metrics so getComputedStyle runs once, not on every keystroke.
+  // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
   );
@@ -637,8 +937,8 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  // Two-row layout shows once the input wraps or a tool is on. Tools pre-select
-  // before a model loads, so an active toggle expands the composer either way.
+  // Two-row layout shows once the input wraps or a tool is on. Tools can
+  // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -646,11 +946,12 @@ const Composer: FC<{
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled ||
+    ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
-  // leaves a stray blank row. Nudge a resize whenever the input width changes.
+  // leaves a stray blank row. Nudge a resize whenever input width changes.
   useEffect(() => {
     const el = inputRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
@@ -665,8 +966,8 @@ const Composer: FC<{
         return;
       }
       lastWidth = width;
-      // Re-measure after layout settles. An immediate dispatch races autosize's
-      // own measurement (stale pre-expand width); 0ms + 64ms wins it, no flash.
+      // Re-measure after layout settles. An immediate dispatch races
+      // autosize's own measurement (stale pre-expand width); 0ms + 64ms wins.
       while (pending.length) {
         clearTimeout(pending.pop());
       }
@@ -686,21 +987,91 @@ const Composer: FC<{
       observer.disconnect();
     };
   }, []);
-  // Docked composer opens upward; the centered welcome composer opens downward
-  // by default and only flips up via collision detection when it would not fit.
+  // Docked composer opens upward; the welcome composer opens downward by
+  // default and only flips up via collision detection when it won't fit.
   const effectiveMenuSide = menuSide ?? "bottom";
+
+  // While this thread's docs index, hold the send and fire it once they finish so
+  // retrieval covers all of them.
+  const [indexingActive, setIndexingActive] = useState(false);
+  const [pendingSend, setPendingSend] = useState(false);
+  const pendingSendRef = useRef(false);
+  const waitToastRef = useRef<string | number | null>(null);
+
+  const dismissWaitToast = useCallback(() => {
+    if (waitToastRef.current !== null) {
+      toast.dismiss(waitToastRef.current);
+      waitToastRef.current = null;
+    }
+  }, []);
+
+  const cancelQueuedSend = useCallback(() => {
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+  }, [dismissWaitToast]);
+
+  const enqueueSend = useCallback(() => {
+    if (pendingSendRef.current) return;
+    pendingSendRef.current = true;
+    setPendingSend(true);
+    waitToastRef.current = toast("Waiting for documents to finish indexing", {
+      description:
+        "Your message will send automatically once indexing finishes.",
+      duration: Infinity,
+      cancel: { label: "Cancel", onClick: cancelQueuedSend },
+    });
+  }, [cancelQueuedSend]);
+
   const shouldBlockSend = useCallback(
     () =>
       !hasSendableContent || isComposingRef.current || hasPendingAttachments,
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
-  const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+  // Gate for both form submit and the Send button. Returns true when it handled
+  // the event (blocked or queued) so callers stop.
+  const interceptSend = useCallback(
+    (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        return;
+        return true;
       }
+      if (indexingActive && !overlay) {
+        event.preventDefault();
+        enqueueSend();
+        return true;
+      }
+      return false;
+    },
+    [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
+  );
+
+  // Fire the parked send once indexing clears, unless the user emptied the
+  // composer while waiting (then drop it quietly).
+  useEffect(() => {
+    if (!pendingSend || indexingActive) return;
+    const { text, attachments } = aui.composer().getState();
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+    if (text.trim().length > 0 || attachments.length > 0) {
+      aui.composer().send();
+    }
+  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+
+  // Drop any queued send + toast on unmount (e.g. thread switch).
+  useEffect(
+    () => () => {
+      pendingSendRef.current = false;
+      if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
+    },
+    [],
+  );
+
+  const handleSubmit = useCallback(
+    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+      if (interceptSend(event)) return;
 
       if (overlay) {
         const trimmed = composerText.trim();
@@ -748,19 +1119,58 @@ const Composer: FC<{
       aui,
       closeOverlay,
       composerText,
-      disabled,
+      interceptSend,
       overlay,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
-      shouldBlockSend,
     ],
   );
+
+  // Update the getter every render so the queue always calls the current
+  // Composer's aui (post-remount).
+  _qGetAui = () => aui;
+
+  const stopQueue = useCallback(() => {
+    _qIsRunning = false;
+    _qStopSubscription();
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    _qItems = [];
+    _qIndex = 0;
+    try { _qGetAui().thread().cancelRun(); } catch {}
+  }, []);
+
+  const startQueue = useCallback((items: string[]) => {
+    const filtered = items.filter((p) => p.trim());
+    if (!filtered.length) return;
+    _qItems = filtered;
+    _qIndex = 0;
+    _qIsRunning = true;
+    _useQueueUI.setState({ isRunning: true, current: 1, total: filtered.length });
+    toast(`Prompt 1 / ${filtered.length}`, {
+      description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+    });
+    // Subscribe BEFORE appending so we don't miss a very fast completion.
+    _qStartSubscription();
+    setTimeout(() => {
+      _qGetAui().thread().append({
+        role: "user",
+        content: [{ type: "text", text: filtered[0] }],
+        createdAt: new Date(),
+      } as never);
+    }, 50);
+  }, []);
+
+  const queueContextValue: _QueueCallbacks = { startQueue, stopQueue };
 
   const composerContent = (
     <>
       <ComposerAttachments />
       <PendingAudioChip />
+      <ThreadDocumentsBar
+        threadId={referenceThreadId}
+        onIndexingChange={setIndexingActive}
+      />
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
@@ -776,6 +1186,7 @@ const Composer: FC<{
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
+              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
               {mcpEnabledForChat ? (
                 <McpComposerButton side={effectiveMenuSide} />
@@ -806,7 +1217,8 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          shouldBlockSend={shouldBlockSend}
+          onSendClick={interceptSend}
+          pendingSend={pendingSend}
           menuSide={effectiveMenuSide}
         />
       </div>
@@ -814,23 +1226,24 @@ const Composer: FC<{
   );
 
   return (
+    <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
       {isTauri ? (
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        // Phase 1 native model owns Tauri local-path drops. Restore browser
+        // attachment drops in Tauri once Phase 1d adds token bridging.
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface">
           {composerContent}
         </div>
       ) : (
         <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative">
           {composerContent}
-          {/* Gemini-style drop affordance: shown only while a file is dragged
-              over the composer. Absolutely positioned + pointer-events-none so
-              the dashed outline adds no layout shift and the drop still lands. */}
+          {/* Gemini-style drop affordance, shown while a file is dragged over
+              the composer. Absolute + pointer-events-none so the outline adds
+              no layout shift and the drop still lands. */}
           <div
             className={cn(
               "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
@@ -849,6 +1262,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </PromptQueueContext.Provider>
   );
 };
 
@@ -856,13 +1270,12 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Fallback timeout for stuck IME composition. When Chrome on Windows talks
-// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
-// the candidate is committed, so `composingRef` stays true and Send stays
-// disabled. Every compositionupdate / non-composing input resets the timer;
-// only a true gap-after-commit lets it fire. 2500ms is well above a normal
-// candidate-window pause but short enough to recover before the user
-// notices the Send button is stuck.
+// Fallback timeout for stuck IME composition. With Chrome on Windows against
+// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// candidate commits, so `composingRef` stays true and Send stays disabled.
+// Every compositionupdate / non-composing input resets the timer; only a true
+// gap-after-commit lets it fire. 2500ms is above a normal candidate-window
+// pause but short enough to recover before the user notices Send is stuck.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers() {
@@ -946,13 +1359,12 @@ function useImeComposerInputHandlers() {
   );
 
   // If the watchdog cleared the composing flags during a long candidate-window
-  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
-  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
-  // and submit the preedit text. Re-arm composingRef synchronously from the
-  // native event so the form-submit gate keeps blocking until compositionend.
-  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
-  // this PR targets (no compositionend, no follow-up input event) would
-  // leave composingRef pinned true indefinitely and Send blocked again.
+  // pause, a later IME keypress (isComposing=true / keyCode 229) would reach
+  // handleSubmit with composingRef=false and submit the preedit text. Re-arm
+  // composingRef synchronously from the native event so the submit gate keeps
+  // blocking until compositionend. Re-arm the watchdog too, or the WSL+Chrome
+  // path (no compositionend, no follow-up input) would pin composingRef true
+  // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
@@ -1153,7 +1565,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           side={side}
           align="end"
           avoidCollisions={true}
-          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[160px]"
+          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
         >
           {isEffort ? (
             <>
@@ -1166,7 +1578,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     setPreserveThinking(false);
                   }}
                 >
-                  <CheckIcon
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                     className={cn(
                       "unsloth-tick size-4",
                       effectiveReasoningVisualEnabled && "opacity-0",
@@ -1191,7 +1605,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       }
                     }}
                   >
-                    <CheckIcon
+                    <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                       className={cn(
                         "unsloth-tick size-4",
                         !(
@@ -1219,7 +1635,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   }
                 }}
               >
-                <CheckIcon
+                <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                   className={cn(
                     "unsloth-tick size-4",
                     !effectiveReasoningEnabled && "opacity-0",
@@ -1243,7 +1661,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 }
               }}
             >
-              <CheckIcon
+              <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                 className={cn(
                   "unsloth-tick size-4",
                   !preserveThinking && "opacity-0",
@@ -1309,9 +1729,8 @@ const WebSearchToggle: FC = () => {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   // External providers (OpenAI today) expose a server-side web_search tool
-  // even when the local tool runtime is unavailable — gate the Search pill
-  // on either source so it lights up on external models too. Mirror of
-  // shared-composer's searchDisabled.
+  // even without the local tool runtime; gate the pill on either source so it
+  // lights up on external models too. Mirror of shared-composer's searchDisabled.
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -1330,7 +1749,7 @@ const WebSearchToggle: FC = () => {
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
@@ -1341,9 +1760,8 @@ const WebSearchToggle: FC = () => {
         const next = !toolsEnabled;
         setToolsEnabled(next);
         // Kimi's $web_search builtin requires thinking=disabled (see
-        // https://platform.kimi.ai/docs/guide/use-web-search). Keep
-        // the two pills mutually exclusive so the visible state always
-        // matches what the backend ends up sending.
+        // https://platform.kimi.ai/docs/guide/use-web-search). Keep the two
+        // pills mutually exclusive so visible state matches what's sent.
         if (isKimiExternal) {
           setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
@@ -1366,18 +1784,17 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // External providers have no local tool runtime, but Anthropic's
-  // Claude 4.x dispatches code_execution_20250825 server-side. The
-  // chat-page resolver stashes that capability in the runtime store
-  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
-  // codeDisabled so this pill lights up in active threads too.
+  // External providers have no local tool runtime, but Anthropic's Claude 4.x
+  // dispatches code_execution_20250825 server-side; the chat-page resolver
+  // stashes that capability in the runtime store (next to
+  // supportsBuiltinWebSearch). Mirror of shared-composer's codeDisabled.
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
@@ -1408,9 +1825,8 @@ const ImagesToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback exists. Mirror of
-  // shared-composer's imageDisabled / showImagePill so the in-thread
-  // composer surfaces the same control as the empty-state composer.
+  // server-side tool; no local runtime fallback. Mirror of shared-composer's
+  // imageDisabled / showImagePill so this composer matches the empty state.
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -1491,10 +1907,9 @@ const ToolStatusDisplay: FC = () => {
 
     setElapsed(0);
 
-    // Debounce badge visibility by 300ms when the badge is not
-    // already on screen. Once visible from a prior tool, consecutive
-    // tools show immediately so the badge does not flicker. Fast
-    // tool calls that all complete under 300ms never show the badge.
+    // Debounce visibility by 300ms when the badge isn't already on screen.
+    // Once visible from a prior tool, later tools show immediately so it
+    // doesn't flicker; tool calls under 300ms never show the badge.
     let showTimer: ReturnType<typeof setTimeout> | undefined;
     if (!visibleRef.current) {
       showTimer = setTimeout(() => setVisible(true), 300);
@@ -1526,8 +1941,8 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
-// Plus menu: attachment and workflow actions. Opens downward in the centered
-// welcome composer; the docked composer passes side="top" to open upward.
+// Plus menu: attachment and workflow actions. Opens downward in the welcome
+// composer; the docked composer passes side="top" to open upward.
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
@@ -1542,7 +1957,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
-  // Capability gating, mirroring the visible pills so menu and pills agree on
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  // Shared gate so the menu row agrees with the RAG pill and Add Files bar.
+  const ragAvailable = useRagToolAvailable();
+  // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -1606,10 +2025,42 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const aui = useAui();
+  // Disable Export chat until the thread has content.
+  const messageCount = useAuiState(({ thread }) => thread.messages.length);
+  const { startQueue } = useContext(PromptQueueContext);
+
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      setRecentPrompts(
+        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
+      );
+    } catch {
+    }
+  }, []);
 
   return (
     <>
-    <DropdownMenu>
+    <PromptStorageDialog
+      open={promptStorageOpen}
+      onOpenChange={setPromptStorageOpen}
+      onUse={(text) => {
+        aui.composer().setText(text);
+      }}
+      onRunList={(items) => {
+        setPromptStorageOpen(false);
+        startQueue(items);
+      }}
+    />
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) void refreshRecentPrompts();
+      }}
+    >
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -1625,8 +2076,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         sideOffset={2}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
-        // Don't refocus the + on close; the restored focus showed a stray
-        // focus-visible ring.
+        // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
         <ComposerPrimitive.AddAttachment asChild={true}>
@@ -1655,7 +2105,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <GlobeIcon />
           Web search
           {toolsEnabled && !searchDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -1674,7 +2128,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         {supportsBuiltinImageGeneration && (
@@ -1690,18 +2148,31 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
-              <CheckIcon className="ml-auto" />
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
             ) : null}
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className={artifactsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+          disabled={!ragAvailable}
+          className={
+            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
+          }
+          onSelect={() => setRagEnabled(!ragEnabled)}
         >
-          <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-          Canvas
-          {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+          RAG
+          {ragEnabled && ragAvailable ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
+          ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={mcpDisabled}
@@ -1715,14 +2186,105 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
           MCP
           {mcpEnabledForChat && !mcpDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
-        {/* RAG hidden temporarily */}
+        {/* Top-level so it stays one click away (not buried in More). */}
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat
         </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+            Saved prompts
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
+            {recentPrompts.map((p) => (
+              <DropdownMenuItem
+                key={p.id}
+                onSelect={() => aui.composer().setText(p.text)}
+              >
+                <span className="truncate">{p.name}</span>
+              </DropdownMenuItem>
+            ))}
+            {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+              All saved prompts…
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        {/* Top-level: a third-level submenu collision-flips at narrow widths
+            and is awkward to reach. */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+            Export chat
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent
+            collisionPadding={16}
+            className="unsloth-plus-menu w-[176px]"
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationRawJsonl(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              Raw JSONL
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationCsv(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              CSV
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationShareGPT(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              ShareGPT JSONL
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-[200px]">
+            <DropdownMenuItem
+              className={
+                artifactsEnabled ? "text-primary font-medium" : undefined
+              }
+              onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+            >
+              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+              Canvas
+              {artifactsEnabled ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -1764,9 +2326,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
-  shouldBlockSend?: () => boolean;
+  onSendClick?: (event: { preventDefault: () => void }) => void;
+  pendingSend?: boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, shouldBlockSend, menuSide }) => {
+}> = ({ disabled, onSendClick, pendingSend, menuSide }) => {
+  const isQueueRunning = _useQueueUI((s) => s.isRunning);
+  const queueCurrent = _useQueueUI((s) => s.current);
+  const queueTotal = _useQueueUI((s) => s.total);
+  const { stopQueue } = useContext(PromptQueueContext);
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -1794,40 +2361,58 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning}>
-        <ComposerPrimitive.Send asChild={true}>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            disabled={disabled}
-            onClick={(event) => {
-              if (shouldBlockSend?.()) {
-                event.preventDefault();
-              }
-            }}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <ComposerPrimitive.Cancel asChild={true}>
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-cancel ml-1.5 size-8 rounded-full"
-            aria-label="Stop generating"
-          >
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-          </Button>
-        </ComposerPrimitive.Cancel>
-      </AuiIf>
+      {isQueueRunning ? (
+        <button
+          type="button"
+          onClick={stopQueue}
+          aria-label="Stop prompt queue"
+          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <SquareIcon className="size-2.5 shrink-0 fill-current" />
+          <span className="tabular-nums">
+            Stop queue {queueCurrent}/{queueTotal}
+          </span>
+        </button>
+      ) : (
+        <>
+          <AuiIf condition={({ thread }) => !thread.isRunning}>
+            <ComposerPrimitive.Send asChild={true}>
+              <TooltipIconButton
+                tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
+                side="bottom"
+                type="submit"
+                variant="default"
+                size="icon"
+                // Stay clickable while docs index so a click can queue the send;
+                // disabled only once a send is parked.
+                disabled={disabled || pendingSend}
+                onClick={(event) => onSendClick?.(event)}
+                className="aui-composer-send ml-1.5 size-8 rounded-full"
+                aria-label="Send message"
+              >
+                {pendingSend ? (
+                  <Spinner className="size-[18px]" />
+                ) : (
+                  <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+                )}
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </AuiIf>
+          <AuiIf condition={({ thread }) => thread.isRunning}>
+            <ComposerPrimitive.Cancel asChild={true}>
+              <Button
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+                aria-label="Stop generating"
+              >
+                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              </Button>
+            </ComposerPrimitive.Cancel>
+          </AuiIf>
+        </>
+      )}
     </div>
   );
 };
@@ -1835,7 +2420,7 @@ const ComposerRightControls: FC<{
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md border border-destructive bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
@@ -1890,6 +2475,7 @@ const AssistantMessage: FC = () => {
             tools: {
               by_name: {
                 web_search: WebSearchToolUI,
+                search_knowledge_base: KnowledgeBaseToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
@@ -1901,6 +2487,7 @@ const AssistantMessage: FC = () => {
           }}
         />
         <SourcesGroup />
+        <RagSourcesGroup />
         <MessageError />
       </div>
 

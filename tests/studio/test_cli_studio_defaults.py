@@ -7,9 +7,7 @@ full unsloth_cli dependencies (typer/pydantic) at test-collection time.
 import ast
 from pathlib import Path
 
-_STUDIO_CMD_PY = (
-    Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
-)
+_STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
 
 
 def _find_typer_option_default(source: str, func_name: str, long_option: str):
@@ -25,13 +23,10 @@ def _find_typer_option_default(source: str, func_name: str, long_option: str):
             continue
         if func_node.name != func_name:
             continue
-        # Walk both regular args and kwonly args, each paired with its default.
         all_args = func_node.args.args + func_node.args.kwonlyargs
         all_defaults = func_node.args.defaults + [
             d for d in func_node.args.kw_defaults if d is not None
         ]
-        # ast pads defaults right-aligned against args (ignoring kwonly). We
-        # iterate calls directly, which is simpler and robust.
         for default in all_defaults:
             if not isinstance(default, ast.Call):
                 continue
@@ -44,8 +39,7 @@ def _find_typer_option_default(source: str, func_name: str, long_option: str):
             )
             if not is_typer_option:
                 continue
-            # First positional is the default value; remaining positionals are
-            # option flags like "--host", "-H".
+            # First positional is the default; the rest are flags like "--host".
             if not default.args:
                 continue
             flags = [
@@ -78,9 +72,7 @@ def test_studio_run_host_is_loopback():
     """`unsloth studio run` --host typer Option default must be 127.0.0.1."""
     source = _STUDIO_CMD_PY.read_text()
     host_default = _find_typer_option_default(source, "run", "--host")
-    assert (
-        host_default is not None
-    ), "Could not find --host typer.Option default in run()"
+    assert host_default is not None, "Could not find --host typer.Option default in run()"
     assert host_default == "127.0.0.1", (
         f"`unsloth studio run` --host default must be '127.0.0.1' (loopback) "
         f"but got '{host_default}'."

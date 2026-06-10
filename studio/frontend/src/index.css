@@ -5,6 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
+@import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
@@ -43,6 +44,16 @@
 		bottom: 0;
 		height: 40px;
 		background: linear-gradient(to top, var(--sidebar), transparent);
+	}
+	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
+	   the scroll fold (JS-toggled). */
+	.rag-docs-bottom-fade {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 	}
 }
 

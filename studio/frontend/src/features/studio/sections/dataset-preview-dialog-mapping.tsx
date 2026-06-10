@@ -303,8 +303,8 @@ const FROM_CANONICAL: Record<string, Record<string, string>> = {
 };
 
 /**
- * Remap a column→role mapping between formats.
- * Normalises every role to canonical chatml first, then maps to the target format.
+ * Remap a column→role mapping between formats: normalise to canonical chatml,
+ * then map to the target format.
  */
 export function remapRolesForFormat(
   mapping: Record<string, string>,

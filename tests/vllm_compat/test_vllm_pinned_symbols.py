@@ -96,13 +96,15 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
         pytest.skip(f"GitHub fetch failed ({e}) for {url}")
 
 
-def _has_def(src: str, name: str, kind: str = "any") -> bool:
+def _has_def(
+    src: str,
+    name: str,
+    kind: str = "any",
+) -> bool:
     """Heuristic AST-equivalent grep for `class Name`, `def name`,
     or `Name = ...` at module scope. We avoid a full ast.parse so a
     single non-importable line (e.g. type: ignore) doesn't false-fail."""
-    if kind in ("any", "class") and re.search(
-        rf"^class\s+{re.escape(name)}\b", src, re.MULTILINE
-    ):
+    if kind in ("any", "class") and re.search(rf"^class\s+{re.escape(name)}\b", src, re.MULTILINE):
         return True
     if kind in ("any", "func") and re.search(
         rf"^(?:async\s+)?def\s+{re.escape(name)}\b", src, re.MULTILINE
@@ -183,11 +185,7 @@ def test_vllm_lora_models_either_path(tag: str):
     # Old path: a single vllm/lora/models.py (or vllm/lora/models/__init__.py).
     old_candidates = ["vllm/lora/models.py", "vllm/lora/models/__init__.py"]
     old_src = next(
-        (
-            s
-            for s in (_fetch_text("vllm-project/vllm", tag, p) for p in old_candidates)
-            if s
-        ),
+        (s for s in (_fetch_text("vllm-project/vllm", tag, p) for p in old_candidates) if s),
         None,
     )
     if old_src is not None:
@@ -229,9 +227,7 @@ def test_vllm_worker_lora_manager_class(tag: str):
     src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/worker_manager.py")
     if src is None:
         # Some vLLM versions split this; check fallback locations.
-        alt = _fetch_text(
-            "vllm-project/vllm", tag, "vllm/v1/worker/lora_model_runner_mixin.py"
-        )
+        alt = _fetch_text("vllm-project/vllm", tag, "vllm/v1/worker/lora_model_runner_mixin.py")
         if alt and ("WorkerLoRAManager" in alt or "LoRAModelRunnerMixin" in alt):
             return
         pytest.fail(
@@ -257,9 +253,7 @@ def test_lora_request_no_removed_kwargs(tag: str):
     assert src is not None
     has_dir = bool(re.search(r"\blora_dir\b", src))
     has_path = bool(re.search(r"\blora_path\b", src))
-    assert (
-        has_dir or has_path
-    ), f"{tag}: vllm.lora.request has neither lora_dir nor lora_path"
+    assert has_dir or has_path, f"{tag}: vllm.lora.request has neither lora_dir nor lora_path"
 
 
 # -------------------------------------------------------------------------
@@ -277,7 +271,6 @@ def _vllm_zoo_local_path() -> str | None:
     importable. None otherwise."""
     try:
         import importlib.util
-
         spec = importlib.util.find_spec("unsloth_zoo.vllm_utils")
         if spec and spec.origin:
             return spec.origin
@@ -294,12 +287,8 @@ def test_unsloth_zoo_standby_guards_present():
     if path is None:
         pytest.skip("unsloth_zoo not installed on runner")
     src = open(path, encoding = "utf-8").read()
-    has_10x_guard = re.search(r"0\.10\.0", src) and re.search(
-        r"standby", src, re.IGNORECASE
-    )
-    has_14x_guard = re.search(r"0\.14\.0", src) and re.search(
-        r"standby", src, re.IGNORECASE
-    )
+    has_10x_guard = re.search(r"0\.10\.0", src) and re.search(r"standby", src, re.IGNORECASE)
+    has_14x_guard = re.search(r"0\.14\.0", src) and re.search(r"standby", src, re.IGNORECASE)
     assert has_10x_guard or has_14x_guard, (
         "unsloth_zoo.vllm_utils dropped the UNSLOTH_VLLM_STANDBY "
         "version-gate against vLLM 0.10.x / 0.14.x; that re-introduces the "
