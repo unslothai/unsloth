@@ -31,23 +31,17 @@ def parse_stdio_command(address: str) -> list[str]:
     posix = sys.platform != "win32"
     parts = shlex.split(address, posix = posix)
     if not posix:
-        # posix=False keeps backslash paths intact but also keeps the surrounding
-        # quotes on a token. Strip a matched pair so the argv reaches the
-        # subprocess clean ('"C:\\Program Files\\node"' -> C:\\Program Files\\node).
-        parts = [
-            p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
-            for p in parts
-        ]
+        # posix=False keeps backslash paths but also keeps surrounding quotes;
+        # strip a matched pair so argv reaches the subprocess clean.
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
     return parts
 
 
 def stdio_mcp_enabled() -> bool:
-    """stdio MCP servers spawn local processes as the backend user (and bypass
-    the python/terminal sandbox), so they are only allowed when the backend
-    host is the user's own machine. The Tauri desktop app sets
-    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see main.py); advanced localhost /
-    self-hosted users can opt in with the same variable. It stays off for
-    Colab and any network (0.0.0.0) bind."""
+    """stdio MCP servers spawn local processes as the backend user (bypassing the
+    sandbox), so allowed only when the host is the user's own machine. The Tauri
+    app sets UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1; localhost/self-hosted users can opt
+    in with the same var. Off for Colab and any network (0.0.0.0) bind."""
     return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
 
 
@@ -66,8 +60,8 @@ def probe_timeout(address: str, use_oauth: bool) -> float:
 
 
 def parse_server_headers(server: dict) -> Optional[dict]:
-    """Parsed headers_json. For stdio servers this dict is the process
-    environment instead of HTTP headers (see _client)."""
+    """Parsed headers_json. For stdio servers this dict is the process env
+    instead of HTTP headers (see _client)."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -85,8 +79,8 @@ def _oauth_store():
         from key_value.aio.stores.filetree import FileTreeStore
         from utils.paths.storage_roots import ensure_dir, studio_root
 
-        # Hash keys/collections — fastmcp uses raw URLs like https://x.com as
-        # keys and FileTreeStore would treat the "://" as nested directories.
+        # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
+        # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
             key_sanitization_strategy = AlwaysHashStrategy(),
@@ -96,15 +90,12 @@ def _oauth_store():
 
 
 async def clear_oauth_tokens_async(url: str) -> None:
-    """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by
-    MCP URL, so on server delete / URL change / OAuth disable we have to
-    clear the old credentials explicitly. Otherwise re-registering the
-    same URL would silently reuse the old account's token. The entire
-    body runs inside the protected block -- store / OAuth construction
-    failing must not make the delete / update route 500."""
+    """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by MCP
+    URL, so on server delete / URL change / OAuth disable we must clear them, else
+    re-registering the same URL reuses the old account's token. Best-effort: store
+    / OAuth failures must not 500 the delete / update route."""
     try:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
@@ -112,7 +103,11 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
-def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
+def _client(
+    url: str,
+    headers: Optional[dict],
+    use_oauth: bool = False,
+):
     from fastmcp import Client
 
     if is_stdio(url):
@@ -124,9 +119,8 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
         parts = parse_stdio_command(url)
         if not parts:
             raise ValueError(f"Empty stdio command: {url!r}")
-        # env vars ride the headers field (merged over the SDK's safe default env).
-        # keep_alive=False tears the subprocess down on exit, so a one-shot
-        # probe/tool call never leaves an orphan process.
+        # env vars ride the headers field (merged over the SDK default env).
+        # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
         return Client(
             StdioTransport(
                 command = parts[0],
@@ -142,13 +136,10 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
-        SSETransport
-        if infer_transport_type_from_url(url) == "sse"
-        else StreamableHttpTransport
+        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
@@ -195,10 +186,9 @@ def call_tool_sync(
 ) -> str:
     """Synchronously call an MCP tool.
 
-    ``cancel_event``: optional ``threading.Event``. When set, the in-flight
-    HTTP call is cancelled and the function returns a cancellation Error.
-    Polled in parallel with the tool call via ``asyncio.wait`` so a /cancel
-    POST from the UI interrupts even mid-network-read.
+    ``cancel_event``: optional ``threading.Event``. When set, the in-flight call is
+    cancelled and a cancellation Error returned. Polled alongside the tool call via
+    ``asyncio.wait`` so a /cancel POST interrupts even mid-network-read.
     """
 
     async def _call() -> Any:
@@ -207,14 +197,13 @@ def call_tool_sync(
 
     async def _watch_cancel() -> None:
         # 50 ms cadence keeps cancellation responsive without busy-looping;
-        # matches the cadence routes/inference.py uses for cancel watchers.
+        # matches routes/inference.py's cancel watcher cadence.
         while cancel_event is not None and not cancel_event.is_set():
             await asyncio.sleep(0.05)
 
     async def _race() -> Any:
-        # Check cancellation before spawning the call task so a pre-set
-        # event short-circuits before opening the transport / HTTP
-        # connection (reviewer-reproduced race).
+        # Check cancellation before spawning the call task so a pre-set event
+        # short-circuits before opening the transport / HTTP connection.
         if cancel_event is not None and cancel_event.is_set():
             raise _MCPCancelled
         call_task = asyncio.create_task(_call())

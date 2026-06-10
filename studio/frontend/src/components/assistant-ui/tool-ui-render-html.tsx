@@ -17,8 +17,8 @@ import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect } from "react";
 
-// Context7 assistant-ui docs: tool UIs can read streaming args via
-// useToolArgsStatus, so render_html does not need to wait for tool completion.
+// Per Context7 assistant-ui docs: tool UIs read streaming args via
+// useToolArgsStatus, so render_html need not wait for tool completion.
 type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;
   title?: string;
@@ -41,9 +41,8 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const isRunning = status?.type === "running";
   const codeIsStreaming = propStatus.code === "streaming";
 
-  // Surface the backend error when the tool call completed with invalid
-  // args.  Backend success results start with "Rendered HTML artifact";
-  // error results start with "Error:".
+  // Surface the backend error when the tool call completed with invalid args.
+  // Success results start with "Rendered HTML artifact"; errors with "Error:".
   const errorText =
     status?.type === "complete" &&
     typeof result === "string" &&

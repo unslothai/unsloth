@@ -3,20 +3,10 @@
 
 """Live, no-mock integration test for ``LlamaCppBackend.load_progress()``.
 
-The companion files (``test_llama_cpp_load_progress.py`` and
-``test_llama_cpp_load_progress_matrix.py``) patch ``builtins.open`` to
-feed synthetic VmRSS values. This file is the opposite: it uses **real**
-subprocesses, **real** file sizes, and the **real** ``/proc``
-interface. It is the sanity check that the contract we keep in the
-mocked tests still maps to what the kernel actually returns on a live
-Linux system.
-
-Why both: the mocked tests can be fooled by a buggy implementation that
-parses ``/proc`` output in a format the kernel no longer uses, or that
-makes assumptions about ``Path.stat()`` vs ``os.path.getsize``. This
-file hits the real APIs so any format drift gets caught.
-
-Skipped cleanly on non-Linux (no ``/proc``).
+The companion mocked tests patch ``builtins.open`` for synthetic VmRSS values;
+this one uses real subprocesses, file sizes, and ``/proc`` so format drift the
+mocks can't see (kernel ``/proc`` layout, stat vs getsize) gets caught. Skipped
+on non-Linux (no ``/proc``).
 """
 
 from __future__ import annotations
@@ -30,10 +20,7 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Same stubs as the matrix file (keep self-contained so the file can be
-# run standalone as well as via the full suite).
-# ---------------------------------------------------------------------------
+# Same stubs as the matrix file (self-contained for standalone + full-suite runs).
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -75,7 +62,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_backend(pid: int, gguf_path: str, healthy: bool = False):
+def _make_backend(
+    pid: int,
+    gguf_path: str,
+    healthy: bool = False,
+):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._process = type("P", (), {"pid": pid})()
     inst._gguf_path = gguf_path
@@ -84,8 +75,8 @@ def _make_backend(pid: int, gguf_path: str, healthy: bool = False):
 
 
 def test_live_rss_matches_kernel_vmrss(tmp_path):
-    """Spawn a real child, let it allocate real bytes, confirm
-    ``bytes_loaded`` tracks the kernel's VmRSS within a sane tolerance."""
+    """Spawn a real child, let it allocate real bytes, confirm ``bytes_loaded``
+    tracks the kernel's VmRSS within a sane tolerance."""
     # Child that allocates ~100 MB of zero'd bytes and then idles.
     script = tmp_path / "burn.py"
     script.write_text(
@@ -108,7 +99,7 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         ready = proc.stdout.readline()
         assert ready.strip() == b"ready"
 
-        # Create a fake 200 MB sparse gguf so bytes_total is concrete.
+        # Fake 200 MB sparse gguf so bytes_total is concrete.
         gguf = tmp_path / "model.gguf"
         with open(gguf, "wb") as f:
             f.truncate(200 * 1024 * 1024)
@@ -119,8 +110,8 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         assert out is not None, "load_progress returned None for live pid"
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 200 * 1024 * 1024
-        # VmRSS for the Python child includes the interpreter + the 100MB
-        # buffer, so a realistic floor is 50 MB and ceiling is 200 MB.
+        # VmRSS for the Python child includes the interpreter + 100MB buffer,
+        # so a realistic floor is 50 MB and ceiling is 200 MB.
         assert (
             out["bytes_loaded"] >= 50 * 1024 * 1024
         ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
@@ -149,8 +140,8 @@ def test_live_ready_phase_when_healthy(tmp_path):
 
 
 def test_live_dead_pid_returns_none(tmp_path):
-    """A recently-dead pid may linger in /proc for ms; use a clearly
-    invalid id so the read reliably fails."""
+    """A recently-dead pid may linger in /proc for ms; use a clearly invalid id
+    so the read reliably fails."""
     gguf = tmp_path / "m.gguf"
     gguf.touch()
 
@@ -160,8 +151,8 @@ def test_live_dead_pid_returns_none(tmp_path):
 
 
 def test_live_shard_aggregation_counts_real_files(tmp_path):
-    """With 4 real sibling shards on disk, ``bytes_total`` equals their
-    summed size to the byte."""
+    """With 4 real sibling shards on disk, ``bytes_total`` equals their summed
+    size to the byte."""
     shard_size = 7 * 1024 * 1024  # 7 MB each
     for i in range(1, 5):
         f = tmp_path / f"model-{i:05d}-of-00004.gguf"
@@ -182,8 +173,8 @@ def test_live_shard_aggregation_counts_real_files(tmp_path):
 
 
 def test_live_repeated_polling_stays_sane(tmp_path):
-    """Sampling the same backend 20 times should not raise or produce
-    non-numeric output, even under normal kernel RSS jitter."""
+    """Sampling the same backend 20 times must not raise or produce non-numeric
+    output, even under normal kernel RSS jitter."""
     gguf = tmp_path / "m.gguf"
     with open(gguf, "wb") as f:
         f.truncate(500 * 1024 * 1024)

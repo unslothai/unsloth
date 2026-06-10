@@ -12,7 +12,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { Trash2Icon } from "lucide-react";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 
@@ -77,7 +78,11 @@ export function ModelDeleteAction({
           buttonClassName,
         )}
       >
-        <Trash2Icon className={cn("size-3.5", iconClassName)} />
+        <HugeiconsIcon
+          icon={Delete02Icon}
+          strokeWidth={1.75}
+          className={cn("size-3.5", iconClassName)}
+        />
       </button>
 
       <AlertDialog

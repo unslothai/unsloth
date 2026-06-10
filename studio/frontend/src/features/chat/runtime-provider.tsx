@@ -14,7 +14,6 @@ import {
   type PendingAttachment,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
   useAuiEvent,
@@ -34,7 +33,11 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
-import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
+import {
+  ThreadAutosaveHandle,
+  createOpenAIStreamAdapter,
+} from "./api/chat-adapter";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -48,6 +51,7 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
@@ -190,7 +194,20 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+  // MIME is unreliable for source files, so also match by extension
+  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
+  // config and other plain-text formats; html keeps its own adapter below.
+  accept = [
+    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
+    "application/json,application/xml,image/svg+xml",
+    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
+    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
+    ".css,.scss,.sass,.less,.svg",
+    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
+    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
+    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
+    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
+  ].join(",");
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -241,9 +258,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const html = await attachment.file.text();
-    // Strip HTML tags to extract readable text
     const doc = new DOMParser().parseFromString(html, "text/html");
-    // Remove script and style elements
     for (const el of doc.querySelectorAll("script, style")) el.remove();
     const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
     return {
@@ -567,9 +582,9 @@ export async function ensureThreadRecord({
   try {
     await saveStoredChatThread(record);
   } catch (error) {
-    // assistant-ui can issue overlapping first-message persistence calls.
-    // If another call created the same thread while this one was waiting,
-    // treat initialization as successful and let the message write continue.
+    // assistant-ui can issue overlapping first-message persistence calls. If
+    // another call created the same thread while this one waited, treat init as
+    // successful and let the message write continue.
     const existingAfterRace = await listStoredChatThreads({
       includeArchived: true,
     }).catch(() => []);
@@ -849,7 +864,7 @@ function useStudioRuntimeAdapters(
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
 
-        // Restore context usage from last assistant message if model matches
+        // Restore context usage from last assistant message if model matches.
         const lastAssistant = [...msgs]
           .reverse()
           .find((m) => m.role === "assistant");
@@ -865,14 +880,14 @@ function useStudioRuntimeAdapters(
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // Window check applies only when a local GGUF window is known;
-        // external providers have ggufContextLength === null.
+        // Window check applies only when a local GGUF window is known; external
+        // providers have ggufContextLength === null.
         const withinLocalLimit =
           !store.ggufContextLength ||
           (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-        // Legacy unscoped usage (no modelId) is only trusted when a
-        // known local window bounds the totals, so we can't misattribute
-        // an old local turn to a newly-selected external provider.
+        // Legacy unscoped usage (no modelId) is trusted only when a known local
+        // window bounds the totals, so an old local turn can't be misattributed
+        // to a newly-selected external provider.
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.ggufContextLength === "number" &&
@@ -881,12 +896,10 @@ function useStudioRuntimeAdapters(
           store.setContextUsage(savedUsage);
         }
 
-        // If any message has a stored parentId, reconstruct the tree
-        // so retries/regenerations load as branches instead of being
-        // unrolled into a flat list.  For mixed legacy/new threads
-        // (old messages without parentId + new messages with), infer
-        // sequential parents for old messages to preserve the chain.
-        // Fall back to fromArray for fully legacy threads.
+        // If any message has a stored parentId, reconstruct the tree so
+        // retries/regenerations load as branches rather than a flat list. For
+        // mixed legacy/new threads, infer sequential parents for old messages to
+        // preserve the chain. Fall back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
@@ -914,7 +927,7 @@ function useStudioRuntimeAdapters(
             return;
           }
           // Keep single-chat runtime state in sync once a new chat is first
-          // persisted. Compare panes intentionally do not write global activeThreadId.
+          // persisted. Compare panes intentionally don't write global activeThreadId.
           if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
             if (store.activeThreadId !== remoteId) {
@@ -962,8 +975,8 @@ function useStudioRuntimeAdapters(
 
   const dictation = useMemo(
     () =>
-      WebSpeechDictationAdapter.isSupported()
-        ? new WebSpeechDictationAdapter()
+      StudioWebSpeechDictationAdapter.isSupported()
+        ? new StudioWebSpeechDictationAdapter()
         : undefined,
     [],
   );
@@ -971,6 +984,7 @@ function useStudioRuntimeAdapters(
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
+        new AudioAttachmentAdapter(),
         new TextAttachmentAdapter(),
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
@@ -1054,8 +1068,8 @@ function ThreadNewChatSwitch({
     if (isLoading) {
       return;
     }
-    // Switch to a fresh local thread without persisting it yet.
-    // Persistence still happens on first message append.
+    // Switch to a fresh local thread without persisting it yet; persistence
+    // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
@@ -1082,8 +1096,8 @@ function ActiveThreadSync({
 }
 
 // Exposes the current thread's cancelRun() via the shared store so external
-// surfaces (e.g. the sidebar trash button) can stop an in-flight stream
-// before deleting the thread — mirroring the Stop → Trash sequence.
+// surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
+// deleting the thread, mirroring the Stop -> Trash sequence.
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -1118,6 +1132,13 @@ function ThreadBackendAutosave({
 }): ReactElement | null {
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
+  const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+
+  const reportAutosaveError = useCallback((error: unknown): void => {
+    if (!isExpectedBackgroundChatStorageError(error)) {
+      console.error("Failed to autosave chat thread", error);
+    }
+  }, []);
 
   const saveThread = useCallback(
     async (threadId: string): Promise<void> => {
@@ -1159,14 +1180,30 @@ function ThreadBackendAutosave({
     (threadId: string): void => {
       saveChainRef.current = saveChainRef.current
         .catch(() => {})
-        .then(() => saveThread(threadId))
-        .catch((error) => {
-          if (!isExpectedBackgroundChatStorageError(error)) {
-            console.error("Failed to autosave chat thread", error);
-          }
-        });
+        .then(async () => {
+          await pendingFirstSavesRef.current.get(threadId);
+          await saveThread(threadId);
+        })
+        .catch(reportAutosaveError);
     },
-    [saveThread],
+    [reportAutosaveError, saveThread],
+  );
+
+  const saveFirstThreadSnapshot = useCallback(
+    (threadId: string): void => {
+      if (pendingFirstSavesRef.current.has(threadId)) {
+        return;
+      }
+
+      const promise = saveThread(threadId)
+        .catch(reportAutosaveError)
+        .finally(() => {
+          pendingFirstSavesRef.current.delete(threadId);
+        });
+      pendingFirstSavesRef.current.set(threadId, promise);
+      ThreadAutosaveHandle.registerFirstSave(threadId, promise);
+    },
+    [reportAutosaveError, saveThread],
   );
 
   useAuiEvent("thread.runEnd", ({ threadId }) => {
@@ -1174,6 +1211,13 @@ function ThreadBackendAutosave({
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const { remoteId } =
+      runtime?.threads.getItemById(threadId).getState() ?? {};
+    if (!remoteId) {
+      saveFirstThreadSnapshot(threadId);
+      return;
+    }
     queueSave(threadId);
   });
 
