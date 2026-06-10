@@ -969,7 +969,8 @@
 
 	.dark .chat-composer-surface {
 		background-color: #2a2a2c;
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+		/* Stronger values so the shadow stays visible on dark surfaces. */
+		box-shadow: 0 2px 12px -2px rgba(0, 0, 0, 0.7);
 	}
 
 	.composer-pill-btn {
@@ -1061,7 +1062,8 @@
 
 	.dark .unsloth-composer-surface {
 		background-color: #2a2a2c;
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+		/* Stronger values so the shadow stays visible on dark surfaces. */
+		box-shadow: 0 2px 12px -2px rgba(0, 0, 0, 0.7);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
