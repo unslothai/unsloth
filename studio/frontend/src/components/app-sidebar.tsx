@@ -72,8 +72,7 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
-  exportBulkConversationsMerged,
-  exportBulkConversationsSeparate,
+  bulkExportConversationsByScope,
   importConversationsFromFile,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
@@ -275,23 +274,7 @@ export function AppSidebar() {
   }
 
   async function handleBulkExport(scope: "recents" | "all", fmt: ConvExportFormat, merged: boolean) {
-    try {
-      const threads = await listStoredChatThreads({
-        includeArchived: false,
-        ...(scope === "recents" ? { projectId: null } : {}),
-      });
-      const ids = [...new Set(threads.map((t) => t.id))];
-      if (ids.length === 0) { toast.info("No conversations to export."); return; }
-      const ts = new Date().toISOString().slice(0, 10);
-      const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
-      if (merged) {
-        await exportBulkConversationsMerged(ids, fmt, basename);
-      } else {
-        await exportBulkConversationsSeparate(ids, fmt, basename);
-      }
-    } catch {
-      toast.error("Export failed.");
-    }
+    await bulkExportConversationsByScope(scope, fmt, merged);
   }
   const [trainOpen, setTrainOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
