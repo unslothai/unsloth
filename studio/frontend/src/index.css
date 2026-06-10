@@ -224,7 +224,8 @@
 	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
 	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
 	   drifted ~3% darker and shifted the neutral hue. */
-	--background: #1f2023;
+	/* Slightly darker than --sidebar so the sidebar reads as its own surface. */
+	--background: #1a1b1e;
 	--foreground: #ececee;
 	--card: #2d2e32;
 	--card-foreground: #ececee;
@@ -251,7 +252,7 @@
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	/* Match the page background (dark); --sidebar-border is the right-edge separator. */
+	/* A step lighter than --background; the tone difference is the separator. */
 	--sidebar: #1f2023;
 	--sidebar-foreground: #ececee;
 	--sidebar-primary: #17b88b;
