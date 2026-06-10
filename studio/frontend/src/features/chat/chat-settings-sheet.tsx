@@ -1606,7 +1606,7 @@ function ChatTemplateFields() {
                 <HugeiconsIcon
                   icon={Edit03Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-3"
                 />
               </button>
             </TooltipPrimitive.Trigger>
