@@ -96,6 +96,13 @@ if already_imported:
     )
 del already_imported, critical_modules
 
+# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import
+# unsloth_zoo` below pulls it in on ROCm hosts).
+from .import_fixes import maybe_set_windows_rocm_bnb_version
+
+maybe_set_windows_rocm_bnb_version()
+del maybe_set_windows_rocm_bnb_version
+
 # Multi-GPU is not yet supported (beta available on request).
 
 # Fixes https://github.com/unslothai/unsloth/issues/1266

@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, Iterable, List, Optional
+from typing import Callable, Generator, Iterable, List, Optional
 
 import httpx
 
@@ -481,6 +481,45 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
+def _is_companion_gguf_path(path: str) -> bool:
+    """True for a non-main GGUF: vision mmproj or a separate MTP drafter
+    (repo-root ``mtp-*.gguf`` or the ``MTP/`` subdir copies, Gemma 4).
+
+    Mirrors hub.utils.gguf so variant resolution never picks a companion as
+    the main model -- e.g. a Gemma ``Q8_0`` request must not resolve to the
+    ``MTP/...-Q8_0-MTP.gguf`` drafter, which sorts ahead of the real weight.
+    """
+    p = path.lower()
+    if not p.endswith(".gguf"):
+        return False
+    if "mmproj" in p:
+        return True
+    name = p.rsplit("/", 1)[-1]
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+
+
+# Below this many B params, draft-mtp regresses vs spec-off (bench in
+# _build_speculative_flags); auto mode drops MTP under it.
+_MTP_MIN_SIZE_B = 3.0
+
+# Context-fit VRAM budget: tighter than _GPU_PIN_VRAM_FRACTION (0.95) on
+# purpose -- over-promising context OOMs at runtime (#5106).
+_CTX_FIT_VRAM_FRACTION = 0.90
+
+# Extra VRAM fraction reserved when MTP will engage: the draft model's
+# weights, KV cache, and compute buffers live outside the main model's
+# estimate. Applied to BOTH the ctx-fit budget and the GPU pin thresholds --
+# tightening only the fit lets a load whose weights land between the two
+# fractions pin without any room for the drafter.
+_MTP_VRAM_RESERVE_FRAC = 0.05
+
+
+def _auto_mode_drops_mtp(req_mode: Optional[str], size_b: Optional[float]) -> bool:
+    """Auto mode drops MTP below _MTP_MIN_SIZE_B (draft-mtp regresses there);
+    forced mtp / mtp+ngram engage regardless of size."""
+    return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
@@ -625,6 +664,9 @@ class LlamaCppBackend:
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         self._hf_repo: Optional[str] = None
+        # Separate MTP drafter launched with the current model; reload-dedup
+        # key so a drafter that appears next to the weights forces a reload.
+        self._mtp_draft_path: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
@@ -731,6 +773,14 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def gguf_path(self) -> Optional[str]:
+        return self._gguf_path
+
+    @property
+    def mtp_draft_path(self) -> Optional[str]:
+        return self._mtp_draft_path
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -1484,13 +1534,16 @@ class LlamaCppBackend:
 
     @staticmethod
     def _select_gpus(
-        model_size_bytes: int, gpus: list[tuple[int, int]]
+        model_size_bytes: int,
+        gpus: list[tuple[int, int]],
+        usable_fraction: Optional[float] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
         ``model_size_bytes`` should include weights and estimated KV cache.
-        ``_GPU_PIN_VRAM_FRACTION`` provides headroom for compute buffers,
-        CUDA context, and other runtime overhead.
+        ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
+        headroom for compute buffers, CUDA context, and other runtime
+        overhead; callers lower it when MTP reserves VRAM for a draft model.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -1501,7 +1554,8 @@ class LlamaCppBackend:
             return None, True
 
         model_size_mib = model_size_bytes / (1024 * 1024)
-        usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        if usable_fraction is None:
+            usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1749,8 +1803,8 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP needs a tighter budget; drop from 0.90 to 0.85.
-        budget_frac = 0.85 if mtp_engaged else 0.90
+        # MTP engaged: carve the drafter's reserve out of the fit budget.
+        budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
@@ -1808,7 +1862,9 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
 
             files = list_repo_files(hf_repo, token = hf_token)
-            gguf_files = [f for f in files if f.endswith(".gguf") and "mmproj" not in f.lower()]
+            gguf_files = [
+                f for f in files if f.endswith(".gguf") and not _is_companion_gguf_path(f)
+            ]
             if not gguf_files:
                 return None
 
@@ -2169,7 +2225,11 @@ class LlamaCppBackend:
                     r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
                 )
                 gguf_files = sorted(
-                    f for f in files if f.endswith(".gguf") and boundary.search(f.lower())
+                    f
+                    for f in files
+                    if f.endswith(".gguf")
+                    and boundary.search(f.lower())
+                    and not _is_companion_gguf_path(f)
                 )
                 if gguf_files:
                     gguf_filename = gguf_files[0]
@@ -2199,7 +2259,7 @@ class LlamaCppBackend:
                         matches = sorted(
                             p.relative_to(snap).as_posix()
                             for p in snap.rglob("*.gguf")
-                            if "mmproj" not in p.name.lower()
+                            if not _is_companion_gguf_path(p.relative_to(snap).as_posix())
                             and boundary.search(p.relative_to(snap).as_posix().lower())
                         )
                         if not matches:
@@ -2303,7 +2363,7 @@ class LlamaCppBackend:
                                 for f in all_gguf_files
                                 if f.startswith(_prefix)
                                 and f != gguf_filename
-                                and "mmproj" not in f.lower()
+                                and not _is_companion_gguf_path(f)
                             )
                         else:
                             gguf_extra_shards = []
@@ -2357,6 +2417,58 @@ class LlamaCppBackend:
             logger.info(f"GGUF downloaded in {dl_elapsed:.1f}s: {local_path}")
         return local_path
 
+    def _download_companion_gguf(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str],
+        pick: Callable[[list[str]], Optional[str]],
+        label: str,
+    ) -> Optional[str]:
+        """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
+
+        Tries the live repo file list, then the local HF cache snapshots
+        (offline, same fallback as _download_gguf), then hf_hub_download.
+        Runs WITHOUT self._lock (like _download_gguf); honors _cancel_event so
+        an /unload between the main download and here skips the fetch.
+        """
+        if self._cancel_event.is_set():
+            return None
+
+        target: Optional[str] = None
+        try:
+            from huggingface_hub import list_repo_files
+            target = pick(list_repo_files(hf_repo, token = hf_token))
+        except Exception as e:
+            logger.debug(f"Could not list repo files for {label}: {e}")
+
+        if target is None:
+            try:
+                from utils.models.model_config import _iter_hf_cache_snapshots
+                for snap in _iter_hf_cache_snapshots(hf_repo):
+                    rel_files = [p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")]
+                    target = pick(rel_files)
+                    if target is not None:
+                        logger.info("Resolved %s %s from local HF cache", label, target)
+                        break
+            except Exception as e:
+                logger.debug(f"Offline cache lookup for {label} failed: {e}")
+
+        if target is None or self._cancel_event.is_set():
+            return None
+
+        try:
+            from huggingface_hub import hf_hub_download
+            logger.info(f"Downloading {label}: {hf_repo}/{target}")
+            return hf_hub_download(
+                repo_id = hf_repo,
+                filename = target,
+                token = hf_token,
+            )
+        except Exception as e:
+            logger.warning(f"Could not download {label}: {e}")
+            return None
+
     def _download_mmproj(
         self,
         *,
@@ -2382,43 +2494,43 @@ class LlamaCppBackend:
                     return f
             return mmproj_files[0]
 
-        target: Optional[str] = None
-        try:
-            from huggingface_hub import list_repo_files
-            target = _pick_mmproj(list_repo_files(hf_repo, token = hf_token))
-        except Exception as e:
-            logger.debug(f"Could not list repo files for mmproj: {e}")
+        return self._download_companion_gguf(
+            hf_repo = hf_repo,
+            hf_token = hf_token,
+            pick = _pick_mmproj,
+            label = "mmproj",
+        )
 
-        # Offline: resolve mmproj from the local HF cache snapshot, same as
-        # _download_gguf's offline fallback above.
-        if target is None:
-            try:
-                from utils.models.model_config import _iter_hf_cache_snapshots
-                for snap in _iter_hf_cache_snapshots(hf_repo):
-                    rel_files = [p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")]
-                    target = _pick_mmproj(rel_files)
-                    if target is not None:
-                        logger.info("Resolved mmproj %s from local HF cache", target)
-                        break
-            except Exception as e:
-                logger.debug(f"Offline cache lookup for mmproj failed: {e}")
+    def _download_mtp(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
-        if target is None:
-            return None
+        Targets the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
+        unsloth mirrors there for llama.cpp ``-hf`` auto-discovery (smallest,
+        recommended for speculation). Repos that bake the MTP head into the
+        main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
+        higher-precision copies under ``MTP/`` are for explicit selection and
+        are intentionally skipped. Returns the local path, or None.
+        """
 
-        try:
-            from huggingface_hub import hf_hub_download
-
-            logger.info(f"Downloading mmproj: {hf_repo}/{target}")
-            local_path = hf_hub_download(
-                repo_id = hf_repo,
-                filename = target,
-                token = hf_token,
+        def _pick_mtp(candidates: list[str]) -> Optional[str]:
+            mtp_files = sorted(
+                f
+                for f in candidates
+                if f.lower().endswith(".gguf") and Path(f).name.lower().startswith("mtp-")
             )
-            return local_path
-        except Exception as e:
-            logger.warning(f"Could not download mmproj: {e}")
-            return None
+            return mtp_files[0] if mtp_files else None
+
+        return self._download_companion_gguf(
+            hf_repo = hf_repo,
+            hf_token = hf_token,
+            pick = _pick_mtp,
+            label = "MTP drafter",
+        )
 
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
@@ -2445,6 +2557,19 @@ class LlamaCppBackend:
             return None
 
         return str(mmproj)
+
+    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
+        """Return mtp_draft_path iff it exists on disk, else None.
+
+        No family check needed: the drafter is only ever auto-resolved from
+        the same repo as the main GGUF (see _download_mtp).
+        """
+        if not mtp_draft_path:
+            return None
+        if not Path(mtp_draft_path).is_file():
+            logger.warning(f"MTP drafter file not found: {mtp_draft_path}")
+            return None
+        return str(mtp_draft_path)
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -2550,6 +2675,8 @@ class LlamaCppBackend:
         gguf_path: Optional[str] = None,
         # Vision projection (mmproj) for local vision models
         mmproj_path: Optional[str] = None,
+        # Separate MTP drafter for local Gemma loads (HF loads auto-resolve it)
+        mtp_draft_path: Optional[str] = None,
         # HF mode: let llama-server download via -hf "repo:quant"
         hf_repo: Optional[str] = None,
         hf_variant: Optional[str] = None,
@@ -2582,6 +2709,7 @@ class LlamaCppBackend:
             # live server already satisfies this request.
             if self._already_in_target_state(
                 gguf_path = gguf_path,
+                mtp_draft_path = mtp_draft_path,
                 model_identifier = model_identifier,
                 hf_variant = hf_variant,
                 n_ctx = n_ctx,
@@ -2653,6 +2781,8 @@ class LlamaCppBackend:
                 )
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+            # mtp_draft_path arrives set for local Gemma loads (detected
+            # sibling); for -hf loads it's None here and resolved just below.
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
@@ -2666,6 +2796,28 @@ class LlamaCppBackend:
                     # Auto-download mmproj for vision models
                     if is_vision and not mmproj_path:
                         mmproj_path = self._download_mmproj(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                        )
+                    # Auto-download the separate MTP drafter (e.g. Gemma) when
+                    # the requested spec mode can use it. Repos with the head
+                    # baked into the main GGUF (Qwen) have no mtp- sibling and
+                    # this no-ops. Skipped when the user disabled MTP, drives
+                    # --spec-type manually via extra_args, or in auto mode on a
+                    # sub-3B model (e.g. Gemma E2B) where the resolver drops
+                    # MTP anyway -- no point fetching a drafter it never uses.
+                    # Forced mtp / mtp+ngram still download (user override).
+                    _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+                    _auto_drops_mtp = _auto_mode_drops_mtp(
+                        _spec_canon, _extract_model_size_b(model_identifier)
+                    )
+                    if (
+                        not mtp_draft_path
+                        and _spec_canon in ("auto", "mtp", "mtp+ngram")
+                        and not _auto_drops_mtp
+                        and not _extra_args_set_spec_type(extra_args)
+                    ):
+                        mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                         )
@@ -2736,12 +2888,15 @@ class LlamaCppBackend:
                     # Will MTP engage on this load? If so, auto-fit reserves
                     # extra VRAM for the draft model. Mirrors
                     # _build_speculative_flags' resolver: forced mtp / mtp+ngram
-                    # always engage; auto only on an MTP GGUF >= 3B; ngram /
-                    # ngram-simple / off never engage MTP.
+                    # always engage; auto only on an MTP model >= 3B; ngram /
+                    # ngram-simple / off never engage MTP. A separate drafter
+                    # (Gemma) counts as an MTP model just like a baked-in head.
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
-                    _mtp_sub_3b_for_fit = _mtp_size_for_fit is not None and _mtp_size_for_fit < 3.0
+                    _mtp_sub_3b_for_fit = (
+                        _mtp_size_for_fit is not None and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                    )
                     _mtp_will_engage = bool(
                         not _extra_args_set_spec_type(extra_args)
                         and (
@@ -2751,6 +2906,7 @@ class LlamaCppBackend:
                                 and (
                                     bool(self._nextn_predict_layers)
                                     or _is_mtp_model_name(model_identifier, model_path)
+                                    or bool(mtp_draft_path)
                                 )
                                 and not _mtp_sub_3b_for_fit
                             )
@@ -2766,6 +2922,11 @@ class LlamaCppBackend:
                     #     context, since multi-GPU is slower.
                     gpu_indices, use_fit = None, True
                     explicit_ctx = requested_ctx > 0
+                    # MTP draft model lives outside the main estimates; carve
+                    # its reserve out of every fit budget and pin threshold so
+                    # a load can't pin into the drafter's headroom.
+                    _mtp_reserve = _MTP_VRAM_RESERVE_FRAC if _mtp_will_engage else 0.0
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _mtp_reserve
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Largest hardware-aware cap from the native context
@@ -2790,7 +2951,7 @@ class LlamaCppBackend:
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
+                                if total_mib <= pool_mib * (_CTX_FIT_VRAM_FRACTION - _mtp_reserve):
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
@@ -2807,13 +2968,15 @@ class LlamaCppBackend:
                             requested_total = model_size + self._estimate_kv_cache_bytes(
                                 effective_ctx, cache_type_kv, n_parallel = n_parallel
                             )
-                            gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
+                            gpu_indices, use_fit = self._select_gpus(
+                                requested_total, gpus, usable_fraction = _pin_fraction
+                            )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
                             # headroom threshold as _select_gpus (#5106).
                             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            pin_fraction = self._GPU_PIN_VRAM_FRACTION
+                            pin_fraction = _pin_fraction
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_mib = sum(free for _, free in subset)
@@ -2861,7 +3024,9 @@ class LlamaCppBackend:
                             "Falling back to file-size-only GPU selection",
                             model_size_gb = round(model_size / (1024**3), 2),
                         )
-                        gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                        gpu_indices, use_fit = self._select_gpus(
+                            model_size, gpus, usable_fraction = _pin_fraction
+                        )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
@@ -2978,6 +3143,9 @@ class LlamaCppBackend:
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
+                launch_mtp_draft_path = self._resolve_launch_mtp_path(
+                    mtp_draft_path = mtp_draft_path,
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -2986,7 +3154,11 @@ class LlamaCppBackend:
                     model_path = model_path,
                     gpus = bool(gpus),
                     binary = binary,
+                    mtp_draft_path = launch_mtp_draft_path,
                 )
+                # Remember where the spec block sits so a drafter-load failure
+                # can be retried with these flags swapped out (see below).
+                _spec_start = len(cmd)
                 cmd.extend(spec_flags)
 
                 # Apply custom chat template override if provided.
@@ -3184,84 +3356,87 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
-                _fit_retry_allowed = self._fit_off_retry_eligible(cmd, use_fit)
-                for _spawn_attempt in (0, 1):
-                    # Defensive kill: drop an orphan Popen a concurrent load may
-                    # have stored before we overwrite the reference (#5161).
-                    # Also reaps the crashed first attempt on the retry pass.
-                    self._kill_process()
+                def _spawn_and_wait(run_cmd, *, label = ""):
+                    """Start llama-server with run_cmd and wait for health.
 
-                    self._stdout_lines = []
-                    # Tee llama-server output to a dedicated log file so a
-                    # post-mortem has the full trail even when the parent only
-                    # kept the last 50 lines. Path is under the studio home.
-                    self._llama_log_fh = None
-                    try:
-                        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
-                        log_dir.mkdir(parents = True, exist_ok = True)
-                        # Include the attempt index: the --fit off retry can
-                        # respawn within the same epoch second, and reusing the
-                        # name would truncate the crash log the retry warning
-                        # just pointed the user at.
-                        self._llama_log_path = log_dir / (
-                            f"llama-{int(time.time())}-port-{self._port}"
-                            f"-try{_spawn_attempt}.log"
-                        )
-                        self._llama_log_fh = open(
-                            self._llama_log_path,
-                            "w",
-                            encoding = "utf-8",
-                            buffering = 1,
-                        )
-                        logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-                    except OSError as e:
-                        # Best-effort; never block the load on logging.
-                        logger.debug(f"Could not open llama-server log file: {e}")
-                        self._llama_log_path = None
-                    self._process = subprocess.Popen(
-                        cmd,
-                        stdout = subprocess.PIPE,
-                        stderr = subprocess.STDOUT,
-                        text = True,
-                        env = env,
-                        **_windows_hidden_subprocess_kwargs(),
-                    )
+                    Retries once with --fit off when the first attempt
+                    crashes during startup and run_cmd is eligible (see
+                    _fit_off_retry_eligible).
+                    """
+                    _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
+                    for _spawn_attempt in (0, 1):
+                        # Defensive kill: drop an orphan Popen a concurrent load may
+                        # have stored before we overwrite the reference (#5161).
+                        # Also reaps the crashed first attempt on the retry pass.
+                        self._kill_process()
 
-                    # Background thread to drain stdout (prevents pipe deadlock)
-                    self._stdout_thread = threading.Thread(
-                        target = self._drain_stdout, daemon = True, name = "llama-stdout"
-                    )
-                    self._stdout_thread.start()
-                    if self._wait_for_health(timeout = 600.0):
-                        break
-                    _startup_crashed = (
-                        self._process.poll() is not None and self._process.returncode != 0
-                    )
-                    if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
-                        logger.warning(
-                            "llama-server crashed during startup (exit code %s) "
-                            "with the default memory-fit step enabled; Studio "
-                            "already verified the model fits, retrying once "
-                            "with --fit off. Crash log: %s",
-                            self._process.returncode,
-                            self._llama_log_path,
+                        self._stdout_lines = []
+                        # Tee llama-server output to a dedicated log file so a
+                        # post-mortem has the full trail even when the parent only
+                        # kept the last 50 lines. Path is under the studio home.
+                        # ``label`` (MTP fallback) and the attempt index (--fit
+                        # off retry) keep a respawn within the same epoch second
+                        # from truncating the crash log a retry warning just
+                        # pointed the user at.
+                        self._llama_log_fh = None
+                        try:
+                            log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                            log_dir.mkdir(parents = True, exist_ok = True)
+                            self._llama_log_path = log_dir / (
+                                f"llama-{int(time.time())}{label}-port-{self._port}"
+                                f"-try{_spawn_attempt}.log"
+                            )
+                            self._llama_log_fh = open(
+                                self._llama_log_path,
+                                "w",
+                                encoding = "utf-8",
+                                buffering = 1,
+                            )
+                            logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
+                        except OSError as e:
+                            # Best-effort; never block the load on logging.
+                            logger.debug(f"Could not open llama-server log file: {e}")
+                            self._llama_log_path = None
+                        self._process = subprocess.Popen(
+                            run_cmd,
+                            stdout = subprocess.PIPE,
+                            stderr = subprocess.STDOUT,
+                            text = True,
+                            env = env,
+                            **_windows_hidden_subprocess_kwargs(),
                         )
-                        cmd = [*cmd, "--fit", "off"]
-                        continue
-                    self._kill_process()
-                    raise RuntimeError(
-                        self._classify_llama_start_failure(
-                            "\n".join(self._stdout_lines[-50:]),
-                            gguf_path,
-                            model_identifier,
+
+                        # Background thread to drain stdout (prevents pipe deadlock)
+                        self._stdout_thread = threading.Thread(
+                            target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
-                    )
+                        self._stdout_thread.start()
+                        if self._wait_for_health(timeout = 600.0):
+                            return True
+                        _startup_crashed = (
+                            self._process.poll() is not None and self._process.returncode != 0
+                        )
+                        if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
+                            logger.warning(
+                                "llama-server crashed during startup (exit code %s) "
+                                "with the default memory-fit step enabled; Studio "
+                                "already verified the model fits, retrying once "
+                                "with --fit off. Crash log: %s",
+                                self._process.returncode,
+                                self._llama_log_path,
+                            )
+                            run_cmd = [*run_cmd, "--fit", "off"]
+                            continue
+                        return False
 
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
-                # llama-server mmap's, which downstream consumers need.
+                # llama-server mmap's, which downstream consumers need. Must be
+                # set BEFORE the spawn: load_progress() reads _gguf_path for
+                # the mmap progress total while the health wait runs.
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
+                self._mtp_draft_path = launch_mtp_draft_path
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -3285,7 +3460,76 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                # Health was confirmed inside the spawn/retry loop above.
+                healthy = _spawn_and_wait(cmd)
+                # A separate MTP drafter (e.g. Gemma's gemma4-assistant head)
+                # can fail to load on a llama-server that advertises the
+                # --spec-type draft-mtp flag but predates the drafter's
+                # architecture -- and that aborts the whole server. Retry once
+                # with the whole spec block replaced by --spec-default so the
+                # main model still loads (without speculation). Replacing the
+                # slice -- rather than re-resolving with mtp_draft_path=None --
+                # is what guarantees MTP is off even for a forced mtp / mtp+ngram
+                # request (which would otherwise re-emit --spec-type draft-mtp).
+                # _requested_spec_mode (the user's choice) is left intact so a
+                # duplicate /load doesn't thrash a reload.
+                # Gate on the flag actually being in the command, not on the
+                # drafter merely existing on disk: local loads pass the path
+                # even in off/ngram modes (and auto drops MTP sub-3B), where a
+                # retry would blame the drafter for an unrelated failure and
+                # override the user's spec choice. The cancel check keeps an
+                # /unload that killed the first attempt from respawning.
+                if (
+                    not healthy
+                    and "--model-draft" in spec_flags
+                    and not self._cancel_event.is_set()
+                ):
+                    # Only blame the binary's age when the output shows the
+                    # drafter actually failing (unknown arch / draft load);
+                    # an unrelated crash (e.g. OOM) gets a neutral message.
+                    # Substrings are upstream llama.cpp messages
+                    # (llama_model_load / srv load_model [spec]); if they
+                    # drift, only the wording degrades -- the retry fires
+                    # either way.
+                    _attempt_output = "\n".join(self._stdout_lines)
+                    if (
+                        "unknown model architecture" in _attempt_output
+                        or "failed to measure draft model memory" in _attempt_output
+                    ):
+                        _retry_reason = (
+                            "the prebuilt may predate its architecture; retrying "
+                            "without speculative decoding -- run "
+                            "`unsloth studio update` for MTP"
+                        )
+                    else:
+                        _retry_reason = (
+                            "retrying without speculative decoding in case the "
+                            "drafter is the cause"
+                        )
+                    logger.warning(
+                        "llama-server failed to start with MTP drafter %s; %s.",
+                        Path(launch_mtp_draft_path).name,
+                        _retry_reason,
+                    )
+                    self._kill_process()
+                    fallback_cmd = (
+                        cmd[:_spec_start]
+                        + ["--spec-default"]
+                        + cmd[_spec_start + len(spec_flags) :]
+                    )
+                    healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
+                    if healthy:
+                        self._speculative_type = "default"
+
+                if not healthy:
+                    self._kill_process()
+                    raise RuntimeError(
+                        self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                        )
+                    )
+
                 self._healthy = True
 
                 # Commit caller intent only after _healthy=True so a failed start
@@ -3373,6 +3617,7 @@ class LlamaCppBackend:
         model_path: Optional[str],
         gpus: bool,
         binary: Optional[str],
+        mtp_draft_path: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -3417,12 +3662,16 @@ class LlamaCppBackend:
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
         canonical_mode = _canonicalize_spec_mode(speculative_type)
-        is_mtp_model = bool(self._nextn_predict_layers) or (
-            _is_mtp_model_name(model_identifier, model_path)
+        # MTP signals: head baked into the main GGUF (Qwen, via metadata or
+        # name), or a separate drafter resolved from the repo (Gemma).
+        is_mtp_model = (
+            bool(self._nextn_predict_layers)
+            or _is_mtp_model_name(model_identifier, model_path)
+            or bool(mtp_draft_path)
         )
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
-        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 3.0
+        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -3457,6 +3706,12 @@ class LlamaCppBackend:
                 return False
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            # Separate-file drafter (Gemma): point llama-server at it. Baked-in
+            # heads (Qwen) pass no path -- llama-server reads them from the
+            # main GGUF.
+            if mtp_draft_path:
+                flags.extend(["--model-draft", mtp_draft_path])
+                logger.info(f"Using separate MTP drafter: {mtp_draft_path}")
             if chain_ngram:
                 ngram_knobs = _build_ngram_mod_flags(caps)
                 if ngram_knobs:
@@ -3589,6 +3844,7 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        mtp_draft_path: Optional[str] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -3647,6 +3903,22 @@ class LlamaCppBackend:
         if (self._chat_template_override or None) != (chat_template_override or None):
             return False
 
+        # A drafter appearing/disappearing next to a local GGUF changes the
+        # launch command (--model-draft) when the mode can use it; without
+        # this, adding mtp-*.gguf after a load is deduped away and MTP can't
+        # engage short of an unload. HF loads resolve the drafter inside
+        # load_model (gguf_path is None here), so only local paths compare;
+        # the route-level probe covers HF cache repos. No sub-3B gate: both
+        # sides come from the same config detection, so a sub-3B mismatch
+        # only happens when a drafter genuinely appeared (one benign reload,
+        # then the stored path converges).
+        if (
+            gguf_path is not None
+            and req_mode in ("auto", "mtp", "mtp+ngram")
+            and (mtp_draft_path or None) != (self._mtp_draft_path or None)
+        ):
+            return False
+
         # extra_args=None means "no opinion" (inherit handled at the route
         # layer); only an explicit list forces equality.
         if extra_args is not None:
@@ -3688,6 +3960,7 @@ class LlamaCppBackend:
             self._model_identifier = None
             self._gguf_path = None
             self._hf_repo = None
+            self._mtp_draft_path = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False

@@ -986,24 +986,51 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Message content parts (compare view CompareMessagePart type: "audio").
+function extractAudioPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "audio" || !("audio" in part)) return undefined;
+  const audioPart = (
+    part as unknown as {
+      type: "audio";
+      audio: string | { data: string; format: string };
+    }
+  ).audio;
+  const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+  if (!raw) return undefined;
+  return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+}
+
+// Exported for tests.
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
+    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (
-          part as unknown as {
-            type: "audio";
-            audio: string | { data: string; format: string };
-          }
-        ).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      const base64 = extractAudioPartBase64(part);
+      if (base64) return base64;
+    }
+
+    // Attachment content parts (from AudioAttachmentAdapter)
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractAudioPartBase64(part);
+          if (base64) return base64;
+        }
       }
     }
+
+    // Only the newest user message counts. audio_base64 switches the
+    // backend onto the audio generation path, so replaying audio from an
+    // older turn would hijack text follow-ups (Whisper would retranscribe
+    // the stale clip). Matches the consumed-on-send semantics of the
+    // legacy pendingAudio path.
+    break;
   }
 
   // Runtime store (main composer's audio upload).
