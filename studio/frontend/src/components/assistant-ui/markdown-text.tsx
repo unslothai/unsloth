@@ -427,33 +427,19 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
 }
 
 const safeImageUrl: UrlTransform = (url, _key, node) => {
-  // For non-image nodes, delegate to the library default so Streamdown's
-  // built-in javascript: / data: link sanitization remains intact.
+  // Only images are restricted; links/other nodes use the default transform.
   if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
 
-  // Strip ASCII control characters (U+0000–U+001F, U+007F) before any
-  // checks.  Browsers remove these during URL parsing, so a raw value like
-  // "/\n/attacker.com" or "\t//attacker.com" would otherwise pass the guards
-  // below and still resolve to an external origin.
+  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
+  // "\t//attacker.com" would otherwise slip past the guards below.
   // eslint-disable-next-line no-control-regex
   const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
   const lower = normalized.toLowerCase();
 
   if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
-
-  // Block protocol-relative and backslash-normalised forms: //, \\, /\, \/
-  // Browsers treat a leading pair of any combination of / and \ as a
-  // network-path reference and resolve it against the current origin scheme.
-  if (/^[/\\]{2}/.test(normalized)) return null;
-
-  // A colon is only a scheme separator when it appears before any path
-  // separator.  A colon in the path or query string — e.g.
-  // /api/image?id=model:v2 or /snapshots/2026-06-04T12:00:00Z.png — is
-  // not a scheme and must not cause the URL to be rejected.
-  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null;
-
-  // Relative path (no scheme) — same-origin and safe.
-  return normalized;
+  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
+  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
+  return normalized; // relative -> same-origin
 };
 
 const MarkdownTextImpl = () => {
