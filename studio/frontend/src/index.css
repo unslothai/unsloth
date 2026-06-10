@@ -1020,6 +1020,12 @@
 		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
+	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
+	   trailing padding is tightened to keep the hover pill balanced. */
+	.composer-pill-btn:has(.composer-pill-caret) {
+		@apply pr-1.5;
+	}
+
 	/* Icon-only (compact) pills drop their label, so make the button a square
 	   and center the glyph; the rounded-full hover highlight then reads as a
 	   circle around the icon rather than a wide rounded rectangle. */
