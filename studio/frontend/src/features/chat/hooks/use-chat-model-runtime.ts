@@ -26,6 +26,7 @@ import { formatEta, formatRate } from "../utils/format-transfer";
 import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
+  readPersistedSpeculativeType,
   type ReasoningEffort,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
@@ -639,16 +640,17 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto on model switch: spec
-            // strategy is per-model, so a sub-3B non-MTP GGUF's "Off" must
-            // not carry into a 27B MTP GGUF where Auto auto-promotes to
-            // draft-mtp. Clears the stale prior choice so the backend's
-            // platform-aware path runs by default; same for spec_draft_n_max
-            // (MTP-only). The user can still force a mode on the new model.
+            // On a model switch, fall back to the persisted standing
+            // preference rather than null so a per-session forced MTP mode
+            // can't follow the user onto a model without an MTP head.
+            // spec_draft_n_max is MTP-only and always resets. Seed the loaded
+            // shadows to the same pref so the settings sheet doesn't flash a
+            // spurious dirty/Apply state mid-switch until the load reports back.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
+              const persistedSpec = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
-                speculativeType: null,
-                loadedSpeculativeType: null,
+                speculativeType: persistedSpec,
+                loadedSpeculativeType: persistedSpec,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });

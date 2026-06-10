@@ -42,6 +42,12 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+
+// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
+// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
+// choice would silently no-op on models without an MTP head. Unknown -> auto.
+const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource =
   | { type: "thread" }
@@ -315,6 +321,19 @@ function saveString(key: string, value: string): void {
     localStorage.setItem(key, value);
   } catch {
     // ignore
+  }
+}
+
+// The user's standing preference, sanitized to the universal set.
+export function readPersistedSpeculativeType(): string {
+  const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
+  return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
+}
+
+// MTP / null / unknown values are left unwritten so they stay session-only.
+function saveSpeculativeType(value: string | null): void {
+  if (value && PERSISTED_SPEC_MODES.has(value)) {
+    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
   }
 }
 
@@ -763,7 +782,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "auto",
+  speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -975,7 +994,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "auto",
+      speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
@@ -1131,7 +1150,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) => set({ speculativeType }),
+  setSpeculativeType: (speculativeType) =>
+    set(() => {
+      saveSpeculativeType(speculativeType);
+      return { speculativeType };
+    }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
