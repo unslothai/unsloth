@@ -223,7 +223,10 @@ def _load_processed_hf_preview_slice(
     if not _is_valid_repo_id(request.dataset_name):
         return None
     try:
-        from datasets import DownloadConfig, load_dataset
+        from datasets import DownloadConfig
+
+        # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
+        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
     except Exception:
         return None
 
