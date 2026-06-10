@@ -942,9 +942,7 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _should_strip_split_mode(
-    request: LoadRequest, backend_extra: Optional[list[str]]
-) -> bool:
+def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
     """Whether an inherited --split-mode should be stripped on reload.
 
     The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
@@ -1004,10 +1002,14 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         # Mirror the reload's conditional split-mode strip, so a preserved
         # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
         # trigger a needless reload of a healthy server.
-        if backend_extra and strip_shadowing_flags(
-            backend_extra,
-            strip_split_mode = _should_strip_split_mode(request, backend_extra),
-        ) != backend_extra:
+        if (
+            backend_extra
+            and strip_shadowing_flags(
+                backend_extra,
+                strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            )
+            != backend_extra
+        ):
             return False
     else:
         if list(request.llama_extra_args) != backend_extra:
