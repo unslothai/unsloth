@@ -618,15 +618,20 @@ def _has_rocm_gpu() -> bool:
                         continue
                     if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
                         continue
-                    # Verify AMD vendor (0x1002 = 4098) to exclude NVIDIA KFD nodes.
+                    # Require AMD vendor_id 4098 (0x1002) in the properties file.
+                    # KFD properties files exist on every kernel that exposes
+                    # /sys/class/kfd, so absence of the file means we cannot
+                    # confirm AMD ownership -- skip the node rather than risk a
+                    # false positive (e.g. NVIDIA open driver KFD nodes that
+                    # lack a properties file on some kernel versions).
                     props_path = os.path.join(kfd_nodes, entry, "properties")
                     try:
                         with open(props_path) as fh:
                             props = fh.read()
-                        if not re.search(r"\bvendor_id\s+4098\b", props):
-                            continue
                     except OSError:
-                        pass  # no properties file -- trust gpu_id alone (older kernels)
+                        continue  # can't confirm vendor -- skip
+                    if not re.search(r"\bvendor_id\s+4098\b", props):
+                        continue
                     return True
         except OSError:
             pass
