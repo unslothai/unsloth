@@ -68,7 +68,12 @@ if sys.platform == "win32":
     # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
     # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
     # to avoid importing torch on every Windows host.
-    if "BNB_ROCM_VERSION" not in os.environ:
+    # Values seeded by the installer's sitecustomize.py are redetectable
+    # defaults; explicit caller values remain authoritative.
+    if (
+        "BNB_ROCM_VERSION" not in os.environ
+        or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
+    ):
         import glob as _glob
         import logging as _logging
 
@@ -100,8 +105,9 @@ if sys.platform == "win32":
             )
         # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
         if _found_rocm_bnb or _hip_env:
-            _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+            _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+            os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
             _logging.getLogger(__name__).info(
                 "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
                 _bnb_rocm_ver_final,

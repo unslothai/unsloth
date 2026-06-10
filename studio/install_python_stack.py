@@ -404,17 +404,26 @@ def _persist_bnb_rocm_version(version: str) -> bool:
         existing = (
             sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
         )
+        # Strip all managed regions, including one whose END marker was lost to
+        # an interrupted write, then append exactly one fresh block.
         pattern = re.compile(
             rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_BEGIN)}.*?"
-            rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_END)}\n?",
+            rf"(?:{re.escape(_BNB_ROCM_SITECUSTOMIZE_END)}\n?|\Z)",
             re.DOTALL,
         )
-        if pattern.search(existing):
-            updated = pattern.sub(block, existing)
-        else:
-            separator = "" if not existing or existing.endswith("\n") else "\n"
-            updated = f"{existing}{separator}{block}"
-        sitecustomize_path.write_text(updated, encoding = "utf-8")
+        remainder = pattern.sub("", existing)
+        separator = "" if not remainder or remainder.endswith("\n") else "\n"
+        updated = f"{remainder}{separator}{block}"
+        tmp_path = sitecustomize_path.with_name(
+            f"{sitecustomize_path.name}.unsloth-tmp{os.getpid()}"
+        )
+        try:
+            tmp_path.write_text(updated, encoding = "utf-8")
+            if sitecustomize_path.exists():
+                shutil.copymode(sitecustomize_path, tmp_path)
+            os.replace(tmp_path, sitecustomize_path)
+        finally:
+            tmp_path.unlink(missing_ok = True)
     except (OSError, UnicodeDecodeError) as exc:
         print(
             f"   Warning: could not persist BNB_ROCM_VERSION={version} "
