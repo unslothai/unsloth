@@ -570,6 +570,19 @@ def _load_model_via_http(
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
 
 
+def _format_context_length_line(load_result: dict) -> Optional[str]:
+    value = load_result.get("context_length")
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    if value_int <= 0:
+        return None
+    return f"  Context length: {value_int} tokens"
+
+
 # ── unsloth studio (server) ──────────────────────────────────────────
 
 
@@ -823,7 +836,10 @@ def run(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
     max_seq_length: int = typer.Option(
-        0, "--max-seq-length", help = "Max sequence length (0 = model default)"
+        0,
+        "--max-seq-length",
+        "--context-length",
+        help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     api_key_name: str = typer.Option(
@@ -1040,6 +1056,7 @@ def run(
 
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
+    context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
@@ -1075,6 +1092,8 @@ def run(
         typer.echo("=" * 56)
         typer.echo(f"  Unsloth Studio running at {base_url}")
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
+        if context_length_line:
+            typer.echo(context_length_line)
         typer.echo(f"  API Key:      {api_key}")
         typer.echo("")
         typer.echo("  OpenAI / Anthropic SDK base URL:")
@@ -1107,6 +1126,8 @@ def run(
     else:
         # Silent still prints URL + API key + tool-status policy.
         typer.echo(f"URL:     {base_url}")
+        if context_length_line:
+            typer.echo(context_length_line.strip())
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 

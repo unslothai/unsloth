@@ -33,6 +33,20 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _runtime_context_length(model, fallback: Optional[int] = None) -> Optional[int]:
+    """Return the effective context length Unsloth attached to a loaded model."""
+    for value in (getattr(model, "max_seq_length", None), fallback):
+        if isinstance(value, bool):
+            continue
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value_int > 0:
+            return value_int
+    return None
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -405,6 +419,10 @@ class InferenceBackend:
 
                 # Reject CPU/disk offload for audio models too
                 raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+                self.models[model_name]["context_length"] = _runtime_context_length(
+                    self.models[model_name].get("model"),
+                    max_seq_length,
+                )
 
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
@@ -485,6 +503,10 @@ class InferenceBackend:
                 self.models[model_name]["tokenizer"] = tokenizer
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+            self.models[model_name]["context_length"] = _runtime_context_length(
+                self.models[model_name].get("model"),
+                max_seq_length,
+            )
 
             self._load_chat_template_info(model_name)
 
