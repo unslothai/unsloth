@@ -15,23 +15,24 @@ export function publicAssetUrl(path: string): string {
   return encodeURI(import.meta.env.BASE_URL + path.replace(LEADING_SLASH, ""));
 }
 
+type MascotImgProps = { src: string } & Omit<
+  ComponentProps<"img">,
+  "src" | "onError"
+>;
+
+// Keying on src remounts the inner component, so the retry state resets
+// whenever the source changes (greeting sloths rotate).
+export function MascotImg(props: MascotImgProps) {
+  return <MascotImgInner key={props.src} {...props} />;
+}
+
 type Stage = "primary" | "retry" | "fallback";
 
 // Decorative mascot that degrades gracefully: a failed load retries once with
 // a cache-buster (transient blips, stale caches), then swaps to the bundled
 // fallback sloth. Empty alt by default so a broken image never paints text.
-export function MascotImg({
-  src,
-  alt = "",
-  ...rest
-}: { src: string } & Omit<ComponentProps<"img">, "src" | "onError">) {
+function MascotImgInner({ src, alt = "", ...rest }: MascotImgProps) {
   const [stage, setStage] = useState<Stage>("primary");
-  // Reset during render when the source changes (greeting sloths rotate).
-  const [lastSrc, setLastSrc] = useState(src);
-  if (src !== lastSrc) {
-    setLastSrc(src);
-    setStage("primary");
-  }
 
   const url = publicAssetUrl(src);
   const effectiveSrc =
