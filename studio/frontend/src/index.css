@@ -796,6 +796,9 @@
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		/* --nav-surface-hover is tuned for the page bg; on the lighter menu
+		   surface it is invisible, so use the menu hover token instead. */
+		background-color: var(--accent);
 		color: #fff;
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
@@ -1253,7 +1256,7 @@
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(255, 255, 255, 0.08) !important;
+		background-color: rgba(255, 255, 255, 0.1) !important;
 	}
 
 	/* Hover tints only the background; the item and every descendant (text, icons,
