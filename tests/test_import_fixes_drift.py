@@ -584,3 +584,57 @@ def test_accelerate_utils_imports_module_present():
         "accelerate.utils.imports.is_wandb_available is gone; "
         "disable_broken_wandb cannot patch the source module."
     )
+
+
+# ===========================================================================
+# bitsandbytes -- ROCm arch / warp-size detection shape
+# ===========================================================================
+
+
+def test_bitsandbytes_rocm_detection_helpers_recognizable():
+    """``fix_bitsandbytes_rocm_arch_detection``. The fix swaps
+    bitsandbytes.cuda_specs.get_rocm_gpu_arch / get_rocm_warpsize only when
+    the helper still shells out via subprocess and never consults torch
+    device properties. If bitsandbytes rewrites detection some third way,
+    the sniff declines by design and Windows ROCm noise silently returns;
+    fail here so the sniff gets updated. Reads the source file instead of
+    importing bitsandbytes to stay side-effect free."""
+    spec = importlib.util.find_spec("bitsandbytes")
+    if spec is None:
+        pytest.skip("bitsandbytes not installed -- nothing to drift-check.")
+    cuda_specs_path = None
+    for location in spec.submodule_search_locations or []:
+        candidate = os.path.join(location, "cuda_specs.py")
+        if os.path.isfile(candidate):
+            cuda_specs_path = candidate
+            break
+    if cuda_specs_path is None:
+        pytest.skip("bitsandbytes has no cuda_specs.py (pre-ROCm version).")
+
+    import ast
+
+    with open(cuda_specs_path, "r", encoding = "utf-8") as f:
+        source = f.read()
+    helpers = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("get_rocm_gpu_arch", "get_rocm_warpsize")
+    ]
+    if not helpers:
+        pytest.skip("bitsandbytes cuda_specs has no ROCm detection helpers.")
+    for node in helpers:
+        segment = ast.get_source_segment(source, node) or ""
+        recognized = (
+            "subprocess" in segment
+            or "get_device_properties" in segment
+            or "gcnArchName" in segment
+        )
+        if not recognized:
+            pytest.fail(
+                f"DRIFT DETECTED: bitsandbytes.cuda_specs.{node.name} uses "
+                "neither subprocess nor torch device properties; "
+                "fix_bitsandbytes_rocm_arch_detection's shape sniff will "
+                "decline to patch it and Windows ROCm import-time noise / "
+                "wrong ROCM_GPU_ARCH may return."
+            )

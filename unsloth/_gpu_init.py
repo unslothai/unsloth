@@ -30,6 +30,7 @@ from .import_fixes import (
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
+    fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
@@ -37,6 +38,9 @@ from .import_fixes import (
 
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
+# Must run before `import unsloth_zoo` below: on ROCm it imports
+# bitsandbytes at module scope, triggering bnb's broken Windows GPU probes.
+fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -45,6 +49,7 @@ torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
+del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
