@@ -6745,7 +6745,11 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
-def _build_openai_passthrough_body(payload, backend_ctx = None, llama_backend = None) -> dict:
+def _build_openai_passthrough_body(
+    payload,
+    backend_ctx = None,
+    llama_backend = None,
+) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only known OpenAI / llama-server fields are forwarded, so Studio-specific
