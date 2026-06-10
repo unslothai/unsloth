@@ -961,8 +961,11 @@
 		box-shadow: 0 4px 14px var(--background) !important;
 	}
 
-	/* Model selector and account menu: flat in dark. */
-	.dark .unsloth-model-selector-menu,
+	/* Model selector: shadow in the page-bg color so it lifts off the
+	   composer it overlaps (chatbox geometry). Account menu stays flat. */
+	.dark .unsloth-model-selector-menu {
+		box-shadow: 0 2px 8px -2px var(--background) !important;
+	}
 	.dark .app-user-menu.menu-soft-surface-up {
 		box-shadow: none !important;
 	}
