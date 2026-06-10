@@ -148,15 +148,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
 
 
 def _rocm_install_args(asset: Optional[str]) -> list[str]:
-    """Reproduce setup.sh/setup.ps1 ROCm forwarding from the install marker.
-
-    setup forwards --rocm-gfx (or --has-rocm) because install_llama_prebuilt.py's
-    own probe can miss the AMD gfx arch on amd-smi-only / name-inferred hosts;
-    without it, re-running on such a host would mis-plan a non-HIP asset or fail.
-    The marker's asset name carries the gfx family for lemonade HIP bundles
-    (e.g. app-...-rocm-gfx110X...) and only 'rocm'/'hip' for the fork ROCm-version
-    bundles (e.g. ...-rocm-6.4-x64...), so derive the same forwarding from it.
-    Works for markers written before this field mattered (asset always present)."""
+    """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
+    The installer probe can miss the gfx arch on amd-smi-only hosts; lemonade
+    bundles carry the family in the name (rocm-gfx110X), fork bundles only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()
@@ -175,11 +169,8 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
     backend = None
     model_was_active = False
     try:
-        # Coordinate with the inference backend so a concurrent model load cannot
-        # spawn a llama-server from the half-swapped binary (and so the old binary
-        # is released for the atomic swap). Setting the flag under _serial_load_lock
-        # drains any in-flight load; load_model() then rejects fast while it is set.
-        # Fails open: with no backend (e.g. hermetic tests) the install still runs.
+        # Maintenance state so no load starts a server from the half-swapped binary
+        # (and the old binary is freed for the swap). Fails open without a backend.
         try:
             from routes.inference import get_llama_cpp_backend
             backend = get_llama_cpp_backend()
@@ -193,9 +184,8 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             try:
                 with backend._serial_load_lock:
                     backend._llama_update_in_progress = True
-                    # is_active (process exists) covers the loading / unhealthy
-                    # window that is_loaded misses; on Windows a live process
-                    # would also keep the executable locked during the swap.
+                    # is_active covers the loading/unhealthy window is_loaded misses
+                    # (a live process also locks the exe on Windows during the swap).
                     if getattr(backend, "is_active", False):
                         model_was_active = True
                         backend.unload_model()

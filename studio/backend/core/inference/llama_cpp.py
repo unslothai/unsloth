@@ -719,9 +719,8 @@ class LlamaCppBackend:
         # Wraps load_model() end-to-end so concurrent loads serialise and never
         # coexist as two llama-server processes (#5401).
         self._serial_load_lock = threading.Lock()
-        # Set by the in-app llama.cpp updater (utils.llama_cpp_update) while it
-        # swaps the prebuilt binaries; load_model() rejects fast so no server is
-        # started from a half-swapped binary during the install window.
+        # Set by the in-app updater while it swaps prebuilt binaries; load_model()
+        # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
         # Last extra_args / requested n_ctx, preserved across unload so the chat
         # UI's /unload+/load Apply path can inherit them (#5401).
@@ -2709,9 +2708,8 @@ class LlamaCppBackend:
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
-            # The in-app updater is swapping the prebuilt binaries; refuse fast
-            # rather than start a server from a half-swapped binary. The updater
-            # set this under the same lock, so any in-flight load has drained.
+            # In-app update swapping binaries: refuse fast (set under this lock,
+            # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
             # Duplicate /load that raced past the route check: do nothing if the

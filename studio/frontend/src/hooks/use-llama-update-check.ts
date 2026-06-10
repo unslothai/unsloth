@@ -102,10 +102,8 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
     }
   }, []);
 
-  // Poll the update job to completion. Shared by apply() (which started the job)
-  // and surfaceIfAvailable() (which observed a job started elsewhere), so a job
-  // is tracked exactly once regardless of who noticed it. onDone, if given, is
-  // resolved with the terminal result.
+  // Poll the job to completion. Shared by apply() and surfaceIfAvailable() so a
+  // job is tracked once whoever noticed it; onDone resolves with the result.
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
@@ -123,8 +121,8 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
           armAutoHide();
           onDone?.({ ok: false, error: s.job.error });
         } else {
-          // idle without a terminal result (e.g. job reset): stop tracking so
-          // the banner does not stay stuck on "Updating...".
+          // idle without a terminal result (job reset): stop so the banner
+          // does not stick on "Updating...".
           armAutoHide();
           onDone?.({ ok: false, error: "update did not complete" });
         }
@@ -139,9 +137,8 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
       if (!next) return;
       setStatus(next);
       if (next.job.state === "running") {
-        // A swap is in progress (e.g. started in another tab) -- keep the banner
-        // up and track the job so "Updating..." clears when it finishes rather
-        // than sticking forever.
+        // Swap in progress (e.g. another tab): keep the banner up and track the
+        // job so "Updating..." clears when it finishes instead of sticking.
         setApplying(true);
         setVisible(true);
         clearHideTimer();
@@ -214,10 +211,9 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
       return { ok: false, error: String(e) };
     }
 
-    // The backend can return 200 without starting a job (no marker, installer
-    // missing). The job stays idle, so entering the completion poll would never
-    // resolve; surface the reason instead. already_running is the exception: a
-    // job is in flight (started elsewhere), so track it to completion.
+    // 200 without a started job (no marker / installer missing) leaves it idle,
+    // so surface the reason instead of polling forever. already_running is the
+    // exception: a job is in flight, so track it to completion below.
     if (action && action.started === false && action.reason !== "already_running") {
       setApplying(false);
       armAutoHide();

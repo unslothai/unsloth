@@ -297,9 +297,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   );
 
   if (!shouldUseCustomWindowTitlebar()) {
-    // macOS desktop uses the native titlebar (no custom chrome), so it returns
-    // here before the custom-titlebar branch below. Mount the updater banner on
-    // this path too, otherwise macOS desktop never sees the in-app update.
+    // macOS desktop uses the native titlebar and returns here before the
+    // custom-titlebar branch, so mount the updater banner on this path too.
     return (
       <>
         {content}
