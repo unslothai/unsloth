@@ -33,8 +33,7 @@ def _you_prompt(colors: bool) -> str:
     except ImportError:
         return "\n\x1b[1;36mYou: \x1b[0m" if colors else "\nYou: "
     libedit = (
-        "libedit" in (readline.__doc__ or "")
-        or getattr(readline, "backend", "") == "editline"
+        "libedit" in (readline.__doc__ or "") or getattr(readline, "backend", "") == "editline"
     )
     if not colors:
         return "\nYou: "
@@ -157,9 +156,7 @@ def chat(
         err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
         raise typer.Exit(code = 1)
 
-    load_opts = dict(
-        hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit
-    )
+    load_opts = dict(hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit)
 
     # Prefer a running Studio server: instant starts, model shared with the UI.
     chat_backend = None if no_server else connect_studio_server(model, **load_opts)

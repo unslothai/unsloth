@@ -82,7 +82,12 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def render_columns(
-    left_label: str, left_text: str, right_label: str, right_text: str, *, console = None
+    left_label: str,
+    left_text: str,
+    right_label: str,
+    right_text: str,
+    *,
+    console = None,
 ) -> None:
     from rich import box
     from rich.console import Console
@@ -215,13 +220,10 @@ def load_chat_backend(
     typer.echo(f"Loading {model}", err = True)
 
     if model_config.is_gguf:
-        return _load_gguf_backend(
-            model_config, hf_token = hf_token, max_seq_length = max_seq_length
-        )
+        return _load_gguf_backend(model_config, hf_token = hf_token, max_seq_length = max_seq_length)
 
     if fresh_backend:
         from studio.backend.core.inference import InferenceOrchestrator
-
         backend = InferenceOrchestrator()
     else:
         backend = get_inference_backend()
@@ -238,7 +240,6 @@ def load_chat_backend(
 
 def find_studio_server(timeout: float = 0.4) -> Optional[str]:
     import urllib.request
-
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     try:
         with urllib.request.urlopen(f"{base}/api/health", timeout = timeout):
@@ -256,11 +257,7 @@ def _studio_token() -> Optional[str]:
         from studio.backend.auth import storage
         from studio.backend.auth.authentication import create_access_token
 
-        row = (
-            storage.get_connection()
-            .execute("SELECT username FROM auth_user LIMIT 1")
-            .fetchone()
-        )
+        row = storage.get_connection().execute("SELECT username FROM auth_user LIMIT 1").fetchone()
         return create_access_token(row[0], desktop = True) if row else None
     except Exception:
         return None
@@ -277,7 +274,13 @@ class HttpChatBackend:
         self._base = base_url
         self._token = token
 
-    def _request(self, method: str, path: str, payload = None, timeout = None):
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload = None,
+        timeout = None,
+    ):
         import json
         import urllib.request
 
@@ -298,9 +301,11 @@ class HttpChatBackend:
         with self._request("GET", "/api/inference/status", timeout = 5) as resp:
             status = json.loads(resp.read())
         # Only skip reload if model AND settings match
-        if (status.get("model_identifier") == model and 
-            status.get("max_seq_length") == max_seq_length and
-            status.get("load_in_4bit") == load_in_4bit):
+        if (
+            status.get("model_identifier") == model
+            and status.get("max_seq_length") == max_seq_length
+            and status.get("load_in_4bit") == load_in_4bit
+        ):
             return
         typer.echo(f"Loading {model} on the Studio server", err = True)
         try:
