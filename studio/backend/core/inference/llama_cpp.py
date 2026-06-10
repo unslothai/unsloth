@@ -4038,11 +4038,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _ctx_integrity_flags(
-        n_parallel: int,
-        use_fit: bool,
-        requested_ctx: int,
-        effective_ctx: int,
-        caps: dict,
+        n_parallel: int, use_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict
     ) -> list[str]:
         """Flags that keep the per-request window equal to the advertised ctx.
 
@@ -4056,12 +4052,7 @@ class LlamaCppBackend:
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
-        if (
-            use_fit
-            and requested_ctx > 0
-            and effective_ctx > 0
-            and caps.get("supports_fit_ctx")
-        ):
+        if use_fit and requested_ctx > 0 and effective_ctx > 0 and caps.get("supports_fit_ctx"):
             flags.extend(["--fit-ctx", str(effective_ctx)])
         return flags
 
