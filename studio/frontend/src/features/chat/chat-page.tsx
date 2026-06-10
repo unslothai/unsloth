@@ -367,9 +367,8 @@ function modelMatchesDeleted(
 }
 
 /**
- * Detect if this is a LoRA base-vs-fine-tuned compare.
- * Returns true when the loaded checkpoint is a LoRA — in that case
- * we use the fast simultaneous base/lora adapter-toggle path.
+ * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
+ * compare that uses the fast simultaneous adapter-toggle path.
  */
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
@@ -424,15 +423,12 @@ const CompareContent = memo(function CompareContent({
 });
 
 /**
- * A single column in the compare layout. Hosts one ChatRuntimeProvider
- * and one Thread rendered with hideComposer — the composer is shared
- * across both panes and rendered outside the pane flex.
+ * A single column in the compare layout: one ChatRuntimeProvider and one
+ * Thread with hideComposer (the composer is shared across panes).
  *
- * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
- * mobile (flex-col) they share height equally, and on desktop (flex-row)
- * they share width equally. The `min-*` constraints are required for
- * the inner viewport to scroll internally instead of spilling into the
- * page.
+ * Each pane is `flex-1 basis-0 min-h-0 min-w-0` so panes share height
+ * (mobile flex-col) or width (desktop flex-row) equally. The `min-*`
+ * constraints let the inner viewport scroll instead of spilling.
  */
 function ComparePane({
   modelType,
@@ -476,16 +472,13 @@ function ComparePane({
 }
 
 /**
- * Shared shell for both compare variants. A vertical flex column with
- * the two panes as siblings and the shared composer docked at the
- * bottom. On mobile the panes stack (flex-col); on desktop they sit
- * side by side (md:flex-row).
+ * Shared shell for both compare variants: a flex column with the two panes
+ * as siblings and the shared composer docked at the bottom. Panes stack on
+ * mobile (flex-col), sit side by side on desktop (md:flex-row).
  *
- * Flex is used rather than CSS grid for the pane container so that
- * viewport sizing stays stable across viewport-size transitions. Grid
- * rows with 1fr were triggering resize thrash in assistant-ui's
- * autoscroll hook on breakpoint crossings, leaving it stuck in a
- * scroll-to-bottom loop.
+ * Flex, not grid, for the pane container: grid rows with 1fr triggered
+ * resize thrash in assistant-ui's autoscroll on breakpoint crossings,
+ * leaving it stuck in a scroll-to-bottom loop.
  */
 function CompareShell({
   handlesRef,
@@ -530,7 +523,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
 
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
+
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -546,7 +544,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -555,6 +553,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <SharedComposer
           handlesRef={handlesRef}
           onExitCompare={onExitCompare}
+          model1ThreadId={baseThreadId}
+          model2ThreadId={loraThreadId}
         />
       }
     >
@@ -594,10 +594,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
 });
 
 /**
- * Per-pane header rendered inside GeneralCompareContent. Contains the
- * model selector aligned with the global topbar height. The left pane
- * reserves room for the mobile sidebar trigger; the right pane reserves
- * room for the global settings button.
+ * Per-pane header (inside GeneralCompareContent) with the model selector,
+ * aligned to the global topbar height. Left pane reserves room for the
+ * mobile sidebar trigger; right pane for the global settings button.
  */
 function GeneralCompareHeader({
   models,
@@ -674,6 +673,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -698,6 +700,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -721,7 +724,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -732,6 +735,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           model1={model1}
           model2={model2}
           onExitCompare={onExitCompare}
+          model1ThreadId={model1ThreadId}
+          model2ThreadId={model2ThreadId}
         />
       }
     >
@@ -1087,9 +1092,8 @@ export function ChatPage(): ReactElement {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
-  // Tracks the latest non-compare view so exiting compare can restore it even
-  // when compare was opened from a path that does not set viewBeforeCompareRef
-  // (e.g. the composer + menu).
+  // Latest non-compare view, so exiting compare can restore it even when
+  // compare was opened from a path that doesn't set viewBeforeCompareRef.
   const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
   useEffect(() => {
     if (!search.compare) {
@@ -1249,15 +1253,11 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
-    // Per-provider default effort. Anthropic gets the highest available
-    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
-    // thinking adjusts cost per turn — sitting at the top of the dial
-    // gives users the strongest answers and the model can still skip
-    // thinking when the turn is trivial. OpenAI gets "high" by default
-    // — the gpt-5.x reasoning models accept high across the board and
-    // it's the right cost/quality sweet spot for Responses-API tools
-    // (web search included). Everyone else gets "medium" as a balanced
-    // default. Users can pick another level via the Think dropdown.
+    // Per-provider default effort. Anthropic gets the highest level since
+    // Claude's adaptive thinking adjusts cost per turn (top of dial =
+    // strongest answers, still skips thinking when trivial). OpenAI gets
+    // "high" (gpt-5.x accept it across the board; good cost/quality for
+    // Responses-API tools). Everyone else "medium". Overridable via Think.
     const isAnthropic = provider?.providerType === "anthropic";
     const isOpenAI = provider?.providerType === "openai";
     const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -1298,19 +1298,15 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
-    // (per https://platform.kimi.ai/docs/models). Mirror that default
-    // in the UI so the Think pill comes up clicked when the user picks
-    // a Kimi model. The Search pill stays off by default; the mutual-
-    // exclusion handlers in the composer flip the two when needed.
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side (per
+    // https://platform.kimi.ai/docs/models). Mirror that so the Think pill
+    // comes up clicked for Kimi models. Search stays off; the composer's
+    // mutual-exclusion handlers flip the two when needed.
     const isKimi = provider?.providerType === "kimi";
-    // Web search is on by default for the two providers we trust most
-    // for it: Anthropic (web_search_20250305 server tool, structured
-    // citations) and OpenAI (/v1/responses web_search, structured
-    // citations). Other providers stay off-by-default — OpenRouter's
-    // plugins shape and Kimi's $web_search builtin still work when the
-    // user opts in via the pill, but they're a notch less reliable so
-    // we don't pre-enable them.
+    // Web search on by default only for the two providers we trust most:
+    // Anthropic and OpenAI (both with structured citations). Others stay
+    // off-by-default; OpenRouter and Kimi work on opt-in but are less
+    // reliable, so we don't pre-enable them.
     const searchOnByDefault =
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
@@ -1345,15 +1341,11 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models never give us a local tool runtime (no
-      // python sandbox), so `supportsTools` must be false. The three
-      // `supportsBuiltin*` flags pick up the slack for providers that
-      // run the tool server-side: `supportsBuiltinWebSearch` lights
-      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
-      // `supportsBuiltinCodeExecution` lights up the Code pill
-      // (Anthropic Claude 4.x and OpenAI gpt-5.5), and
-      // `supportsBuiltinImageGeneration` lights up the Images pill
-      // (OpenAI cloud Responses-API models only).
+      // External models have no local tool runtime, so `supportsTools` is
+      // false. The `supportsBuiltin*` flags cover providers that run tools
+      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
+      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
+      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -1485,9 +1477,9 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
-    // view intentionally excludes __LOCALID_ threads (they fall through to
-    // { mode: "single" } with no threadId/nonce).  Don't close an artifact
-    // whose thread is the currently active local thread.
+    // view excludes __LOCALID_ threads (they fall through to mode:"single"
+    // with no threadId/nonce). Don't close an artifact whose thread is the
+    // active local thread.
     if (
       selectedArtifact.threadId &&
       selectedArtifact.threadId === activeThreadId
@@ -1593,9 +1585,8 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
-        // Same per-provider default policy as the useEffect path above:
-        // Anthropic picks the highest available level, OpenAI picks
-        // "high", everyone else picks "medium".
+        // Same per-provider default policy as the useEffect above:
+        // Anthropic highest level, OpenAI "high", everyone else "medium".
         const isAnthropic = selectedProvider?.providerType === "anthropic";
         const isOpenAI = selectedProvider?.providerType === "openai";
         const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -1617,9 +1608,8 @@ export function ChatPage(): ReactElement {
                 ? "medium"
                 : clampedEffort
           : store.reasoningEffort;
-        // Clear any cached router-picked openrouter/free model unless the
-        // user is staying on openrouter/free — otherwise the chip would
-        // keep showing a stale ":<chosen>" suffix from a previous model.
+        // Clear any cached router-picked openrouter/free model unless staying
+        // on openrouter/free, else the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
@@ -1644,13 +1634,12 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
         );
-        // See sibling useEffect above: Kimi's k2.x default to thinking
-        // enabled, so the Think pill comes up clicked. Search pill stays
-        // off by default; mutual exclusion flips them via the composer.
+        // See sibling useEffect: Kimi's k2.x default to thinking enabled
+        // (Think pill clicked). Search stays off; the composer's mutual
+        // exclusion flips them.
         const isKimi = selectedProvider?.providerType === "kimi";
-        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
-        // on-by-default since their server tools emit structured
-        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by
+        // default (structured citations end-to-end); others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
@@ -1676,9 +1665,8 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
-          // Clear previous-model counters; the relaxed external-provider
-          // render gate would otherwise show stale stats until the next
-          // completion overwrites them.
+          // Clear previous-model counters, else the relaxed external-provider
+          // render gate shows stale stats until the next completion.
           contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -1694,14 +1682,10 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools
-          // stays false. The three supportsBuiltin* flags carry the
-          // server-side capability info for each pill:
-          //   - Search → providerSupportsBuiltinWebSearch
-          //   - Code   → providerSupportsBuiltinCodeExecution
-          //              (Anthropic Claude 4.x + OpenAI gpt-5.5)
-          //   - Images → providerSupportsBuiltinImageGeneration
-          //              (OpenAI cloud Responses-API models)
+          // External models have no local tool runtime → supportsTools false.
+          // The supportsBuiltin* flags carry server-side capability per pill:
+          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
+          // Responses-API).
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -1813,8 +1797,8 @@ export function ChatPage(): ReactElement {
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the
-    // composer + menu path also returns to where the user started.
+    // Prefer the explicit save; fall back to the last non-compare view so
+    // the composer + menu path also returns where the user started.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
     // No saved view (compare opened by direct URL); fall back to a fresh chat.
     if (!saved) {
@@ -1823,9 +1807,8 @@ export function ChatPage(): ReactElement {
     }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore usage from the last assistant message, but only if it
-    // matches the currently active checkpoint. Without this guard the
-    // relaxed render gate would show stale stats from another model.
+    // Restore usage from the last assistant message, only if it matches the
+    // active checkpoint, else the relaxed render gate shows stale stats.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1845,7 +1828,7 @@ export function ChatPage(): ReactElement {
           const usageModelId =
             (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
-          // (model-scoped usage cannot be attributed to "nothing").
+          // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
             if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
               return;
@@ -1895,15 +1878,13 @@ export function ChatPage(): ReactElement {
         .flatMap((provider) =>
           provider.models.map((model) => {
             // For OpenRouter's free router we know which underlying free
-            // model the gateway actually picked once a stream completes
-            // (chat-adapter latches `chunk.model` into the runtime store).
-            // Render the chip as `openrouter:<short-chosen>` — drop the
-            // redundant `/free` from the router id and the org prefix
-            // from the chosen id (e.g.
-            //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
-            //     -> openrouter:ring-2.6-1t-20260508:free
-            // ). The `:free` suffix on the chosen id already conveys
-            // 'free model', so the leading `/free` is noise.
+            // model the gateway picked once a stream completes (chat-adapter
+            // latches `chunk.model`). Render the chip as
+            // `openrouter:<short-chosen>`, dropping the redundant `/free`
+            // and the chosen id's org prefix (e.g. openrouter/free +
+            // inclusionai/ring-2.6-1t-20260508:free ->
+            // openrouter:ring-2.6-1t-20260508:free). The `:free` suffix
+            // already conveys "free model".
             let displayName = model;
             if (
               provider.providerType === "openrouter" &&
@@ -2117,8 +2098,8 @@ export function ChatPage(): ReactElement {
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
-        {/* Bottom fade under the top bar so messages dissolve as they scroll
-            beneath it (Gemini / unsloth-sidebar style), instead of a hard cut. */}
+        {/* Fade under the top bar so messages dissolve as they scroll
+            beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden

@@ -61,9 +61,8 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
   return items.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so
-// each quiet window produces at most one O(N) fetch; requestSeq
-// discards stale responses.
+// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
+// window produces at most one O(N) fetch; requestSeq discards stale responses.
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
 
 export function useChatSidebarItems(options?: {

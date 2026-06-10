@@ -15,7 +15,12 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
     """Verify HfFileSystem.glob is not called when is_model or is_peft is False."""
 
     def _run_both_exist_block(
-        self, is_model, is_peft, supports_llama32, model_name, is_local_dir = False
+        self,
+        is_model,
+        is_peft,
+        supports_llama32,
+        model_name,
+        is_local_dir = False,
     ):
         """Simulate the both_exist detection block from loader.py.
 
@@ -40,10 +45,7 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
             else:
                 files = glob_mock(f"{model_name}/*.json")
                 files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
+                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
 
         return both_exist, glob_mock.called
@@ -87,9 +89,7 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
             supports_llama32 = False,
             model_name = "org/some-model",
         )
-        self.assertFalse(
-            glob_called, "glob should not be called when SUPPORTS_LLAMA32=False"
-        )
+        self.assertFalse(glob_called, "glob should not be called when SUPPORTS_LLAMA32=False")
         # both_exist is set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
         self.assertTrue(both_exist)
 

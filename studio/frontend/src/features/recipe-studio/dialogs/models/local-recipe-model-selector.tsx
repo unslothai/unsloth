@@ -556,8 +556,8 @@ export function LocalRecipeModelSelector({
             return;
           }
         } catch {
-          // Non-GGUF local models commonly have no variant endpoint. Fall
-          // through to regular selection so users can still choose them.
+          // Non-GGUF local models commonly have no variant endpoint;
+          // fall through to regular selection so they stay choosable.
         } finally {
           setProbingVariantModelId(null);
         }
