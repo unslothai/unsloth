@@ -656,8 +656,10 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) pill is local-only: search_knowledge_base needs the local runtime.
-  const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
+  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
+  // Disable only when a loaded model can't run it; with no model the toggle
+  // can still be pre-selected, matching Web search/Code/MCP.
+  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
   // Code always show; the rest are conditional.
@@ -1270,7 +1272,7 @@ export function SharedComposer({
             <DropdownMenuContent
               side="top"
               align="start"
-              sideOffset={2}
+              sideOffset={0}
               avoidCollisions={true}
               className="unsloth-plus-menu w-[212px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
@@ -1323,10 +1325,12 @@ export function SharedComposer({
                 }
                 onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
               >
+                {/* Scale, not width: an oversized box pushed the label out of
+                    line. */}
                 <HugeiconsIcon
                   icon={CodeIcon}
                   strokeWidth={2}
-                  className="size-[1.175rem]!"
+                  className="scale-[1.12]"
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
@@ -1369,7 +1373,7 @@ export function SharedComposer({
                 onSelect={() => setRagEnabled(!ragEnabled)}
               >
                 <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-                RAG
+                Chat with Files
                 {ragEnabled && !ragDisabled ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
@@ -1396,88 +1400,95 @@ export function SharedComposer({
                 ) : null}
               </DropdownMenuItem>
               {/* RAG hidden temporarily */}
-              {/* Always active: this menu only renders in compare mode. Ticked
-                  like Web search/Code; click toggles it off. */}
-              <DropdownMenuItem
-                className="text-primary font-medium"
-                onSelect={handleExitCompare}
-              >
-                <Columns2Icon />
-                Compare chat
-                <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                  className="ml-auto"
-                />
-              </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                  Saved prompts
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
-                  {recentPrompts.map((p) => (
-                    <DropdownMenuItem
-                      key={p.id}
-                      onSelect={() => {
-                        setText(p.text);
-                        requestAnimationFrame(() =>
-                          textareaRef.current?.focus(),
-                        );
-                      }}
-                    >
-                      <span className="truncate">{p.name}</span>
-                    </DropdownMenuItem>
-                  ))}
-                  {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
-                  <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-                    All saved prompts…
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              {/* Top-level: a third-level submenu collision-flips at narrow
-                  widths and is awkward to reach. */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                  Export chat
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent
-                  collisionPadding={16}
-                  className="unsloth-plus-menu w-[176px]"
-                >
-                  {[
-                    { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                    { label: "CSV", fn: exportConversationCsv },
-                    {
-                      label: "ShareGPT JSONL",
-                      fn: exportConversationShareGPT,
-                    },
-                  ].map(({ label, fn }) => (
-                    <DropdownMenuItem
-                      key={label}
-                      disabled={exportThreadIds.length === 0}
-                      onSelect={() => {
-                        if (!exportThreadIds.length) {
-                          toast.error("No conversation to export yet.");
-                          return;
-                        }
-                        Promise.all(exportThreadIds.map((id) => fn(id))).catch(
-                          () => toast.error("Export failed."),
-                        );
-                      }}
-                    >
-                      {label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <MoreHorizontalIcon className="size-4" />
                   More
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  {/* Always active: this menu only renders in compare mode. Ticked
+                      like Web search/Code; click toggles it off. */}
+                  <DropdownMenuItem
+                    className="text-primary font-medium"
+                    onSelect={handleExitCompare}
+                  >
+                    <Columns2Icon />
+                    Compare chat
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                      Saved prompts
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="unsloth-plus-menu w-[176px]"
+                    >
+                      {recentPrompts.map((p) => (
+                        <DropdownMenuItem
+                          key={p.id}
+                          onSelect={() => {
+                            setText(p.text);
+                            requestAnimationFrame(() =>
+                              textareaRef.current?.focus(),
+                            );
+                          }}
+                        >
+                          <span className="truncate">{p.name}</span>
+                        </DropdownMenuItem>
+                      ))}
+                      {recentPrompts.length > 0 ? (
+                        <DropdownMenuSeparator />
+                      ) : null}
+                      <DropdownMenuItem
+                        onSelect={() => setPromptStorageOpen(true)}
+                      >
+                        All saved prompts…
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger
+                      disabled={exportThreadIds.length === 0}
+                    >
+                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                      Export chat
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="unsloth-plus-menu w-[176px]"
+                    >
+                      {[
+                        { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                        { label: "CSV", fn: exportConversationCsv },
+                        {
+                          label: "ShareGPT JSONL",
+                          fn: exportConversationShareGPT,
+                        },
+                      ].map(({ label, fn }) => (
+                        <DropdownMenuItem
+                          key={label}
+                          disabled={exportThreadIds.length === 0}
+                          onSelect={() => {
+                            if (!exportThreadIds.length) {
+                              toast.error("No conversation to export yet.");
+                              return;
+                            }
+                            Promise.all(
+                              exportThreadIds.map((id) => fn(id)),
+                            ).catch(() => toast.error("Export failed."));
+                          }}
+                        >
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
                   <DropdownMenuItem
                     className={
                       artifactsEnabled ? "text-primary font-medium" : undefined

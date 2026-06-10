@@ -3,6 +3,7 @@
 
 import { McpServerIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { XIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -248,11 +249,26 @@ export function McpComposerButton({
               data-active={active ? "true" : "false"}
               aria-label="MCP servers"
             >
-              <HugeiconsIcon
-                icon={McpServerIcon}
-                className="size-[15px]"
-                strokeWidth={2}
-              />
+              {/* Icon doubles as an off switch: hover swaps to an X; clicking
+                  it turns MCP off without opening the menu. */}
+              <span
+                role="button"
+                aria-label="Turn off MCP"
+                tabIndex={-1}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMcpEnabledForChat(false);
+                }}
+                className="composer-pill-glyph cursor-pointer"
+              >
+                <HugeiconsIcon
+                  icon={McpServerIcon}
+                  className="size-[15px]"
+                  strokeWidth={2}
+                />
+                <XIcon className="composer-pill-x" />
+              </span>
               <span>MCP</span>
               <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
             </button>
@@ -260,7 +276,7 @@ export function McpComposerButton({
           <DropdownMenuContent
             side={side}
             align="start"
-            sideOffset={2}
+            sideOffset={0}
             avoidCollisions={true}
             className="unsloth-plus-menu mcp-menu w-[232px]"
           >

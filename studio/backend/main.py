@@ -63,13 +63,35 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
+    # ── Windows AMD ROCm: make hipInfo.exe resolvable for subprocess probes ──
+    # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via PATH at import
+    # time; the AMD torch wheel ships it in the venv Scripts dir, which is on
+    # PATH only when the venv is activated -- Studio launches python directly.
+    # Without this, every bitsandbytes import logs a scary (but harmless)
+    # "Could not detect ROCm GPU architecture: [WinError 2]" ERROR + WARNING.
+    # Gated on the file existing: only AMD ROCm wheels ship hipInfo.exe, so
+    # NVIDIA/CPU hosts are untouched. os.add_dll_directory above does not help
+    # here -- subprocess PATH resolution ignores DLL search directories.
+    _scripts_dir = os.path.dirname(sys.executable)
+    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
+        import shutil as _shutil
+        if not _shutil.which("hipinfo.exe"):
+            os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+        del _shutil
+    del _scripts_dir
+
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
     # bitsandbytes derives the rocm<ver>.dll name from torch.version.hip, but the
     # wheel ships rocm72.dll, so the server crashes ("Configured ROCm binary not
     # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
     # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
     # to avoid importing torch on every Windows host.
-    if "BNB_ROCM_VERSION" not in os.environ:
+    # Values seeded by the installer's sitecustomize.py are redetectable
+    # defaults; explicit caller values remain authoritative.
+    if (
+        "BNB_ROCM_VERSION" not in os.environ
+        or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
+    ):
         import glob as _glob
         import logging as _logging
 
@@ -101,12 +123,35 @@ if sys.platform == "win32":
             )
         # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
         if _found_rocm_bnb or _hip_env:
-            _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+            _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+            os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
             _logging.getLogger(__name__).info(
                 "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
                 _bnb_rocm_ver_final,
             )
+
+# ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
+# In WSL the AMD GPU is reached via the ROCDXG bridge (librocdxg.so over
+# /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_DETECTION=1 is set BEFORE
+# torch touches the GPU. A worker launched outside a login shell (e.g.
+# `wsl.exe -d Ubuntu-24.04 python ...`) misses the installer's persisted env
+# and silently falls back to CPU. Set it here, gated to no-op unless BOTH
+# /dev/dxg AND librocdxg.so exist -- native Linux ROCm, NVIDIA, macOS and
+# Windows are unaffected.
+elif sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
+    try:
+        if os.path.exists("/dev/dxg") and any(
+            os.path.exists(os.path.join(_p, "librocdxg.so"))
+            for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
+        ):
+            os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "WSL ROCm: set HSA_ENABLE_DXG_DETECTION=1 (librocdxg bridge present)"
+            )
+    except Exception:
+        pass
 
 # Put backend dir on sys.path so _platform_compat is importable when main.py
 # is launched directly (e.g. `uvicorn main:app`).

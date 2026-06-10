@@ -7,7 +7,6 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -55,7 +54,6 @@ export function ThreadDocumentsBar({
   onIndexingChange?: (active: boolean) => void;
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const ragAvailable = useRagToolAvailable();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,8 +135,9 @@ export function ThreadDocumentsBar({
     fileInputRef.current?.click();
   }, []);
 
-  // Only when the RAG pill is on: enabled AND a tool-capable model loaded.
-  if (!ragEnabled || !ragAvailable) return null;
+  // Shown whenever the RAG pill is on: ingestion only needs the embedder, so
+  // files can index before a chat model loads.
+  if (!ragEnabled) return null;
   // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;

@@ -64,7 +64,7 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
-import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
+import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
@@ -740,8 +740,8 @@ function buildWelcome(hour: number, name: string): Welcome {
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
-    g("Ready when you are.", "large sloth thumbs.png"),
+    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
+    g("Ready when you are", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
     g("How can I help?", "sloth sir large.png"),
   ];
@@ -785,7 +785,7 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28.5vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
@@ -876,12 +876,11 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const ragToolAvailable = useRagToolAvailable();
   // More than 4 pills: collapse to icons only. Search and Code always show;
-  // Images, Canvas and MCP are conditional.
+  // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
-      (ragEnabled && ragToolAvailable ? 1 : 0) +
+      (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -2017,8 +2016,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  // Shared gate so the menu row agrees with the RAG pill and Add Files bar.
-  const ragAvailable = useRagToolAvailable();
+  // Shared gate so the menu row agrees with the RAG pill.
+  const ragDisabled = useRagToolDisabled();
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -2131,7 +2130,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
       <DropdownMenuContent
         side={side}
         align="start"
-        sideOffset={2}
+        sideOffset={0}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
         // Don't refocus the + on close; restored focus showed a stray ring.
@@ -2180,10 +2179,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           }
           onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
         >
+          {/* Scale, not width: an oversized box pushed the label out of line. */}
           <HugeiconsIcon
             icon={CodeIcon}
             strokeWidth={2}
-            className="size-[1.175rem]!"
+            className="scale-[1.12]"
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
@@ -2217,15 +2217,15 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          disabled={!ragAvailable}
+          disabled={ragDisabled}
           className={
-            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
+            ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
           }
           onSelect={() => setRagEnabled(!ragEnabled)}
         >
           <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-          RAG
-          {ragEnabled && ragAvailable ? (
+          Chat with Files
+          {ragEnabled && !ragDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}
@@ -2252,80 +2252,82 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
-        {/* Top-level so it stays one click away (not buried in More). */}
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-            Saved prompts
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
-            {recentPrompts.map((p) => (
-              <DropdownMenuItem
-                key={p.id}
-                onSelect={() => aui.composer().setText(p.text)}
-              >
-                <span className="truncate">{p.name}</span>
-              </DropdownMenuItem>
-            ))}
-            {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
-            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-              All saved prompts…
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        {/* Top-level: a third-level submenu collision-flips at narrow widths
-            and is awkward to reach. */}
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
-            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-            Export chat
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent
-            collisionPadding={16}
-            className="unsloth-plus-menu w-[176px]"
-          >
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationRawJsonl(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              Raw JSONL
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationCsv(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              CSV
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationShareGPT(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              ShareGPT JSONL
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-[200px]">
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                Saved prompts
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                {recentPrompts.map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onSelect={() => aui.composer().setText(p.text)}
+                  >
+                    <span className="truncate">{p.name}</span>
+                  </DropdownMenuItem>
+                ))}
+                {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                  All saved prompts…
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                disabled={!activeThreadId || messageCount === 0}
+              >
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                Export chat
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationRawJsonl(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  Raw JSONL
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationCsv(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationShareGPT(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  ShareGPT JSONL
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               className={
                 artifactsEnabled ? "text-primary font-medium" : undefined
@@ -2655,7 +2657,7 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
