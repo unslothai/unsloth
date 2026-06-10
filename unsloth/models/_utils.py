@@ -93,6 +93,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import copy
+import importlib
 import re
 from dataclasses import dataclass, field
 import functools
@@ -1262,7 +1263,11 @@ if is_openai_available():
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 from transformers import AutoTokenizer
-from transformers.utils.import_utils import _is_package_available
+
+
+def _is_package_available_bool(package_name):
+    return importlib.util.find_spec(package_name) is not None
+
 
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
@@ -1274,7 +1279,7 @@ if DEVICE_TYPE == "cuda":
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
-        if _is_package_available("flash_attn"):
+        if _is_package_available_bool("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
                 try:
@@ -1319,7 +1324,7 @@ if DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
+    if _is_package_available_bool("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
             try:
@@ -1651,8 +1656,6 @@ if Version(peft_version) < Version("0.12.0"):
         )
 
 # =============================================
-import importlib
-
 global USE_MODELSCOPE
 USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 if USE_MODELSCOPE:
@@ -1981,7 +1984,7 @@ def is_bfloat16_supported():
 
 
 def is_vLLM_available():
-    return _is_package_available("vllm")
+    return _is_package_available_bool("vllm")
 
 
 # Patches models to add RoPE Scaling
