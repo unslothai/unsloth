@@ -846,6 +846,12 @@
 		box-shadow: none;
 	}
 
+	/* Lift the dialog off the page bg; halfway to --card keeps the inner
+	   bg-muted / bg-background fills readable. */
+	.dark .settings-surface {
+		background-color: color-mix(in srgb, var(--background) 50%, var(--card));
+	}
+
 	/* App-wide: every clickable control shows the hand cursor. Disabled ones
 	   (native :disabled, aria-disabled, Radix data-disabled) keep the default. */
 	button:not(:disabled):not([aria-disabled="true"]),
