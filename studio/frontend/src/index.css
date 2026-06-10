@@ -1257,8 +1257,9 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark). */
-		border-radius: 18px;
+		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark).
+		   !important beats the global 14px dropdown radius. */
+		border-radius: 18px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
@@ -1267,7 +1268,7 @@
 	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
 	   the narrower + menu (18 * 232/212 ~= 20px). */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 20px;
+		border-radius: 20px !important;
 	}
 
 	.dark .unsloth-plus-menu[data-slot] {
