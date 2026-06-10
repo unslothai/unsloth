@@ -1167,8 +1167,15 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
     ``mtp-`` filename prefix unsloth uses for ``-hf`` auto-discovery -- the
     same signal as the HF download path. Repos that bake the head into the
     main GGUF (Qwen) have no such sibling, so this returns None.
+
+    Pairs by name so a multi-model folder can't attach a foreign drafter:
+    unsloth names the drafter ``mtp-<model>.gguf`` where ``<model>`` prefixes
+    the weight filename across all Gemma 4 repos (e.g.
+    ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
+    An unmatched drafter is skipped (fail-safe: no MTP).
     """
     p = Path(path)
+    weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
@@ -1180,8 +1187,13 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             continue
         for f in entries:
             name = f.name.lower()
+            if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                continue
+            stem = name[len("mtp-"):-len(".gguf")]
+            if not stem or (weight_name is not None and not weight_name.startswith(stem)):
+                continue
             try:
-                if name.startswith("mtp-") and name.endswith(".gguf") and f.is_file():
+                if f.is_file():
                     return str(f.resolve())
             except OSError:
                 continue

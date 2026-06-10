@@ -512,6 +512,12 @@ _CTX_FIT_VRAM_FRACTION = 0.90
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
+def _auto_mode_drops_mtp(req_mode: Optional[str], size_b: Optional[float]) -> bool:
+    """Auto mode drops MTP below _MTP_MIN_SIZE_B (draft-mtp regresses there);
+    forced mtp / mtp+ngram engage regardless of size."""
+    return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
@@ -656,6 +662,9 @@ class LlamaCppBackend:
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         self._hf_repo: Optional[str] = None
+        # Separate MTP drafter launched with the current model; reload-dedup
+        # key so a drafter that appears next to the weights forces a reload.
+        self._mtp_draft_path: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
@@ -762,6 +771,14 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def gguf_path(self) -> Optional[str]:
+        return self._gguf_path
+
+    @property
+    def mtp_draft_path(self) -> Optional[str]:
+        return self._mtp_draft_path
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -2690,6 +2707,7 @@ class LlamaCppBackend:
             # live server already satisfies this request.
             if self._already_in_target_state(
                 gguf_path = gguf_path,
+                mtp_draft_path = mtp_draft_path,
                 model_identifier = model_identifier,
                 hf_variant = hf_variant,
                 n_ctx = n_ctx,
@@ -2788,11 +2806,8 @@ class LlamaCppBackend:
                     # MTP anyway -- no point fetching a drafter it never uses.
                     # Forced mtp / mtp+ngram still download (user override).
                     _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-                    _spec_size_b = _extract_model_size_b(model_identifier)
-                    _auto_drops_mtp = (
-                        _spec_canon == "auto"
-                        and _spec_size_b is not None
-                        and _spec_size_b < _MTP_MIN_SIZE_B
+                    _auto_drops_mtp = _auto_mode_drops_mtp(
+                        _spec_canon, _extract_model_size_b(model_identifier)
                     )
                     if (
                         not mtp_draft_path
@@ -3382,6 +3397,7 @@ class LlamaCppBackend:
                 # the mmap progress total while the health wait runs.
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
+                self._mtp_draft_path = launch_mtp_draft_path
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -3789,6 +3805,7 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        mtp_draft_path: Optional[str] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -3847,6 +3864,22 @@ class LlamaCppBackend:
         if (self._chat_template_override or None) != (chat_template_override or None):
             return False
 
+        # A drafter appearing/disappearing next to a local GGUF changes the
+        # launch command (--model-draft) when the mode can use it; without
+        # this, adding mtp-*.gguf after a load is deduped away and MTP can't
+        # engage short of an unload. HF loads resolve the drafter inside
+        # load_model (gguf_path is None here), so only local paths compare;
+        # the route-level probe covers HF cache repos. No sub-3B gate: both
+        # sides come from the same config detection, so a sub-3B mismatch
+        # only happens when a drafter genuinely appeared (one benign reload,
+        # then the stored path converges).
+        if (
+            gguf_path is not None
+            and req_mode in ("auto", "mtp", "mtp+ngram")
+            and (mtp_draft_path or None) != (self._mtp_draft_path or None)
+        ):
+            return False
+
         # extra_args=None means "no opinion" (inherit handled at the route
         # layer); only an explicit list forces equality.
         if extra_args is not None:
@@ -3888,6 +3921,7 @@ class LlamaCppBackend:
             self._model_identifier = None
             self._gguf_path = None
             self._hf_repo = None
+            self._mtp_draft_path = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False

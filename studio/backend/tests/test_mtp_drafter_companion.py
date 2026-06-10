@@ -166,3 +166,101 @@ def test_detect_gguf_model_dir_skips_companions(tmp_path):
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"x" * 128)
 
     assert detect_gguf_model(str(tmp_path)) == str(main.resolve())
+
+
+def test_detect_mtp_file_pairs_by_weight_name(tmp_path):
+    # Multi-model folder: each weight must get its own drafter, never the
+    # first-sorted foreign one.
+    (tmp_path / "gemma-4-12b-it-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "gemma-4-31B-it-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
+    (tmp_path / "mtp-gemma-4-31B-it.gguf").write_bytes(b"x")
+
+    found = detect_mtp_file(str(tmp_path / "gemma-4-31B-it-Q4_K_M.gguf"))
+    assert found is not None and found.endswith("mtp-gemma-4-31B-it.gguf")
+
+
+def test_detect_mtp_file_skips_foreign_drafter(tmp_path):
+    (tmp_path / "qwen3-8b-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
+    assert detect_mtp_file(str(tmp_path / "qwen3-8b-Q4_K_M.gguf")) is None
+
+
+def test_detect_mtp_file_qat_prefix_layout(tmp_path):
+    # unsloth's qat repo: drafter stem omits the -qat suffix but prefixes
+    # the weight name (mtp-gemma-4-12B-it.gguf / gemma-4-12B-it-qat-Q4_0.gguf).
+    (tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf").write_bytes(b"x")
+    (tmp_path / "mtp-gemma-4-12B-it.gguf").write_bytes(b"x")
+    found = detect_mtp_file(str(tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf"))
+    assert found is not None and found.endswith("mtp-gemma-4-12B-it.gguf")
+
+
+def test_detect_mtp_file_search_root(tmp_path):
+    # Weight in a quant subdir, drafter at the granted directory root.
+    sub = tmp_path / "Q4_K_M"
+    sub.mkdir()
+    (sub / "gemma-4-12b-it-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
+    found = detect_mtp_file(
+        str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path)
+    )
+    assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
+
+
+# ── Reload dedup includes the drafter ────────────────────────────────
+
+
+def _loaded_backend(weight, drafter_path):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    b = LlamaCppBackend()
+    # Shape matches atexit cleanup expectations (terminate/wait/kill).
+    b._process = SimpleNamespace(
+        poll = lambda: None,
+        terminate = lambda: None,
+        wait = lambda timeout = None: 0,
+        kill = lambda: None,
+    )
+    b._healthy = True
+    b._model_identifier = "local-gemma"
+    b._gguf_path = str(weight)
+    b._hf_variant = None
+    b._requested_n_ctx = 4096
+    b._cache_type_kv = None
+    b._requested_spec_mode = "auto"
+    b._speculative_type = "draft-mtp" if drafter_path else "default"
+    b._spec_draft_n_max = None
+    b._chat_template_override = None
+    b._extra_args = None
+    b._mtp_draft_path = drafter_path
+    return b
+
+
+def _target_state_kwargs(weight, mtp_draft_path):
+    return dict(
+        model_identifier = "local-gemma",
+        hf_variant = None,
+        n_ctx = 4096,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = str(weight),
+        mtp_draft_path = mtp_draft_path,
+    )
+
+
+def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
+    weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    drafter = tmp_path / "mtp-gemma-4-12b-it.gguf"
+    drafter.write_bytes(b"x")
+
+    # Loaded without a drafter; one now exists on disk -> must reload.
+    b = _loaded_backend(weight, None)
+    assert not b._already_in_target_state(**_target_state_kwargs(weight, str(drafter)))
+    # Same drafter as launched -> still deduped.
+    b = _loaded_backend(weight, str(drafter))
+    assert b._already_in_target_state(**_target_state_kwargs(weight, str(drafter)))
