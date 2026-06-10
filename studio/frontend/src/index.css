@@ -114,7 +114,7 @@
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
-	--background: #fdfcfb;
+	--background: #fefdfc;
 	--foreground: oklch(0.2686 0 0);
 	--card: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
