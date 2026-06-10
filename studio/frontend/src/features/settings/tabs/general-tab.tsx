@@ -33,6 +33,7 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -284,6 +285,8 @@ export function GeneralTab() {
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
