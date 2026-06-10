@@ -254,10 +254,7 @@ def _overflow_truncation_requested(payload) -> bool:
     requested = getattr(payload, "context_overflow", None)
     if requested is not None:
         return requested == "truncate_middle"
-    return (
-        os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower()
-        == "truncate_middle"
-    )
+    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
 
 
 def _parse_overflow_counts(err_text: str):
@@ -349,6 +346,7 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     Message count and roles never change, so tool pairing holds even when
     group-dropping could not free enough. Returns messages clipped.
     """
+
     def _candidates():
         tools = [m for m in messages if m.get("role") == "tool"]
         users = [m for m in messages[:-1] if m.get("role") == "user"]

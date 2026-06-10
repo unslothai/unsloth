@@ -74,9 +74,7 @@ except ImportError:
             "__exit__": lambda self, *a: None,
         },
     )
-    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(
-        RuntimeError("unstubbed httpx.get")
-    )
+    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("unstubbed httpx.get"))
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
@@ -89,7 +87,11 @@ import core.inference.llama_cpp as llama_cpp_mod
 
 
 class _FakeResponse:
-    def __init__(self, status_code = 200, body = None):
+    def __init__(
+        self,
+        status_code = 200,
+        body = None,
+    ):
         self.status_code = status_code
         self._body = body or {}
 
@@ -105,7 +107,12 @@ def _make_backend(effective_ctx = 98304, port = 51234):
     return inst
 
 
-def _stub_props(monkeypatch, status_code = 200, body = None, exc = None):
+def _stub_props(
+    monkeypatch,
+    status_code = 200,
+    body = None,
+    exc = None,
+):
     def fake_get(url, timeout = None):
         assert url.endswith("/props")
         if exc is not None:

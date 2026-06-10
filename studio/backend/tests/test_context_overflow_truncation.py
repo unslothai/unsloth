@@ -49,11 +49,13 @@ def _tool_turn(i: int, result_chars: int = 400) -> list[dict]:
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{
-                "id": f"call_{i}",
-                "type": "function",
-                "function": {"name": "read", "arguments": f'{{"filePath":"/f{i}"}}'},
-            }],
+            "tool_calls": [
+                {
+                    "id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": f'{{"filePath":"/f{i}"}}'},
+                }
+            ],
         },
         {"role": "tool", "tool_call_id": f"call_{i}", "content": "x" * result_chars},
     ]
@@ -107,10 +109,7 @@ def test_truncation_never_orphans_tool_results():
     new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.4)
     assert dropped > 0
     surviving_call_ids = {
-        tc["id"]
-        for m in new
-        if m.get("role") == "assistant"
-        for tc in (m.get("tool_calls") or [])
+        tc["id"] for m in new if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])
     }
     for m in new:
         if m.get("role") == "tool":

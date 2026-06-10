@@ -4044,10 +4044,7 @@ class LlamaCppBackend:
         actual_n_ctx = self._query_server_n_ctx()
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
-        if (
-            self._effective_context_length
-            and actual_n_ctx < self._effective_context_length
-        ):
+        if self._effective_context_length and actual_n_ctx < self._effective_context_length:
             logger.warning(
                 "llama-server allocated a smaller per-request context than "
                 f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
