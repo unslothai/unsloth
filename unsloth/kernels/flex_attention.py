@@ -47,7 +47,9 @@ def _flex_is_dgx_spark():
 
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output = True, text = True, timeout = 5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         names = (out.stdout or "").upper()
         return any(t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110"))
