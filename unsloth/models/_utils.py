@@ -93,7 +93,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import copy
-import importlib
+import importlib.util
 import re
 from dataclasses import dataclass, field
 import functools
