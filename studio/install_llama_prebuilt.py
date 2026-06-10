@@ -2941,9 +2941,7 @@ def detect_host() -> HostInfo:
             # AMD torch wheels ship hipInfo.exe into the venv Scripts dir
             # (next to python.exe) -- resolvable on driver-only hosts where no
             # SDK dir exists, so a standalone rerun can still detect the GPU.
-            _venv_candidate = os.path.join(
-                os.path.dirname(sys.executable), f"{name}.exe"
-            )
+            _venv_candidate = os.path.join(os.path.dirname(sys.executable), f"{name}.exe")
             if os.path.isfile(_venv_candidate):
                 return _venv_candidate
             return None

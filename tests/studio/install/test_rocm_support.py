@@ -1639,9 +1639,7 @@ class TestGfxArchNameFallback:
         """hipinfo absent everywhere + amd-smi absent -> WMI name fallback."""
         ps_result = MagicMock()
         ps_result.returncode = 0
-        ps_result.stdout = (
-            b"AMD Radeon(TM) 8060S Graphics\r\nMicrosoft Basic Display Adapter\r\n"
-        )
+        ps_result.stdout = b"AMD Radeon(TM) 8060S Graphics\r\nMicrosoft Basic Display Adapter\r\n"
 
         def _run(cmd, **kwargs):
             if cmd and "powershell.exe" in str(cmd[0]).lower():
