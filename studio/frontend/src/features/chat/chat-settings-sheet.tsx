@@ -1564,15 +1564,12 @@ function ChatTemplateFields() {
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={openEditor}
-          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
-        >
-          Chat Template
-        </button>
-        <div className="flex items-center gap-1">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
+            Chat Template
+          </span>
+          <div className="flex items-center gap-1">
           {isModified && (
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -1621,7 +1618,18 @@ function ChatTemplateFields() {
               Edit template
             </TooltipContent>
           </Tooltip>
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={openEditor}
+          aria-label="Edit chat template"
+          className="panel-text-surface mt-1 flex w-full cursor-pointer items-start px-3.5 py-2.5 text-left text-[10px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
+        >
+          <span className="block line-clamp-4 whitespace-pre-wrap break-words">
+            {displayValue}
+          </span>
+        </button>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent
