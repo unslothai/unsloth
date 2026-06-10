@@ -297,7 +297,10 @@ class HttpChatBackend:
 
         with self._request("GET", "/api/inference/status", timeout = 5) as resp:
             status = json.loads(resp.read())
-        if status.get("model_identifier") == model:
+        # Only skip reload if model AND settings match
+        if (status.get("model_identifier") == model and 
+            status.get("max_seq_length") == max_seq_length and
+            status.get("load_in_4bit") == load_in_4bit):
             return
         typer.echo(f"Loading {model} on the Studio server", err = True)
         try:
