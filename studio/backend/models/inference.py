@@ -694,6 +694,16 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
+            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "autoinject_min_score?}. Candidate pools and the RRF constant come from "
+            "server config. The model never sees this; the server resolves which "
+            "documents to search."
+        ),
+    )
     cancel_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",

@@ -23,6 +23,9 @@ from .storage_roots import (
     auth_root,
     auth_db_path,
     studio_db_path,
+    rag_root,
+    rag_db_path,
+    rag_uploads_root,
     documents_root,
     project_workspaces_root,
     tmp_root,
@@ -66,6 +69,9 @@ __all__ = [
     "auth_root",
     "auth_db_path",
     "studio_db_path",
+    "rag_root",
+    "rag_db_path",
+    "rag_uploads_root",
     "documents_root",
     "project_workspaces_root",
     "tmp_root",
@@ -86,3 +92,6 @@ __all__ = [
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]
+
+# Bind the re-exports so the import-hoist verifier counts them as used.
+_ = (rag_root, rag_db_path, rag_uploads_root)
