@@ -15,15 +15,26 @@ import sync_allow_scripts_pins as sync  # noqa: E402
 
 
 def write_fixture(tmp: Path, policy: dict, lock_packages: dict) -> None:
-    (tmp / "package.json").write_text(json.dumps({
-        "name": "fixture",
-        "dependencies": {"a": "^1.0.0"},
-        "allowScripts": policy,
-    }, indent=2) + "\n")
-    (tmp / "package-lock.json").write_text(json.dumps({
-        "lockfileVersion": 3,
-        "packages": lock_packages,
-    }) + "\n")
+    (tmp / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "fixture",
+                "dependencies": {"a": "^1.0.0"},
+                "allowScripts": policy,
+            },
+            indent = 2,
+        )
+        + "\n"
+    )
+    (tmp / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": lock_packages,
+            }
+        )
+        + "\n"
+    )
 
 
 LOCK = {
@@ -45,36 +56,48 @@ def test_split_spec():
 def test_in_sync_is_clean():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        write_fixture(tmp, {
-            "@biomejs/biome@1.9.9": True,
-            "msw@2.15.0": True,
-            "fsevents": True,
-        }, LOCK)
+        write_fixture(
+            tmp,
+            {
+                "@biomejs/biome@1.9.9": True,
+                "msw@2.15.0": True,
+                "fsevents": True,
+            },
+            LOCK,
+        )
         assert sync.main(["--check", "--dir", str(tmp)]) == 0
 
 
 def test_stale_pin_fails_check_and_fix_repairs():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        write_fixture(tmp, {
-            "@biomejs/biome@1.9.4": True,   # stale, bumped to 1.9.9
-            "msw@2.14.3": False,            # stale denial, bumped to 2.15.0
-            "fsevents": True,               # bare: never stale
-            "ghost@9.9.9": True,            # not in lockfile: left alone
-            "weird@*": True,                # non-exact spec: left alone
-        }, LOCK)
+        write_fixture(
+            tmp,
+            {
+                "@biomejs/biome@1.9.4": True,  # stale, bumped to 1.9.9
+                "msw@2.14.3": False,  # stale denial, bumped to 2.15.0
+                "fsevents": True,  # bare: never stale
+                "ghost@9.9.9": True,  # not in lockfile: left alone
+                "weird@*": True,  # non-exact spec: left alone
+            },
+            LOCK,
+        )
         assert sync.main(["--check", "--dir", str(tmp)]) == 1
         assert sync.main(["--fix", "--dir", str(tmp)]) == 0
         got = json.loads((tmp / "package.json").read_text())["allowScripts"]
         assert got == {
             "@biomejs/biome@1.9.9": True,
-            "msw@2.15.0": False,            # value and key order preserved
+            "msw@2.15.0": False,  # value and key order preserved
             "fsevents": True,
             "ghost@9.9.9": True,
             "weird@*": True,
         }
         assert list(got) == [
-            "@biomejs/biome@1.9.9", "msw@2.15.0", "fsevents", "ghost@9.9.9", "weird@*",
+            "@biomejs/biome@1.9.9",
+            "msw@2.15.0",
+            "fsevents",
+            "ghost@9.9.9",
+            "weird@*",
         ]
         assert sync.main(["--check", "--dir", str(tmp)]) == 0
 
