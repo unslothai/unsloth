@@ -533,8 +533,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -679,6 +681,16 @@ class ChatCompletionRequest(BaseModel):
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,

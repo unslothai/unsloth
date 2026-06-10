@@ -3281,6 +3281,7 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
+                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
@@ -4015,6 +4016,47 @@ class LlamaCppBackend:
 
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
+
+    def _query_server_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated, from ``/props``.
+
+        The memory-fit step or ``--parallel`` slot split can leave this below
+        the requested ``-c``; requests are validated against this value.
+        """
+        url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(url, timeout = 5.0)
+            if resp.status_code != 200:
+                return None
+            settings = resp.json().get("default_generation_settings") or {}
+            n_ctx = settings.get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except Exception:
+            return None
+
+    def _reconcile_effective_ctx_with_server(self) -> None:
+        """Adopt the server's real ``n_ctx`` when it is below Studio's value.
+
+        Keeps ``context_length`` (load response, status route, passthrough
+        ``max_tokens`` ceiling) honest; clients sized to the requested value
+        would otherwise hit ``exceed_context_size_error`` 400s early.
+        """
+        actual_n_ctx = self._query_server_n_ctx()
+        if not actual_n_ctx or actual_n_ctx <= 0:
+            return
+        if (
+            self._effective_context_length
+            and actual_n_ctx < self._effective_context_length
+        ):
+            logger.warning(
+                "llama-server allocated a smaller per-request context than "
+                f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
+                "memory fit or --parallel slot split); clients must treat "
+                f"{actual_n_ctx} as the real context window."
+            )
+            self._effective_context_length = actual_n_ctx
+        elif not self._effective_context_length:
+            self._effective_context_length = actual_n_ctx
 
     # ── Message building (OpenAI format) ──────────────────────────
 
