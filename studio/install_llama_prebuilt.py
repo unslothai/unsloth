@@ -47,6 +47,38 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
+# DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
+# elevation (its manifest is asInvoker), so this is just harmless belt-and-
+# suspenders for manifest-elevating tools. The real guard is _amd_smi_allowed():
+# we don't spawn amd-smi on Windows w/o a HIP SDK (or opt-in).
+if platform.system() == "Windows":
+    os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi here.
+
+    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
+    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows
+    when a HIP SDK is detectable (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1;
+    Linux/macOS always allowed. When skipped, the gfx arch still arrives via the
+    forwarded --rocm-gfx, so prebuilt selection is unaffected.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if shutil.which("hipinfo"):
+        return True
+    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        _root = os.environ.get(_var)
+        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+            return True
+    return False
+
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
     """Return Windows-only subprocess kwargs that suppress console windows."""
@@ -2503,6 +2535,15 @@ def run_capture(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    # amd-smi on Windows auto-elevates and pops a UAC/DiskPart prompt mid-install;
+    # RunAsInvoker forces it un-elevated. Callers already fall back to WMI/name
+    # detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate; Windows-only.
+    if (
+        command
+        and platform.system() == "Windows"
+        and os.path.basename(command[0]).lower().startswith("amd-smi")
+    ):
+        env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
     result = subprocess.run(
         command,
         capture_output = True,
@@ -2689,6 +2730,13 @@ def detect_host() -> HostInfo:
     has_rocm = False
     rocm_gfx_target: str | None = None
     if is_linux:
+        # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
+        # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
+        # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
+        # drop-in reaches login shells only). Probe accordingly or a ROCDXG
+        # WSL host is misdetected as CPU-only.
+        _dxg_probe_env = {**os.environ}
+        _dxg_probe_env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         for _cmd, _check in (
             # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
             # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -2701,10 +2749,18 @@ def detect_host() -> HostInfo:
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
+            if not _exe and _cmd[0] == "rocminfo":
+                _opt_rocminfo = "/opt/rocm/bin/rocminfo"
+                if os.access(_opt_rocminfo, os.X_OK):
+                    _exe = _opt_rocminfo
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+                _result = run_capture(
+                    [_exe, *_cmd[1:]],
+                    timeout = 10,
+                    env = _dxg_probe_env if _cmd[0] == "rocminfo" else None,
+                )
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
@@ -2730,12 +2786,20 @@ def detect_host() -> HostInfo:
                     _candidate = os.path.join(_root, "bin", f"{name}.exe")
                     if os.path.isfile(_candidate):
                         return _candidate
+            # AMD torch wheels ship hipInfo.exe into the venv Scripts dir
+            # (next to python.exe) -- resolvable on driver-only hosts where no
+            # SDK dir exists, so a standalone rerun can still detect the GPU.
+            _venv_candidate = os.path.join(os.path.dirname(sys.executable), f"{name}.exe")
+            if os.path.isfile(_venv_candidate):
+                return _venv_candidate
             return None
 
-        for _cmd, _check in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _amd_smi_has_gpu),
-        ):
+        _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
+        if _amd_smi_allowed():
+            # Skipped on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # gfx arch still arrives via --rocm-gfx, so has_rocm is set by override.
+            _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
+        for _cmd, _check in _win_probes:
             _exe = _resolve_exe(_cmd[0])
             if not _exe:
                 continue
@@ -3425,16 +3489,12 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 return int(parts[0]), int(parts[1])
         except Exception:
             pass
-    amd_smi = shutil.which("amd-smi")
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
-            result = subprocess.run(
-                [amd_smi, "version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            # Off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # hipconfig below and the version-file reads above cover that case.
+            result = run_capture([amd_smi, "version"], timeout = 5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
@@ -4780,6 +4840,46 @@ def validated_validation_model_bytes(data: bytes) -> bytes:
     return data
 
 
+def _hf_resolve_url_parts(url: str) -> tuple[str, str, str] | None:
+    """Parse a huggingface.co .../resolve/<rev>/<path> URL into
+    (repo_id, revision, filename); None if it is not such a URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return None
+    if (parsed.netloc or "").lower() not in ("huggingface.co", "www.huggingface.co"):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    # <owner>/<name>/resolve/<rev>/<path...>
+    if len(parts) >= 5 and parts[2] == "resolve":
+        return f"{parts[0]}/{parts[1]}", parts[3], "/".join(parts[4:])
+    return None
+
+
+def _fetch_validation_model_bytes() -> bytes:
+    """Fetch the tiny GGUF validation model. Prefer huggingface_hub (completes
+    TLS chains via AIA fetching that bare urllib can't on some Windows/proxy
+    setups); fall back to the direct URL when hf_hub is unavailable or fails."""
+    parts = _hf_resolve_url_parts(TEST_MODEL_URL)
+    if parts is not None:
+        repo_id, revision, filename = parts
+        try:
+            from huggingface_hub import hf_hub_download
+            local = hf_hub_download(repo_id = repo_id, filename = filename, revision = revision)
+            return validated_validation_model_bytes(Path(local).read_bytes())
+        except Exception as exc:
+            log(
+                f"huggingface_hub fetch of validation model failed ({exc}); "
+                "falling back to direct URL"
+            )
+    return validated_validation_model_bytes(
+        download_bytes(
+            TEST_MODEL_URL,
+            progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+        )
+    )
+
+
 def download_validation_model(path: Path, cache_path: Path | None = None) -> None:
     try:
         data: bytes | None = None
@@ -4792,12 +4892,7 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
                 data = None
         if data is None:
             log("downloading tiny GGUF validation model")
-            data = validated_validation_model_bytes(
-                download_bytes(
-                    TEST_MODEL_URL,
-                    progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
-                )
-            )
+            data = _fetch_validation_model_bytes()
             if cache_path is not None:
                 atomic_write_bytes(cache_path, data)
         atomic_write_bytes(path, data)

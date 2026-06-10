@@ -36,8 +36,9 @@ from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
 from unsloth_zoo.vision_utils import (
-    UnslothVisionDataCollator,
+    UnslothVisionDataCollator as _UnslothVisionDataCollatorBase,
 )
+from unsloth.models.vision import check_dataset_for_missing_videos
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
 import dataclasses
@@ -49,9 +50,47 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "check_dataset_for_missing_videos",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
+    """
+    Drop-in zoo collator that validates local video paths on every batch
+    (deduped across batches), applying formatting_func first so formatter-made
+    paths are checked too. Raises FileNotFoundError on missing files instead
+    of silently training on empty video tensors (issue #5085).
+    """
+
+    __slots__ = ("_checked_video_paths",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._checked_video_paths = set()
+
+    def __call__(self, examples):
+        formatting_func = self.formatting_func
+        if formatting_func is not None:
+            examples = [formatting_func(example) for example in examples]
+
+        check_dataset_for_missing_videos(
+            examples,
+            raise_error = True,
+            checked = self._checked_video_paths,
+        )
+
+        if formatting_func is None:
+            return super().__call__(examples)
+
+        # why: base __call__ would reapply formatting_func; applied above.
+        self.formatting_func = None
+        try:
+            return super().__call__(examples)
+        finally:
+            self.formatting_func = formatting_func
+
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""

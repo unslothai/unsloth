@@ -35,6 +35,7 @@ import {
   useInfiniteScroll,
   useRecommendedModelVram,
 } from "@/hooks";
+import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
@@ -120,7 +121,7 @@ function ModelRow({
   tooltipText,
 }: {
   label: string;
-  meta?: string;
+  meta?: string | null;
   selected?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
@@ -456,14 +457,6 @@ function hasGgufSuffix(id: string): boolean {
 
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || hasGgufSuffix(id);
-}
-
-/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
-function extractParamLabel(id: string): string | undefined {
-  const name = id.split("/").pop() ?? id;
-  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
-  return match ? `${match[1]}B` : undefined;
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
