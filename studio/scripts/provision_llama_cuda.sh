@@ -49,8 +49,11 @@ HAVE_APT=0; command -v apt-get >/dev/null 2>&1 && HAVE_APT=1
 # without the basic build tools needed to clone/configure llama.cpp.
 if [ "$HAVE_APT" -eq 1 ]; then
     $SUDO apt-get update -y >/dev/null 2>&1 || true
+    # libcurl4-openssl-dev: _cmake_configure forces -DLLAMA_CURL=ON, and on the WSL
+    # deferred path this script is the only build path -- setup.sh's GGUF dep install
+    # (which covers libcurl) was skipped, so configure would fail without the headers.
     $SUDO apt-get install -y --no-install-recommends \
-        build-essential cmake git curl ca-certificates >/dev/null 2>&1 || true
+        build-essential cmake git curl ca-certificates libcurl4-openssl-dev >/dev/null 2>&1 || true
     $SUDO apt-get install -y --no-install-recommends gcc-14 g++-14 >/dev/null 2>&1 || true
 fi
 
@@ -112,11 +115,17 @@ if [ -n "$CC_CAP" ]; then CUDA_ARCH="$CC_CAP"; else CUDA_ARCH="native"; fi
 # the user's request instead of always tracking ggml-org main.
 mkdir -p "$(dirname "$LLAMA_DIR")"
 _LLAMA_REF="${UNSLOTH_LLAMA_TAG:-}"
+# Preserve any existing (e.g. CPU-only) llama.cpp so a failed clone OR a failed CUDA
+# build doesn't leave the user with NO server: the backup is restored on any failure
+# exit and only dropped once a server from the fresh build is confirmed.
+_LLAMA_BAK=""
+_restore_prev() {
+    if [ -n "$_LLAMA_BAK" ] && [ -e "$_LLAMA_BAK" ]; then
+        rm -rf "$LLAMA_DIR" 2>/dev/null
+        mv "$_LLAMA_BAK" "$LLAMA_DIR" 2>/dev/null && log "restored previous llama.cpp install"
+    fi
+}
 if [ ! -d "$LLAMA_DIR/.git" ]; then
-    # Preserve any existing (e.g. CPU-only) llama.cpp so a FAILED clone doesn't leave the user
-    # with NO server -- restore it on clone failure. A successful clone makes it obsolete (the
-    # fresh CUDA build replaces it), so the backup is dropped then.
-    _LLAMA_BAK=""
     if [ -e "$LLAMA_DIR" ]; then
         _LLAMA_BAK="${LLAMA_DIR}.prev.$$"
         rm -rf "$_LLAMA_BAK" 2>/dev/null
@@ -131,12 +140,11 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
     fi
     if [ "$_clone_ok" -ne 1 ]; then
         log "git clone failed"
-        [ -n "$_LLAMA_BAK" ] && mv "$_LLAMA_BAK" "$LLAMA_DIR" 2>/dev/null   # restore previous server
+        _restore_prev
         exit 0
     fi
-    [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
 fi
-cd "$LLAMA_DIR" || exit 0
+cd "$LLAMA_DIR" || { _restore_prev; exit 0; }
 
 log "building CUDA llama.cpp (arch=$CUDA_ARCH, host=$HCXX) - this takes a few minutes..."
 _cmake_configure() {
@@ -153,7 +161,7 @@ _cmake_configure() {
 if ! _cmake_configure; then
     log "stale/incompatible CMake cache detected; wiping build dir for a clean CUDA configure"
     rm -rf build
-    _cmake_configure || { log "cmake configure failed"; exit 0; }
+    _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
 fi
 # Build the full target set unsloth-zoo's GGUF exporter also needs (llama-mtmd-cli,
 # llama-gguf-split) so one build serves both Studio inference and save_pretrained_gguf.
@@ -192,13 +200,19 @@ if ! _cmake_build; then
     # Wipe build/ and rebuild clean once before giving up.
     log "build failed (likely interrupted/partial); wiping build dir and rebuilding clean"
     rm -rf build
-    _cmake_configure || { log "cmake configure failed"; exit 0; }
-    _cmake_build || { log "cmake build failed"; exit 0; }
+    _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
+    _cmake_build || { log "cmake build failed"; cd /; _restore_prev; exit 0; }
 fi
 
 if is_cuda_server "$SERVER"; then
     log "CUDA llama-server ready: $SERVER"
-else
+    [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
+elif [ -x "$SERVER" ]; then
+    # A server exists but isn't CUDA-confirmed; still better than the old backup.
     log "build finished but CUDA llama-server could not be confirmed"
+    [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
+else
+    log "build finished but no llama-server was produced"
+    cd /; _restore_prev
 fi
 exit 0

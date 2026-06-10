@@ -1488,7 +1488,11 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         elif [ -f "$LLAMA_SERVER_BIN" ]; then
             substep "CUDA build unavailable; keeping existing (CPU) llama-server" "$C_WARN"
         else
-            substep "CUDA build unavailable; see ~/.unsloth/llama.cpp build output" "$C_WARN"
+            substep "CUDA build unavailable and no llama-server present; see $LLAMA_CPP_DIR build output" "$C_WARN"
+            # No server at all (e.g. the provisioner replaced a previous build and then
+            # failed): mark degraded so the arm64 CPU-prebuilt last resort below and the
+            # installer failure exit fire instead of reporting a working install.
+            _LLAMA_CPP_DEGRADED=true
         fi
     fi
 fi

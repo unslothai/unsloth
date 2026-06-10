@@ -1563,6 +1563,29 @@ shell.Run cmd, 0, False
         if (-not $haveDistro) {
             substep "installing WSL distro '$distro' (first time only)..." "Cyan"
             try { & wsl.exe --install -d $distro --no-launch } catch {}
+        } else {
+            # A PRE-EXISTING distro may be WSL1, which has no GPU passthrough: the existence
+            # probe passes but the full install would only fail at the final torch.cuda
+            # check. Detect WSL1 up-front from inside the distro (kernel string + libcuda --
+            # encoding-proof, unlike parsing UTF-16 `wsl -l -v` output) and convert in place;
+            # `wsl --set-version` preserves the distro's files. Freshly installed distros
+            # are WSL2 (default version 2), so only the pre-existing case needs this.
+            $_wsl2Probe = 'grep -qiE ''microsoft-standard|WSL2'' /proc/version 2>/dev/null || test -e /usr/lib/wsl/lib/libcuda.so'
+            $_isWsl2 = $false
+            $global:LASTEXITCODE = -1
+            try { & wsl.exe -d $distro -u root -- bash -c $_wsl2Probe *> $null; $_isWsl2 = ($LASTEXITCODE -eq 0) } catch {}
+            if (-not $_isWsl2) {
+                substep "distro '$distro' looks like WSL1 (no GPU passthrough) -- converting to WSL2 (one-time; can take a few minutes)..." "Yellow"
+                $global:LASTEXITCODE = -1
+                try { & wsl.exe --set-version $distro 2 } catch {}
+                $global:LASTEXITCODE = -1
+                try { & wsl.exe -d $distro -u root -- bash -c $_wsl2Probe *> $null; $_isWsl2 = ($LASTEXITCODE -eq 0) } catch {}
+                if (-not $_isWsl2) {
+                    Restore-StudioVenvRollback
+                    return (Exit-InstallFailure "WSL distro '$distro' is WSL1 and automatic conversion failed; NVIDIA GPU passthrough needs WSL2. Convert it, then re-run the installer:  wsl --set-version `"$distro`" 2" 1)
+                }
+                substep "'$distro' converted to WSL2." "Green"
+            }
         }
         substep "installing Unsloth Studio inside WSL '$distro' with full GPU (this downloads PyTorch)..." "Cyan"
         # For a non-main ref, fetch + export THAT ref so the WSL venv gets the branch's
@@ -1575,10 +1598,16 @@ shell.Run cmd, 0, False
         # itself instead of leaving them with no GGUF server.)
         # apt stderr is kept visible (only stdout -> /dev/null) so network/DNS/repo failures inside
         # WSL are diagnosable rather than silently swallowed.
+        # Forward the CUDA llama.cpp opt-out into WSL: without it the inner setup.sh would
+        # defer its build to a background builder this script then never starts (the same
+        # opt-out skips the dispatch below), leaving no llama-server and a misleading
+        # "building in background" footer. Forwarded, setup.sh keeps its own build instead.
+        $_fwdEnv = ''
+        if ($env:UNSLOTH_NO_LLAMA_CUDA -eq '1') { $_fwdEnv = 'export UNSLOTH_NO_LLAMA_CUDA=1; ' }
         if ($_instRef -eq 'main') {
-            $wslInstall = 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
         } else {
-            $wslInstall = 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh'
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh'
         }
         # install.sh may exit non-zero on the optional llama.cpp prebuilt step (no aarch64 prebuilt)
         # though torch + unsloth + Studio still install, so lower EAP so it doesn't abort under Stop.
@@ -1651,7 +1680,9 @@ shell.Run cmd, 0, False
                 New-Item -ItemType Directory -Force -Path $shimDir *> $null
                 $shimLines = @(
                     '@echo off',
-                    "wsl.exe -d $distro -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
+                    # Quote the distro: an UNSLOTH_WSL_DISTRO with spaces (e.g. "Ubuntu Preview")
+                    # would otherwise split after -d and break every `unsloth ...` invocation.
+                    "wsl.exe -d `"$distro`" -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
                 )
                 Set-Content -LiteralPath (Join-Path $shimDir "unsloth.cmd") -Value $shimLines -Encoding ASCII
                 # A fresh Windows profile may have no HKCU 'Path' value at all -> $userPath is null
@@ -1668,7 +1699,7 @@ shell.Run cmd, 0, False
                 substep "    unsloth studio        # runs in WSL; opens http://localhost:8888" "Cyan"
                 substep "    unsloth studio run    # also forwarded into WSL" "Cyan"
             } catch {
-                substep "(shim creation failed; launch manually):  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
+                substep "(shim creation failed; launch manually):  wsl -d `"$distro`" -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
             }
             # Desktop + Start Menu shortcuts: launch the WSL Studio and open the browser when ready.
             try {
@@ -1768,13 +1799,13 @@ shell.Run cmd, 0, False
                         Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
-                        substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $distro -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
+                        substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d `"$distro`" -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
                     }
                 } catch {} finally { $ErrorActionPreference = $prevEapL }
             }
         } else {
             step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
-            substep "retry, or launch manually:  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
+            substep "retry, or launch manually:  wsl -d `"$distro`" -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
         }
         if ($torchOk) {
             # WSL GPU install succeeded. On this path the Windows venv is vestigial (everything
