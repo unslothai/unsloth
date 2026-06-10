@@ -611,7 +611,7 @@
 	   prompt button, and the chat-template textarea so all three read
 	   as one quiet gray family, matching the focused-edit-number tint. */
 	.panel-input-group {
-		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[10px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[14px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
 		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
@@ -713,7 +713,7 @@
 	   enough to read as interactive, not enough to compete with the
 	   slider row's quiet aesthetic. */
 	.panel-number-input {
-		@apply h-7 rounded-md border-0 bg-transparent px-1.5 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
+		@apply h-7 rounded-full border-0 bg-transparent px-1.5 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
@@ -772,7 +772,7 @@
 		height: 36px;
 		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
-		border-radius: 12px;
+		border-radius: 9999px;
 		font-weight: 500;
 		font-size: 15px;
 		line-height: 20px;
