@@ -7,6 +7,7 @@ Main FastAPI application for Unsloth UI Backend
 
 import os
 import sys
+import threading
 from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
@@ -216,6 +217,7 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    rag_router,
     training_history_router,
     training_router,
 )
@@ -230,6 +232,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.prompts import router as prompts_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -373,6 +376,21 @@ async def lifespan(app: FastAPI):
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
+
+    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
+    def _warm_rag_embedder():
+        try:
+            from storage import rag_db
+
+            if not rag_db.RAG_AVAILABLE:
+                return
+            from core.rag import embeddings
+
+            embeddings.warm()
+        except Exception:
+            pass
+
+    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
@@ -738,9 +756,11 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])

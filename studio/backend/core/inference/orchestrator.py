@@ -859,6 +859,7 @@ class InferenceOrchestrator:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        rag_scope: Optional[dict] = None,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         **_unused,
@@ -919,6 +920,7 @@ class InferenceOrchestrator:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            rag_scope = rag_scope,
         )
 
     def generate_with_adapter_control(

@@ -49,7 +49,9 @@ import {
   CursorInfo02Icon,
   DashboardCircleIcon,
   Delete02Icon,
+  Download01Icon,
   DownloadSquare01Icon,
+  Upload01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderExportIcon,
@@ -66,6 +68,17 @@ import {
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  exportConversationRawJsonl,
+  exportConversationCsv,
+  exportConversationShareGPT,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  importConversationsFromFile,
+  EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   Tooltip,
   TooltipContent,
@@ -245,6 +258,41 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
+
+  const recentsImportInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleImportToRecents(file: File) {
+    try {
+      const count = await importConversationsFromFile(file, null);
+      if (count === 0) {
+        toast.info("No conversations found in file.");
+      } else {
+        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to Recents.`);
+      }
+    } catch {
+      toast.error("Import failed.");
+    }
+  }
+
+  async function handleBulkExport(scope: "recents" | "all", fmt: ConvExportFormat, merged: boolean) {
+    try {
+      const threads = await listStoredChatThreads({
+        includeArchived: false,
+        ...(scope === "recents" ? { projectId: null } : {}),
+      });
+      const ids = [...new Set(threads.map((t) => t.id))];
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
   const [trainOpen, setTrainOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
@@ -644,6 +692,35 @@ export function AppSidebar() {
                 ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Export</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                {[
+                  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                  { label: "CSV", fn: exportConversationCsv },
+                  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+                ].map(({ label, fn }) => (
+                  <DropdownMenuItem
+                    key={label}
+                    onSelect={async () => {
+                      try {
+                        const ids = item.type === "single"
+                          ? [item.id]
+                          : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+                        await Promise.all(ids.map((id) => fn(id)));
+                      } catch {
+                        toast.error("Export failed.");
+                      }
+                    }}
+                  >
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               variant="destructive"
               onSelect={() => setConfirmingDelete({ kind: "chat", item })}
@@ -659,6 +736,18 @@ export function AppSidebar() {
 
   return (
     <>
+    {/* Hidden file inputs for chat import */}
+    <input
+      ref={recentsImportInputRef}
+      type="file"
+      accept=".jsonl,.ndjson,.csv"
+      className="hidden"
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        if (file) void handleImportToRecents(file);
+        e.target.value = "";
+      }}
+    />
     <Sidebar
       collapsible="icon"
       variant="sidebar"
@@ -872,10 +961,68 @@ export function AppSidebar() {
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                </CollapsibleTrigger>
+                <div className="flex w-full items-center group/sb-collap">
+                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
+                    {t("shell.navigation.recents")}
+                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  </CollapsibleTrigger>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="ml-auto flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-0"
+                        title="Export recents"
+                      >
+                        <MoreHorizontalIcon className="size-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="bottom" align="start" className="w-56">
+                      <DropdownMenuItem onSelect={() => recentsImportInputRef.current?.click()}>
+                        <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                        Import chats
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                          Export Recents
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
+                              {label} — combined
+                            </DropdownMenuItem>
+                          ))}
+                          <DropdownMenuSeparator />
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
+                              {label} — per chat
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                          Export Recents + Projects
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
+                              {label} — combined
+                            </DropdownMenuItem>
+                          ))}
+                          <DropdownMenuSeparator />
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
+                              {label} — per chat
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="px-2">

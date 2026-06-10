@@ -23,6 +23,8 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
     strip_tool_markup,
@@ -143,6 +145,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    rag_scope: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -167,11 +170,23 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+
+    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
+    from core.inference.tools import build_rag_autoinject
+
+    _auto = build_rag_autoinject(conversation, rag_scope)
+    if _auto:
+        for _ev in _auto["events"]:
+            yield _ev
+        conversation.extend(_auto["messages"])
+
     unrestricted_tools = not tools
     tool_controller = ToolLoopController(
         tools = None if unrestricted_tools else tools,
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
+    # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
+    kb_search_count = 0
     final_attempt_done = False
     next_call_id = 0
 
@@ -498,17 +513,27 @@ def run_safetensors_tool_loop(
             yield decision.tool_start_event()
 
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-            try:
-                result = execute_tool(
-                    decision.tool_name,
-                    decision.arguments,
-                    cancel_event = cancel_event,
-                    timeout = eff_timeout,
-                    session_id = session_id,
-                )
-            except Exception as exc:
-                logger.exception("Tool %s raised: %s", decision.tool_name, exc)
-                result = f"Error: tool raised an exception: {exc}"
+            # RAG: cap paraphrased KB re-searches that slip past the dup guard.
+            if (
+                decision.tool_name == "search_knowledge_base"
+                and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+            ):
+                result = RAG_SEARCH_CAP_NUDGE
+            else:
+                try:
+                    result = execute_tool(
+                        decision.tool_name,
+                        decision.arguments,
+                        cancel_event = cancel_event,
+                        timeout = eff_timeout,
+                        session_id = session_id,
+                        rag_scope = rag_scope,
+                    )
+                except Exception as exc:
+                    logger.exception("Tool %s raised: %s", decision.tool_name, exc)
+                    result = f"Error: tool raised an exception: {exc}"
+                if decision.tool_name == "search_knowledge_base":
+                    kb_search_count += 1
 
             completion = tool_controller.record_result(decision, result)
             yield completion.tool_end_event()
