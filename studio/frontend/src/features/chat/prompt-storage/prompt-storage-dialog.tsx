@@ -626,30 +626,16 @@ function sharegptToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  const lines = csvText.split(/\r?\n/);
+  // parseCsv handles quoted newlines, so multi-line message content
+  // round-trips; a naive per-line split would break those records.
+  const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let role = "";
-    let content = "";
-    if (line.startsWith('"')) {
-      const m = line.match(/^"((?:[^"]|"")*)"\s*,\s*([\s\S]*)$/);
-      if (!m) continue;
-      role = m[1].replace(/""/g, '"');
-      content = m[2].startsWith('"')
-        ? m[2].slice(1, m[2].endsWith('"') ? -1 : undefined).replace(/""/g, '"')
-        : m[2];
-    } else {
-      const comma = line.indexOf(",");
-      if (comma === -1) continue;
-      role = line.slice(0, comma);
-      content = line.slice(comma + 1).startsWith('"')
-        ? line.slice(comma + 2, line.endsWith('"') ? -1 : undefined).replace(/""/g, '"')
-        : line.slice(comma + 1);
-    }
+  for (const row of rows) {
+    if (row.length < 2) continue;
+    const role = row[0].trim();
+    const content = row.slice(1).join(",");
     if (!content.trim()) continue;
     const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
     const id = crypto.randomUUID();
