@@ -122,12 +122,12 @@ def _serialize_preview_rows(rows):
     ]
 
 
-# Data-file extensions for the single-file fallback. Tier 1 preview prefers
-# tabular over archives: archives (e.g. images.zip) load as ImageFolder with
-# synthetic image/label columns that don't match the real schema.
-_TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
-_ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
-DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
+# Data-file extensions for single-file preview. Tier 1 only uses tabular
+# files; archives/text/config fall through to full load_dataset.
+_COLUMNAR_EXTS = (".parquet", ".arrow")
+_RECORD_EXTS = (".jsonl", ".csv", ".tsv")
+_JSON_EXTS = (".json",)
+_TABULAR_EXTS = _COLUMNAR_EXTS + _RECORD_EXTS + _JSON_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 # sync: training dataset upload limits are exposed by /api/settings/upload-limit
@@ -143,6 +143,166 @@ def _safe_read_metadata(path: Path) -> dict | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+_HF_PREVIEW_EXT_PRIORITY = {
+    ".parquet": 0,
+    ".arrow": 0,
+    ".jsonl": 1,
+    ".csv": 2,
+    ".tsv": 3,
+    ".json": 4,
+}
+_HF_NON_DATA_EXACT_FILENAMES = {
+    ".gitattributes",
+    "builder_config.json",
+    "config.json",
+    "dataset_info.json",
+    "dataset_infos.json",
+    "metadata.json",
+}
+_HF_NON_DATA_CARD_FILENAMES = {"card.json", "dataset_card.json"}
+
+
+def _normalize_hf_repo_path(path: str) -> str:
+    return path.strip().replace("\\", "/").lstrip("./")
+
+
+def _hf_preview_extension(path: str) -> str | None:
+    lower = path.lower()
+    for ext in _HF_PREVIEW_EXT_PRIORITY:
+        if lower.endswith(ext):
+            return ext
+    return None
+
+
+def _is_known_hf_non_data_file(path: str) -> bool:
+    name = Path(path).name.lower()
+    if name in _HF_NON_DATA_EXACT_FILENAMES:
+        return True
+    if name in _HF_NON_DATA_CARD_FILENAMES:
+        return True
+    if name == "readme" or name.startswith("readme."):
+        return True
+    if name.endswith("_config.json") or name.endswith("-config.json"):
+        return True
+    if name.endswith("_card.json") or name.endswith("-card.json"):
+        return True
+    return False
+
+
+def _is_hf_preview_data_file(path: str) -> bool:
+    normalized = _normalize_hf_repo_path(path)
+    if not normalized or _is_known_hf_non_data_file(normalized):
+        return False
+    return _hf_preview_extension(normalized) is not None
+
+
+def _extract_hf_metadata_data_paths(metadata: dict | None) -> list[str]:
+    if not metadata:
+        return []
+    file_paths = metadata.get("file_paths")
+    if not isinstance(file_paths, dict):
+        return []
+    raw_data_paths = file_paths.get("data")
+    if isinstance(raw_data_paths, str):
+        values = [raw_data_paths]
+    elif isinstance(raw_data_paths, list):
+        values = raw_data_paths
+    else:
+        return []
+
+    paths: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = _normalize_hf_repo_path(value)
+        if normalized:
+            paths.append(normalized)
+    return paths
+
+
+def _select_best_hf_preview_candidate(
+    candidates: list[str], *, subset: str | None, split: str | None
+) -> str | None:
+    if not candidates:
+        return None
+    subset_lower = subset.lower() if subset else None
+    split_lower = split.lower() if split else None
+
+    def score(path: str) -> tuple[int, int, int, int, str]:
+        ext = _hf_preview_extension(path)
+        ext_priority = _HF_PREVIEW_EXT_PRIORITY[ext] if ext else 99
+        stem = Path(path).stem.lower()
+        path_lower = path.lower()
+
+        subset_miss = 0
+        if subset_lower:
+            subset_miss = 0 if subset_lower in stem or subset_lower in path_lower else 1
+
+        split_miss = 0
+        if split_lower:
+            split_hit = (
+                stem == split_lower
+                or stem.startswith(f"{split_lower}_")
+                or stem.startswith(f"{split_lower}-")
+                or f"/{split_lower}/" in path_lower
+                or f"_{split_lower}." in path_lower
+                or f"-{split_lower}." in path_lower
+                or f"/{split_lower}." in path_lower
+                or f"/{split_lower}_" in path_lower
+                or f"/{split_lower}-" in path_lower
+            )
+            split_miss = 0 if split_hit else 1
+
+        return (subset_miss, split_miss, ext_priority, len(path), path)
+
+    return sorted(candidates, key = score)[0]
+
+
+def _select_hf_preview_file(
+    repo_files: list[str], *, metadata: dict | None, subset: str | None, split: str | None
+) -> str | None:
+    normalized_repo_files = [_normalize_hf_repo_path(path) for path in repo_files]
+    repo_file_set = set(normalized_repo_files)
+
+    metadata_candidates = [
+        path
+        for path in _extract_hf_metadata_data_paths(metadata)
+        if path in repo_file_set and _is_hf_preview_data_file(path)
+    ]
+    if metadata_candidates:
+        return _select_best_hf_preview_candidate(metadata_candidates, subset = subset, split = split)
+
+    data_candidates = [path for path in normalized_repo_files if _is_hf_preview_data_file(path)]
+    return _select_best_hf_preview_candidate(data_candidates, subset = subset, split = split)
+
+
+def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | None) -> dict | None:
+    metadata_file = next(
+        (
+            path
+            for path in repo_files
+            if Path(_normalize_hf_repo_path(path)).name.lower() == "metadata.json"
+        ),
+        None,
+    )
+    if not metadata_file:
+        return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+        local_path = hf_hub_download(
+            repo_id = repo_id,
+            filename = metadata_file,
+            repo_type = "dataset",
+            token = token,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not read HF dataset metadata for {repo_id}: {exc}")
+        return None
+
+    return _safe_read_metadata(Path(local_path))
 
 
 def _safe_read_rows_from_metadata(payload: dict | None) -> int | None:
@@ -442,7 +602,8 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
     """Check if a dataset requires manual column mapping.
 
     HuggingFace strategy:
-      1. list_repo_files -> first data file -> load_dataset (avoids resolving thousands of files; ~2-4 s).
+      1. list_repo_files -> select one tabular data file -> load_dataset
+         (avoids resolving thousands of files; ~2-4 s).
       2. Full streaming load_dataset as a last-resort fallback.
 
     Local files load directly. Plain `def` (not async) so FastAPI runs it in a
@@ -470,7 +631,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
             )
         else:
             # ── HuggingFace dataset ─────────────────────────────────
-            # Tier 1: load only the first data file from list_repo_files
+            # Tier 1: list_repo_files -> load one selected tabular data file
             preview_slice = None
 
             try:
@@ -482,27 +643,23 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
                     repo_type = "dataset",
                     token = request.hf_token or None,
                 )
-                data_files = [f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)]
+                metadata = _download_hf_metadata(
+                    repo_id = request.dataset_name,
+                    repo_files = repo_files,
+                    token = request.hf_token or None,
+                )
+                selected_file = _select_hf_preview_file(
+                    repo_files,
+                    metadata = metadata,
+                    subset = request.subset,
+                    split = request.train_split or "train",
+                )
 
-                # Prefer tabular over archives (e.g. images.zip -> ImageFolder
-                # with synthetic columns not in the real schema).
-                tabular_files = [
-                    f for f in data_files if any(f.endswith(ext) for ext in _TABULAR_EXTS)
-                ]
-                candidates = tabular_files or data_files
-
-                # With a subset, narrow to files whose name matches it.
-                if request.subset and candidates:
-                    subset_matches = [f for f in candidates if request.subset in Path(f).stem]
-                    if subset_matches:
-                        candidates = subset_matches
-
-                if candidates:
-                    first_file = candidates[0]
-                    logger.info(f"Tier 1: loading single file {first_file}")
+                if selected_file:
+                    logger.info(f"Tier 1: loading single file {selected_file}")
                     load_kwargs = {
                         "path": request.dataset_name,
-                        "data_files": [first_file],
+                        "data_files": [selected_file],
                         "split": "train",
                         "streaming": True,
                     }
@@ -596,6 +753,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
             detected_audio_column = result.get("detected_audio_column"),
             detected_text_column = result.get("detected_text_column"),
             detected_speaker_column = result.get("detected_speaker_column"),
+            chat_column = result.get("chat_column"),
             preview_samples = preview_samples,
             total_rows = total_rows,
             warning = warning,

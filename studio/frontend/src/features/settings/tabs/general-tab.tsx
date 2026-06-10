@@ -16,6 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
+  loadHelperPrecacheSettings,
+  updateHelperPrecacheSettings,
+  type HelperPrecacheSettings,
+} from "../api/helper-precache";
+import {
   DEFAULT_UPLOAD_LIMIT_MB,
   loadUploadLimitSettings,
   updateUploadLimitSettings,
@@ -114,6 +119,12 @@ export function GeneralTab() {
   );
   const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
   const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
+  const [helperPrecache, setHelperPrecache] =
+    useState<HelperPrecacheSettings | null>(null);
+  const [helperPrecacheError, setHelperPrecacheError] = useState<string | null>(
+    null,
+  );
+  const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -157,6 +168,44 @@ export function GeneralTab() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadHelperPrecacheSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setHelperPrecache(settings);
+        setHelperPrecacheError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHelperPrecacheError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.helperLlm.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveHelperPrecache = async (enabled: boolean) => {
+    setIsSavingHelperPrecache(true);
+    setHelperPrecacheError(null);
+    try {
+      const settings = await updateHelperPrecacheSettings(enabled);
+      setHelperPrecache(settings);
+    } catch (error) {
+      setHelperPrecacheError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.helperLlm.saveError"),
+      );
+    } finally {
+      setIsSavingHelperPrecache(false);
+    }
+  };
 
   const saveUploadLimit = async () => {
     const parsed = Number(draftUploadLimit);
@@ -233,6 +282,36 @@ export function GeneralTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={helperPrecache?.enabled ?? false}
+              disabled={
+                !helperPrecache ||
+                isSavingHelperPrecache ||
+                helperPrecache.disabledByEnv
+              }
+              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+            />
+            {helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null}
+          </div>
         </SettingsRow>
       </SettingsSection>
 
