@@ -113,7 +113,6 @@ except (NotImplementedError, RuntimeError) as _device_exc:
     _smi_gpu_name = ""
     if not _zoo_already_hinted:
         import subprocess as _sp
-
         try:
             _smi = _sp.run(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -129,8 +128,7 @@ except (NotImplementedError, RuntimeError) as _device_exc:
         try:
             import torch as _torch_probe
             _torch_cuda_build = (
-                getattr(getattr(_torch_probe, "version", None), "cuda", None)
-                or "unknown"
+                getattr(getattr(_torch_probe, "version", None), "cuda", None) or "unknown"
             )
         except Exception:
             _torch_cuda_build = "unknown"
