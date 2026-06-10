@@ -274,6 +274,17 @@ export interface OpenAIChatCompletionsRequest {
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
+  /** Local models + enable_tools only. */
+  mcp_enabled?: boolean;
+  /** Exactly one of `kb_id` (a KB) or `thread_id` (thread docs). */
+  rag_scope?: {
+    kb_id?: string;
+    thread_id?: string;
+    default_top_k: number;
+    mode: "hybrid" | "lexical" | "dense";
+    autoinject?: boolean;
+    autoinject_min_score?: number;
+  };
   auto_heal_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
