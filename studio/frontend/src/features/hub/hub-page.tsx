@@ -675,7 +675,7 @@ export function ModelsPage() {
   );
 
   return (
-    <div className="hub-page flex h-full min-h-0 flex-col bg-background">
+    <div className="hub-page flex h-full min-h-0 flex-col">
       <div className="mx-auto flex w-full max-w-[1180px] flex-1 min-h-0 flex-col gap-6 px-5 pt-8 pb-16 sm:px-9 sm:pt-10 sm:pb-24">
         <ModelsHeader
           cachedCount={effectiveCachedRows.length}

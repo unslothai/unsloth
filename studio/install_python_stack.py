@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -489,6 +490,73 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     return max(all_vers, key = lambda v: int(v)) if all_vers else None
 
 
+_BNB_ROCM_SITECUSTOMIZE_BEGIN = "# BEGIN Unsloth BNB_ROCM_VERSION"
+_BNB_ROCM_SITECUSTOMIZE_END = "# END Unsloth BNB_ROCM_VERSION"
+_BNB_ROCM_VERSION_SOURCE_ENV = "UNSLOTH_BNB_ROCM_VERSION_SOURCE"
+_BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE = "sitecustomize"
+_BNB_ROCM_VERSION_SOURCE_DETECTED = "detected"
+
+
+def _persist_bnb_rocm_version(version: str) -> bool:
+    """Persist BNB_ROCM_VERSION for future Python processes in this venv."""
+    version = str(version).strip()
+    if not version:
+        return False
+
+    site_packages = sysconfig.get_path("purelib")
+    if not site_packages:
+        return False
+
+    sitecustomize_path = Path(site_packages) / "sitecustomize.py"
+    block = (
+        f"{_BNB_ROCM_SITECUSTOMIZE_BEGIN}\n"
+        "import os as _unsloth_os\n"
+        "_unsloth_existing_bnb_rocm = _unsloth_os.environ.get('BNB_ROCM_VERSION')\n"
+        f"_unsloth_os.environ.setdefault('BNB_ROCM_VERSION', {version!r})\n"
+        "if _unsloth_existing_bnb_rocm is None and "
+        f"_unsloth_os.environ.get('BNB_ROCM_VERSION') == {version!r}:\n"
+        "    _unsloth_os.environ.setdefault("
+        f"{_BNB_ROCM_VERSION_SOURCE_ENV!r}, "
+        f"{_BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE!r})\n"
+        "del _unsloth_existing_bnb_rocm\n"
+        f"{_BNB_ROCM_SITECUSTOMIZE_END}\n"
+    )
+
+    try:
+        sitecustomize_path.parent.mkdir(parents = True, exist_ok = True)
+        existing = (
+            sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
+        )
+        # Strip all managed regions, including one whose END marker was lost to
+        # an interrupted write, then append exactly one fresh block.
+        pattern = re.compile(
+            rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_BEGIN)}.*?"
+            rf"(?:{re.escape(_BNB_ROCM_SITECUSTOMIZE_END)}\n?|\Z)",
+            re.DOTALL,
+        )
+        remainder = pattern.sub("", existing)
+        separator = "" if not remainder or remainder.endswith("\n") else "\n"
+        updated = f"{remainder}{separator}{block}"
+        tmp_path = sitecustomize_path.with_name(
+            f"{sitecustomize_path.name}.unsloth-tmp{os.getpid()}"
+        )
+        try:
+            tmp_path.write_text(updated, encoding = "utf-8")
+            if sitecustomize_path.exists():
+                shutil.copymode(sitecustomize_path, tmp_path)
+            os.replace(tmp_path, sitecustomize_path)
+        finally:
+            tmp_path.unlink(missing_ok = True)
+    except (OSError, UnicodeDecodeError) as exc:
+        print(
+            f"   Warning: could not persist BNB_ROCM_VERSION={version} "
+            f"to {sitecustomize_path}: {exc}"
+        )
+        return False
+
+    return True
+
+
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
     for cmd, check_fn in (
@@ -636,15 +704,27 @@ def _install_bnb_windows_rocm() -> bool:
     )
     if not _ok:
         return False
-    # After install: detect the actual ROCm DLL suffix in the wheel and set
-    # BNB_ROCM_VERSION so bitsandbytes loads the correct DLL regardless of what
-    # torch.version.hip reports. The wheel may ship an older suffix (e.g. "72")
-    # while torch reports a newer HIP version (e.g. 7.13); the override stops
-    # bitsandbytes from failing on a non-existent DLL. The worker subprocess
-    # inherits this env var. Fall back to "72" if detection fails (no-op/dry-run).
-    if "BNB_ROCM_VERSION" not in os.environ:
+    # After install: detect the actual ROCm DLL suffix shipped in the wheel and
+    # set BNB_ROCM_VERSION so bitsandbytes loads the correct DLL regardless of
+    # what torch.version.hip reports.  The wheel may ship an older suffix (e.g.
+    # "72") while torch reports a newer HIP version (e.g. 7.13); the env var
+    # override ensures bitsandbytes does not fail looking for a non-existent DLL.
+    # The worker subprocess inherits this env var automatically.
+    # Fall back to "72" if detection fails (e.g. install was a no-op / dry-run).
+    _env_ver = os.environ.get("BNB_ROCM_VERSION")
+    _env_is_persisted_default = (
+        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
+    )
+    _persist_detected_version = False
+    if _env_ver and not _env_is_persisted_default:
+        _ver = _env_ver
+    else:
         _ver = _detect_bnb_rocm_dll_ver() or "72"
         os.environ["BNB_ROCM_VERSION"] = _ver
+        os.environ[_BNB_ROCM_VERSION_SOURCE_ENV] = _BNB_ROCM_VERSION_SOURCE_DETECTED
+        _persist_detected_version = True
+    if _persist_detected_version:
+        _persist_bnb_rocm_version(_ver)
     # Make hipInfo.exe (shipped into the venv Scripts dir by the AMD torch
     # wheel) resolvable via PATH for this process and every child python the
     # installer spawns (import checks, precompile): bitsandbytes runs
