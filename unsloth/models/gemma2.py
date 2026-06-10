@@ -421,10 +421,9 @@ def Gemma2Attention_fast_forward_inference(
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
     # Attention
-    # [TODO] Gemma2 uses manual matmul for all batch sizes because SDPA does
-    # not support softcapping (tanh logit scaling). If a future PyTorch adds
-    # a softcap param to scaled_dot_product_attention, consider using SDPA
-    # for bsz > 1 to match the llama/qwen3 pattern.
+    # [TODO] Gemma2 uses manual matmul for all batch sizes since SDPA lacks
+    # softcapping (tanh logit scaling). If PyTorch adds a softcap param to
+    # SDPA, consider SDPA for bsz > 1 to match the llama/qwen3 pattern.
     Qn *= (
         self.scalar
     )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963

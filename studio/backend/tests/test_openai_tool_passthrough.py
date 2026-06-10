@@ -1,26 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
 
-Covers:
-- ChatCompletionRequest accepts standard OpenAI `tools` / `tool_choice` / `stop`.
-- ChatMessage accepts role="tool" with `tool_call_id` and role="assistant"
-  with `content: None` + `tool_calls`.
-- ChatCompletionRequest carries unknown fields via `extra="allow"`.
-- anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
-- _build_passthrough_payload() honors a caller-supplied tool_choice and
-  defaults to "auto" when unset.
-- _friendly_error() maps httpx transport errors to a "Lost connection"
-  message so passthrough failures are legible instead of bare 500s.
-
-No running server or GPU required.
+Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
+extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
+tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
+mapping. No server or GPU required.
 """
 
 import os
 import sys
 import asyncio
+import json
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -34,13 +26,20 @@ from pydantic import ValidationError
 from models.inference import (
     ChatCompletionRequest,
     ChatMessage,
+    CompletionChoice,
+    CompletionMessage,
 )
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
+    _build_openai_passthrough_body,
     _build_passthrough_payload,
+    _clamp_finish_reason,
+    _effective_max_tokens,
+    _extract_content_parts,
     _friendly_error,
+    _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
 )
@@ -120,8 +119,8 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "function", content = "x")
 
     def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
-        # Assistant messages that carry only tool_calls are the one
-        # documented case where `content=None` is permitted.
+        # Assistant messages carrying only tool_calls are the one documented
+        # case where `content=None` is permitted.
         msg = ChatMessage(
             role = "assistant",
             tool_calls = [
@@ -136,9 +135,9 @@ class TestChatMessageToolRoles:
 
     def test_tool_role_missing_tool_call_id_left_for_request_validator(self):
         # Per-message: missing tool_call_id is now allowed at this layer.
-        # ChatCompletionRequest's walkback fills it in from the prior
-        # assistant tool_calls; see test_inference_model_validation.py for
-        # the resolution coverage.
+        # ChatCompletionRequest's walkback fills it from the prior assistant
+        # tool_calls; see test_inference_model_validation.py for resolution
+        # coverage.
         msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
         assert msg.tool_call_id is None
         assert msg.content == '{"temperature": 72}'
@@ -173,7 +172,7 @@ class TestChatMessageToolRoles:
         assert "content" in str(exc_info.value)
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
-        # Stop-button leaves an empty assistant turn; tolerate so replay round-trips.
+        # Stop-button leaves an empty assistant turn; tolerate for replay.
         msg = ChatMessage(role = "assistant")
         assert msg.content is None
         assert msg.tool_calls is None
@@ -280,18 +279,19 @@ class TestChatCompletionRequestToolFields:
         assert req.stop is None
 
     def test_extra_fields_accepted(self):
-        # `frequency_penalty`, `seed`, `response_format` are not yet
-        # explicitly declared but must survive Pydantic parsing now that
-        # extra="allow" is set.
+        # `frequency_penalty` and `response_format` are not yet explicitly
+        # declared but must survive Pydantic parsing now that extra="allow" is
+        # set. `seed` is declared and should land on the typed field instead.
         req = self._make(
             frequency_penalty = 0.5,
             seed = 42,
             response_format = {"type": "json_object"},
         )
+        assert req.seed == 42
         # Extras land in model_extra
         assert req.model_extra is not None
         assert req.model_extra.get("frequency_penalty") == 0.5
-        assert req.model_extra.get("seed") == 42
+        assert "seed" not in req.model_extra
         assert req.model_extra.get("response_format") == {"type": "json_object"}
 
     def test_unsloth_extensions_still_work(self):
@@ -305,25 +305,16 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI's /v1/chat/completions spec defaults `stream` to false.
-        # Studio previously defaulted to true, which broke naive curl
-        # clients (and .NET / System.Text.Json SDKs per #5047) that omit
-        # `stream` -- they expect a JSON blob, got SSE.
-        # Pin the corrected default so it can't silently regress.
+        # OpenAI defaults `stream` to false. Studio used to default true,
+        # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
         req = self._make()
         assert req.stream is False
 
     def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
-        # Wire-level guard for the same default: a POST body that omits
-        # `stream` entirely (the exact shape naive curl / .NET clients
-        # send) must deserialise into stream=False *and* the response
-        # must be `application/json`, never `text/event-stream`.
-        # Mounts the real `routes.inference.router` so this catches
-        # regressions in middleware/aliasing on the actual endpoint
-        # (e.g. someone adding a request layer that injects stream=True
-        # before pydantic builds the model). Backends are bypassed by
-        # routing through `provider_type` and stubbing the external
-        # provider proxy.
+        # Wire-level guard: a POST body omitting `stream` must deserialise to
+        # stream=False and return application/json, never text/event-stream.
+        # Mounts the real router to catch middleware/aliasing regressions;
+        # backends are bypassed via provider_type + a stubbed proxy.
         from fastapi import FastAPI
         from fastapi.responses import JSONResponse
         from fastapi.testclient import TestClient
@@ -355,6 +346,153 @@ class TestChatCompletionRequestToolFields:
         assert resp.headers["content-type"].startswith("application/json")
         assert "text/event-stream" not in resp.headers["content-type"]
         assert captured["stream"] is False
+
+    def _v1_client(
+        self,
+        monkeypatch,
+        llama_backend,
+        inference_backend = None,
+    ):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inference_route
+        from auth.authentication import get_current_subject
+        from utils.api_errors import install_api_error_handlers
+
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
+        if inference_backend is not None:
+            monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
+
+        app = FastAPI()
+        app.include_router(inference_route.router, prefix = "/v1")
+        install_api_error_handlers(app)
+        app.dependency_overrides[get_current_subject] = lambda: "test-user"
+        return TestClient(app)
+
+    def _assert_unsupported_param(self, response, param):
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"]["param"] == param
+        assert body["error"]["code"] == "unsupported_parameter"
+
+    def _assert_unsupported_n(self, response):
+        self._assert_unsupported_param(response, "n")
+
+    def test_n_allows_openai_chat_completion_range(self):
+        req = self._make(n = 128)
+        assert req.n == 128
+        with pytest.raises(ValidationError):
+            self._make(n = 129)
+
+    def test_n_rejected_for_external_provider_path(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "logprobs": True,
+            },
+        )
+        self._assert_unsupported_param(resp, "logprobs")
+
+    def test_top_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "top_logprobs": 3,
+            },
+        )
+        self._assert_unsupported_param(resp, "top_logprobs")
+
+    def test_n_rejected_for_gguf_streaming_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_gguf_tools_passthrough_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_non_gguf_path(self, monkeypatch):
+        class _NoGGUFBackend:
+            is_loaded = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {}}
+
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -468,16 +606,131 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
-    def test_stream_adds_include_usage(self):
+    def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
         args["stream"] = True
         body = _build_passthrough_payload(**args)
+        assert "stream_options" not in body
+
+    def test_stream_forwards_include_usage_when_client_requests_it(self):
+        args = self._args()
+        args["stream"] = True
+        body = _build_passthrough_payload(
+            **args,
+            stream_options = {"include_usage": True},
+        )
         assert body.get("stream_options") == {"include_usage": True}
+
+    def test_stream_forwards_include_usage_false_when_client_requests_it(self):
+        args = self._args()
+        args["stream"] = True
+        body = _build_passthrough_payload(
+            **args,
+            stream_options = {"include_usage": False},
+        )
+        assert body.get("stream_options") == {"include_usage": False}
 
     def test_repetition_penalty_renamed(self):
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+    def test_passthrough_body_merges_system_and_developer_messages(self):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools = self._args()["openai_tools"],
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert body["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+
+# =====================================================================
+# OpenAI API compatibility helpers — verified spec edge cases
+# =====================================================================
+
+
+class TestOpenAICompatibilityHelpers:
+    def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
+        payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
+        assert _effective_max_tokens(payload) == 64
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        ["stop", "length", "tool_calls", "content_filter", "function_call"],
+    )
+    def test_clamp_finish_reason_preserves_openai_finish_reasons(self, finish_reason):
+        assert _clamp_finish_reason(finish_reason) == finish_reason
+
+    def test_clamp_finish_reason_defaults_unknown_to_stop(self):
+        assert _clamp_finish_reason(None) == "stop"
+        assert _clamp_finish_reason("unexpected") == "stop"
+
+    def test_non_streaming_completion_choice_accepts_tool_calls_finish_reason(self):
+        choice = CompletionChoice(
+            index = 0,
+            message = CompletionMessage(content = ""),
+            finish_reason = "tool_calls",
+        )
+        assert choice.finish_reason == "tool_calls"
+
+    def test_stream_usage_chunk_requires_include_usage(self):
+        usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        payload = SimpleNamespace(stream_options = None)
+        assert (
+            _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
+        )
+
+        payload.stream_options = {"include_usage": True}
+        line = _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None)
+        assert line is not None
+        assert '"choices":[]' in line
+        assert '"usage"' in line
+
+    def test_stream_usage_chunk_coerces_nullable_counts(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        line = _openai_stream_usage_chunk(
+            payload,
+            "chatcmpl-test",
+            123,
+            "model",
+            {"prompt_tokens": None, "completion_tokens": 7, "total_tokens": None},
+            None,
+        )
+
+        assert line is not None
+        parsed = json.loads(line.removeprefix("data: "))
+        usage = parsed["usage"]
+        assert usage["prompt_tokens"] == 0
+        assert usage["completion_tokens"] == 7
+        assert usage["total_tokens"] == 7
+
+    def test_developer_message_preserves_existing_system_prompt(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        for message in payload.messages:
+            if message.role == "developer":
+                message.role = "system"
+
+        system_prompt, chat_messages, image_b64 = _extract_content_parts(payload.messages)
+
+        assert system_prompt == "original system\n\ndeveloper rules"
+        assert chat_messages == [{"role": "user", "content": "hi"}]
+        assert image_b64 is None
 
 
 # =====================================================================
@@ -486,13 +739,10 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 class TestFriendlyErrorHttpx:
-    """The async pass-through helpers talk to llama-server via httpx.
-    When the subprocess is down, httpx raises RequestError subclasses
-    whose string form (``"All connection attempts failed"``, ``"[Errno 111]
-    Connection refused"``, ...) does NOT contain the substring
-    ``"Lost connection to llama-server"`` the sync path uses, so the
-    previous substring-only `_friendly_error` returned a useless generic
-    message. These tests pin the new isinstance-based mapping.
+    """When llama-server is down, httpx RequestError strings lack the
+    "Lost connection to llama-server" substring the sync path keys off, so the
+    old substring-only `_friendly_error` returned a useless generic message.
+    These tests pin the new isinstance-based mapping.
     """
 
     def _req(self):
@@ -515,9 +765,8 @@ class TestFriendlyErrorHttpx:
         assert "Lost connection" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
-        # Non-httpx exceptions still fall through to the existing substring
-        # heuristics — a context-size message must still produce the
-        # "Message too long" path.
+        # Non-httpx exceptions still fall through to the substring heuristics
+        # — a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
@@ -543,7 +792,7 @@ class TestDropEmptyAssistantSentinels:
         assert out == [{"role": "user", "content": "hi"}, {"role": "user", "content": "again"}]
 
     def test_drops_assistant_with_no_content_key(self):
-        # exclude_none=True strips the content key entirely; filter must catch this.
+        # exclude_none=True strips the content key entirely; filter must catch it.
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "assistant"},
@@ -658,8 +907,8 @@ class TestGgufVisionMessages:
         assert len(messages[2]["content"]) == 2
         assert isinstance(messages[1]["content"], str)
 
-        # Legacy top-level image_base64 must be ignored when any message-level
-        # image already exists; otherwise turn 2 ends up with two image parts.
+        # Legacy top-level image_base64 must be ignored when a message-level
+        # image exists; otherwise turn 2 ends up with two image parts.
         for msg in messages:
             content = msg.get("content")
             if isinstance(content, list):
@@ -823,3 +1072,131 @@ class TestGgufVisionToolRouting:
         assert tool_messages[0]["role"] == "system"
         assert tool_messages[1]["role"] == "user"
         assert tool_messages[1]["content"][1]["type"] == "image_url"
+
+    def test_parallel_tool_calls_false_reaches_gguf_tool_loop(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "done"}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            parallel_tool_calls = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            yield "done"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+
+        assert captured["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("seed", "expected"),
+        [
+            (41, [41, 42, 43]),
+            (-1, [-1, -1, -1]),
+        ],
+    )
+    def test_gguf_n_choices_vary_explicit_non_negative_seed(self, monkeypatch, seed, expected):
+        import routes.inference as inf_mod
+
+        seen_seeds = []
+
+        def _generate(**kwargs):
+            seen_seeds.append(kwargs.get("seed"))
+            yield f"choice-{len(seen_seeds)}"
+            yield {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 7,
+                    "total_tokens": 12,
+                },
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            n = 3,
+            seed = seed,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        body = json.loads(response.body)
+
+        assert seen_seeds == expected
+        assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]

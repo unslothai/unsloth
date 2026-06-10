@@ -49,7 +49,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
             cached = info;
             return info;
         } catch {
-            // Reset promise so subsequent calls retry (e.g. backend wasn't ready)
+            // Reset so subsequent calls retry (e.g. backend wasn't ready).
             fetchPromise = null;
             return DEFAULT;
         }
@@ -59,10 +59,8 @@ async function fetchOnce(): Promise<HardwareInfo> {
 }
 
 /**
- * Fetch hardware info from `GET /api/system/hardware`.
- *
- * The result is cached at module level — only one network request is made
- * regardless of how many components call this hook.
+ * Fetch hardware info from `GET /api/system/hardware`. Cached at module level,
+ * so only one request is made regardless of how many components call this hook.
  */
 export function useHardwareInfo(): HardwareInfo {
     const [info, setInfo] = useState<HardwareInfo>(cached ?? DEFAULT);

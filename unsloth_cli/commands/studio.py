@@ -738,11 +738,10 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
 
 
 def _expand_attached_np_short() -> None:
-    # Click clusters `-np8` as `-n -p 8` (-p = --port), dropping the
-    # parallel value. Split to `-np <N>` so typer's alias matches.
-    # Stops at `--`; accepts signed and digit-prefix-junk forms so
-    # typer can report a clean error against `-np`. Kept in lockstep
-    # with the backend `_flag_name` recogniser.
+    # Click clusters `-np8` as `-n -p 8` (-p = --port), dropping the parallel
+    # value. Split to `-np <N>` so typer's alias matches. Stops at `--`;
+    # accepts signed/junk forms so typer reports a clean error against `-np`.
+    # Kept in lockstep with the backend `_flag_name` recogniser.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
@@ -1131,6 +1130,33 @@ def run(
 _PID_FILE = STUDIO_HOME / "studio.pid"
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with ``pid`` exists.
+
+    ``os.kill(pid, 0)`` raises OSError (WinError 87) for every pid on Windows,
+    so use ``tasklist`` there and the signal-0 probe elsewhere.
+    """
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            ).stdout
+        except Exception:
+            # Can't determine -- assume alive; taskkill no-ops if already gone.
+            return True
+        return f'"{int(pid)}"' in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 @studio_app.command()
 def stop():
     """Stop a running Unsloth Studio server.
@@ -1152,15 +1178,11 @@ def stop():
 
     pid = int(pid_text)
 
-    # Check if the process is still alive
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
+    if not _pid_alive(pid):
         typer.echo(f"Studio server (PID {pid}) is not running. Cleaning up stale PID file.")
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
-    except PermissionError:
-        pass  # process exists but we may not own it; try to signal anyway
 
     # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
@@ -1177,17 +1199,13 @@ def stop():
         typer.echo(f"Failed to stop Studio server (PID {pid}): {e}", err = True)
         raise typer.Exit(1)
 
-    # Wait briefly for the process to exit and clean up
+    # Wait briefly for the process to exit and clean up.
     for _ in range(10):
         time.sleep(0.5)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             _PID_FILE.unlink(missing_ok = True)
             typer.echo("Studio server stopped.")
             raise typer.Exit(0)
-        except PermissionError:
-            break
 
     typer.echo("Studio server is shutting down (may take a few seconds).")
 
@@ -1210,14 +1228,10 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        # Use -Command + `*>&1` instead of -File so setup.ps1's
-        # Write-Host output (PowerShell Information stream / #6) is
-        # merged into the success stream and reaches the parent's
-        # stdout. With -File, Information stream output is dropped
-        # whenever stdout is a pipe, which is exactly the situation
-        # CI hits with `unsloth studio update --local 2>&1 | tee
-        # logs/update.log`. Single-quote escaping handles paths that
-        # contain apostrophes.
+        # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
+        # (Information stream #6) merges into stdout. -File drops it when
+        # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.
+        # Single-quote escaping handles paths containing apostrophes.
         script_pwsh_literal = str(script).replace("'", "''")
         powershell_args.extend(
             [
@@ -1227,20 +1241,13 @@ def _run_setup_script(*, verbose: bool = False) -> None:
                 f"& '{script_pwsh_literal}' *>&1",
             ]
         )
-        # Explicitly hand stdin/stdout/stderr to the child so the
-        # CI tee actually sees setup.ps1's output. Without this,
-        # subprocess.run on Windows uses close_fds=True (default,
-        # since Python 3.7) which sets bInheritHandles=False on
-        # CreateProcess. With CREATE_NO_WINDOW also set (via
-        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
-        # child has neither a console nor any inherited std
-        # handles, so PowerShell's Write-Host -- and even
-        # [Console]::Out.WriteLine -- writes to nothing. Passing
-        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
-        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
-        # explicitly inheritable, which works alongside
-        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
-        # CI was the smoking gun (run 25533694490 and 25534292239).
+        # Explicitly hand std handles to the child so CI tee sees setup.ps1's
+        # output. On Windows, subprocess.run defaults to close_fds=True
+        # (bInheritHandles=False); combined with CREATE_NO_WINDOW the child
+        # has no console and no inherited handles, so Write-Host writes to
+        # nothing. Passing stdout/stderr makes Python mark the std handles
+        # inheritable via PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Empty update.log
+        # on windows-latest CI was the smoking gun (runs 25533694490/25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,

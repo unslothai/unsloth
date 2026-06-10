@@ -283,9 +283,8 @@ def QUANT_STATE(W):
 
 
 def get_lora_parameters(proj):
-    """
-    Return a 5-tuple of (weight, weight quant_state, lora A, lora B, and lora scale).
-    If QAT is enabled, additionally fake quantize the base layer and lora weights.
+    """Return (weight, weight quant_state, lora A, lora B, lora scale).
+    With QAT enabled, also fake-quantizes the base layer and lora weights.
     """
     # For DPO or disabled adapters
     base_layer = getattr(
@@ -382,10 +381,8 @@ def get_lora_parameters_bias(proj):
 
 
 def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
-    """
-    If QAT is enabled, fake quantize the input activations.
-    Otherwise, just return the input activations as is.
-    Weights are fake quantized separately in `get_lora_parameters`.
+    """Fake-quantize input activations if QAT is enabled, else return as-is.
+    Weights are fake-quantized separately in `get_lora_parameters`.
     """
     base_layer = getattr(proj, "base_layer", proj)
     activation_fake_quantizer = getattr(base_layer, "activation_fake_quantizer", None)
@@ -1089,9 +1086,8 @@ def matmul_lora(
     if isinstance(W, Float8Tensor):
         assert W.ndim == 2
         if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-            # In the backward pass, rowwise scaled becomes colwise scaled after we
-            # transpose the weight tensor. Use this case to detect backward.
-            # TODO: would be simpler if we simply don't call `matmul_lora` in backward
+            # Rowwise scaling becomes colwise after transpose, so this detects
+            # the backward pass. TODO: avoid calling matmul_lora in backward.
             W = W.dequantize()
         else:
             W = W.contiguous()

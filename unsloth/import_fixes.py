@@ -106,11 +106,10 @@ except Exception:
 def suppress_cuda_printf():
     """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
 
-    CUDA device printf (eg CUTLASS "Arch conditional MMA" errors on Blackwell)
-    writes to stdout fd 1 at the C level, bypassing Python sys.stdout entirely.
-    The existing HidePrintMessage filter on sys.stderr cannot catch these since
-    they go to a different fd at a different layer. This context manager redirects
-    both fd 1 and fd 2 at the OS level, syncs CUDA, then restores them.
+    CUDA device printf (e.g. CUTLASS "Arch conditional MMA" errors on Blackwell)
+    writes to fd 1 at the C level, bypassing Python's sys.stdout, so the
+    HidePrintMessage filter can't catch it. Redirect fd 1 and 2 at the OS level,
+    sync CUDA, then restore.
     """
     sys.stdout.flush()
     sys.stderr.flush()
@@ -575,22 +574,18 @@ def check_fbgemm_gpu_version():
 
 
 def patch_enable_input_require_grads():
-    """
-    Patch transformers PreTrainedModel.enable_input_require_grads to handle vision models
-    that raise NotImplementedError from get_input_embeddings().
-
-    """
+    """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
+    that raise NotImplementedError from get_input_embeddings()."""
     import inspect
     from transformers import PreTrainedModel
 
-    # Check if the original function iterates over self.modules() instead of just returning the enable_input_require_grads
+    # Only patch the new variant that iterates over self.modules().
     # Ref: https://github.com/huggingface/transformers/pull/41993/files#diff-6b72b98c4c2dcfc6cc606843917733f5d858374fbc22a735ff483bbc0c1e63eaL1979-R1996
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
-    # Only patch if the new pattern exists (iterating over self.modules())
     if "for module in self.modules()" not in original_source:
         return
 
@@ -610,8 +605,8 @@ def patch_enable_input_require_grads():
             try:
                 input_embeddings = module.get_input_embeddings()
             except NotImplementedError:
-                # Vision models may not implement get_input_embeddings - skip them
-                # For GLM V4.6 for example, this skips only `self.visual`
+                # Vision models may not implement get_input_embeddings (e.g. GLM
+                # V4.6 skips only `self.visual`); skip them
                 continue
 
             if input_embeddings is None:
@@ -635,11 +630,10 @@ def patch_enable_input_require_grads():
 
 def _is_custom_torch_build(raw_version_str):
     """Check if a raw version string indicates a custom or source build.
-    Must operate on the raw string from importlib_version(), not the parsed
-    Version object, since our custom Version() strips local identifiers.
 
-    Standard PyTorch releases use: +cu124, +rocm6.3, +cpu, +xpu
-    Source/custom builds use: +gitXXXXXXX, +HEXHASH, or other suffixes.
+    Operates on the raw importlib_version() string (our Version() strips local
+    identifiers). Standard releases use +cu124/+rocm6.3/+cpu/+xpu; custom builds
+    use +gitXXXX or other suffixes.
     """
     if "+" not in raw_version_str:
         return False
@@ -701,13 +695,12 @@ def torchvision_compatibility_check():
         (2, 4): (0, 19),
     }
 
-    # Extract major.minor from the parsed version
     torch_release = torch_v.release
     if len(torch_release) < 2:
         return
     torch_major, torch_minor = torch_release[0], torch_release[1]
 
-    # Try known table first, then fall back to formula for forward compatibility
+    # Known table first, then the formula for forward compatibility
     required = TORCH_TORCHVISION_COMPAT.get((torch_major, torch_minor))
 
     if required is None:
@@ -1018,11 +1011,10 @@ def check_vllm_torch_sm100_compatibility():
     This check runs early (before vLLM import) to provide a helpful error message
     instead of a cryptic std::bad_alloc crash.
     """
-    # Check if vLLM is installed (without importing it)
+    # vLLM installed? (without importing it)
     if importlib.util.find_spec("vllm") is None:
         return
 
-    # Check torch version
     try:
         torch_version = Version(importlib_version("torch"))
         if torch_version >= Version("2.9.0"):
@@ -1030,7 +1022,7 @@ def check_vllm_torch_sm100_compatibility():
     except Exception:
         return  # Can't determine torch version, skip check
 
-    # Check if any CUDA GPU is SM100 (Blackwell)
+    # Any SM100 (Blackwell) GPU?
     try:
         import torch
 
@@ -1051,13 +1043,12 @@ def check_vllm_torch_sm100_compatibility():
     except Exception:
         return
 
-    # Get vLLM version for the error message
     try:
         vllm_version = importlib_version("vllm")
     except Exception:
         vllm_version = "unknown"
 
-    # Incompatible combination detected - raise helpful error
+    # Incompatible combination: raise a helpful error
     raise RuntimeError(
         f"Unsloth: Incompatible configuration detected.\n\n"
         f"  GPU: {sm100_gpu_name} (SM100 / Blackwell architecture)\n"
@@ -1085,14 +1076,13 @@ def fix_vllm_pdl_blackwell():
     if importlib.util.find_spec("vllm") is None:
         return
 
-    # Check if any CUDA GPU is SM100 (Blackwell)
+    # Any SM100 (Blackwell) GPU? Fix applies globally via env var + monkey-patch.
     try:
         import torch
 
         if not torch.cuda.is_available():
             return
 
-        # Scan all GPUs for SM100 - fix applies globally via env var and monkey-patch
         has_sm100 = False
         sm100_gpu_name = None
         for i in range(torch.cuda.device_count()):
@@ -1107,14 +1097,13 @@ def fix_vllm_pdl_blackwell():
     except Exception:
         return
 
-    # Helper to check if module spec exists
     def _spec_exists(name):
         try:
             return importlib.util.find_spec(name) is not None
         except (ImportError, OSError, ModuleNotFoundError, ValueError):
             return False
 
-    # Check if vLLM has the PDL-related modules before doing internet check
+    # PDL-related modules present?
     has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
     has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
     has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
@@ -1123,7 +1112,7 @@ def fix_vllm_pdl_blackwell():
         # Old vLLM version without PDL support - nothing to patch
         return
 
-    # Check if vLLM version includes the fix
+    # vLLM version already includes the fix?
     VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
@@ -1150,9 +1139,8 @@ def fix_vllm_pdl_blackwell():
             patched.append(name)
             patched_names.add(name)
 
-    # First, patch the source module (utils.py) where supports_pdl is defined.
-    # This is critical because supports_pdl uses @lru_cache - we must clear the
-    # cache to prevent stale cached results from the original function.
+    # Patch the source module (utils.py) where supports_pdl is defined. It uses
+    # @lru_cache, so clear the cache to avoid stale results.
     try:
         utils_module = importlib.import_module("vllm.lora.ops.triton_ops.utils")
         if hasattr(utils_module, "supports_pdl"):
@@ -1164,9 +1152,7 @@ def fix_vllm_pdl_blackwell():
     except (ImportError, ModuleNotFoundError, AttributeError):
         pass
 
-    # Also patch the consumer modules that import supports_pdl from utils.
-    # This ensures the patched function is used even if the module was already
-    # imported before this fix runs.
+    # Also patch consumer modules that imported supports_pdl before this ran.
     consumer_modules = {
         "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
         "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
@@ -1328,10 +1314,9 @@ def disable_broken_wandb():
             tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
-        # Patch accelerate's is_wandb_available (used by trl/trainer/callbacks.py).
-        # Must patch both the source module AND the re-export namespace since
-        # `from accelerate.utils import is_wandb_available` reads from
-        # accelerate.utils, not accelerate.utils.imports.
+        # Patch accelerate's is_wandb_available. Patch both the source module and
+        # the re-export namespace, since `from accelerate.utils import
+        # is_wandb_available` reads accelerate.utils, not accelerate.utils.imports.
         try:
             import accelerate.utils.imports as acc_imports
             acc_imports.is_wandb_available = _wandb_false
@@ -1597,6 +1582,8 @@ def patch_peft_weight_converter_compatibility():
     except (ImportError, AttributeError):
         return
 
+    _patch_peft_moe_target_conversion(twc)
+
     if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
         return
 
@@ -1664,6 +1651,47 @@ def patch_peft_weight_converter_compatibility():
 
     twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
     twc._unsloth_weight_converter_compat_patch = True
+
+
+def _patch_peft_moe_target_conversion(twc):
+    """Keep PEFT 0.19 MoE conversion from rewriting explicit Unsloth targets."""
+    if getattr(twc, "_unsloth_moe_target_conversion_patch", False):
+        return
+
+    original_convert_moe = getattr(twc, "_convert_peft_config_moe", None)
+    if original_convert_moe is None:
+        return
+
+    @functools.wraps(original_convert_moe)
+    def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
+        if getattr(peft_config, "target_parameters", None):
+            return
+
+        target_modules = getattr(peft_config, "target_modules", None)
+        if isinstance(target_modules, str):
+            if "." in target_modules:
+                return
+            return original_convert_moe(peft_config, model_type)
+
+        if not target_modules:
+            return original_convert_moe(peft_config, model_type)
+
+        explicit_targets = {
+            target for target in target_modules if isinstance(target, str) and "." in target
+        }
+        if not explicit_targets:
+            return original_convert_moe(peft_config, model_type)
+
+        bare_targets = set(target_modules) - explicit_targets
+        if not bare_targets:
+            return
+
+        peft_config.target_modules = bare_targets
+        original_convert_moe(peft_config, model_type)
+        peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
+
+    twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    twc._unsloth_moe_target_conversion_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False
@@ -2134,3 +2162,91 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+_BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
+
+
+def _is_hip_torch_build():
+    """True only when torch itself is a HIP/ROCm build. Env hints (HIP_PATH
+    etc.) do not count: CUDA bitsandbytes raises at import when the ROCm
+    override is set. Wheel tag first (no torch import); torch.version.hip
+    fallback for source builds."""
+    try:
+        if "rocm" in str(importlib_version("torch")).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        import torch
+        return bool(getattr(torch.version, "hip", None))
+    except Exception:
+        return False
+
+
+def _detect_installed_bnb_rocm_version():
+    """Highest installed ``libbitsandbytes_rocm<NN>.dll`` suffix ("72", "713")
+    or ``None``. Listing order is unordered, so take the numeric max."""
+    try:
+        spec = importlib.util.find_spec("bitsandbytes")
+    except Exception:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+
+    suffixes = []
+    for pkg_dir in spec.submodule_search_locations:
+        try:
+            entries = os.listdir(pkg_dir)
+        except Exception:
+            continue
+        for entry in entries:
+            match = _BNB_ROCM_DLL_RE.fullmatch(entry)
+            if match is not None:
+                suffixes.append(match.group(1))
+    if not suffixes:
+        return None
+    return max(suffixes, key = lambda value: int(value))
+
+
+def maybe_set_windows_rocm_bnb_version():
+    """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
+
+    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose
+    suffix can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll),
+    breaking the native 4-bit/8-bit paths. Pin the installed suffix before
+    bitsandbytes is first imported.
+
+    No-op unless ALL of: Windows, a real HIP torch build (env hints like
+    HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
+    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
+    (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
+    redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
+    opts out and drops a seeded default. Returns the value set, else None.
+    """
+    if sys.platform != "win32":
+        return None
+    if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
+        # Real opt-out: drop our seeded default (marker present); explicit
+        # user values carry no marker and are kept.
+        if os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize":
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop("UNSLOTH_BNB_ROCM_VERSION_SOURCE", None)
+        return None
+    if "BNB_ROCM_VERSION" in os.environ and (
+        os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") != "sitecustomize"
+    ):
+        return None
+    if not _is_hip_torch_build():
+        return None
+    version = _detect_installed_bnb_rocm_version()
+    if version is None:
+        return None
+    os.environ["BNB_ROCM_VERSION"] = version
+    os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            f"Unsloth: set BNB_ROCM_VERSION={version} "
+            "(detected from the installed bitsandbytes ROCm wheel on Windows)."
+        )
+    return version

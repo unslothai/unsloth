@@ -82,7 +82,7 @@ def test_blank_removed_for_small_import_block(name):
     out, changed = remove_blank_after_short_import(src)
     assert changed is True
     assert out != src
-    # The import line and the following statement are now adjacent (no blank between).
+    # Import and following statement now adjacent (no blank between).
     assert "\n\n" not in out or out.count("\n\n") < src.count("\n\n")
     # Semantics preserved and idempotent.
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))

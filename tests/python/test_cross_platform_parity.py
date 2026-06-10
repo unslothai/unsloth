@@ -21,8 +21,7 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text().splitlines()
-        # Find the fallback block: starts with the "else" after the
-        # TORCH_INDEX_URL check and ends at the next "fi".
+        # Fallback block: from "GPU detection failed" to the next "fi".
         fallback_start = None
         fallback_end = None
         for i, line in enumerate(lines):
