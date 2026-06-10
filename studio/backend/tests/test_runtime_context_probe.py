@@ -207,9 +207,13 @@ class TestLaunchContextLength:
         inst = _backend(requested_n_ctx = 8192)
         assert inst.launch_context_length == 8192
 
-    def test_auto_load_returns_none(self):
+    def test_auto_load_returns_none_without_recorded_launch(self):
         inst = _backend(requested_n_ctx = 0)
         assert inst.launch_context_length is None
+
+    def test_auto_load_exposes_effective_total_c(self):
+        inst = _backend(requested_n_ctx = 0, launch_context_length = 8192)
+        assert inst.launch_context_length == 8192
 
 
 class TestReloadMaxSeqLengthContract:

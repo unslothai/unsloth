@@ -28,7 +28,7 @@ function getSeverityColor(percent: number): {
 
 export const ContextUsageBar: FC<{
   used: number;
-  // null on external providers (no known window); bar then hides the ratio.
+  // null on external providers (unknown window); bar hides the ratio.
   total?: number | null;
   /** Launch -c when runtime total is below what was requested (--fit). */
   requestedTotal?: number | null;

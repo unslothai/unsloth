@@ -51,12 +51,8 @@ def auth_client():
 
 
 def data_recipe_jobs_module():
-    route_path = (
-        Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "_desktop_data_recipe_jobs", route_path
-    )
+    route_path = Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
+    spec = importlib.util.spec_from_file_location("_desktop_data_recipe_jobs", route_path)
     jobs_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(jobs_route)
@@ -243,7 +239,7 @@ def test_consume_refresh_token_second_call_returns_none():
 
 
 def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatch):
-    """64-thread pile-up against one token; DELETE RETURNING permits one winner."""
+    """64-thread pile-up on one token; DELETE RETURNING permits one winner."""
     seed_user()
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta, timezone
@@ -258,16 +254,14 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         try:
             return storage.consume_refresh_token(raw)
         except sqlite3.OperationalError:
-            # "database is locked" under heavy contention; treat as losing the race.
+            # "database is locked" under contention; treat as losing the race.
             return None
 
     with ThreadPoolExecutor(max_workers = workers) as pool:
         results = list(pool.map(attempt, range(workers)))
 
     successes = [r for r in results if r is not None]
-    assert (
-        len(successes) == 1
-    ), f"expected exactly one consumer to win, got {len(successes)}"
+    assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
     assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
@@ -285,9 +279,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
-    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()[
-        "access_token"
-    ]
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
 
     response = client.post(
         "/api/auth/api-keys",
@@ -302,8 +294,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
     # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT). The unified API-key path validates as the real admin
-    # user regardless of whether the incoming session was desktop or web.
+    # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -322,14 +313,11 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert (
-        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
-    )
+    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web
-    # and desktop incoming tokens; auth via get_current_subject works the same.
+    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
@@ -345,9 +333,7 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert (
-        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
-    )
+    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_desktop_login_rejects_invalid_secret():
@@ -480,8 +466,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
 
 def test_provision_desktop_auth_writes_secret_and_creates_db_without_backend_deps(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir()
@@ -536,12 +521,9 @@ if result.exit_code != 0:
             """
         ).fetchone()
         app_secrets = {
-            row["key"]: row["value"]
-            for row in conn.execute("SELECT key, value FROM app_secrets")
+            row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_secrets")
         }
-        refresh_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
-        }
+        refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     finally:
         conn.close()
 
@@ -633,9 +615,7 @@ def test_update_password_clears_desktop_secret():
     raw = storage.create_desktop_secret()
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
-    changed = storage.update_password(
-        storage.DEFAULT_ADMIN_USERNAME, "new-admin-password"
-    )
+    changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
     assert changed is True
     assert storage.validate_desktop_secret(raw) is None
 
@@ -651,11 +631,7 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
 
 def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
-        Path(__file__).resolve().parents[3]
-        / "studio"
-        / "src-tauri"
-        / "src"
-        / "desktop_auth.rs"
+        Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
     )
     src = rs_path.read_text()
     start = src.index("async fn provision_desktop_auth(")

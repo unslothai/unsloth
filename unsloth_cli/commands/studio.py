@@ -52,9 +52,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(
-                inferred
-            ):
+            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
                 return inferred, True
     except (OSError, ValueError):
         pass
@@ -271,9 +269,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
                 # emits for editable installs.
-                m = re.search(
-                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
-                )
+                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
                 if not m:
                     continue
                 try:
@@ -363,9 +359,7 @@ def _create_api_key_inprocess(name: str) -> str:
 
 def _load_backend_auth_storage():
     run_py = _find_run_py()
-    backend_dir = (
-        run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
-    )
+    backend_dir = run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
     if backend_dir.is_dir() and str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
 
@@ -474,13 +468,9 @@ def _connect_auth_db() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
-    refresh_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
-    }
+    refresh_columns = {row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
-        conn.execute(
-            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
-        )
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     return conn
 
@@ -782,11 +772,10 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
 
 
 def _expand_attached_np_short() -> None:
-    # Click clusters `-np8` as `-n -p 8` (-p = --port), dropping the
-    # parallel value. Split to `-np <N>` so typer's alias matches.
-    # Stops at `--`; accepts signed and digit-prefix-junk forms so
-    # typer can report a clean error against `-np`. Kept in lockstep
-    # with the backend `_flag_name` recogniser.
+    # Click clusters `-np8` as `-n -p 8` (-p = --port), dropping the parallel
+    # value. Split to `-np <N>` so typer's alias matches. Stops at `--`;
+    # accepts signed/junk forms so typer reports a clean error against `-np`.
+    # Kept in lockstep with the backend `_flag_name` recogniser.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
@@ -805,10 +794,7 @@ def _expand_attached_np_short() -> None:
 
 
 def _consume_legacy_short_aliases(
-    args: List[str],
-    aliases: tuple[str, ...],
-    current: Optional[str],
-    canonical: str,
+    args: List[str], aliases: tuple[str, ...], current: Optional[str], canonical: str
 ) -> tuple[Optional[str], List[str]]:
     """Pop exact-match legacy shorts (`-m`/`-hfr`/`-f`) from args;
     leave clusters (`-mg`/`-fa`/...) for the llama-server tail. Inline
@@ -827,9 +813,7 @@ def _consume_legacy_short_aliases(
             i += 1
             continue
         if value is not None:
-            raise typer.BadParameter(
-                f"{name} conflicts with {canonical} already provided"
-            )
+            raise typer.BadParameter(f"{name} conflicts with {canonical} already provided")
         if sep:
             if inline == "":  # `-m=` would become --model '' (Path('')='.').
                 raise typer.BadParameter(f"{name} requires a non-empty value")
@@ -839,9 +823,7 @@ def _consume_legacy_short_aliases(
             nxt = args[i + 1]
             # `--long` is unambiguously a flag; single-dash `-x` may be a path.
             if nxt.startswith("--") and nxt != "--":
-                raise typer.BadParameter(
-                    f"{name} expects a value but got the flag {nxt}"
-                )
+                raise typer.BadParameter(f"{name} expects a value but got the flag {nxt}")
             value = nxt
             i += 2
         else:
@@ -994,9 +976,7 @@ def run(
         # Re-exec via the studio venv's `unsloth` console-script.
         studio_bin = studio_python.parent / "unsloth"
         if not studio_bin.is_file():
-            typer.echo(
-                "Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup"
-            )
+            typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
         args = [
             str(studio_bin),
@@ -1208,9 +1188,7 @@ def stop():
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        typer.echo(
-            f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
-        )
+        typer.echo(f"Studio server (PID {pid}) is not running. Cleaning up stale PID file.")
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
     except PermissionError:
@@ -1264,14 +1242,10 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        # Use -Command + `*>&1` instead of -File so setup.ps1's
-        # Write-Host output (PowerShell Information stream / #6) is
-        # merged into the success stream and reaches the parent's
-        # stdout. With -File, Information stream output is dropped
-        # whenever stdout is a pipe, which is exactly the situation
-        # CI hits with `unsloth studio update --local 2>&1 | tee
-        # logs/update.log`. Single-quote escaping handles paths that
-        # contain apostrophes.
+        # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
+        # (Information stream #6) merges into stdout. -File drops it when
+        # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.
+        # Single-quote escaping handles paths containing apostrophes.
         script_pwsh_literal = str(script).replace("'", "''")
         powershell_args.extend(
             [
@@ -1281,20 +1255,13 @@ def _run_setup_script(*, verbose: bool = False) -> None:
                 f"& '{script_pwsh_literal}' *>&1",
             ]
         )
-        # Explicitly hand stdin/stdout/stderr to the child so the
-        # CI tee actually sees setup.ps1's output. Without this,
-        # subprocess.run on Windows uses close_fds=True (default,
-        # since Python 3.7) which sets bInheritHandles=False on
-        # CreateProcess. With CREATE_NO_WINDOW also set (via
-        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
-        # child has neither a console nor any inherited std
-        # handles, so PowerShell's Write-Host -- and even
-        # [Console]::Out.WriteLine -- writes to nothing. Passing
-        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
-        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
-        # explicitly inheritable, which works alongside
-        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
-        # CI was the smoking gun (run 25533694490 and 25534292239).
+        # Explicitly hand std handles to the child so CI tee sees setup.ps1's
+        # output. On Windows, subprocess.run defaults to close_fds=True
+        # (bInheritHandles=False); combined with CREATE_NO_WINDOW the child
+        # has no console and no inherited handles, so Write-Host writes to
+        # nothing. Passing stdout/stderr makes Python mark the std handles
+        # inheritable via PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Empty update.log
+        # on windows-latest CI was the smoking gun (runs 25533694490/25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,
@@ -1338,9 +1305,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(
-                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
-            )
+            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
 
         for script in candidates:
             try:
@@ -1362,9 +1327,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         **_windows_hidden_subprocess_kwargs(),
                     )
                     if result.returncode != 0:
-                        typer.echo(
-                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
-                        )
+                        typer.echo(f"  refresh-launcher  install.ps1 exited {result.returncode}")
                     return
             except OSError:
                 continue
@@ -1377,9 +1340,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             with urllib.request.urlopen(request, timeout = 30) as response:
                 installer = response.read().decode("utf-8", errors = "replace")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(
-                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
-            )
+            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
             return
 
         # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
@@ -1420,9 +1381,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
                     )
             except OSError as exc:
-                typer.echo(
-                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
-                )
+                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
         finally:
             try:
                 os.unlink(ps1_path)
@@ -1439,9 +1398,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                     check = False,
                 )
                 if result.returncode != 0:
-                    typer.echo(
-                        f"  refresh-launcher  install.sh exited {result.returncode}"
-                    )
+                    typer.echo(f"  refresh-launcher  install.sh exited {result.returncode}")
                 return
         except OSError:
             continue
@@ -1454,9 +1411,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         with urllib.request.urlopen(request, timeout = 30) as response:
             installer = response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(
-            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
-        )
+        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
         return
 
     try:
@@ -1467,9 +1422,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             check = False,
         )
         if result.returncode != 0:
-            typer.echo(
-                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
-            )
+            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
@@ -1489,9 +1442,7 @@ def setup(
 
 @studio_app.command()
 def update(
-    local: bool = typer.Option(
-        False, "--local", help = "Install from local repo instead of PyPI"
-    ),
+    local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
     package: str = typer.Option(
         "unsloth", "--package", help = "Package name to install/update (for testing)"
     ),
@@ -1623,7 +1574,6 @@ def desktop_capabilities(
     }
     try:
         from importlib.metadata import version as package_version
-
         payload["version"] = package_version("unsloth")
     except Exception:
         pass

@@ -5,6 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
+@import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
@@ -1140,7 +1141,7 @@
 	/* Open menu rotates the plus 45deg into an x. Ease-in-out for a smooth
 	   spin; keep it at 45deg so it never passes back through a "+". */
 	.unsloth-composer-plus svg {
-		transition: transform 300ms cubic-bezier(0.65, 0, 0.35, 1);
+		transition: transform 250ms cubic-bezier(0.65, 0, 0.35, 1);
 		will-change: transform;
 	}
 
@@ -2009,6 +2010,24 @@
 	/* Keep the plus/x morph animating under reduced motion (small rotation,
 	   like the spinners above). */
 	.unsloth-composer-plus svg {
-		transition-duration: 300ms !important;
+		transition-duration: 250ms !important;
 	}
+}
+
+/*
+ * Tool-call chevron visibility:
+ *  - A solo tool call (not wrapped in a multi-tool group) always shows its
+ *    collapsible chevron.
+ *  - When the tool call is part of a multi-tool group (.aui-tool-group-root),
+ *    the chevron stays hidden and only reveals on hover / keyboard focus.
+ */
+.aui-tool-fallback-trigger-chevron {
+  opacity: 1;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger-chevron {
+  opacity: 0;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger:hover .aui-tool-fallback-trigger-chevron,
+.aui-tool-group-root .aui-tool-fallback-trigger:focus-visible .aui-tool-fallback-trigger-chevron {
+  opacity: 1;
 }

@@ -1,19 +1,11 @@
-"""Comprehensive E2E sandbox tests for PR #4624 (fix/install-mac-intel-no-torch).
-
-Proves that:
-- The BEFORE state (top-level torch imports) crashes without torch
-- The AFTER state (lazy/removed imports) works without torch
-- Edge cases (broken torch, partial torch) are handled gracefully
-- Hardware detection falls back to CPU without torch
-- install.sh flag parsing and platform detection work correctly
-- install_python_stack.py NO_TORCH filtering is correct
-- Live server starts and responds without torch (optional, requires studio venv)
+"""E2E sandbox tests for PR #4624 (fix/install-mac-intel-no-torch): BEFORE
+(top-level torch) crashes, AFTER (lazy imports) works, broken/partial torch,
+CPU hardware fallback, install.sh parsing, NO_TORCH filtering, and live server.
 
 Run:
-    # Lightweight tests (Groups 1-6, ~26 tests):
+    # Lightweight (Groups 1-6):
     python -m pytest tests/python/test_e2e_no_torch_sandbox.py -v -k "not server"
-
-    # Server tests (Group 7, 4 tests, requires studio venv):
+    # Server (Group 7, requires studio venv):
     python -m pytest tests/python/test_e2e_no_torch_sandbox.py -v -m server
 """
 
@@ -212,12 +204,8 @@ def no_torch_venv(request, tmp_path_factory):
 
 
 class TestBeforeAfterImportChain:
-    """Prove the bug exists in BEFORE state and is fixed in AFTER state.
-
-    BEFORE = PR branch files with top-level torch import synthetically prepended
-             (simulates the main branch).
-    AFTER  = PR branch files as-is (lazy imports / torch import removed).
-    """
+    """BEFORE (PR files with a synthetic top-level torch import, simulating
+    main) crashes; AFTER (PR files as-is, lazy imports) works."""
 
     # -- BEFORE: crashes --
 
@@ -247,12 +235,8 @@ class TestBeforeAfterImportChain:
             exec(source)
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode != 0
-        ), "BEFORE chat_templates.py should crash without torch"
-        assert (
-            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-        )
+        assert result.returncode != 0, "BEFORE chat_templates.py should crash without torch"
+        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
 
     def test_before_data_collators_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: data_collators.py with top-level 'import torch' crashes."""
@@ -270,12 +254,8 @@ class TestBeforeAfterImportChain:
             exec(open({str(before_file)!r}).read())
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode != 0
-        ), "BEFORE data_collators.py should crash without torch"
-        assert (
-            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-        )
+        assert result.returncode != 0, "BEFORE data_collators.py should crash without torch"
+        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
 
     def test_before_full_import_chain_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: full utils/datasets/ package with top-level torch imports crashes."""
@@ -320,12 +300,8 @@ class TestBeforeAfterImportChain:
             from utils.datasets import detect_dataset_format
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode != 0
-        ), "BEFORE full import chain should crash without torch"
-        assert (
-            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-        )
+        assert result.returncode != 0, "BEFORE full import chain should crash without torch"
+        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
 
     # -- AFTER: succeeds --
 
@@ -539,9 +515,7 @@ class TestEdgeCasesBrokenTorch:
             print("OK: data_collators works despite broken torch on sys.path")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode == 0
-        ), f"Should work with broken torch:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"Should work with broken torch:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
     def test_torch_import_error_hardware_fallback(self, no_torch_venv, sandbox_dir):
@@ -604,14 +578,10 @@ class TestEdgeCasesBrokenTorch:
             print("OK: detect_hardware returned CPU with fake torch (no CUDA)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode == 0
-        ), f"Should fall back to CPU:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"Should fall back to CPU:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
-    def test_lazy_torch_fails_at_call_time_not_import_time(
-        self, no_torch_venv, sandbox_dir
-    ):
+    def test_lazy_torch_fails_at_call_time_not_import_time(self, no_torch_venv, sandbox_dir):
         """apply_chat_template_to_dataset is importable without torch.
 
         Calling the alpaca branch triggers the lazy 'from torch.utils.data' inside
@@ -657,9 +627,7 @@ class TestEdgeCasesBrokenTorch:
                 print("OK: call succeeded (unexpected but not a crash)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert (
-            result.returncode == 0
-        ), f"Should not crash at import time:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"Should not crash at import time:\n{result.stderr.decode()}"
         assert b"OK: import succeeded" in result.stdout
 
 
@@ -1011,9 +979,7 @@ class TestInstallPythonStackFiltering:
         source = Path(ips.__file__).read_text(encoding = "utf-8")
 
         # NO_TORCH guard before overrides
-        assert (
-            "if NO_TORCH:" in source
-        ), "NO_TORCH guard not found in install_python_stack.py"
+        assert "if NO_TORCH:" in source, "NO_TORCH guard not found in install_python_stack.py"
 
         # macOS guard for triton
         assert (
@@ -1037,7 +1003,6 @@ def _studio_venv_python() -> Path | None:
 def _server_port() -> int:
     """Find an available port for the test server."""
     import socket
-
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
@@ -1117,9 +1082,7 @@ class TestLiveServerStartup:
         for _ in range(30):
             time.sleep(1)
             try:
-                resp = urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/health", timeout = 2
-                )
+                resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout = 2)
                 if resp.status == 200:
                     ready = True
                     break
@@ -1143,12 +1106,8 @@ class TestLiveServerStartup:
                     capture_output = True,
                     timeout = 300,
                 )
-            server_output = stdout.decode(errors = "replace") + stderr.decode(
-                errors = "replace"
-            )
-            pytest.skip(
-                f"Server failed to start within 30 seconds. Output:\n{server_output}"
-            )
+            server_output = stdout.decode(errors = "replace") + stderr.decode(errors = "replace")
+            pytest.skip(f"Server failed to start within 30 seconds. Output:\n{server_output}")
 
         yield proc, port
 
@@ -1192,9 +1151,7 @@ class TestLiveServerStartup:
         import urllib.request
 
         _, port = server_process
-        resp = urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/openapi.json", timeout = 5
-        )
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/openapi.json", timeout = 5)
         spec = json.loads(resp.read())
         assert (
             len(spec.get("paths", {})) >= 20
