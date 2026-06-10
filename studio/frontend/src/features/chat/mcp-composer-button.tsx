@@ -246,6 +246,7 @@ export function McpComposerButton({
             <button
               type="button"
               className="composer-pill-btn"
+              data-pill-label="MCP"
               data-active={active ? "true" : "false"}
               aria-label="MCP servers"
             >

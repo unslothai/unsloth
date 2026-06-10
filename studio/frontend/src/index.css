@@ -749,7 +749,7 @@
 	   visually anchored to its trigger rather than reading as a much
 	   larger floating pill. */
 	.tooltip-compact {
-		@apply rounded-[10px] border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-full border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Rich tooltip — used for the context-usage and token-counter
@@ -1069,6 +1069,18 @@
 		.composer-pill-btn:not([data-keep-label])
 		.composer-pill-x {
 		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+	}
+
+	/* Compact pills hide their labels, so surface the name as a hover
+	   tooltip styled like .tooltip-compact. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label] {
+		position: relative;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
+		content: attr(data-pill-label);
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
 	}
 
 	/* Compact caret pills (RAG, MCP) open their menu on click instead of

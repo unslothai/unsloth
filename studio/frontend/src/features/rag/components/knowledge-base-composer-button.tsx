@@ -100,6 +100,7 @@ export function KnowledgeBaseComposerButton({
           <button
             type="button"
             className="composer-pill-btn"
+            data-pill-label="RAG"
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
