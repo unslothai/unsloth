@@ -1560,10 +1560,14 @@ function ChatTemplateFields() {
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[13px] font-medium tracking-nav text-nav-fg">
+      <div className="-mb-1.5 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={openEditor}
+          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
+        >
           Chat Template
-        </span>
+        </button>
         <div className="flex items-center gap-1">
           {isModified && (
             <Tooltip>
