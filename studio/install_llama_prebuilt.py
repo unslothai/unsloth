@@ -2903,7 +2903,8 @@ def detect_host() -> HostInfo:
         # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
         # drop-in reaches login shells only). Probe accordingly or a ROCDXG
         # WSL host is misdetected as CPU-only.
-        _dxg_probe_env = {**os.environ, "HSA_ENABLE_DXG_DETECTION": "1"}
+        _dxg_probe_env = {**os.environ}
+        _dxg_probe_env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         for _cmd, _check in (
             # rocminfo: a real gfx GPU id (3-4 chars, nonzero first digit).
             # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines
