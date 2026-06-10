@@ -1189,7 +1189,7 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             name = f.name.lower()
             if not (name.startswith("mtp-") and name.endswith(".gguf")):
                 continue
-            stem = name[len("mtp-"):-len(".gguf")]
+            stem = name[len("mtp-") : -len(".gguf")]
             if not stem or (weight_name is not None and not weight_name.startswith(stem)):
                 continue
             try:

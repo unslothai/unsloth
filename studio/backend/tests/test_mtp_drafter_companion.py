@@ -201,9 +201,7 @@ def test_detect_mtp_file_search_root(tmp_path):
     sub.mkdir()
     (sub / "gemma-4-12b-it-Q4_K_M.gguf").write_bytes(b"x")
     (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
-    found = detect_mtp_file(
-        str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path)
-    )
+    found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path))
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
 
 
