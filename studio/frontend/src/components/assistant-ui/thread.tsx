@@ -64,7 +64,7 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
-import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
+import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
@@ -876,12 +876,11 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const ragToolAvailable = useRagToolAvailable();
   // More than 4 pills: collapse to icons only. Search and Code always show;
-  // Images, Canvas and MCP are conditional.
+  // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
-      (ragEnabled && ragToolAvailable ? 1 : 0) +
+      (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -2017,8 +2016,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  // Shared gate so the menu row agrees with the RAG pill and Add Files bar.
-  const ragAvailable = useRagToolAvailable();
+  // Shared gate so the menu row agrees with the RAG pill.
+  const ragDisabled = useRagToolDisabled();
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -2180,10 +2179,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           }
           onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
         >
+          {/* Scale, not width: an oversized box pushed the label out of line. */}
           <HugeiconsIcon
             icon={CodeIcon}
             strokeWidth={2}
-            className="size-[1.175rem]!"
+            className="scale-[1.12]"
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
@@ -2217,15 +2217,15 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          disabled={!ragAvailable}
+          disabled={ragDisabled}
           className={
-            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
+            ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
           }
           onSelect={() => setRagEnabled(!ragEnabled)}
         >
           <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-          RAG
-          {ragEnabled && ragAvailable ? (
+          Chat with Files
+          {ragEnabled && !ragDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}
@@ -2252,80 +2252,82 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
-        {/* Top-level so it stays one click away (not buried in More). */}
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-            Saved prompts
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
-            {recentPrompts.map((p) => (
-              <DropdownMenuItem
-                key={p.id}
-                onSelect={() => aui.composer().setText(p.text)}
-              >
-                <span className="truncate">{p.name}</span>
-              </DropdownMenuItem>
-            ))}
-            {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
-            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-              All saved prompts…
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        {/* Top-level: a third-level submenu collision-flips at narrow widths
-            and is awkward to reach. */}
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
-            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-            Export chat
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent
-            collisionPadding={16}
-            className="unsloth-plus-menu w-[176px]"
-          >
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationRawJsonl(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              Raw JSONL
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationCsv(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              CSV
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                if (!activeThreadId) return;
-                exportConversationShareGPT(activeThreadId).catch(() =>
-                  toast.error("Export failed."),
-                );
-              }}
-            >
-              ShareGPT JSONL
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-[200px]">
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                Saved prompts
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                {recentPrompts.map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onSelect={() => aui.composer().setText(p.text)}
+                  >
+                    <span className="truncate">{p.name}</span>
+                  </DropdownMenuItem>
+                ))}
+                {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                  All saved prompts…
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                disabled={!activeThreadId || messageCount === 0}
+              >
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                Export chat
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationRawJsonl(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  Raw JSONL
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationCsv(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationShareGPT(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  ShareGPT JSONL
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               className={
                 artifactsEnabled ? "text-primary font-medium" : undefined
