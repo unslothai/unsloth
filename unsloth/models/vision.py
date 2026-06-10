@@ -1770,3 +1770,125 @@ class FastBaseModel:
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
+
+
+def _looks_like_message_list(value):
+    return isinstance(value, list) and (len(value) == 0 or isinstance(value[0], dict))
+
+
+def _iter_message_lists(example, column):
+    if _looks_like_message_list(example):
+        yield example
+        return
+    if not isinstance(example, dict):
+        return
+    seen_keys = set()
+    for key in (column, "messages", "conversations", "prompt", "completion"):
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        value = example.get(key)
+        if _looks_like_message_list(value):
+            yield value
+
+
+def _local_path_from_video_value(video_path):
+    # data: URIs are inline payloads, not files, and contain no "://"
+    if video_path.startswith("data:"):
+        return None
+    if "://" not in video_path:
+        return video_path
+    if not video_path.startswith("file://"):
+        return None
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    parsed = urlparse(video_path)
+    # RFC 8089: only an empty authority or "localhost" is the local machine
+    if parsed.netloc and parsed.netloc != "localhost":
+        return None
+    path = url2pathname(parsed.path)
+    return path or None
+
+
+def check_dataset_for_missing_videos(
+    dataset,
+    column = "messages",
+    raise_error = True,
+    checked = None,
+):
+    """
+    Validate that local video paths referenced in a dataset exist, catching
+    missing files before training (torchvision otherwise returns an empty
+    tensor and the model silently receives no video signal).
+
+    Args:
+        dataset:     Map-style Dataset, list of dicts, or iterable of examples
+                     (not a streaming IterableDataset - iterating consumes it).
+        column:      Chat-messages column, default "messages"; "conversations",
+                     "prompt" and "completion" are also scanned.
+        raise_error: True (default) raises FileNotFoundError listing missing
+                     files; False warns and returns them.
+        checked:     Optional set of known-good paths for cross-call dedup.
+
+    Returns:
+        List[str]: Missing file paths (empty when all exist).
+    """
+    try:
+        from datasets import IterableDataset as _IterableDataset
+        if isinstance(dataset, _IterableDataset):
+            warnings.warn(
+                "Unsloth: check_dataset_for_missing_videos received a streaming "
+                "IterableDataset; iterating would exhaust it and training would "
+                "see zero samples. Skipping validation - pass a map-style Dataset "
+                "or rely on the UnslothVisionDataCollator's per-batch check.",
+                stacklevel = 2,
+            )
+            return []
+    except ImportError:
+        pass
+
+    missing = []
+    # Report each missing path once; only confirmed-existing paths enter
+    # `checked`, so retries after an error re-check previously missing files.
+    seen_missing = set()
+    if checked is None:
+        checked = set()
+
+    for example in dataset:
+        for messages in _iter_message_lists(example, column):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                if not isinstance(content, (list, tuple)):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "video":
+                        continue
+                    video_path = item.get("video", "")
+                    if not isinstance(video_path, str) or not video_path:
+                        continue
+                    path = _local_path_from_video_value(video_path)
+                    if path is None or path in checked or path in seen_missing:
+                        continue
+                    if not os.path.isfile(path):
+                        seen_missing.add(path)
+                        missing.append(path)
+                    else:
+                        checked.add(path)
+
+    if missing:
+        missing_list = "\n".join(f"  - {p}" for p in missing)
+        error_msg = (
+            f"Unsloth: {len(missing)} video file(s) referenced in your dataset could not be found.\n"
+            "Training would silently continue with empty video tensors - the model would receive\n"
+            "no actual video signal while loss still appears to decrease.\n\n"
+            f"Missing files:\n{missing_list}\n\n"
+            "Fix: verify the video file paths in your dataset before calling the trainer."
+        )
+        if raise_error:
+            raise FileNotFoundError(error_msg)
+        warnings.warn(error_msg, stacklevel = 2)
+
+    return missing
