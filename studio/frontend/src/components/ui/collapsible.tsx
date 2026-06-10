@@ -2,13 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
+import * as React from "react";
 import { Collapsible as CollapsiblePrimitive } from "radix-ui";
 
-function Collapsible({
-  ...props
-}: React.ComponentProps<typeof CollapsiblePrimitive.Root>) {
-  return <CollapsiblePrimitive.Root data-slot="collapsible" {...props} />;
-}
+const Collapsible = React.forwardRef<
+  React.ElementRef<typeof CollapsiblePrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof CollapsiblePrimitive.Root>
+>(({ ...props }, ref) => {
+  return (
+    <CollapsiblePrimitive.Root ref={ref} data-slot="collapsible" {...props} />
+  );
+});
+Collapsible.displayName = CollapsiblePrimitive.Root.displayName;
 
 function CollapsibleTrigger({
   ...props

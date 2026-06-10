@@ -33,7 +33,7 @@ export function GaussianDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Mean"
             htmlFor={meanId}
@@ -47,7 +47,7 @@ export function GaussianDialog({
             onChange={(event) => onUpdate({ mean: event.target.value })}
           />
         </div>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Std"
             htmlFor={stdId}
@@ -62,7 +62,7 @@ export function GaussianDialog({
           />
         </div>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Convert to"
           htmlFor={convertId}

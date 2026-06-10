@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic models for API request/response schemas
-"""
+"""Pydantic models for API request/response schemas."""
 
 from .training import (
     TrainingStartRequest,
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+    TrainingRunSummary,
+    TrainingRunListResponse,
+    TrainingRunMetrics,
+    TrainingRunDetailResponse,
+    TrainingRunDeleteResponse,
+    TrainingRunUpdateRequest,
 )
 from .models import (
     CheckpointInfo,
@@ -71,6 +75,12 @@ __all__ = [
     "TrainingJobResponse",
     "TrainingStatus",
     "TrainingProgress",
+    "TrainingRunSummary",
+    "TrainingRunListResponse",
+    "TrainingRunMetrics",
+    "TrainingRunDetailResponse",
+    "TrainingRunDeleteResponse",
+    "TrainingRunUpdateRequest",
     # Model management schemas
     "ModelDetails",
     "LocalModelInfo",

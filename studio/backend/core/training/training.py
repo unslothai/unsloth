@@ -4,30 +4,82 @@
 """
 Training backend — subprocess orchestrator.
 
-Each training job runs in a fresh subprocess (mp.get_context("spawn")),
-solving the transformers version-switching problem. The old in-process
-UnslothTrainer singleton is only used inside the subprocess (worker.py).
-
-This file orchestrates the subprocess lifecycle, pumps events from the
-worker's mp.Queue, and exposes the same API surface to routes/training.py.
-
-Pattern follows core/data_recipe/jobs/manager.py.
+Each job runs in a fresh spawn subprocess (solving transformers version-switching);
+the in-process UnslothTrainer singleton is only used inside the worker. This file
+orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, and
+exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
+import json as _json
 import math
 import multiprocessing as mp
+import os
 import queue
+import re
+import shutil
 import threading
 import time
 import structlog
+from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
+from utils.hardware import prepare_gpu_selection
+from utils.native_path_leases import (
+    native_path_secret_removed_for_child_start,
+    run_without_native_path_secret,
+)
+from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+
+_HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
+
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
+
+    Completed ``checkpoint-<int>/`` dirs survive. Symlinked output_dir / children
+    are skipped so containment can't be bypassed.
+    """
+    out = Path(output_dir)
+    if not out.exists() or not out.is_dir() or out.is_symlink():
+        return
+    try:
+        out_real = out.resolve()
+        out_root_real = Path(outputs_root()).resolve()
+    except OSError:
+        return
+    try:
+        out_real.relative_to(out_root_real)
+    except ValueError:
+        logger.warning(
+            "Skipping checkpoint cleanup - %s is not under outputs_root %s",
+            out_real,
+            out_root_real,
+        )
+        return
+    removed = 0
+    for entry in out.iterdir():
+        if not entry.is_dir() or entry.is_symlink():
+            continue
+        if not _HF_TMP_CHECKPOINT_RE.match(entry.name):
+            continue
+        try:
+            shutil.rmtree(entry, ignore_errors = False)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+    logger.info(
+        "Cancelled-run cleanup removed %d in-flight tmp-checkpoint dir(s) under %s",
+        removed,
+        out,
+    )
+
 
 _CTX = mp.get_context("spawn")
 
@@ -38,14 +90,13 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress — kept here so the parent process
-    never needs to import the heavy ML modules."""
+    """Mirror of trainer.TrainingProgress so the parent never imports heavy ML modules."""
 
     epoch: float = 0
     step: int = 0
     total_steps: int = 0
-    loss: float = 0.0
-    learning_rate: float = 0.0
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
     is_training: bool = False
     is_completed: bool = False
     error: Optional[str] = None
@@ -55,13 +106,16 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
 
 
 class TrainingBackend:
     """
     Training orchestration backend — subprocess-based.
-    Launches a fresh subprocess per training job, communicates via mp.Queue.
+    Launches a fresh subprocess per job, communicates via mp.Queue.
     """
+
+    FLUSH_THRESHOLD: int = 10
 
     def __init__(self):
         # Subprocess state
@@ -76,7 +130,7 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
-        # Training Metrics (consumed by routes for SSE and /metrics)
+        # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
         self.step_history: list = []
@@ -91,46 +145,38 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
 
+        # DB persistence
+        self._metric_buffer: list[dict] = []
+        self._run_finalized: bool = False
+        self._db_run_created: bool = False
+        self._db_total_steps_set: bool = False
+        self._db_config: Optional[dict] = None
+        self._db_started_at: Optional[str] = None
+
         logger.info("TrainingBackend initialized (subprocess mode)")
 
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
-    def start_training(self, **kwargs) -> bool:
+    def start_training(self, job_id: str, **kwargs) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
-        Returns True if the subprocess was started successfully.
+        Returns True if the subprocess started successfully.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Training subprocess already running")
                 return False
 
-        # Join prior pump thread to prevent it from consuming events
-        # from the new job's queue (it reads self._event_queue dynamically).
+        # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
-                logger.warning("Previous pump thread did not exit within 5s")
+                logger.warning("Previous pump thread did not exit within 5s — refusing to start")
+                return False
         self._pump_thread = None
-
-        # Reset state
-        self._should_stop = False
-        self._cancel_requested = False
-        self._progress = TrainingProgress(
-            is_training = True, status_message = "Initializing training..."
-        )
-        self.loss_history.clear()
-        self.lr_history.clear()
-        self.step_history.clear()
-        self.grad_norm_history.clear()
-        self.grad_norm_step_history.clear()
-        self.eval_loss_history.clear()
-        self.eval_step_history.clear()
-        self.eval_enabled = False
-        self._output_dir = None
 
         # Build config dict for the subprocess
         config = {
@@ -139,6 +185,7 @@ class TrainingBackend:
             "hf_token": kwargs.get("hf_token", ""),
             "load_in_4bit": kwargs.get("load_in_4bit", True),
             "max_seq_length": kwargs.get("max_seq_length", 2048),
+            "vision_image_size": kwargs.get("vision_image_size"),
             "hf_dataset": kwargs.get("hf_dataset", ""),
             "local_datasets": kwargs.get("local_datasets"),
             "local_eval_datasets": kwargs.get("local_eval_datasets"),
@@ -155,13 +202,15 @@ class TrainingBackend:
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
+            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
             "warmup_ratio": kwargs.get("warmup_ratio"),
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.01),
+            "weight_decay": kwargs.get("weight_decay", 0.001),
+            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
@@ -177,41 +226,100 @@ class TrainingBackend:
             "train_on_completions": kwargs.get("train_on_completions", False),
             "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
             "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get(
-                "finetune_attention_modules", True
-            ),
+            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
             "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
             "enable_wandb": kwargs.get("enable_wandb", False),
             "wandb_token": kwargs.get("wandb_token"),
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
+            "gpu_ids": kwargs.get("gpu_ids"),
         }
 
-        # Derive load_in_4bit from training_type
-        if config["training_type"] != "LoRA/QLoRA":
+        # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
+        if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
-        # Spawn subprocess
+        # Spawn into locals so state is untouched on failure.
+        from utils.hardware import hardware as _hw
+
+        if _hw.DEVICE == _hw.DeviceType.MLX:
+            config["resolved_gpu_ids"] = None
+            config["gpu_selection"] = None
+        else:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                kwargs.get("gpu_ids"),
+                model_name = config["model_name"],
+                hf_token = config["hf_token"] or None,
+                training_type = config["training_type"],
+                load_in_4bit = config["load_in_4bit"],
+                batch_size = config.get("batch_size", 4),
+                max_seq_length = config.get("max_seq_length", 2048),
+                lora_rank = config.get("lora_r", 16),
+                target_modules = config.get("target_modules"),
+                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                optimizer = config.get("optim", "adamw_8bit"),
+            )
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
+
         from .worker import run_training_process
 
-        self._event_queue = _CTX.Queue()
-        self._stop_queue = _CTX.Queue()
+        try:
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
 
-        self._proc = _CTX.Process(
-            target = run_training_process,
-            kwargs = {
-                "event_queue": self._event_queue,
-                "stop_queue": self._stop_queue,
-                "config": config,
-            },
-            daemon = True,
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                proc.start()
+        except Exception:
+            logger.error("Failed to start training subprocess", exc_info = True)
+            return False
+
+        logger.info("Training subprocess started (pid=%s)", proc.pid)
+
+        # Reset state (old pump thread dead, proc.start() succeeded).
+        self.current_job_id = job_id
+        self._should_stop = False
+        self._cancel_requested = False
+        self._progress = TrainingProgress(
+            is_training = True, status_message = "Initializing training..."
         )
-        self._proc.start()
-        logger.info("Training subprocess started (pid=%s)", self._proc.pid)
+        self.loss_history.clear()
+        self.lr_history.clear()
+        self.step_history.clear()
+        self.grad_norm_history.clear()
+        self.grad_norm_step_history.clear()
+        self.eval_loss_history.clear()
+        self.eval_step_history.clear()
+        self.eval_enabled = False
+        self._output_dir = None
+        self._metric_buffer.clear()
+        self._run_finalized = False
+        self._db_run_created = False
+        self._db_total_steps_set = False
+        self._db_config = {k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}}
+        self._db_started_at = datetime.now(timezone.utc).isoformat()
 
-        # Start event pump thread
+        # Assign subprocess handles after state reset.
+        self._event_queue = event_queue
+        self._stop_queue = stop_queue
+        self._proc = proc
+
+        # Eagerly create DB run row so it appears in history during model loading.
+        self._ensure_db_run_created()
+
         self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
         self._pump_thread.start()
 
@@ -228,11 +336,9 @@ class TrainingBackend:
                     self._stop_queue.put({"type": "stop", "save": save})
                 except (OSError, ValueError):
                     pass
-            # Update progress immediately for responsive UI
+            # Update progress immediately for responsive UI.
             self._progress.status_message = (
-                "Stopping training and saving checkpoint..."
-                if save
-                else "Cancelling training..."
+                "Stopping training and saving checkpoint..." if save else "Cancelling training..."
             )
         return True
 
@@ -240,11 +346,11 @@ class TrainingBackend:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
-                logger.info(
-                    "Force-terminating training subprocess (pid=%s)", self._proc.pid
-                )
+                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
                 self._proc.terminate()
             proc = self._proc
+            cancelled = self._cancel_requested
+            output_dir = self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -252,25 +358,35 @@ class TrainingBackend:
                 proc.kill()
                 proc.join(timeout = 2.0)
 
+        # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
+        if self._pump_thread is not None and self._pump_thread.is_alive():
+            self._pump_thread.join(timeout = 8.0)
+
+        if cancelled and output_dir:
+            try:
+                _cleanup_cancelled_checkpoints(output_dir)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up cancelled-run checkpoints under %s",
+                    output_dir,
+                )
+
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
         with self._lock:
-            # Subprocess alive = active
             if self._proc is not None and self._proc.is_alive():
                 return True
 
-            # Stop was requested and process exited → inactive
             if self._should_stop:
                 return False
 
-            # Check progress state
             p = self._progress
             if p.is_training:
                 return True
             if p.is_completed or p.error:
                 return False
 
-            # Check status message for activity indicators
+            # Infer activity from the status message.
             status_lower = (p.status_message or "").lower()
             if any(
                 k in status_lower
@@ -363,21 +479,19 @@ class TrainingBackend:
             if self._proc is None or self._event_queue is None:
                 return
 
-            # Try to read an event
             event = self._read_queue(self._event_queue, timeout_sec = 0.25)
             if event is not None:
                 self._handle_event(event)
                 continue
 
-            # No event — check if process is still alive
             if self._proc.is_alive():
                 continue
 
-            # Process exited — drain remaining events
+            # Process exited — drain remaining events.
             for e in self._drain_queue(self._event_queue):
                 self._handle_event(e)
 
-            # Mark as done if no explicit complete/error was received
+            # Mark done if no explicit complete/error was received.
             with self._lock:
                 if self._progress.is_training:
                     if self._should_stop:
@@ -386,60 +500,144 @@ class TrainingBackend:
                     else:
                         self._progress.is_training = False
                         self._progress.error = (
-                            self._progress.error
-                            or "Training process exited unexpectedly"
+                            self._progress.error or "Training process exited unexpectedly"
                         )
+
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(
+                status = "stopped" if self._should_stop else "error",
+                error_message = None
+                if self._should_stop
+                else "Training process terminated unexpectedly",
+            )
             return
 
     def _handle_event(self, event: dict) -> None:
-        """Apply a subprocess event to local state."""
+        """Apply a subprocess event to local state.
+
+        State updates happen inside self._lock; DB I/O happens after releasing
+        it so status-polling endpoints aren't blocked by slow SQLite writes.
+        """
         etype = event.get("type")
+        db_action: Optional[str] = None
+        db_action_kwargs: dict = {}
 
         with self._lock:
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
-                self._progress.loss = event.get("loss", self._progress.loss)
-                self._progress.learning_rate = event.get(
-                    "learning_rate", self._progress.learning_rate
-                )
-                self._progress.total_steps = event.get(
-                    "total_steps", self._progress.total_steps
-                )
+                # loss/lr sanitized below.
+                _raw_loss = event.get("loss")
+                _raw_lr = event.get("learning_rate")
+                try:
+                    _safe_loss = float(_raw_loss) if _raw_loss is not None else None
+                except (TypeError, ValueError):
+                    logger.debug("Could not convert loss to float: %s", _raw_loss)
+                    _safe_loss = None
+                if _safe_loss is not None and not math.isfinite(_safe_loss):
+                    _safe_loss = None
+                try:
+                    _safe_lr = float(_raw_lr) if _raw_lr is not None else None
+                except (TypeError, ValueError):
+                    logger.debug("Could not convert learning_rate to float: %s", _raw_lr)
+                    _safe_lr = None
+                if _safe_lr is not None and not math.isfinite(_safe_lr):
+                    _safe_lr = None
+                if _safe_loss is not None:
+                    self._progress.loss = _safe_loss
+                if _safe_lr is not None:
+                    self._progress.learning_rate = _safe_lr
+                self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                _peak = event.get("peak_memory_gb")
+                if _peak is not None:
+                    try:
+                        self._progress.peak_memory_gb = float(_peak)
+                    except (TypeError, ValueError):
+                        pass
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories
+                # Update metric histories using sanitized values.
                 step = event.get("step", 0)
-                loss = event.get("loss", 0.0)
-                lr = event.get("learning_rate", 0.0)
-                if step >= 0 and loss > 0:
+                loss = _safe_loss
+                lr = _safe_lr
+                if step > 0 and loss is not None:
                     self.loss_history.append(loss)
-                    self.lr_history.append(lr)
+                    self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)
 
                 grad_norm = event.get("grad_norm")
+                gn = None
                 if grad_norm is not None:
                     try:
                         gn = float(grad_norm)
                     except (TypeError, ValueError):
                         gn = None
-                    if gn is not None and math.isfinite(gn):
+                    if step > 0 and gn is not None and math.isfinite(gn):
                         self.grad_norm_history.append(gn)
                         self.grad_norm_step_history.append(step)
+                    else:
+                        gn = None
 
                 eval_loss = event.get("eval_loss")
                 if eval_loss is not None:
-                    self.eval_loss_history.append(eval_loss)
-                    self.eval_step_history.append(step)
-                    self.eval_enabled = True
+                    try:
+                        eval_loss = float(eval_loss)
+                    except (TypeError, ValueError):
+                        logger.debug("Could not convert eval_loss to float: %s", eval_loss)
+                        eval_loss = None
+                    if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
+                        self.eval_loss_history.append(eval_loss)
+                        self.eval_step_history.append(step)
+                        self.eval_enabled = True
+                    else:
+                        eval_loss = None
+
+                # Buffer metric for DB flush.
+                self._metric_buffer.append(
+                    {
+                        "step": step,
+                        "loss": loss,
+                        "learning_rate": lr,
+                        "grad_norm": gn,
+                        "eval_loss": eval_loss,
+                        "epoch": event.get("epoch"),
+                        "num_tokens": event.get("num_tokens"),
+                        "elapsed_seconds": event.get("elapsed_seconds"),
+                    }
+                )
+
+                # Pick the DB action to run after releasing the lock.
+                if not self._db_run_created and self.current_job_id and self._db_config:
+                    db_action = "create_run"
+                    db_action_kwargs = {
+                        "job_id": self.current_job_id,
+                        "model_name": self._db_config["model_name"],
+                        "dataset_name": self._db_config.get("hf_dataset")
+                        or next(iter(self._db_config.get("local_datasets") or []), "unknown"),
+                        "config_json": _json.dumps(self._db_config),
+                        "started_at": self._db_started_at or datetime.now(timezone.utc).isoformat(),
+                        "total_steps": event.get("total_steps"),
+                    }
+                elif (
+                    event.get("total_steps")
+                    and self._db_run_created
+                    and not self._db_total_steps_set
+                ):
+                    db_action = "update_total_steps"
+                    db_action_kwargs = {
+                        "job_id": self.current_job_id,
+                        "total_steps": event["total_steps"],
+                    }
+                elif len(self._metric_buffer) >= self.FLUSH_THRESHOLD:
+                    db_action = "flush"
 
             elif etype == "eval_configured":
                 self.eval_enabled = True
@@ -454,6 +652,14 @@ class TrainingBackend:
                 self._output_dir = event.get("output_dir")
                 msg = event.get("status_message", "Training completed")
                 self._progress.status_message = msg
+                if not self._db_run_created and self.current_job_id and self._db_config:
+                    db_action = "create_and_finalize"
+                else:
+                    db_action = "finalize"
+                db_action_kwargs = {
+                    "status": "stopped" if self._should_stop else "completed",
+                    "output_dir": self._output_dir,
+                }
 
             elif etype == "error":
                 self._progress.is_training = False
@@ -462,6 +668,131 @@ class TrainingBackend:
                 stack = event.get("stack", "")
                 if stack:
                     logger.error("Stack trace:\n%s", stack)
+                if not self._db_run_created and self.current_job_id and self._db_config:
+                    db_action = "create_and_finalize"
+                else:
+                    db_action = "finalize"
+                db_action_kwargs = {
+                    "status": "stopped" if self._should_stop else "error",
+                    "error_message": event.get("error", "Unknown error"),
+                }
+
+        # --- DB I/O outside the lock ---
+        if db_action == "create_run":
+            try:
+                from storage.studio_db import create_run
+
+                create_run(
+                    id = db_action_kwargs["job_id"],
+                    model_name = db_action_kwargs["model_name"],
+                    dataset_name = db_action_kwargs["dataset_name"],
+                    config_json = db_action_kwargs["config_json"],
+                    started_at = db_action_kwargs["started_at"],
+                    total_steps = db_action_kwargs["total_steps"],
+                )
+                self._db_run_created = True
+                if db_action_kwargs["total_steps"]:
+                    self._db_total_steps_set = True
+            except Exception:
+                logger.warning("Failed to create DB run record", exc_info = True)
+        elif db_action == "create_and_finalize":
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(**db_action_kwargs)
+        elif db_action == "update_total_steps":
+            try:
+                from storage.studio_db import update_run_total_steps
+                update_run_total_steps(db_action_kwargs["job_id"], db_action_kwargs["total_steps"])
+                self._db_total_steps_set = True
+            except Exception:
+                logger.warning("Failed to update total_steps in DB", exc_info = True)
+        elif db_action == "flush":
+            self._flush_metrics_to_db()
+        elif db_action == "finalize":
+            self._finalize_run_in_db(**db_action_kwargs)
+
+    def _ensure_db_run_created(self) -> None:
+        """Create the DB row if it doesn't exist yet. Called outside the lock."""
+        if self._db_run_created or not self.current_job_id or not self._db_config:
+            return
+        try:
+            from storage.studio_db import create_run
+
+            dataset_name = self._db_config.get("hf_dataset") or next(
+                iter(self._db_config.get("local_datasets") or []), "unknown"
+            )
+            create_run(
+                id = self.current_job_id,
+                model_name = self._db_config["model_name"],
+                dataset_name = dataset_name,
+                config_json = _json.dumps(self._db_config),
+                started_at = self._db_started_at or datetime.now(timezone.utc).isoformat(),
+                total_steps = self._progress.total_steps or None,
+            )
+            self._db_run_created = True
+        except Exception:
+            logger.warning("Failed to create DB run record for early failure", exc_info = True)
+
+    def _finalize_run_in_db(
+        self,
+        status: str,
+        error_message: Optional[str] = None,
+        output_dir: Optional[str] = None,
+    ) -> None:
+        """Flush remaining metrics and mark a run as finished in the DB."""
+        if not self.current_job_id or not self._db_run_created or self._run_finalized:
+            return
+        self._flush_metrics_to_db()
+        try:
+            from storage.studio_db import finish_run
+            from utils.downsample import downsample
+
+            sparkline = downsample(self.loss_history, 50)
+            finish_run(
+                id = self.current_job_id,
+                status = status,
+                ended_at = datetime.now(timezone.utc).isoformat(),
+                final_step = self._progress.step,
+                final_loss = self._progress.loss
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
+                else None,
+                duration_seconds = self._progress.elapsed_seconds,
+                loss_sparkline = _json.dumps(sparkline),
+                output_dir = output_dir,
+                error_message = error_message,
+            )
+            self._run_finalized = True
+        except Exception:
+            logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
+
+    def _flush_metrics_to_db(self) -> None:
+        """Flush buffered metrics to the database and update live progress."""
+        if not self._metric_buffer or not self.current_job_id or not self._db_run_created:
+            return
+        # Cap buffer to bound memory growth.
+        if len(self._metric_buffer) > 500:
+            logger.warning(
+                "Metric buffer exceeded 500 entries (%d) — trimming oldest",
+                len(self._metric_buffer),
+            )
+            self._metric_buffer = self._metric_buffer[-500:]
+        # Snapshot before insert so metrics arriving during the write survive.
+        batch = list(self._metric_buffer)
+        try:
+            from storage.studio_db import insert_metrics_batch, update_run_progress
+
+            insert_metrics_batch(self.current_job_id, batch)
+            del self._metric_buffer[: len(batch)]
+            update_run_progress(
+                id = self.current_job_id,
+                step = self._progress.step,
+                loss = self._progress.loss
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
+                else None,
+                duration_seconds = self._progress.elapsed_seconds,
+            )
+        except Exception:
+            # Leave buffer intact for retry on next flush
+            logger.warning("Failed to flush metrics to DB", exc_info = True)
 
     @staticmethod
     def _read_queue(q: Any, timeout_sec: float) -> Optional[dict]:
@@ -484,11 +815,13 @@ class TrainingBackend:
                 return events
 
     # ------------------------------------------------------------------
-    # Plot generation (unchanged from original)
+    # Plot generation
     # ------------------------------------------------------------------
 
     def _create_loss_plot(
-        self, progress: TrainingProgress, theme: str = "light"
+        self,
+        progress: TrainingProgress,
+        theme: str = "light",
     ) -> plt.Figure:
         """Create training loss plot with theme-aware styling."""
         plt.close("all")
@@ -561,17 +894,17 @@ class TrainingBackend:
             if progress.error:
                 title = f"Error: {progress.error}"
             elif progress.is_completed:
-                title = f"Training completed! Final loss: {progress.loss:.4f}"
+                loss_str = f"{progress.loss:.4f}" if progress.loss is not None else "--"
+                title = f"Training completed! Final loss: {loss_str}"
             elif progress.status_message:
                 title = progress.status_message
             elif progress.step > 0:
-                title = f"Epoch: {progress.epoch} | Step: {progress.step}/{progress.total_steps} | Loss: {progress.loss:.4f}"
+                loss_str = f"{progress.loss:.4f}" if progress.loss is not None else "--"
+                title = f"Epoch: {progress.epoch} | Step: {progress.step}/{progress.total_steps} | Loss: {loss_str}"
             else:
                 title = "Training Loss"
 
-            ax.set_title(
-                title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"]
-            )
+            ax.set_title(title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"])
             ax.grid(True, alpha = 0.4, linestyle = "--", color = style["grid_color"])
             ax.tick_params(colors = style["text"], which = "both")
             ax.spines["top"].set_visible(False)
@@ -605,9 +938,8 @@ class TrainingBackend:
     def _transfer_to_inference_backend(self) -> bool:
         """Transfer model to inference backend.
 
-        With subprocess-based training, the model lives in the subprocess
-        and is freed when it exits. Inference must load from the saved
-        checkpoint on disk. This is a no-op placeholder.
+        No-op: with subprocess training the model is freed on exit, so inference
+        must load from the saved checkpoint on disk.
         """
         logger.info(
             "_transfer_to_inference_backend: subprocess training — "

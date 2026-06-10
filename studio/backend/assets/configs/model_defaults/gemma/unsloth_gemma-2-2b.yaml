@@ -13,7 +13,7 @@ training:
   warmup_steps: 5
   max_steps: 30
   save_steps: 30
-  weight_decay: 0.01
+  weight_decay: 0.001
   random_seed: 3407
   packing: false
   train_on_completions: true

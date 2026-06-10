@@ -107,7 +107,7 @@ export function ValidatorDialog({
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Code to check"
           htmlFor={targetColumnId}
@@ -158,7 +158,7 @@ export function ValidatorDialog({
       </div>
       {config.validator_type === "oxc" && (
         <div className="grid gap-3">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Check mode"
               htmlFor={oxcModeId}
@@ -197,7 +197,7 @@ export function ValidatorDialog({
               </Combobox>
             </div>
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Code shape"
               htmlFor={oxcCodeShapeId}
@@ -249,7 +249,7 @@ export function ValidatorDialog({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Batch size"
               htmlFor={batchSizeId}

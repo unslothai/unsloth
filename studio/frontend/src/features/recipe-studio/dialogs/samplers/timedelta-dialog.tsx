@@ -45,7 +45,7 @@ export function TimedeltaDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="dt_min"
             htmlFor={dtMinId}
@@ -59,7 +59,7 @@ export function TimedeltaDialog({
             onChange={(event) => updateField("dt_min", event.target.value)}
           />
         </div>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="dt_max"
             htmlFor={dtMaxId}
@@ -74,7 +74,7 @@ export function TimedeltaDialog({
           />
         </div>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Unit"
           htmlFor={unitId}
@@ -98,7 +98,7 @@ export function TimedeltaDialog({
           </SelectContent>
         </Select>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Reference datetime column"
           htmlFor={referenceId}

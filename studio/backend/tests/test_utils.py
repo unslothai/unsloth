@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
+"""Tests for utils/hardware and utils/utils: device detection, GPU memory, error formatting.
 
-These tests are designed to pass on ANY platform:
-  • NVIDIA GPU  (CUDA backend, requires torch)
-  • Apple Silicon (MLX backend, requires mlx)
-  • CPU-only     (no GPU at all)
-
-No ML framework is imported at the top level.
-Tests that need torch/mlx internals for mocking are skipped when unavailable.
-
-Run with:
-    cd studio/backend
-    python -m pytest tests/test_utils.py -v
+Passes on any platform (NVIDIA/CUDA, Apple Silicon/MLX, CPU-only). No ML framework
+is imported at top level; tests needing torch/mlx internals skip when unavailable.
 """
 
 import platform
@@ -25,14 +15,12 @@ import pytest
 # --- Conditional framework imports ---
 try:
     import torch
-
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
 
 try:
     import mlx.core as mx
-
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -191,14 +179,15 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
+        # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it
+        # equals get_device().value.
+        from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
-        assert result["backend"] == get_device().value
+        assert result["backend"] == _backend_label(get_device())
 
     # --- When a GPU IS available ---
 
-    @pytest.mark.skipif(
-        _actual_device() == "cpu", reason = "No GPU available on this machine"
-    )
+    @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
     def test_gpu_available_fields(self):
         result = get_gpu_memory_info()
         assert result["available"] is True
@@ -285,7 +274,7 @@ class TestLogGpuMemory:
     def test_does_not_raise(self):
         log_gpu_memory("test")
 
-    def test_logs_gpu_info_when_available(self, caplog):
+    def test_logs_gpu_info_when_available(self, capfd):
         fake_info = {
             "available": True,
             "backend": "cuda",
@@ -295,35 +284,23 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        import structlog
-        from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
-        ):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
             log_gpu_memory("unit-test")
 
-        assert "unit-test" in caplog.text
-        assert "CUDA" in caplog.text
-        assert "FakeGPU" in caplog.text
+        captured = capfd.readouterr()
+        assert "unit-test" in captured.out
+        assert "CUDA" in captured.out
+        assert "FakeGPU" in captured.out
 
-    def test_logs_cpu_fallback_when_no_gpu(self, caplog):
+    def test_logs_cpu_fallback_when_no_gpu(self, capfd):
         fake_info = {"available": False, "backend": "cpu"}
-        import structlog
-        from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
-        ):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
             log_gpu_memory("cpu-test")
 
-        assert "No GPU available" in caplog.text
+        captured = capfd.readouterr()
+        assert "No GPU available" in captured.out
 
 
 # ========== format_error_message() ==========

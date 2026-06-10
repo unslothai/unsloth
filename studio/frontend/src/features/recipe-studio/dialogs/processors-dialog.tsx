@@ -93,7 +93,7 @@ export function ProcessorsDialog({
           {schemaProcessor && (
             <div className="space-y-3">
               <AvailableVariables configId="" />
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Name"
                   htmlFor={nameId}
@@ -106,7 +106,7 @@ export function ProcessorsDialog({
                   onChange={(event) => updateSchema({ name: event.target.value })}
                 />
               </div>
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Template (JSON)"
                   htmlFor={templateId}

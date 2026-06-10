@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Path utilities for model and dataset handling
-"""
+"""Path utilities for model and dataset handling."""
 
-from .path_utils import normalize_path, is_local_path, is_model_cached, get_cache_path
+from .path_utils import (
+    normalize_path,
+    is_local_path,
+    is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
+    get_cache_case_resolution_stats,
+    reset_cache_case_resolution_state,
+)
 from .storage_roots import (
     studio_root,
     assets_root,
@@ -16,11 +22,22 @@ from .storage_roots import (
     exports_root,
     auth_root,
     auth_db_path,
+    studio_db_path,
+    rag_root,
+    rag_db_path,
+    rag_uploads_root,
+    documents_root,
+    project_workspaces_root,
     tmp_root,
     seed_uploads_root,
     unstructured_seed_cache_root,
+    unstructured_uploads_root,
     oxc_validator_tmp_root,
     tensorboard_root,
+    legacy_hf_cache_dir,
+    hf_default_cache_dir,
+    lmstudio_model_dirs,
+    well_known_model_dirs,
     ensure_dir,
     ensure_studio_directories,
     resolve_under_root,
@@ -30,11 +47,18 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
+# Re-export shim: mark project-path helpers as used so the import-hoist
+# safety net does not flag them as unused.
+_REEXPORTED = (documents_root, project_workspaces_root)
+
 __all__ = [
     "normalize_path",
     "is_local_path",
     "is_model_cached",
     "get_cache_path",
+    "resolve_cached_repo_id_case",
+    "get_cache_case_resolution_stats",
+    "reset_cache_case_resolution_state",
     "studio_root",
     "assets_root",
     "datasets_root",
@@ -44,11 +68,22 @@ __all__ = [
     "exports_root",
     "auth_root",
     "auth_db_path",
+    "studio_db_path",
+    "rag_root",
+    "rag_db_path",
+    "rag_uploads_root",
+    "documents_root",
+    "project_workspaces_root",
     "tmp_root",
     "seed_uploads_root",
     "unstructured_seed_cache_root",
+    "unstructured_uploads_root",
     "oxc_validator_tmp_root",
     "tensorboard_root",
+    "legacy_hf_cache_dir",
+    "hf_default_cache_dir",
+    "lmstudio_model_dirs",
+    "well_known_model_dirs",
     "ensure_dir",
     "ensure_studio_directories",
     "resolve_under_root",
@@ -57,3 +92,6 @@ __all__ = [
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]
+
+# Bind the re-exports so the import-hoist verifier counts them as used.
+_ = (rag_root, rag_db_path, rag_uploads_root)

@@ -49,7 +49,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -78,6 +77,7 @@ SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
+SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq).
 # See _fix_rope_inv_freq() below for details.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
@@ -99,18 +99,36 @@ from ._utils import (
     fast_inference_setup,
 )
 
-global FORCE_FLOAT32
-# Forces float32 precision since float16 goes to infinity
-FORCE_FLOAT32 = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
-    "gemma3n",
-    "gpt_oss",
-    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-]
+# Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
+# doing `from unsloth.models.loader import FORCE_FLOAT32` keep working.
+# Fallback list mirrors zoo for users who upgrade unsloth without upgrading
+# unsloth_zoo (so this module never fails at import).
+try:
+    from unsloth_zoo import FORCE_FLOAT32  # noqa: F401
+except ImportError:
+    global FORCE_FLOAT32
+    # Forces float32 precision since float16 goes to infinity
+    FORCE_FLOAT32 = [
+        "gemma3,",  # Add comma bc gemma3 will match gemma3n
+        "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
+        "gemma3n",
+        "gpt_oss",
+        "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+    ]
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
+
+
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """Remove Unsloth 4bit suffixes without lowercasing (HF cache dirs are case-sensitive)."""
+    s = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
+            s = s[: -len(suffix)]
+    return s
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -122,25 +140,18 @@ global DISABLE_SDPA_MODEL_NAMES
 DISABLE_SDPA_MODEL_NAMES = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
+    "gpt_oss",
 ]
 
 
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
-    Transformers v5 initializes models on the meta device, then
-    _move_missing_keys_from_meta_to_device() (modeling_utils.py) replaces ALL
-    non-persistent buffers with torch.empty_like() -- uninitialized memory.
-
-    Vanilla transformers restores inv_freq via _init_weights() which checks for
-    hasattr(module, "original_inv_freq"). Unsloth's LlamaRotaryEmbedding and
-    subclasses do not have this attribute, so inv_freq stays corrupted. This
-    produces wrong positional encodings and causes 5-11x higher training loss.
-
-    This function recomputes inv_freq from the stored base and dim, applies
-    any model-specific scaling, and rebuilds the cos/sin caches.
-
-    Only runs on transformers >= 5.0.0. No-op on v4.
+    v5 inits on meta then replaces all non-persistent buffers with uninitialized
+    memory. Vanilla restores inv_freq via _init_weights() (needs original_inv_freq),
+    but Unsloth rotary classes lack that attr, so inv_freq stays corrupted -> wrong
+    positional encodings and 5-11x higher training loss. Here we recompute inv_freq
+    from base/dim, apply scaling, and rebuild cos/sin caches. No-op on v4.
     """
     if not _NEEDS_ROPE_FIX:
         return model
@@ -159,9 +170,7 @@ def _fix_rope_inv_freq(model):
             inv_freq = 1.0 / (
                 module.base
                 ** (
-                    torch.arange(
-                        0, module.dim, 2, dtype = torch.int64, device = "cpu"
-                    ).float()
+                    torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
                     / module.dim
                 )
             )
@@ -189,9 +198,7 @@ def _fix_rope_inv_freq(model):
                 long_factor = rope_scaling.get("long_factor", None)
                 if short_factor is not None and long_factor is not None:
                     inv_freq_shape = (
-                        torch.arange(
-                            0, module.dim, 2, dtype = torch.int64, device = "cpu"
-                        ).float()
+                        torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
                         / module.dim
                     )
                     sf = torch.tensor(short_factor, device = "cpu", dtype = torch.float32)
@@ -275,14 +282,10 @@ class FastLanguageModel(FastLlamaModel):
             bnb_compute_dtype = None
             if isinstance(quantization_config, dict):
                 if quantization_config.get("load_in_4bit", False):
-                    bnb_compute_dtype = quantization_config.get(
-                        "bnb_4bit_compute_dtype", None
-                    )
+                    bnb_compute_dtype = quantization_config.get("bnb_4bit_compute_dtype", None)
             else:
                 if getattr(quantization_config, "load_in_4bit", False):
-                    bnb_compute_dtype = getattr(
-                        quantization_config, "bnb_4bit_compute_dtype", None
-                    )
+                    bnb_compute_dtype = getattr(quantization_config, "bnb_4bit_compute_dtype", None)
             if isinstance(bnb_compute_dtype, str):
                 bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
             if isinstance(bnb_compute_dtype, torch.dtype):
@@ -296,6 +299,16 @@ class FastLanguageModel(FastLlamaModel):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 device_map = distributed_device_map
+
+        # Honour offline env vars BEFORE FastModel delegation so 8bit /
+        # full-finetuning / qat paths also receive local_files_only.
+        if not kwargs.get("local_files_only", False):
+            _offline = {"1", "true", "yes", "on"}
+            if (
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+            ):
+                kwargs["local_files_only"] = True
 
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
@@ -401,8 +414,7 @@ class FastLanguageModel(FastLlamaModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -412,7 +424,6 @@ class FastLanguageModel(FastLlamaModel):
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-
             model_name = snapshot_download(model_name)
 
         # First check if it's a normal model via AutoConfig
@@ -429,12 +440,15 @@ class FastLanguageModel(FastLlamaModel):
         peft_error = None
         model_config = None
         peft_config = None
+        local_files_only = kwargs.get("local_files_only", False)
+
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_model = True
         except ImportError:
@@ -460,6 +474,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_peft = True
         except ImportError:
@@ -495,7 +510,7 @@ class FastLanguageModel(FastLlamaModel):
             model_type = model_types
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -504,14 +519,10 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -548,8 +559,7 @@ class FastLanguageModel(FastLlamaModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
@@ -561,6 +571,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
 
         if not was_disabled:
@@ -571,9 +582,7 @@ class FastLanguageModel(FastLlamaModel):
             if getattr(model_config, "rope_scaling", None) is not None:
                 scaling_type1 = model_config.rope_scaling.get("type", None)
                 scaling_type2 = model_config.rope_scaling.get("rope_type", None)
-                scaling_type = (
-                    scaling_type1 if scaling_type1 is not None else scaling_type2
-                )
+                scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
 
             if scaling_type == "llama3" and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -630,9 +639,7 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
-            dispatch_model = (
-                FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
-            )
+            dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
         # elif model_type == "falcon_h1":
         #     dispatch_model = FastFalconH1Model
         #     if not SUPPORTS_FALCON_H1:
@@ -769,9 +776,7 @@ class FastLanguageModel(FastLlamaModel):
                 model.config.update({"quantization_config": quantization_config})
             else:
                 if hasattr(quantization_config, "to_dict"):
-                    model.config.update(
-                        {"quantization_config": quantization_config.to_dict()}
-                    )
+                    model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
@@ -815,7 +820,6 @@ from transformers import (
 
 try:
     from transformers import AutoModelForImageTextToText
-
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
@@ -894,14 +898,10 @@ class FastModel(FastBaseModel):
             bnb_compute_dtype = None
             if isinstance(quantization_config, dict):
                 if quantization_config.get("load_in_4bit", False):
-                    bnb_compute_dtype = quantization_config.get(
-                        "bnb_4bit_compute_dtype", None
-                    )
+                    bnb_compute_dtype = quantization_config.get("bnb_4bit_compute_dtype", None)
             else:
                 if getattr(quantization_config, "load_in_4bit", False):
-                    bnb_compute_dtype = getattr(
-                        quantization_config, "bnb_4bit_compute_dtype", None
-                    )
+                    bnb_compute_dtype = getattr(quantization_config, "bnb_4bit_compute_dtype", None)
             if isinstance(bnb_compute_dtype, str):
                 bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
             if isinstance(bnb_compute_dtype, torch.dtype):
@@ -910,9 +910,7 @@ class FastModel(FastBaseModel):
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-            logger.warning_once(
-                "Device does not support bfloat16. Will change to float16."
-            )
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
         assert load_in_fp8 in (True, False, "block")
@@ -930,10 +928,7 @@ class FastModel(FastBaseModel):
             load_in_16bit = False
 
         if (
-            int(load_in_4bit)
-            + int(load_in_8bit)
-            + int(load_in_16bit)
-            + int(load_in_fp8 != False)
+            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
             >= 2
         ):
             raise RuntimeError(
@@ -1016,8 +1011,7 @@ class FastModel(FastBaseModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -1028,7 +1022,6 @@ class FastModel(FastBaseModel):
         # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-
             model_name = snapshot_download(model_name)
 
         # First check if it's a normal model via AutoConfig
@@ -1045,12 +1038,24 @@ class FastModel(FastBaseModel):
         peft_error = None
         model_config = None
         peft_config = None
+        local_files_only = kwargs.get("local_files_only", False)
+        # Mirror env-var fallback for direct callers (FastVisionModel / FastTextModel).
+        if not local_files_only:
+            _offline = {"1", "true", "yes", "on"}
+            if (
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+            ):
+                local_files_only = True
+                kwargs["local_files_only"] = True
+
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_model = True
         except ImportError:
@@ -1076,6 +1081,7 @@ class FastModel(FastBaseModel):
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_peft = True
         except ImportError:
@@ -1119,17 +1125,21 @@ class FastModel(FastBaseModel):
 
         # Check versions
         LATEST = "\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`"
-        NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
+        NIGHTLY = (
+            '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
+        )
         # Pixtral
         if "pixtral" in model_types_all and transformers_version < Version("4.49.0"):
-            raise RuntimeError(
-                "Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST
-            )
+            raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         # Qwen 2.5
         elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
-            raise RuntimeError(
-                "Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST
-            )
+            raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
+        # Gemma 4 must be before Gemma 3N and Gemma 3
+        elif "gemma4" in model_types_all:
+            if not SUPPORTS_GEMMA4:
+                raise RuntimeError("Unsloth: Gemma 4 requires transformers >= 5.5.0" + LATEST)
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Gemma 3N must be before Gemma 3
         elif "gemma3n" in model_types_all:
             if transformers_version < Version("4.53.0"):
@@ -1165,12 +1175,9 @@ class FastModel(FastBaseModel):
             if is_rdna():
                 os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         # Cohere
-        elif "cohere2" in model_types_all and transformers_version < Version(
-            "4.50.0.dev0"
-        ):
+        elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError(
-                "Unsloth: Cohere's Command model only works on transformers >= 4.50.0."
-                + NIGHTLY
+                "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
         # Sesame
         elif "csm" in model_types_all:
@@ -1186,13 +1193,12 @@ class FastModel(FastBaseModel):
             # Granite-4 rms norms are stored as 16 bit, but we upcast
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-        # Olmo 2
-        elif "olmo2" in model_types_all and transformers_version < Version(
-            "4.50.0.dev0"
-        ):
-            raise RuntimeError(
-                "Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY
-            )
+        # OLMo 2
+        elif "olmo2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
+        # OLMo 3
+        elif "olmo3" in model_types_all and transformers_version < Version("4.57.0.dev0"):
+            raise RuntimeError("Unsloth: OLMo-3 only works on transformers >= 4.57.0." + LATEST)
         elif "falcon_h1" in model_types_all:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
@@ -1260,7 +1266,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -1269,13 +1275,10 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -1306,8 +1309,7 @@ class FastModel(FastBaseModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
@@ -1319,6 +1321,7 @@ class FastModel(FastBaseModel):
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
 
         if not was_disabled:
@@ -1337,12 +1340,10 @@ class FastModel(FastBaseModel):
         for model_type_arch in model_types:
             if model_type_arch != "siglip":
                 break
-        global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
             # add comma to model_types_all matching in case of exact match for end
             if (
-                disable_name.lower()
-                == model_type_arch.lower().replace("-", "").replace("_", "")
+                disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
@@ -1407,17 +1408,19 @@ class FastModel(FastBaseModel):
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        # If num_labels is set, use AutoModelForSequenceClassification
+        _num_labels = kwargs.get("num_labels", None)
         if auto_model is None:
-            if is_vlm:
+            if _num_labels is not None:
+                from transformers import AutoModelForSequenceClassification
+                auto_model = AutoModelForSequenceClassification
+            elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
                 # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
                 # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
-                if (
-                    "AutoModelForCausalLM" in _auto_map
-                    and _vlm_class_name not in _auto_map
-                ):
+                if "AutoModelForCausalLM" in _auto_map and _vlm_class_name not in _auto_map:
                     auto_model = AutoModelForCausalLM
                 else:
                     auto_model = AutoModelForVision2Seq
@@ -1501,9 +1504,7 @@ class FastModel(FastBaseModel):
                 model.config.update({"quantization_config": quantization_config})
             else:
                 if hasattr(quantization_config, "to_dict"):
-                    model.config.update(
-                        {"quantization_config": quantization_config.to_dict()}
-                    )
+                    model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
@@ -1513,14 +1514,72 @@ class FastModel(FastBaseModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(
-                model,
-                old_model_name,
-                token = token,
-                revision = revision,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
-            )
+
+            # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA
+            # on it directly.  Monkey-patch PEFT to target the inner .linear
+            # child instead (same patch as vision.py training path).
+            # See https://github.com/huggingface/peft/issues/3129
+            _clippable_linear_cls = None
+            try:
+                from transformers.models.gemma4.modeling_gemma4 import (
+                    Gemma4ClippableLinear as _clippable_linear_cls,
+                )
+            except ImportError:
+                pass
+
+            if _clippable_linear_cls is not None:
+                from peft.tuners.lora.model import LoraModel as _LoraModel
+
+                _original_car = _LoraModel._create_and_replace
+
+                def _patched_car(
+                    self,
+                    peft_config,
+                    adapter_name,
+                    target,
+                    target_name,
+                    parent,
+                    current_key = None,
+                    **kwargs,
+                ):
+                    if isinstance(target, _clippable_linear_cls):
+                        return _original_car(
+                            self,
+                            peft_config,
+                            adapter_name,
+                            target.linear,
+                            "linear",
+                            target,
+                            current_key = current_key,
+                            **kwargs,
+                        )
+                    return _original_car(
+                        self,
+                        peft_config,
+                        adapter_name,
+                        target,
+                        target_name,
+                        parent,
+                        current_key = current_key,
+                        **kwargs,
+                    )
+
+                _LoraModel._create_and_replace = _patched_car
+
+            try:
+                model = PeftModel.from_pretrained(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    is_trainable = True,
+                    trust_remote_code = trust_remote_code,
+                )
+            finally:
+                # Always restore original PEFT method, even if loading fails
+                if _clippable_linear_cls is not None:
+                    _LoraModel._create_and_replace = _original_car
+
             # Patch it as well!
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code

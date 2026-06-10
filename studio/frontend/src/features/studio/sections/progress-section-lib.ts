@@ -3,19 +3,6 @@
 
 import type { TrainingPhase } from "@/features/training";
 
-export const phaseLabel: Record<TrainingPhase, string> = {
-  idle: "Idle",
-  downloading_model: "Downloading model",
-  downloading_dataset: "Downloading dataset",
-  loading_model: "Loading model",
-  loading_dataset: "Loading dataset",
-  configuring: "Configuring",
-  training: "Training",
-  completed: "Completed",
-  error: "Error",
-  stopped: "Stopped",
-};
-
 export const phaseColors: Record<TrainingPhase, string> = {
   idle: "bg-muted text-muted-foreground",
   downloading_model:
@@ -35,12 +22,17 @@ export const phaseColors: Record<TrainingPhase, string> = {
   stopped: "bg-muted text-muted-foreground",
 };
 
-export function formatDuration(seconds: number | null): string {
-  if (seconds == null || seconds < 0) return "--";
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "--";
   const total = Math.floor(seconds);
-  const min = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${min}m ${sec}s`;
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 export function formatNumber(value: number | null | undefined, digits: number): string {

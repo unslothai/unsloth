@@ -6,7 +6,7 @@ labels: bug
 assignees: ''
 
 ---
-
+Note: Please do not remove the questions. Answer beside them.
 1. Did you update? `pip install --upgrade unsloth unsloth_zoo`
 2. `Colab` or `Kaggle` or local / cloud
 3. Number GPUs used, use `nvidia-smi`
@@ -16,6 +16,7 @@ assignees: ''
 
 ```python
 Put Minimal code to reproduce error here ###Remove Hugging Face token###
+###Please make sure to check formatting properly, edit if needed.###
 ```
 
 🦥 You can also ask via our Reddit page: https://reddit.com/r/unsloth/

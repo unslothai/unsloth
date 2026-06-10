@@ -58,7 +58,7 @@ export function MarkdownNoteDialog({
           </div>
         </div>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Markdown"
           htmlFor={markdownId}

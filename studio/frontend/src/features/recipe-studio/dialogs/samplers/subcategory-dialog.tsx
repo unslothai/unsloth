@@ -74,7 +74,7 @@ export function SubcategoryDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="space-y-3">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Parent category column"
             htmlFor={parentSelectId}

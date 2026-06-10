@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -33,11 +34,14 @@ import {
 } from "@/components/ui/tooltip";
 import {
   CONTEXT_LENGTHS,
+  CPT_TARGET_MODULES,
   LR_SCHEDULER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
 import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
+import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
+import { isAdapterMethod } from "@/types/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
   ArrowDown01Icon,
@@ -46,6 +50,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
+import { useT } from "@/i18n";
+
+type StudioT = ReturnType<typeof useT>;
 
 function Row({
   label,
@@ -122,15 +129,66 @@ function SliderRow({
   );
 }
 
+function formatOptimizerLabel(
+  value: string,
+  fallback: string,
+  t: StudioT,
+): string {
+  switch (value) {
+    case "adamw_8bit":
+      return t("studio.params.optimizerOptions.adamw8bit");
+    case "paged_adamw_8bit":
+      return t("studio.params.optimizerOptions.pagedAdamw8bit");
+    case "adamw_bnb_8bit":
+      return t("studio.params.optimizerOptions.adamwBnb8bit");
+    case "paged_adamw_32bit":
+      return t("studio.params.optimizerOptions.pagedAdamw32bit");
+    case "adamw_torch":
+      return t("studio.params.optimizerOptions.adamwTorch");
+    case "adamw_torch_fused":
+      return t("studio.params.optimizerOptions.adamwTorchFused");
+    default:
+      return fallback;
+  }
+}
+
+function formatSchedulerLabel(
+  value: string,
+  fallback: string,
+  t: StudioT,
+): string {
+  switch (value) {
+    case "linear":
+      return t("studio.params.lrSchedulerOptions.linear");
+    case "cosine":
+      return t("studio.params.lrSchedulerOptions.cosine");
+    default:
+      return fallback;
+  }
+}
+
 export function ParamsSection(): ReactElement {
+  const t = useT();
   const store = useTrainingConfigStore();
-  const isLora = store.trainingMethod !== "full";
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const isLora = isAdapterMethod(store.trainingMethod);
+  const isCpt = store.trainingMethod === "cpt";
+  const isRawText = isRawTextDatasetFormat(store.datasetFormat);
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  // DeepSeek OCR uses a coupled preset; backend ignores user image size.
+  const _selectedModelLower = (store.selectedModel ?? "").toLowerCase();
+  const isDeepseekOcr =
+    _selectedModelLower.includes("deepseek") &&
+    _selectedModelLower.includes("ocr");
+  const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
+  const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
+  // Backend validator allows [256, 2048]; offer the full span.
+  const visionImageSizePresets = [256, 384, 512, 768, 1024, 1536, 2048];
 
   // Keep input in sync when the store value changes externally
   // (e.g. model defaults being applied after model selection).
@@ -160,13 +218,15 @@ export function ParamsSection(): ReactElement {
   const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
-    <div data-tour="studio-params" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-params" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
-        title="Parameters"
-        description="Configure training hyperparameters"
+        title={t("studio.params.title")}
+        description={t("studio.params.description")}
         accent="orange"
-        className="md:min-h-[470px]"
+        className={`${needsExpandedHeight
+          ? "min-h-studio-config-column"
+          : "h-studio-config-column"} duration-150`}
       >
         <div className="flex flex-col gap-4">
           {/* Max Steps / Epochs */}
@@ -177,7 +237,7 @@ export function ParamsSection(): ReactElement {
             >
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {useEpochs ? "Epochs" : "Max Steps"}
+                  {useEpochs ? t("studio.params.epochs") : t("studio.params.maxSteps")}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -192,15 +252,15 @@ export function ParamsSection(): ReactElement {
                     </TooltipTrigger>
                     <TooltipContent>
                       {useEpochs
-                        ? "Number of full passes over the dataset."
-                        : "Override total optimizer steps."}{" "}
+                        ? t("studio.params.epochsTooltip")
+                        : t("studio.params.maxStepsTooltip")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("studio.params.readMore")}
                       </a>
                     </TooltipContent>
                   </Tooltip>
@@ -211,7 +271,7 @@ export function ParamsSection(): ReactElement {
                     onClick={toggleUseEpochs}
                     className="text-xs text-primary underline cursor-pointer"
                   >
-                    {useEpochs ? "Use Max Steps" : "Use Epochs"}
+                    {useEpochs ? t("studio.params.useMaxSteps") : t("studio.params.useEpochs")}
                   </button>
                   <input
                     type="number"
@@ -251,8 +311,8 @@ export function ParamsSection(): ReactElement {
               />
               <p className="text-[10px] text-muted-foreground">
                 {useEpochs
-                  ? "Each epoch is one full pass over your dataset."
-                  : "Limits training to a fixed number of optimizer steps."}
+                  ? t("studio.params.epochsDescription")
+                  : t("studio.params.maxStepsDescription")}
               </p>
             </div>
           </div>
@@ -260,7 +320,7 @@ export function ParamsSection(): ReactElement {
           {/* Context length */}
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Context Length
+              {t("studio.params.contextLength")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -274,14 +334,14 @@ export function ParamsSection(): ReactElement {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Maximum number of tokens per training sample.{" "}
+                  {t("studio.params.contextLengthTooltip")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("studio.params.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -320,7 +380,7 @@ export function ParamsSection(): ReactElement {
                   }}
                 />
                 <ComboboxContent anchor={ctxAnchorRef}>
-                  <ComboboxEmpty>Enter a custom value</ComboboxEmpty>
+                  <ComboboxEmpty>{t("studio.params.customContextLength")}</ComboboxEmpty>
                   <ComboboxList className="p-1">
                     {(id: string) => (
                       <ComboboxItem key={id} value={id} className="font-mono">
@@ -332,14 +392,14 @@ export function ParamsSection(): ReactElement {
               </Combobox>
             </div>
             <p className="text-[10px] text-muted-foreground">
-              Max sequence length for training samples
+              {t("studio.params.contextLengthDescription")}
             </p>
           </div>
 
           {/* Learning Rate */}
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Learning Rate
+              {t("studio.params.learningRate")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -353,15 +413,14 @@ export function ParamsSection(): ReactElement {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Step size for weight updates. Lower values train slower but more
-                  stably.{" "}
+                  {t("studio.params.learningRateTooltip")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("studio.params.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -374,39 +433,80 @@ export function ParamsSection(): ReactElement {
               className="w-full font-mono"
             />
             <p className="text-[10px] text-muted-foreground">
-              Recommended: 2e-4 for LoRA, 2e-5 for full fine-tune
+              {t("studio.params.learningRateDescription")}
             </p>
           </div>
 
+          {/* Embedding Learning Rate (CPT only) */}
+          {isCpt && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {t("studio.params.embeddingLearningRate")}
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t("studio.params.embeddingLearningRateTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <Input
+                type="number"
+                step="0.00001"
+                min="0"
+                max="1"
+                placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
+                value={store.embeddingLearningRate ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === "") {
+                    store.setEmbeddingLearningRate(null);
+                    return;
+                  }
+                  const n = Number(raw);
+                  store.setEmbeddingLearningRate(Number.isFinite(n) ? n : null);
+                }}
+                className="w-full font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {t("studio.params.embeddingLearningRateDescription")}
+              </p>
+            </div>
+          )}
+
           {/* LoRA Settings */}
           {isLora && (
-            <div>
-              <button
-                type="button"
-                onClick={() => setLoraOpen(!loraOpen)}
-                className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
-              >
+            <Collapsible open={loraOpen} onOpenChange={setLoraOpen}>
+              <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
                 <HugeiconsIcon
                   icon={ArrowDown01Icon}
                   className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
                 />
-                LoRA Settings
-              </button>
-              <div
-                className={`${loraOpen ? "" : "hidden"} pt-1.5 mt-4 flex flex-col gap-4`}
-              >
+                {t("studio.params.loraSettings")}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
+                <div className="pt-1.5 flex flex-col gap-4">
                 <SliderRow
-                  label="Rank"
+                  label={t("studio.params.rank")}
                   tooltip={
                     <>
-                      Dimension of the low-rank matrices. Higher = more capacity.{" "}
+                      {t("studio.params.rankTooltip")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("studio.params.readMore")}
                       </a>
                     </>
                   }
@@ -417,17 +517,17 @@ export function ParamsSection(): ReactElement {
                   step={4}
                 />
                 <SliderRow
-                  label="Alpha"
+                  label={t("studio.params.alpha")}
                   tooltip={
                     <>
-                      Scaling factor for LoRA updates. Usually 2x rank.{" "}
+                      {t("studio.params.alphaTooltip")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("studio.params.readMore")}
                       </a>
                     </>
                   }
@@ -438,17 +538,17 @@ export function ParamsSection(): ReactElement {
                   step={4}
                 />
                 <SliderRow
-                  label="Dropout"
+                  label={t("studio.params.dropout")}
                   tooltip={
                     <>
-                      Dropout probability for LoRA layers to reduce overfitting.{" "}
+                      {t("studio.params.dropoutTooltip")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("studio.params.readMore")}
                       </a>
                     </>
                   }
@@ -467,25 +567,25 @@ export function ParamsSection(): ReactElement {
                       [
                         [
                           "finetuneVisionLayers",
-                          "Vision layers",
+                          t("studio.params.visionLayers"),
                           store.finetuneVisionLayers,
                           store.setFinetuneVisionLayers,
                         ],
                         [
                           "finetuneLanguageLayers",
-                          "Language layers",
+                          t("studio.params.languageLayers"),
                           store.finetuneLanguageLayers,
                           store.setFinetuneLanguageLayers,
                         ],
                         [
                           "finetuneAttentionModules",
-                          "Attention modules",
+                          t("studio.params.attentionModules"),
                           store.finetuneAttentionModules,
                           store.setFinetuneAttentionModules,
                         ],
                         [
                           "finetuneMLPModules",
-                          "MLP modules",
+                          t("studio.params.mlpModules"),
                           store.finetuneMLPModules,
                           store.setFinetuneMLPModules,
                         ],
@@ -514,10 +614,10 @@ export function ParamsSection(): ReactElement {
                 {!showVisionLora && (
                   <div className="flex flex-col gap-2 pt-1">
                     <span className="text-xs font-medium text-muted-foreground">
-                      Target Modules
+                      {t("studio.params.targetModules")}
                     </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {TARGET_MODULES.map((mod) => {
+                      {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((mod) => {
                         const active = store.targetModules.includes(mod);
                         return (
                           <button
@@ -549,14 +649,14 @@ export function ParamsSection(): ReactElement {
                     [
                       {
                         value: "lora",
-                        label: "Enable LoRA",
-                        desc: "Train with LoRA",
+                        label: t("studio.params.enableLora"),
+                        desc: t("studio.params.trainWithLora"),
                       },
-                      { value: "rslora", label: "RS-LoRA", desc: "Stable Rank" },
+                      { value: "rslora", label: "RS-LoRA", desc: t("studio.params.stableRank") },
                       {
                         value: "loftq",
                         label: "LoftQ",
-                        desc: "Memory Efficient",
+                        desc: t("studio.params.memoryEfficient"),
                       },
                     ] as const
                   ).map((opt) => (
@@ -576,8 +676,9 @@ export function ParamsSection(): ReactElement {
                     </button>
                   ))}
                 </div>
-              </div>
-            </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           )}
 
           {/* Training Hyperparams */}
@@ -587,7 +688,7 @@ export function ParamsSection(): ReactElement {
                 icon={ArrowDown01Icon}
                 className={`size-3.5 transition-transform ${hyperOpen ? "rotate-180" : ""}`}
               />
-              Training Hyperparameters
+              {t("studio.params.trainingHyperparameters")}
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
               <Tabs defaultValue="optimization" className="w-full">
@@ -596,19 +697,19 @@ export function ParamsSection(): ReactElement {
                     value="optimization"
                     className="flex-1 !corner-squircle text-xs cursor-pointer"
                   >
-                    Optimization
+                    {t("studio.params.optimization")}
                   </TabsTrigger>
                   <TabsTrigger
                     value="schedule"
                     className="flex-1 text-xs cursor-pointer"
                   >
-                    Schedule
+                    {t("studio.params.schedule")}
                   </TabsTrigger>
                   <TabsTrigger
                     value="memory"
                     className="flex-1 text-xs cursor-pointer"
                   >
-                    Memory
+                    {t("studio.params.memory")}
                   </TabsTrigger>
                 </TabsList>
 
@@ -617,18 +718,17 @@ export function ParamsSection(): ReactElement {
                   className="mt-3 flex flex-col gap-3"
                 >
                   <Row
-                    label="Optimizer"
+                    label={t("studio.params.optimizer")}
                     tooltip={
                       <>
-                        Optimization algorithm. 8-bit variants reduce memory usage.
-                        Fused is recommended for vision models.{" "}
+                        {t("studio.params.optimizerTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -646,25 +746,24 @@ export function ParamsSection(): ReactElement {
                             key={opt.value}
                             value={opt.value}
                           >
-                            {opt.label}
+                            {formatOptimizerLabel(opt.value, opt.label, t)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </Row>
                   <Row
-                    label="LR scheduler"
+                    label={t("studio.params.lrScheduler")}
                     tooltip={
                       <>
-                        How the learning rate changes over training. Linear decays
-                        steadily; cosine decays in a curve.{" "}
+                        {t("studio.params.lrSchedulerTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -682,24 +781,24 @@ export function ParamsSection(): ReactElement {
                             key={opt.value}
                             value={opt.value}
                           >
-                            {opt.label}
+                            {formatSchedulerLabel(opt.value, opt.label, t)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </Row>
                   <SliderRow
-                    label="Batch Size"
+                    label={t("studio.params.batchSize")}
                     tooltip={
                       <>
-                        Samples processed per step. Higher uses more VRAM.{" "}
+                        {t("studio.params.batchSizeTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -710,17 +809,17 @@ export function ParamsSection(): ReactElement {
                     step={1}
                   />
                   <SliderRow
-                    label="Grad Accum"
+                    label={t("studio.params.gradAccum")}
                     tooltip={
                       <>
-                        Simulates larger batch sizes without extra VRAM.{" "}
+                        {t("studio.params.gradAccumTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -731,17 +830,17 @@ export function ParamsSection(): ReactElement {
                     step={1}
                   />
                   <Row
-                    label="Weight Decay"
+                    label={t("studio.params.weightDecay")}
                     tooltip={
                       <>
-                        L2 regularization to prevent overfitting.{" "}
+                        {t("studio.params.weightDecayTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -763,17 +862,17 @@ export function ParamsSection(): ReactElement {
                   className="mt-3 flex flex-col gap-3"
                 >
                   <SliderRow
-                    label="Warmup Steps"
+                    label={t("studio.params.warmupSteps")}
                     tooltip={
                       <>
-                        Gradually increase LR at training start for stability.{" "}
+                        {t("studio.params.warmupStepsTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -785,18 +884,17 @@ export function ParamsSection(): ReactElement {
                   />
                   {!useEpochs && (
                     <SliderRow
-                      label="Epochs"
+                      label={t("studio.params.epochs")}
                       tooltip={
                         <>
-                          Number of full passes over the dataset. Set 0 to run by
-                          max steps.{" "}
+                          {t("studio.params.scheduleEpochsTooltip")}{" "}
                           <a
                             href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-primary underline"
                           >
-                            Read more
+                            {t("studio.params.readMore")}
                           </a>
                         </>
                       }
@@ -808,17 +906,17 @@ export function ParamsSection(): ReactElement {
                     />
                   )}
                   <Row
-                    label="Save Steps"
+                    label={t("studio.params.saveSteps")}
                     tooltip={
                       <>
-                        Save a checkpoint every N steps. 0 to disable.{" "}
+                        {t("studio.params.saveStepsTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -831,8 +929,8 @@ export function ParamsSection(): ReactElement {
                     />
                   </Row>
                   <Row
-                    label="Eval Steps"
-                    tooltip="Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps."
+                    label={t("studio.params.evalSteps")}
+                    tooltip={t("studio.params.evalStepsTooltip")}
                   >
                     <Input
                       type="number"
@@ -844,7 +942,7 @@ export function ParamsSection(): ReactElement {
                       className="w-28 font-mono"
                     />
                   </Row>
-                  <Row label="Seed" tooltip="Random seed for reproducibility.">
+                  <Row label={t("studio.params.seed")} tooltip={t("studio.params.seedTooltip")}>
                     <Input
                       type="number"
                       value={store.randomSeed}
@@ -857,18 +955,74 @@ export function ParamsSection(): ReactElement {
                 </TabsContent>
 
                 <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
+                  {showVisionImageSize && (
+                    <Row
+                      label="Image Size"
+                      tooltip={
+                        <>
+                          Resize images by maximum side length. Default uses the
+                          model image size. Larger images use up more context. Does not upscale or change aspect ratio.{" "}
+                          <a
+                            href="https://unsloth.ai/docs/basics/vision-fine-tuning"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline"
+                          >
+                            Read more
+                          </a>
+                        </>
+                      }
+                    >
+                      <Select
+                        value={
+                          store.visionImageSize == null
+                            ? "default"
+                            : String(store.visionImageSize)
+                        }
+                        onValueChange={(value) => {
+                          if (value === "default") {
+                            store.setVisionImageSize(null);
+                            return;
+                          }
+                          store.setVisionImageSize(Number(value));
+                        }}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default</SelectItem>
+                          {store.visionImageSize != null &&
+                            !visionImageSizePresets.includes(
+                              store.visionImageSize,
+                            ) && (
+                              <SelectItem
+                                value={String(store.visionImageSize)}
+                              >
+                                {store.visionImageSize}
+                              </SelectItem>
+                            )}
+                          {visionImageSizePresets.map((size) => (
+                            <SelectItem key={size} value={String(size)}>
+                              {size}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                  )}
                   <Row
-                    label="Grad Checkpoint"
+                    label={t("studio.params.gradCheckpoint")}
                     tooltip={
                       <>
-                        Trade compute for memory by recomputing activations.{" "}
+                        {t("studio.params.gradCheckpointTooltip")}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary underline"
                         >
-                          Read more
+                          {t("studio.params.readMore")}
                         </a>
                       </>
                     }
@@ -883,9 +1037,13 @@ export function ParamsSection(): ReactElement {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">None</SelectItem>
-                        <SelectItem value="true">Standard</SelectItem>
-                        <SelectItem value="unsloth">Unsloth</SelectItem>
+                        <SelectItem value="none">{t("studio.params.none")}</SelectItem>
+                        <SelectItem value="true">{t("studio.params.standard")}</SelectItem>
+                        {platformDeviceType === "mac" ? (
+                          <SelectItem value="mlx">MLX</SelectItem>
+                        ) : (
+                          <SelectItem value="unsloth">Unsloth</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </Row>
@@ -900,11 +1058,11 @@ export function ParamsSection(): ReactElement {
                         htmlFor="packing"
                         className="text-xs cursor-pointer text-muted-foreground"
                       >
-                        Enable packing
+                        {t("studio.params.enablePacking")}
                       </label>
                     </div>
                   )}
-                  {!store.isEmbeddingModel && (
+                  {!store.isEmbeddingModel && !isCpt && !isRawText && (
                     <div className="flex items-center gap-2">
                       <Checkbox
                         id="trainOnCompletions"
@@ -915,7 +1073,7 @@ export function ParamsSection(): ReactElement {
                         htmlFor="trainOnCompletions"
                         className="text-xs cursor-pointer text-muted-foreground"
                       >
-                        Assistant completions only
+                        {t("studio.params.assistantCompletionsOnly")}
                       </label>
                     </div>
                   )}

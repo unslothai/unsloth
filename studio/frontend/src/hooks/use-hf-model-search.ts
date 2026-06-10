@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PipelineType } from "@huggingface/hub";
-import { listModels, modelInfo } from "@huggingface/hub";
+import { listModels } from "@huggingface/hub";
+import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
+import { usePlatformStore } from "@/config/env";
 
 export interface HfModelResult {
   id: string;
@@ -12,9 +14,11 @@ export interface HfModelResult {
   likes: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
+  isGguf: boolean;
 }
 
-const EXCLUDED_TAGS = new Set([
+/** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
+const EXCLUDED_TAGS_GPU = new Set([
   "gptq",
   "awq",
   "exl2",
@@ -26,8 +30,20 @@ const EXCLUDED_TAGS = new Set([
   "ctranslate2",
 ]);
 
-// Embedding / sentence-transformer models ship with onnx/openvino as additional
-// export formats — they should not be excluded by the tag check above.
+/** Tags to exclude on MLX (Mac) — GPU-only quant formats won't load on MLX. */
+const EXCLUDED_TAGS_MLX = new Set([
+  "gptq",
+  "awq",
+  "exl2",
+  "onnx",
+  "openvino",
+  "coreml",
+  "tflite",
+  "ctranslate2",
+]);
+
+// Embedding / sentence-transformer models ship onnx/openvino as extra
+// export formats, so the tag check above must not exclude them.
 const EMBEDDING_TAGS = new Set([
   "sentence-transformers",
   "feature-extraction",
@@ -75,7 +91,7 @@ function estimateSizeFromDtypes(
   return total > 0 ? total : undefined;
 }
 
-function makeMapModel(excludeGguf: boolean) {
+function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
   return (raw: unknown): HfModelResult | null => {
     const m = raw as {
       name: string;
@@ -85,10 +101,13 @@ function makeMapModel(excludeGguf: boolean) {
       tags?: string[];
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
-    if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+    if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
       return null;
     }
-    if (excludeGguf && m.tags?.includes("gguf")) {
+    const isGguf =
+      Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
+      /-GGUF(?:$|-)/i.test(m.name);
+    if (excludeGguf && isGguf) {
       return null;
     }
     return {
@@ -97,12 +116,35 @@ function makeMapModel(excludeGguf: boolean) {
       likes: m.likes,
       totalParams: m.safetensors?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
+      isGguf,
     };
   };
 }
 
 /** Number of unsloth results to pull up-front before yielding general results. */
 const UNSLOTH_PREFETCH = 20;
+/** Fewer unsloth results before the pinned model when a publisher is searched. */
+const UNSLOTH_PINNED_PREFETCH = 4;
+/** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
+const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
+
+/**
+ * Prime the hf-cache from a listModels result. For public models, also
+ * prime the anonymous slot so the VRAM hook gets cache hits without
+ * re-fetching. Gated/private models are cached only under the caller's
+ * token to avoid auth leakage.
+ */
+function primeFromListing(
+  name: string,
+  accessToken: string | undefined,
+  model: unknown,
+): void {
+  const data = model as CachedResult;
+  primeCacheFromListing(name, accessToken, data);
+  if (accessToken && !data.private && !data.gated) {
+    primeCacheFromListing(name, undefined, data);
+  }
+}
 
 /**
  * Creates a merged async generator that yields unsloth-owned models first,
@@ -112,6 +154,7 @@ async function* mergedModelIterator(
   query: string,
   task?: PipelineType,
   accessToken?: string,
+  pinnedId?: string,
 ): AsyncGenerator<unknown> {
   const common = {
     additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
@@ -129,21 +172,54 @@ async function* mergedModelIterator(
     ...common,
   });
 
+  // Start the pinned lookup now so it runs in parallel with Phase 1
+  // instead of blocking Phase 2.
+  const pinnedPromise = pinnedId
+    ? cachedModelInfo({
+        name: pinnedId,
+        additionalFields: ["safetensors", "tags"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }).catch(() => null)
+    : null;
+
+  const limit = pinnedId ? UNSLOTH_PINNED_PREFETCH : UNSLOTH_PREFETCH;
+
   // Phase 1: pull & yield unsloth models first
   const seen = new Set<string>();
   let count = 0;
   for await (const model of unslothIter) {
     const m = model as { name?: string };
-    if (m.name) seen.add(m.name);
+    if (m.name) {
+      seen.add(m.name);
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
     count++;
-    if (count >= UNSLOTH_PREFETCH) break;
+    if (count >= limit) break;
   }
 
-  // Phase 2: yield general results, skipping already-seen unsloth models
+  // Phase 1b: yield the pinned (original publisher) model before general results
+  if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
+    const pinned = await pinnedPromise;
+    if (pinned) {
+      // Record both the raw input and HF's canonical name so phase 2 dedupe
+      // works across casing (e.g. "OpenAI/..." vs HF's "openai/...").
+      seen.add(pinnedId);
+      const canonicalName = (pinned as { name?: string }).name;
+      if (canonicalName && canonicalName !== pinnedId) {
+        seen.add(canonicalName);
+      }
+      yield pinned;
+    }
+  }
+
+  // Phase 2: yield general results, skipping already-seen models
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
   }
 }
@@ -167,7 +243,7 @@ async function* priorityThenListingIterator(
   const seen = new Set<string>();
   const settled = await Promise.allSettled(
     priorityIds.map((id) =>
-      modelInfo({
+      cachedModelInfo({
         name: id,
         additionalFields: ["safetensors", "tags"],
         ...(accessToken ? { credentials: { accessToken } } : {}),
@@ -177,7 +253,7 @@ async function* priorityThenListingIterator(
   for (const result of settled) {
     if (result.status === "fulfilled") {
       const m = result.value as { name?: string; pipeline_tag?: string };
-      // Skip models that don't match the selected task filter
+      // Skip models that don't match the task filter.
       if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
       if (m.name) seen.add(m.name);
       yield result.value;
@@ -192,6 +268,9 @@ async function* priorityThenListingIterator(
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
   }
 }
@@ -207,11 +286,24 @@ export function useHfModelSearch(
 ) {
   const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
 
+  // Detect the publisher once, shared by the iterator factory and the
+  // secondary sort gate (avoids duplicating the regex + logic).
+  const { isPublisherQuery, searchQuery, pinnedId, trimmed } = useMemo(() => {
+    const t = query.trim();
+    const m = PUBLISHER_RE.exec(t);
+    const is = !!m && m[1].toLowerCase() !== "unsloth";
+    return {
+      isPublisherQuery: is,
+      searchQuery: is ? m![2] : t,
+      pinnedId: is ? t : undefined,
+      trimmed: t,
+    };
+  }, [query]);
+
   const createIter = useCallback(
     () => {
-      const trimmed = query.trim();
       if (!trimmed) {
-        // No query → show priority models first (with full metadata), then general unsloth listing
+        // No query: priority models first (full metadata), then general unsloth.
         if (priorityIds && priorityIds.length > 0) {
           return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
         }
@@ -222,26 +314,35 @@ export function useHfModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
-      // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
-      return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
+      // Typed query: disable the task filter so explicitly searched models
+      // appear even with wrong/missing HF task metadata. For a valid
+      // "owner/repo" query, strip the org prefix so unsloth variants
+      // surface, then pin the original publisher model after a small batch.
+      // unsloth-owned queries are left as-is for the full prefetch + sort.
+      return mergedModelIterator(searchQuery, undefined, accessToken, pinnedId) as AsyncGenerator<unknown>;
     },
-    [query, task, accessToken, priorityIds],
+    [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
   );
 
-  const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const excludedTags = deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
+  const mapModel = useMemo(() => makeMapModel(excludeGguf, excludedTags), [excludeGguf, excludedTags]);
   const search = useHfPaginatedSearch(createIter, mapModel);
 
-  // Secondary sort guarantee: unsloth models always float to the top
+  // Secondary sort: unsloth models always float to the top. Skip for a
+  // specific non-unsloth publisher query (e.g. "openai/gpt-oss-20b") --
+  // the iterator already handles pinned ordering there.
   const results = useMemo(
     () =>
-      [...search.results].sort((a, b) => {
-        const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
-        const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
-        return aFirst - bFirst;
-      }),
-    [search.results],
+      isPublisherQuery
+        ? search.results
+        : [...search.results].sort((a, b) => {
+            const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+            const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+            return aFirst - bFirst;
+          }),
+    [search.results, isPublisherQuery],
   );
 
   return { ...search, results };
 }
-

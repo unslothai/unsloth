@@ -41,6 +41,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
+import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
   type TrainingMethod as VramTrainingMethod,
@@ -85,6 +86,7 @@ export function ModelSelectionStep() {
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -94,7 +96,7 @@ export function ModelSelectionStep() {
     error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
   });
@@ -107,7 +109,7 @@ export function ModelSelectionStep() {
     return applyPriorityOrdering(ids);
   }, [hfResults]);
 
-  // Match Studio behavior: only show exception signals (OOM/TIGHT) in training flows.
+  // Match Studio: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,
@@ -119,7 +121,7 @@ export function ModelSelectionStep() {
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         status: fit?.status ?? null,
-        detail: r.totalParams ? formatCompact(r.totalParams) : null,
+        detail: r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
       });
     }
     return map;
@@ -260,12 +262,12 @@ export function ModelSelectionStep() {
                       <ComboboxItem
                         key={id}
                         value={id}
-                        className={`justify-between ${exceeds ? "opacity-50" : ""}`}
+                        className="justify-between"
                       >
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
                             <span
-                              className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}
+                              className={`min-w-0 flex-1 truncate ${exceeds ? "!text-gray-500 dark:!text-gray-400" : ""}`}
                             >
                               {id}
                             </span>
@@ -279,12 +281,12 @@ export function ModelSelectionStep() {
                         </Tooltip>
                         <span className="flex items-center gap-1.5 shrink-0">
                           {fitStatus === "exceeds" && (
-                            <span className="text-[9px] font-medium text-red-400">
+                            <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                               OOM
                             </span>
                           )}
                           {fitStatus === "tight" && (
-                            <span className="text-[9px] font-medium text-amber-400">
+                            <span className="text-[9px] font-medium !text-amber-400">
                               TIGHT
                             </span>
                           )}
@@ -358,6 +360,7 @@ export function ModelSelectionStep() {
                 <SelectItem value="qlora">QLoRA (4-bit)</SelectItem>
                 <SelectItem value="lora">LoRA (16-bit)</SelectItem>
                 <SelectItem value="full">Full Fine-tune</SelectItem>
+                <SelectItem value="cpt">Continued Pretraining</SelectItem>
               </SelectContent>
             </Select>
           </div>

@@ -157,7 +157,7 @@ function DraftInputField({
   placeholder,
 }: DraftInputFieldProps): ReactElement {
   return (
-    <div className="grid gap-2">
+    <div className="grid gap-1.5">
       <FieldLabel label={label} htmlFor={id} hint={hint} />
       <Input
         id={id}
@@ -253,8 +253,13 @@ function ValidationResultPanel({
           ))}
         </div>
       )}
-      {!validateResult.valid && validateResult.rawDetail && (
-        <p className="break-words text-xs text-destructive">
+      {validateResult.rawDetail && (
+        <p
+          className={cn(
+            "break-words text-xs",
+            validateResult.valid ? "text-muted-foreground" : "text-destructive",
+          )}
+        >
           {validateResult.rawDetail}
         </p>
       )}
@@ -330,7 +335,7 @@ function RunDialogBody({
         </p>
       </DialogHeader>
 
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Run type"
           hint="Start with a quick check or generate the full dataset."
@@ -358,7 +363,7 @@ function RunDialogBody({
       </div>
 
       {kind === "full" && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Run name"
             htmlFor="run-name"
@@ -380,7 +385,7 @@ function RunDialogBody({
         </div>
       )}
 
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel label="Records" htmlFor="run-rows" hint={rowHint} />
         <Input
           id="run-rows"

@@ -89,7 +89,7 @@ export function CategoryDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="space-y-3">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Values"
             hint="Define allowed categorical values for this column."
@@ -127,7 +127,7 @@ export function CategoryDialog({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-2 space-y-3">
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
                 label="Weights (optional)"
                 hint="Set selection probability per value."
@@ -239,7 +239,7 @@ export function CategoryDialog({
                   }}
                   placeholder="Type a conditional value and press Enter"
                 />
-                <div className="grid gap-2">
+                <div className="grid gap-1.5">
                   <p className="text-xs font-semibold uppercase text-muted-foreground">
                     Rule weights (optional)
                   </p>

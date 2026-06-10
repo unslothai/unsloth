@@ -2,76 +2,80 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Colab-specific helpers for running Unsloth Studio.
-Uses Colab's built-in proxy - no external tunneling needed!
+Colab helpers for Unsloth Studio. Uses Colab's built-in proxy.
 """
 
 from pathlib import Path
 import sys
 
+# Seed platform._sys_version_cache before attrs->rich->structlog->platform crash on conda Python.
+# See: https://github.com/python/cpython/issues/102396
+_backend_dir = str(Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+import _platform_compat  # noqa: F401
 
-def _bootstrap_studio_venv() -> None:
-    """Expose the Studio venv's site-packages to the current interpreter.
-
-    On Colab, notebook cells run outside the venv subshell. Instead of
-    installing the full stack into system Python, we prepend the venv's
-    site-packages so that packages like structlog, fastapi, etc. are
-    importable from notebook cells and take priority over system copies.
-    """
-    venv_lib = Path.home() / ".unsloth" / "studio" / ".venv" / "lib"
-    if not venv_lib.exists():
-        import warnings
-
-        warnings.warn(
-            f"Studio venv not found at {venv_lib.parent} -- run 'unsloth studio setup' first",
-            stacklevel = 2,
-        )
-        return
-    for sp in venv_lib.glob("python*/site-packages"):
-        sp_str = str(sp)
-        if sp_str not in sys.path:
-            sys.path.insert(0, sp_str)
-
-
-_bootstrap_studio_venv()
-
-# Add backend to path early so local modules like loggers can be imported
-backend_path = str(Path(__file__).parent)
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_colab_url(port: int = 8000) -> str:
+def get_colab_url(port: int = 8888) -> str:
     """
-    Get the actual Colab proxy URL for a port.
+    Get the Colab proxy URL for a port.
+
+    Retries up to 3 times, validating the result is a real HTTPS Colab URL.
+    Falls back to http://localhost:{port} only when all attempts fail.
     """
+    import time as _time
+
+    fallback = f"http://localhost:{port}"
+
     try:
         from google.colab.output import eval_js
+    except ImportError:
+        return fallback
 
-        # Use Colab's proxy mechanism
-        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 5)
-        return url if url else f"http://localhost:{port}"
-    except Exception as e:
-        logger.info(f"Note: Could not get Colab URL ({e})")
-        return f"http://localhost:{port}"
+    for attempt in range(3):
+        try:
+            url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
+            # Valid proxy URL is https:// and embeds the port.
+            if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
+                return url.rstrip("/")
+        except Exception as e:
+            logger.info(f"Note: Could not get Colab URL (attempt {attempt + 1}/3: {e})")
+        if attempt < 2:
+            _time.sleep(1)
+
+    logger.warning(
+        f"Could not get a valid Colab proxy URL after 3 attempts — using localhost fallback. "
+        f"The link/iframe may not work from outside the runtime."
+    )
+    return fallback
 
 
-def show_link(port: int = 8000):
-    """Display a styled clickable link to the UI."""
+def show_link(port: int = 8888, *, _url: "str | None" = None):
+    """Display a styled clickable link to the UI.
+
+    *_url* is an optional pre-fetched proxy URL; pass it to avoid a second eval_js round-trip.
+    """
     from IPython.display import display, HTML
 
-    # Get real Colab proxy URL
-    url = get_colab_url(port)
+    url = _url if _url is not None else get_colab_url(port)
 
-    short_url = (
-        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
-        if "8000-" in url
-        else url
-    )
+    # Truncated display URL; try/except so an odd URL shape still renders the link.
+    try:
+        port_prefix = f"{port}-"
+        idx = url.index(port_prefix)
+        next_dash = url.index("-", idx + len(port_prefix))
+        short_url = url[: next_dash + 1] + "..."
+    except (ValueError, IndexError):
+        short_url = url
+
+    # Plain-text line so the URL shows even if HTML display fails.
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
+
     html = f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -81,14 +85,17 @@ def show_link(port: int = 8000):
                  height="48" style="display:block;">
             Unsloth Studio is Ready!
         </h2>
-        <a href="{url}" target="_blank"
+        <a href="{url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
            style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
                   background: #000000; color: white; text-decoration: none; border-radius: 8px;
-                  font-weight: 800; font-size: 16px;">
+                  font-weight: 800; font-size: 16px; cursor: pointer;">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
             Open Unsloth Studio
         </a>
-        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace;">
+        <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
+            If the link doesn't work, you can scroll down to view the UI generated directly in Colab.
+        </p>
+        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
             {short_url}
         </p>
     </div>
@@ -96,7 +103,68 @@ def show_link(port: int = 8000):
     display(HTML(html))
 
 
-def start(port: int = 8000):
+def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
+    """Return True if a Studio backend is already answering health checks on *port*."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _show_and_embed(port: int):
+    """Embed the Studio inline for *port* with a branded header bar.
+
+    Fetches the proxy URL once (registering the port), then renders header bar +
+    iframe. Falls back to serve_kernel_port_as_iframe if IPython HTML is unavailable.
+    """
+    url = get_colab_url(port)
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
+
+    try:
+        from IPython.display import HTML, display
+
+        iframe_id = f"unsloth-studio-{port}"
+
+        # Truncated header URL — best-effort, falls back to full URL.
+        try:
+            port_prefix = f"{port}-"
+            idx = url.index(port_prefix)
+            next_dash = url.index("-", idx + len(port_prefix))
+            short_url = url[: next_dash + 1] + "..."
+        except (ValueError, IndexError):
+            short_url = url
+
+        display(
+            HTML(f"""
+<div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;
+            border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.18);">
+  <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;background:#000;">
+    <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
+         height="26" style="display:block;">
+    <span style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-0.2px;">Unsloth Studio</span>
+    <span style="margin-left:auto;color:#666;font-size:11px;font-family:monospace;">{short_url}</span>
+  </div>
+  <iframe
+    id="{iframe_id}"
+    src="{url}"
+    style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
+    allow="clipboard-read; clipboard-write"
+  ></iframe>
+</div>
+""")
+        )
+    except Exception:
+        # Fallback: Colab's built-in helper.
+        try:
+            from google.colab import output as colab_output
+            colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
+        except ImportError:
+            pass
+
+
+def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
 
@@ -104,9 +172,22 @@ def start(port: int = 8000):
         from colab import start
         start()
     """
-    import sys
+    import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+
+    # Fast path: Studio already running (cell re-run). Re-launching would collide on
+    # the port, so just re-show the link and iframe.
+    if _is_studio_healthy(port):
+        logger.info(f"   Studio is already running on port {port} — reusing existing server.")
+        _show_and_embed(port)
+        try:
+            for _ in range(10000):
+                time.sleep(300)
+                print("=", end = "", flush = True)
+        except KeyboardInterrupt:
+            logger.info("\nUnsloth Studio keepalive stopped.")
+        return
 
     logger.info("   Loading backend...")
     from run import run_server
@@ -115,18 +196,56 @@ def start(port: int = 8000):
     repo_root = Path(__file__).parent.parent
     frontend_path = repo_root / "frontend" / "dist"
 
-    if not frontend_path.exists():
+    if not (frontend_path / "index.html").exists():
         logger.info("❌ Frontend not built! Please run the setup cell first.")
         return
 
     logger.info("   Starting server...")
-    # Start server silently
-    run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    try:
+        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    except SystemExit as exc:
+        logger.error(f"❌ Unsloth Studio failed to start: {exc}")
+        return
+    except Exception as exc:
+        logger.error(f"❌ Unsloth Studio failed to start: {exc}")
+        return
 
-    logger.info("   Server started!")
+    # run_server auto-increments the port if in use; read back the bound port so the
+    # proxy URL and iframe point at the right place.
+    actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
 
-    # Show the clickable link with real URL
-    show_link(port)
+    logger.info(f"   Server started on port {actual_port}!")
+
+    # Poll health endpoint before showing the link — avoids the race where ready_event
+    # fires but the process hasn't finished binding.
+    import urllib.request
+
+    server_ready = False
+    for _ in range(40):
+        try:
+            with urllib.request.urlopen(f"http://localhost:{actual_port}/api/health", timeout = 1):
+                server_ready = True
+                break
+        except Exception:
+            time.sleep(0.5)
+
+    if not server_ready:
+        logger.error(
+            f"❌ Unsloth Studio did not become healthy on port {actual_port}. "
+            "Check for errors above."
+        )
+        return
+
+    _show_and_embed(actual_port)
+
+    # Keep kernel alive so the daemon server thread runs; handle KeyboardInterrupt
+    # cleanly so interrupting the cell gives a readable message.
+    try:
+        for _ in range(10000):
+            time.sleep(300)
+            print("=", end = "", flush = True)
+    except KeyboardInterrupt:
+        logger.info("\nUnsloth Studio keepalive stopped.")
 
 
 if __name__ == "__main__":
