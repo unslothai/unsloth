@@ -1213,8 +1213,10 @@ def detect_gguf_model(path: str) -> Optional[str]:
     if p.suffix.lower() == ".gguf":
         # Companions are not models: rejecting a drafter here also keeps
         # detect_mtp_file from pairing the same file with itself
-        # (-m drafter --model-draft drafter).
-        if _is_mmproj(p.name) or _is_mtp_drafter(p.name):
+        # (-m drafter --model-draft drafter). Include the immediate parent
+        # dir so the MTP/ subdir copies are caught -- the basename alone
+        # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
+        if _is_mmproj(p.name) or _is_mtp_drafter(f"{p.parent.name}/{p.name}"):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1232,7 +1234,8 @@ def detect_gguf_model(path: str) -> Optional[str]:
             (
                 f
                 for f in _iter_gguf_files(p)
-                if not _is_mmproj(f.name) and not _is_mtp_drafter(f.name)
+                if not _is_mmproj(f.name)
+                and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
             ),
             key = lambda f: f.stat().st_size,
             reverse = True,

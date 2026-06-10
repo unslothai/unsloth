@@ -262,3 +262,15 @@ def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
     # Same drafter as launched -> still deduped.
     b = _loaded_backend(weight, str(drafter))
     assert b._already_in_target_state(**_target_state_kwargs(weight, str(drafter)))
+
+
+def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
+    # Direct selection of an MTP/ copy: the basename alone has no mtp-
+    # prefix, so rejection relies on the parent dir name.
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    copy = sub / "gemma-4-12b-it-BF16-MTP.gguf"
+    copy.write_bytes(b"x")
+    assert detect_gguf_model(str(copy)) is None
+    # Selecting the MTP dir itself must not surface the copies as models.
+    assert detect_gguf_model(str(sub)) is None
