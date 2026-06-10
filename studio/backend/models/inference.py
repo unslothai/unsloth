@@ -72,7 +72,7 @@ class LoadRequest(BaseModel):
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "still accepted. Ignored for non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(

@@ -417,7 +417,9 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -427,7 +429,11 @@ try:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        extract_model_size_b,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -444,7 +450,9 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -454,7 +462,11 @@ except ImportError:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        extract_model_size_b,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -927,35 +939,42 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
 logger = get_logger(__name__)
 
 
-def _validate_native_mmproj_companion(mmproj_path: str | None, gguf_path: str | None) -> None:
-    if not mmproj_path or not gguf_path:
+def _validate_native_gguf_companion(
+    companion_path: str | None, gguf_path: str | None, label: str
+) -> None:
+    """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
+    would otherwise hand to llama-server: must be a regular file (no symlink
+    escaping the leased directory) living next to the selected GGUF."""
+    if not companion_path or not gguf_path:
         return
     import stat as _stat_module
 
-    mm = Path(mmproj_path)
+    companion = Path(companion_path)
     gguf = Path(gguf_path)
     try:
-        mm_lstat = os.lstat(mm)
+        companion_lstat = os.lstat(companion)
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
-    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+    if _stat_module.S_ISLNK(companion_lstat.st_mode) or not _stat_module.S_ISREG(
+        companion_lstat.st_mode
+    ):
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion must be a regular file.",
+            detail = f"Native {label} must be a regular file.",
         )
     try:
-        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
             raise HTTPException(
                 status_code = 400,
-                detail = "Native vision companion must live next to the selected GGUF.",
+                detail = f"Native {label} must live next to the selected GGUF.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
 
 
@@ -980,13 +999,11 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         llama_backend.cache_type_kv
     ):
         return False
-    # Vision loads silently drop speculative decoding (llama_cpp.py gates spec
-    # on ``not is_vision``), so treat the request as ``off`` against the
-    # backend's ``None`` to avoid a redundant reload.
-    if llama_backend.is_vision:
-        req_mode = "off"
-    else:
-        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    # Spec decoding works on vision models too (MTP is mmproj-compatible,
+    # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
+    # the real requested mode -- coercing vision to ``off`` here used to
+    # swallow every spec-mode change on a vision model as already_loaded.
+    req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
@@ -1008,6 +1025,35 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
+    # A drafter that appeared next to the loaded weights since the last load
+    # changes the launch command (--model-draft) when the mode can use it;
+    # without this, a duplicate /load is deduped and MTP can't engage short
+    # of an unload. Runs last: it stats the filesystem (two dir scans against
+    # the resolved weight path -- covers local dirs and HF cache snapshots
+    # alike), so every pure-memory comparison above short-circuits first.
+    # Skipped when auto drops MTP anyway (sub-3B) or the user owns
+    # --spec-type, where a drafter changes nothing. Resolve both sides: the
+    # stored launch path may be a snapshot symlink while detect_mtp_file
+    # returns the resolved blob.
+    if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
+        effective_extras = (
+            request.llama_extra_args
+            if request.llama_extra_args is not None
+            else llama_backend.extra_args
+        )
+        size_b = extract_model_size_b(llama_backend.model_identifier or "")
+        if not _auto_mode_drops_mtp(req_mode, size_b) and not _extra_args_set_spec_type(
+            effective_extras
+        ):
+            detected = detect_mtp_file(llama_backend.gguf_path)
+            stored = llama_backend.mtp_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
     return True
 
 
@@ -1313,12 +1359,26 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                if native_grant_backed and config.gguf_mmproj_file:
-                    _validate_native_mmproj_companion(config.gguf_mmproj_file, config.gguf_file)
+                if native_grant_backed:
+                    if config.gguf_mmproj_file:
+                        _validate_native_gguf_companion(
+                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                        )
+                    if config.gguf_mtp_file:
+                        # The drafter is optional (unlike mmproj for a vision
+                        # model): drop it rather than fail the load.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
+                            config.gguf_mtp_file = None
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    mtp_draft_path = config.gguf_mtp_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).

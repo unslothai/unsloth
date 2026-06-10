@@ -25,7 +25,12 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-from hub.utils.gguf import extract_quant_label, is_gguf_filename, is_mmproj_filename
+from hub.utils.gguf import (
+    extract_quant_label,
+    is_gguf_filename,
+    is_mmproj_filename,
+    is_mtp_drafter_path,
+)
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -336,7 +341,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel):
+        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
         split = _GGUF_SPLIT_RE.search(path.name)
