@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hub page: browse + download surface only. Train CTA hidden until Hub->train picker ships.
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -15,6 +14,12 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  getInferenceStatus,
+  isExternalModelId,
+  useChatModelRuntime,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -179,14 +184,31 @@ export function ModelsPage() {
   const gpu = useGpuInfo();
   const online = useOnlineStatus();
 
-  // "Use in chat" just navigates to /chat; checkpoint/variant handoff lands with the Hub-aware picker.
-  const activeCheckpoint: string | null = null;
-  const activeGgufVariant: string | null = null;
-  // Stubs so the inspector + load-status memo still typecheck; cast keeps the shape from narrowing to `never`.
-  const loadingModel = null as { id: string } | null;
-  const loadProgress = null as {
-    phase?: "downloading" | "starting";
-  } | null;
+  const { selectModel, loadingModel, loadProgress, ejectModel } =
+    useChatModelRuntime();
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const activeCheckpoint =
+    checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getInferenceStatus()
+      .then((status) => {
+        if (cancelled || !status.active_model) return;
+        const store = useChatRuntimeStore.getState();
+        if (
+          !isExternalModelId(store.params.checkpoint) &&
+          !modelIdsMatch(store.params.checkpoint, status.active_model)
+        ) {
+          store.setCheckpoint(status.active_model, status.gguf_variant ?? null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const { tab, setTab: setModelsTab } = useModelsTabState();
   const [query, setQuery] = useState("");
@@ -522,8 +544,8 @@ export function ModelsPage() {
   );
 
   const isLoadingThisModel = useMemo(() => {
-    if (!loadingModel) return false;
-    return selectedRepoMatchesRuntime(selectedModel, loadingModel.id, null);
+    if (!loadingModel || !selectedModel) return false;
+    return modelIdsMatch(loadingModel.id, selectedModel.resource.runId);
   }, [loadingModel, selectedModel]);
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
@@ -536,22 +558,40 @@ export function ModelsPage() {
       ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
       : "Unavailable";
 
-  // Load / use-in-chat / train handlers are stubs; they wire in once the
-  // Hub-aware chat and train pickers ship.
+  const runSelectedModel = useCallback(
+    (opts: ModelLoadOptions, isDownloaded: boolean) => {
+      if (!selectedModel) return;
+      const runId = selectedModel.resource.runId;
+      void selectModel({
+        id: runId,
+        ggufVariant: opts.ggufVariant,
+        isDownloaded,
+        expectedBytes: opts.expectedBytes,
+        throwOnError: true,
+      })
+        .then(() => {
+          const store = useChatRuntimeStore.getState();
+          if (!modelIdsMatch(store.params.checkpoint, runId)) {
+            store.setCheckpoint(runId, opts.ggufVariant ?? null);
+          }
+        })
+        .catch(() => undefined);
+    },
+    [selectModel, selectedModel],
+  );
   const handleLoad = useCallback(
-    (_opts: ModelLoadOptions) => undefined,
-    [],
+    (opts: ModelLoadOptions) =>
+      runSelectedModel(opts, selectedModel?.isDownloaded ?? true),
+    [runSelectedModel, selectedModel],
   );
   const handleLoadLocal = useCallback(
-    (_opts: ModelLoadOptions = {}) => undefined,
-    [],
+    (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
+    [runSelectedModel],
   );
   const handleUseInChat = useCallback(() => {
-    void navigate({ to: "/chat" });
+    void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
   }, [navigate]);
-  const handleTrain = useCallback(() => {
-    // Train CTA hidden until Hub->train picker ships.
-  }, []);
+  const handleTrain = useCallback(() => undefined, []);
 
   const inspectorRuntime = useMemo(
     () => ({
@@ -685,7 +725,7 @@ export function ModelsPage() {
           ramLabel={ramLabel}
           activeCheckpoint={activeCheckpoint}
           activeGgufVariant={activeGgufVariant}
-          onEject={() => undefined}
+          onEject={() => void ejectModel()}
         />
 
         <section className="elevated-card flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
