@@ -75,8 +75,8 @@ export function useTrainingActions() {
           isVlm,
         });
 
-        // Backend auto-detects image/audio from dataset content.
-        // Sync these flags into the store so buildTrainingStartPayload picks them up.
+        // Backend auto-detects image/audio from dataset content; sync the flags
+        // into the store so buildTrainingStartPayload picks them up.
         const isAudio = !!check.is_audio;
         const isImage = !!check.is_image;
 

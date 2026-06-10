@@ -24,13 +24,10 @@ if str(_BACKEND_ROOT) not in sys.path:
 @pytest.fixture(scope = "module")
 def main_module():
     import main as _main  # noqa: F401
-
     return _main
 
 
-# =====================================================================
 # MaxBodyMiddleware
-# =====================================================================
 
 
 def _make_protected_app(
@@ -110,8 +107,8 @@ class TestMaxBodyMiddleware:
         assert "too large" in r.json()["detail"].lower()
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
-        # Regression: declared-Content-Length-only check could be bypassed
-        # by chunked transfer-encoding.
+        # Regression: declared-Content-Length-only check could be bypassed by
+        # chunked transfer-encoding.
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
 
@@ -168,9 +165,7 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 200
         assert r.json()["total"] == 512
 
-    def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(
-        self, main_module
-    ):
+    def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,
             main_module,
@@ -208,9 +203,7 @@ class TestMaxBodyMiddleware:
         assert "Content-Length" in r.json()["detail"]
 
 
-# =====================================================================
 # SecurityHeadersMiddleware / CSP
-# =====================================================================
 
 
 def _make_csp_app(main_module, attach_nonce: str | None = None):
@@ -274,9 +267,7 @@ class TestSecurityHeadersMiddleware:
         csp = r.headers["content-security-policy"]
         assert f"'nonce-{nonce}'" in csp
         # Internal handoff header must not leak to clients.
-        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {
-            k.lower() for k in r.headers.keys()
-        }
+        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers.keys()}
 
     def test_build_csp_helper_shape(self, main_module):
         plain = main_module._build_csp()
@@ -285,32 +276,25 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_img_src_allows_google_favicons(self, main_module):
-        # sources.tsx fetches https://www.google.com/s2/favicons?... ; without
-        # this allowlist entry citation favicons fall back to gray initials.
+    def test_img_and_media_allow_https_sources(self, main_module):
+        # Model-card READMEs and citation favicons pull images/media from many
+        # https origins (HF LFS/XET CDNs, shields/badge hosts, GitHub-hosted
+        # assets, audio/video samples). img-src/media-src allow any https source
+        # so they render; this mirrors the desktop CSP in tauri.conf.json.
         csp = main_module._build_csp()
-        img_directive = next(
-            chunk.strip()
+        directives = {
+            chunk.strip().split()[0]: chunk.strip().split()
             for chunk in csp.split(";")
-            if chunk.strip().startswith("img-src ")
-        )
-        # Tokenise and compare with `==` so CodeQL's URL-substring rule does
-        # not read directive-string `in` membership as URL sanitisation.
-        img_sources = img_directive.split()
-        assert any(src == "https://www.google.com" for src in img_sources)
-        # Pre-existing favicon CDNs stay allowed.
-        for host in (
-            "https://t0.gstatic.com",
-            "https://t1.gstatic.com",
-            "https://t2.gstatic.com",
-            "https://t3.gstatic.com",
-        ):
-            assert any(src == host for src in img_sources)
+            if chunk.strip()
+        }
+        for name in ("img-src", "media-src"):
+            assert name in directives, f"missing {name} directive"
+            # Tokenise and compare with `==` so CodeQL's URL-substring rule does
+            # not read directive-string `in` membership as URL sanitisation.
+            assert any(src == "https:" for src in directives[name])
 
 
-# =====================================================================
 # /api/health auth gate
-# =====================================================================
 
 
 @pytest.fixture
@@ -339,9 +323,9 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    # Launcher / frontend bootstrap fields are available unauth so the Tauri
-    # watchdog can re-adopt a sibling backend and the SPA can detect chat-only
-    # mode before any token exists. Version / device_type still require a bearer.
+    # Launcher / frontend bootstrap fields are unauth so the Tauri watchdog can
+    # re-adopt a sibling backend and the SPA can detect chat-only mode before
+    # any token exists. Version / device_type still require a bearer.
     LAUNCHER_BITS = (
         "service",
         "studio_root_id",
@@ -368,7 +352,7 @@ class TestHealthAuthGate:
             assert forbidden not in body
 
     def test_invalid_bearer_returns_launcher_bits_only(self, health_app):
-        # Regression: calling the async dep without await made any Bearer header pass.
+        # Regression: calling the async dep without await let any Bearer header pass.
         c = TestClient(health_app)
         r = c.get(
             "/api/health",

@@ -94,16 +94,25 @@ function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
+  if (model.is_mlx) tags.push("MLX");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
   if (model.is_audio) tags.push("Audio");
   if (model.has_audio_input) tags.push("Audio Input");
-  if (!model.is_lora && !model.is_vision && !model.is_gguf && !model.is_audio && !model.has_audio_input)
+  if (
+    !model.is_lora &&
+    !model.is_vision &&
+    !model.is_gguf &&
+    !model.is_mlx &&
+    !model.is_audio &&
+    !model.has_audio_input
+  )
     tags.push("Base");
   return tags.join(" · ");
 }
@@ -114,6 +123,7 @@ function toChatModelSummary(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -125,10 +135,55 @@ function toChatModelSummary(model: {
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
     isGguf: Boolean(model.is_gguf),
+    isMlx: Boolean(model.is_mlx),
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
   };
+}
+
+// Merge capability flags from a load/status response into the matching
+// models[] entry. /api/models/list omits audio capability for default and
+// active-GGUF entries, so the attach gates (`activeModel?.hasAudioInput`)
+// would otherwise stay false. Mirrors the compare composer's sync.
+// Exported for tests.
+export function syncModelCapabilities(
+  modelId: string,
+  resp: {
+    display_name?: string | null;
+    is_vision?: boolean;
+    is_lora?: boolean;
+    is_gguf?: boolean;
+    is_audio?: boolean;
+    audio_type?: string | null;
+    has_audio_input?: boolean;
+  },
+): void {
+  const store = useChatRuntimeStore.getState();
+  const models = store.models;
+  const synced = {
+    isVision: Boolean(resp.is_vision),
+    isGguf: Boolean(resp.is_gguf),
+    isAudio: Boolean(resp.is_audio),
+    audioType: resp.audio_type ?? null,
+    hasAudioInput: Boolean(resp.has_audio_input),
+  };
+  const idx = models.findIndex((m) => m.id === modelId);
+  if (idx === -1) {
+    store.setModels([
+      ...models,
+      {
+        id: modelId,
+        name: resp.display_name || modelId,
+        isLora: Boolean(resp.is_lora),
+        ...synced,
+      },
+    ]);
+  } else {
+    const next = [...models];
+    next[idx] = { ...next[idx], ...synced };
+    store.setModels(next);
+  }
 }
 
 function toLoraSummary(lora: {
@@ -156,11 +211,9 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
-// Canonicalises any value the backend reports (or persisted state holds)
-// onto the five UI-facing modes the Speculative Decoding dropdown
-// understands: "auto" / "mtp" / "ngram" / "mtp+ngram" / "off" / null.
-// Mirrors backend _canonicalize_spec_mode so old persisted "default" /
-// "draft-mtp" / "ngram-mod" / chain values round-trip cleanly.
+// Canonicalises any backend/persisted value onto the Speculative Decoding
+// dropdown's modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Mirrors
+// backend _canonicalize_spec_mode so legacy persisted values round-trip.
 function normalizeSpeculativeType(v: string | null | undefined): string | null {
   if (v == null) return null;
   const s = String(v).trim().toLowerCase();
@@ -265,9 +318,8 @@ export function useChatModelRuntime() {
         listLoras(),
       ]);
 
-      // Cancellation can land while the requests above are in flight (e.g. the
-      // user cancels a load during this refresh). Bail before writing any
-      // backend state back into the store -- cancelLoading already cleared it.
+      // Cancellation can land while the requests above are in flight. Bail
+      // before writing backend state back -- cancelLoading already cleared it.
       if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
@@ -323,12 +375,10 @@ export function useChatModelRuntime() {
         const currentVisionProjector = statusRes.is_gguf
           ? (statusRes.load_mmproj ?? true)
           : true;
-        // Refresh runs both on F5 (fresh store needs hydration) AND right
-        // after a fresh load (store was already set by the load path). For
-        // the user-configurable model params we only hydrate when the shadow
-        // `loaded*` field is still null -- that signals "not yet hydrated".
-        // Otherwise we'd clobber the values the load path just applied and
-        // the UI would appear to revert the user's changes.
+        // Refresh runs on F5 (needs hydration) and right after a load (store
+        // already set). For user-configurable params, only hydrate when the
+        // shadow `loaded*` field is null ("not yet hydrated"); otherwise we'd
+        // clobber what the load path just applied and revert the user.
         const prevState = useChatRuntimeStore.getState();
         const clampedReasoningEffort = clampLocalReasoningEffort(
           prevState.reasoningEffort,
@@ -347,15 +397,12 @@ export function useChatModelRuntime() {
           supportsPreserveThinking,
           supportsTools,
           // Reset per-turn reasoning flag so:
-          //   1. models that do not support reasoning do not inherit a stale
-          //      off state from a prior model, and
-          //   2. local reasoning-effort models (where the composer hides
-          //      the Off option via supportsReasoningOff=false) cannot end
-          //      up with reasoningEnabled=false carried over from an
-          //      external model where Off was selected — the composer would
-          //      keep showing "Think: <level>" via effectiveReasoningEnabled,
-          //      but the chat-adapter would omit the kwarg and the Harmony
-          //      template would fall back to its own default effort.
+          //   1. non-reasoning models don't inherit a stale off state, and
+          //   2. local reasoning-effort models (Off hidden via
+          //      supportsReasoningOff=false) don't carry reasoningEnabled=false
+          //      from an external model where Off was selected -- the composer
+          //      would still show "Think: <level>" but the adapter would omit
+          //      the kwarg, so Harmony falls back to its default effort.
           reasoningEnabled: supportsReasoning
             ? reasoningStyle === "reasoning_effort"
               ? true
@@ -395,6 +442,9 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: statusRes.chat_template_override,
             }),
         });
+        // setModels(listRes...) above used catalog data, which omits audio
+        // capability. Re-apply live status so attach gates survive a refresh.
+        syncModelCapabilities(statusRes.active_model, statusRes);
 
         // Set reasoning default for Qwen3.5/3.6 small models
         if (
@@ -600,15 +650,12 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto whenever the user
-            // switches to a different model. Spec strategy is a
-            // per-model decision: a sub-3B non-MTP GGUF that ran with
-            // "Off" should not carry that choice into a 27B MTP GGUF
-            // where Auto would auto-promote to draft-mtp. The user can
-            // still pick a forced mode on the new model; this just
-            // clears the stale prior-model choice so the backend's
-            // platform-aware path runs by default. Same applies to
-            // spec_draft_n_max which is MTP-only.
+            // Reset Speculative Decoding to Auto on model switch: spec
+            // strategy is per-model, so a sub-3B non-MTP GGUF's "Off" must
+            // not carry into a 27B MTP GGUF where Auto auto-promotes to
+            // draft-mtp. Clears the stale prior choice so the backend's
+            // platform-aware path runs by default; same for spec_draft_n_max
+            // (MTP-only). The user can still force a mode on the new model.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
               useChatRuntimeStore.setState({
                 speculativeType: null,
@@ -753,6 +800,8 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               activeNativePathToken: nativePathToken ?? null,
             });
+            // Unlock attach menus for capabilities the catalog entry lacked.
+            syncModelCapabilities(modelId, loadResponse);
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (
               modelId.toLowerCase().includes("qwen3") &&
@@ -859,17 +908,15 @@ export function useChatModelRuntime() {
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models (GGUF and non-GGUF).
-        // Then, once the download wraps (or for already-cached models),
-        // poll the llama-server mmap phase so "Starting model..." no
-        // longer looks frozen for several minutes on large MoE models.
+        // Poll download progress for non-cached models, then (after download
+        // or for cached models) poll the llama-server mmap phase so "Starting
+        // model..." doesn't look frozen for minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate / ETA estimation.
-        // Shared across download + mmap phases so the estimator doesn't
-        // reset when the phase flips.
+        // Rolling window of byte samples for rate/ETA estimation, shared
+        // across download + mmap phases so it survives phase flips.
         type Sample = { t: number; b: number };
         const MIN_SAMPLES = 3;
         const MIN_WINDOW = 3_000; // ms

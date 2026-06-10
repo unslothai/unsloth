@@ -51,10 +51,8 @@ def _run_auditor(
 
 
 def test_malicious_lockfile_exits_1(tmp_path):
-    """The malicious fixture combines a non-registry resolved URL, a
-    known IOC substring (`filev2.getsession.org`), and a missing
-    integrity hash. The auditor must refuse with exit 1.
-    """
+    """Fixture combines a non-registry resolved URL, a known IOC substring
+    (`filev2.getsession.org`), and a missing integrity hash: auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
     assert fixture.is_file()
     proc = _run_auditor(root = tmp_path, npm_lockfiles = [fixture])
@@ -66,13 +64,9 @@ def test_malicious_lockfile_exits_1(tmp_path):
     assert "non-registry-resolved-url" in combined
     assert "missing-integrity-hash" in combined
     assert "known-ioc-string" in combined
-    # Verify the scanner WROTE the IOC name into its stdout/stderr. The
-    # literal is constructed at runtime so CodeQL's
-    # py/incomplete-url-substring-sanitization rule (which fires on
-    # source-literal + `in` even when the operand is the scanner's own
-    # output, not a URL being sanitized) does not false-positive across
-    # pre-commit reformatting that may split the assert onto multiple
-    # lines and detach an inline lgtm comment from the operator.
+    # IOC literal built at runtime so CodeQL's
+    # py/incomplete-url-substring-sanitization rule doesn't false-positive on
+    # the source-literal + `in` (the operand is the scanner's own output).
     _ioc_host = "filev2." + "getsession.org"
     assert _ioc_host in combined
 
@@ -143,7 +137,6 @@ def test_lockfile_auditor_blocked_versions_match_scanner():
     comment until the next PR factors them into a shared module).
     """
     from scripts import scan_npm_packages as snp
-
     assert (
         lsa.BLOCKED_NPM_VERSIONS == snp.BLOCKED_NPM_VERSIONS
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
@@ -171,15 +164,9 @@ checksum = "0000000000000000000000000000000000000000000000000000000000000000"
 
 
 def test_malicious_cargo_lockfile_refused(tmp_path):
-    """Inline Cargo.lock with `source = "git+https://example.com/..."`
-    must trip the `non-registry-cargo-source` check.
-
-    `non-registry-cargo-source` is an advisory finding kind in the
-    auditor's default mode (per the audit script's BLOCKING_KINDS
-    set). To exercise the historical "refuse to install" behavior we
-    pass --strict here; that promotes every finding to blocking and
-    keeps the test honest about its intent (detection + refusal).
-    """
+    """Inline Cargo.lock with a `git+https://...` source must trip the
+    `non-registry-cargo-source` check. It's advisory in default mode, so
+    --strict promotes it to blocking to exercise the refuse-to-install path."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -232,13 +219,9 @@ def test_audit_cargo_lockfile_direct_call(tmp_path):
 
 
 def test_gha_escape_collapses_finding_to_one_line():
-    """`_gha_escape()` must collapse newlines (`%0A`), carriage
-    returns (`%0D`), and percent signs (`%25`) so that
-    `::warning::<msg>` / `::error::<msg>` render the full finding
-    in the GitHub Actions UI annotation instead of being truncated
-    at the first newline. The `%` replacement must happen first or
-    the subsequent `%0A` / `%0D` escapes get double-encoded.
-    """
+    """`_gha_escape()` collapses newlines (`%0A`), carriage returns (`%0D`),
+    and percent signs (`%25`) so GHA annotations aren't truncated at the first
+    newline. `%` must escape first or the `%0A`/`%0D` escapes double-encode."""
     assert lsa._gha_escape("a\nb\nc") == "a%0Ab%0Ac"
     assert lsa._gha_escape("a\rb") == "a%0Db"
     assert lsa._gha_escape("100%") == "100%25"
@@ -261,13 +244,9 @@ def test_gha_escape_collapses_finding_to_one_line():
 
 
 def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
-    """End-to-end check: the `::warning::` line emitted for an
-    advisory finding must be a SINGLE physical line (the rest of
-    the Finding is `%0A`-escaped inside the message). Regression
-    test for the gemini-code-assist review on PR #5604: without
-    `_gha_escape`, GitHub Actions truncates the annotation after
-    `[kind] path` and the package + detail fields never render.
-    """
+    """The `::warning::` line for an advisory finding must be a SINGLE physical
+    line (rest of the Finding `%0A`-escaped). Regression for PR #5604: without
+    `_gha_escape`, GHA truncates after `[kind] path` and drops package/detail."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -275,9 +254,7 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    warning_lines = [
-        line for line in proc.stderr.splitlines() if line.startswith("::warning::")
-    ]
+    warning_lines = [line for line in proc.stderr.splitlines() if line.startswith("::warning::")]
     assert warning_lines, (
         "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
     )
@@ -299,11 +276,9 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
 
 
 def test_skip_env_var_with_short_value_rejected(tmp_path):
-    """`UNSLOTH_LOCKFILE_AUDIT_SKIP=1` used to silently bypass the
-    audit. Per SF4 it must instead emit a `::warning::` to stderr and
-    fall through to run the audit. A real justification value
-    (>=5 chars, not a boolean shape) is still honored.
-    """
+    """`UNSLOTH_LOCKFILE_AUDIT_SKIP=1` must no longer silently bypass: per SF4
+    it warns and falls through to run the audit. A real justification value
+    (>=5 chars, not a boolean shape) is still honored."""
     fixture = FIXTURES / "clean_lockfile.json"
 
     # Case 1 -- "1" rejected, audit RUNS.

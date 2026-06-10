@@ -12,8 +12,8 @@ import { initializeLocale } from "./i18n";
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
 if (globalCrypto && typeof globalCrypto.randomUUID !== "function") {
-  // Some envs ship `crypto` but no `randomUUID()` (or a non-function stub).
-  // Provide a best-effort v4 UUID using `getRandomValues` when available.
+  // Some envs ship `crypto` without `randomUUID()`. Provide a best-effort v4
+  // UUID using `getRandomValues` when available.
   const cryptoRef = globalCrypto;
 
   function getRandomByte(): number {

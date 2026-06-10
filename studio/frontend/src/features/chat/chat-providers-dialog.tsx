@@ -212,6 +212,7 @@ export function ChatProvidersSettings({
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  const seededProviderTypeRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -317,6 +318,8 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
+    if (seededProviderTypeRef.current === providerType) return;
+    seededProviderTypeRef.current = providerType;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -326,9 +329,8 @@ export function ChatProvidersSettings({
       return;
     }
     // Seed default_models only for curated providers (catalog too large to
-    // enumerate — defaults are the suggestion shortlist). Remote-mode cloud
-    // providers and local OpenAI-compat presets stay empty until the user
-    // clicks "Load available models".
+    // enumerate). Remote cloud providers and local OpenAI-compat presets stay
+    // empty until the user clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
@@ -364,7 +366,8 @@ export function ChatProvidersSettings({
         setProviderType((current) => {
           if (
             current &&
-            registryRows.some((entry) => entry.provider_type === current)
+            (isCustomProviderType(current) ||
+              registryRows.some((entry) => entry.provider_type === current))
           ) {
             return current;
           }
@@ -425,10 +428,9 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
-        // Trust the backend response when it succeeds. An empty array means
-        // every connection was removed (often from another browser/tab) and
-        // the local cache should mirror that, otherwise the stale entries
-        // become un-removable in this browser until localStorage is cleared.
+        // Trust the backend response. An empty array means every connection was
+        // removed (often from another tab); mirror that locally, else stale
+        // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
       } catch (error) {
         // Only surface a toast for real failures, not for the silent

@@ -13,14 +13,10 @@
 
 """Public-API surface drift detectors for unsloth itself.
 
-Companion to tests/test_import_fixes_drift.py: that file catches drift
-in THIRD-PARTY libraries (transformers / trl / triton / peft / etc.)
-that unsloth's import_fixes patches around. This file catches drift in
-unsloth's OWN public-surface API -- the top-10 symbols and classmethods
-that the unslothai/notebooks tree (and therefore every user on Colab)
-calls. If a refactor on this repo renames FastLanguageModel.from_pretrained
-or drops one of the documented kwargs, the test fires DRIFT DETECTED
-here BEFORE the breakage reaches users.
+Companion to tests/test_import_fixes_drift.py (which catches THIRD-PARTY drift):
+this catches drift in unsloth's OWN public surface -- the top symbols and
+classmethods the unslothai/notebooks tree calls -- so a rename or dropped kwarg
+fires DRIFT DETECTED here before it reaches users.
 
 Call-site counts measured against unslothai/notebooks @ main:
   FastLanguageModel.from_pretrained   506
@@ -33,10 +29,9 @@ Call-site counts measured against unslothai/notebooks @ main:
   FastModel.from_pretrained           103
   FastModel.get_peft_model             67
 
-Mirrors the unsloth-zoo / unsloth drift-detector skeleton:
-``pytest.importorskip("unsloth")`` to gate, assert the healthy upstream
-shape, ``pytest.fail("DRIFT DETECTED: ...")`` (never ``pytest.skip``) on
-regression so the matrix cell goes red.
+Mirrors the drift-detector skeleton: gate on ``pytest.importorskip("unsloth")``,
+assert the healthy shape, and ``pytest.fail("DRIFT DETECTED: ...")`` (never skip)
+on regression so the matrix cell goes red.
 """
 
 from __future__ import annotations
@@ -70,10 +65,8 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
     return (not missing), missing
 
 
-# ===========================================================================
-# FastLanguageModel: the headline class. 506 from_pretrained + 370
-# for_inference + 304 get_peft_model call sites across the notebooks.
-# ===========================================================================
+# FastLanguageModel: headline class (506 from_pretrained + 370 for_inference +
+# 304 get_peft_model call sites).
 
 
 def test_fast_language_model_class_present():
@@ -126,9 +119,7 @@ def test_fast_language_model_for_inference_callable():
         )
 
 
-# ===========================================================================
 # FastVisionModel: 183 + 176 + 99 + 60 call sites across vision notebooks.
-# ===========================================================================
 
 
 def test_fast_vision_model_class_and_methods():
@@ -165,9 +156,7 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
         )
 
 
-# ===========================================================================
-# FastModel: the modern unified entry point. 103 + 67 call sites.
-# ===========================================================================
+# FastModel: modern unified entry point. 103 + 67 call sites.
 
 
 def test_fast_model_class_and_methods():
@@ -197,9 +186,7 @@ def test_fast_model_from_pretrained_kwargs():
         )
 
 
-# ===========================================================================
 # Bf16 helper alias (renamed once already; keep both accepted).
-# ===========================================================================
 
 
 def test_is_bf16_supported_or_alias_callable():
