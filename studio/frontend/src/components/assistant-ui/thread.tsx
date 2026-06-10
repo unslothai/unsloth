@@ -643,8 +643,8 @@ function buildWelcome(hour: number, name: string): Welcome {
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
-    g("Ready when you are.", "large sloth thumbs.png"),
+    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
+    g("Ready when you are", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
     g("How can I help?", "sloth sir large.png"),
   ];
