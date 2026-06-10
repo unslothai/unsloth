@@ -773,6 +773,14 @@ fi
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before the
+# probes or a ROCDXG WSL host is misdetected as CPU-only.
+export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+    PATH="$PATH:/opt/rocm/bin"
+fi
 _setup_amd_detected=false
 _setup_gfx_all=""
 _setup_mkt=""
@@ -810,14 +818,20 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        # Kept in sync with the table in install.sh (and the PS nameArchTable).
+        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                 _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                      _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)       _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                        _setup_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                             _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
