@@ -19,3 +19,13 @@ repos:
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$'
         additional_dependencies:
           - ruff==0.6.9
+      # Re-pins allowScripts entries after dependency bumps. pre-commit.ci
+      # pushes the fix to PR branches, Dependabot's included, so stale pins
+      # heal without a human in the loop.
+      - id: sync-allow-scripts-pins
+        name: Sync allowScripts pins with the frontend lockfile
+        entry: scripts/sync_allow_scripts_pins.py
+        args: [--fix]
+        language: python
+        files: ^studio/frontend/(package\.json|package-lock\.json)$
+        pass_filenames: false
