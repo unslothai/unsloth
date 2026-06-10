@@ -201,22 +201,25 @@ def _load_run_module():
 
     run_py = _find_run_py()
     if run_py is None:
-        raise ImportError(
-            "Could not find studio/backend/run.py. Re-run: unsloth studio setup"
-        )
+        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
 
     loaded = sys.modules.get("studio.backend.run")
-    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
-    if loaded is not None and loaded_path == run_py.resolve():
-        _RUN_MODULE = loaded
-        return _RUN_MODULE
+    if loaded is not None:
+        loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
+        if loaded_path == run_py.resolve():
+            _RUN_MODULE = loaded
+            return _RUN_MODULE
 
     spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load studio backend from {run_py}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["studio.backend.run"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("studio.backend.run", None)
+        raise
     _RUN_MODULE = module
     return _RUN_MODULE
 
