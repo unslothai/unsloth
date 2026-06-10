@@ -719,6 +719,94 @@ class TestEnsureRocmTorch:
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    def test_torch_backend_cuda_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+        """UNSLOTH_TORCH_BACKEND=cuda must short-circuit before any GPU probe."""
+        with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cuda"}):
+            # Reload _TORCH_BACKEND from the patched environment.
+            with patch.object(stack_mod, "_TORCH_BACKEND", "cuda"):
+                _ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    def test_torch_backend_cpu_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+        """UNSLOTH_TORCH_BACKEND=cpu must short-circuit before any GPU probe."""
+        with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cpu"}):
+            with patch.object(stack_mod, "_TORCH_BACKEND", "cpu"):
+                _ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+
+# TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard
+
+
+class TestHasRocmGpuKfdVendorGuard:
+    """Verify that the KFD sysfs fallback rejects non-AMD (NVIDIA) KFD nodes.
+
+    These tests are source-level: they verify the regex and logic present in
+    the _has_rocm_gpu implementation rather than running the sysfs traversal
+    (which requires Linux path conventions).
+    """
+
+    def _src(self) -> str:
+        """Return the source of _has_rocm_gpu from install_python_stack.py."""
+        import inspect
+        return inspect.getsource(stack_mod._has_rocm_gpu)
+
+    def test_vendor_id_check_present(self):
+        """_has_rocm_gpu sysfs fallback must check vendor_id 4098 (AMD 0x1002)."""
+        src = self._src()
+        assert "vendor_id" in src, (
+            "_has_rocm_gpu KFD sysfs fallback must read the properties file "
+            "to check vendor_id and exclude NVIDIA KFD nodes"
+        )
+        assert "4098" in src, (
+            "_has_rocm_gpu must require AMD vendor_id 4098 (0x1002) in the "
+            "KFD node properties to avoid false positives on NVIDIA systems"
+        )
+
+    def test_vendor_regex_pattern_anchored(self):
+        """The vendor_id regex must use a word boundary to avoid partial matches."""
+        import re as _re
+        src = self._src()
+        # The pattern should have a word boundary before and after the number
+        # so "vendor_id 41098" doesn't match "vendor_id 4098".
+        assert _re.search(r'\\b.*vendor_id.*\\b', src) or "\\bvendor_id" in src, (
+            "_has_rocm_gpu vendor_id check should use word boundary anchors"
+        )
+
+    def test_sysfs_fallback_guarded_by_non_win32(self):
+        """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
+        src = self._src()
+        assert "win32" in src, (
+            "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
+        )
+
+    def test_cpu_node_excluded(self):
+        """gpu_id == '0' must be excluded (CPU topology nodes)."""
+        src = self._src()
+        assert '!= "0"' in src or "== '0'" in src or '!= \'0\'' in src or '"0"' in src, (
+            "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+        )
+
+    def test_install_sh_has_vendor_check(self):
+        """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "vendor_id" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
+        )
+        assert "4098" in func_body, (
+            "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
+        )
+
 
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
 
@@ -1017,6 +1105,47 @@ class TestInstallShStructure:
         darwin_pos = func_body.find("Darwin")
         rocm_pos = func_body.find("amd-smi")
         assert darwin_pos < rocm_pos, "macOS check should come before ROCm detection"
+
+    def test_unsloth_torch_backend_exported_after_get_torch_index_url(self):
+        """install.sh must export UNSLOTH_TORCH_BACKEND after TORCH_INDEX_URL is set.
+
+        This lets install_python_stack.py skip ROCm torch operations on CUDA
+        and CPU hosts without re-running GPU detection in a subprocess.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
+        backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
+        assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
+        assert backend_pos > torch_url_pos, (
+            "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        )
+        # Verify all three cases are covered
+        assert '"cuda"' in source[backend_pos : backend_pos + 500]
+        assert '"rocm"' in source[backend_pos : backend_pos + 500]
+        assert '"cpu"' in source[backend_pos : backend_pos + 500]
+        # Must be exported so subprocesses (setup.sh, install_python_stack.py) see it
+        assert "export UNSLOTH_TORCH_BACKEND" in source
+
+    def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
+        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098.
+
+        NVIDIA open kernel module (560+) registers KFD nodes with vendor_id
+        4318 (0x10DE). Without the vendor check, _has_amd_rocm_gpu returns 0
+        (true) on NVIDIA-only hosts that have the nvidia-open driver, causing
+        get_torch_index_url to select a ROCm wheel index.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "vendor_id" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
+        )
+        assert "4098" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+        )
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)

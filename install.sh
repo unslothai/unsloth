@@ -1726,8 +1726,13 @@ _has_amd_rocm_gpu() {
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     elif [ -e /dev/kfd ] && \
-         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+         awk '/gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
+        # 560+) can register KFD topology nodes with non-zero gpu_id but
+        # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
+        # NVIDIA-only hosts to the ROCm install path.
         return 0
     fi
     return 1
@@ -2097,6 +2102,15 @@ _maybe_bootstrap_rocm_wsl() {
 _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
+# downstream scripts (setup.sh -> install_python_stack.py) know what was
+# chosen here and can skip ROCm-specific repair steps on CUDA/CPU hosts.
+case "$TORCH_INDEX_URL" in
+    */rocm*|*/gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
+    */cpu)          export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    *)              export UNSLOTH_TORCH_BACKEND="cuda" ;;
+esac
 
 # rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
 # All other ROCm tags and CUDA stay within <2.11.0.

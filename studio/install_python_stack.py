@@ -598,6 +598,13 @@ def _has_rocm_gpu() -> bool:
     # runtime-only detection. On minimal package-managed installs (no
     # rocminfo / no amd-smi tools), the kernel exposes AMD GPUs via
     # /sys/class/kfd so `studio update` can still detect and repair.
+    #
+    # Guard: reject any KFD node whose properties file reports a non-AMD
+    # vendor. With the NVIDIA open kernel module (driver 560+), NVIDIA GPUs
+    # can register KFD topology nodes with a non-zero gpu_id; those nodes
+    # have vendor_id 4318 (0x10DE) rather than the AMD value 4098 (0x1002).
+    # Without this check the fallback returns True on NVIDIA-only systems,
+    # causing _ensure_rocm_torch to install ROCm wheels on NVIDIA hardware.
     if sys.platform != "win32":
         try:
             kfd_nodes = "/sys/class/kfd/kfd/topology/nodes"
@@ -609,8 +616,18 @@ def _has_rocm_gpu() -> bool:
                             gpu_id = fh.read().strip()
                     except OSError:
                         continue
-                    if gpu_id and gpu_id != "0":  # gpu_id 0 = CPU node
-                        return True
+                    if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
+                        continue
+                    # Verify AMD vendor (0x1002 = 4098) to exclude NVIDIA KFD nodes.
+                    props_path = os.path.join(kfd_nodes, entry, "properties")
+                    try:
+                        with open(props_path) as fh:
+                            props = fh.read()
+                        if not re.search(r"\bvendor_id\s+4098\b", props):
+                            continue
+                    except OSError:
+                        pass  # no properties file -- trust gpu_id alone (older kernels)
+                    return True
         except OSError:
             pass
     return False
@@ -749,6 +766,13 @@ def _ensure_rocm_torch() -> None:
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     global _rocm_windows_torch_installed
+    # install.sh sets UNSLOTH_TORCH_BACKEND to the resolved wheel family
+    # ("cuda", "rocm", "cpu"). Skip ROCm operations entirely when install.sh
+    # already selected a non-ROCm backend -- this is the authoritative signal
+    # and avoids re-running GPU detection in a subprocess that may see a
+    # different environment (different PATH, CUDA_VISIBLE_DEVICES, etc.).
+    if _TORCH_BACKEND in ("cuda", "cpu"):
+        return
     # setup.ps1 sets this after installing AMD wheels; skip the probe only when
     # torch is actually importable as ROCm. If the venv was wiped between runs,
     # the stale env-var would suppress a needed reinstall.
@@ -1087,6 +1111,12 @@ def _infer_no_torch() -> bool:
 
 
 NO_TORCH = _infer_no_torch()
+
+# UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() so
+# that this script knows which torch variant was selected without re-running
+# GPU detection. Values: "cuda", "rocm", or "cpu". Empty means unknown
+# (standalone `unsloth studio update` runs, where we re-detect normally).
+_TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
 
 
 # -- Verbosity control ----------------------------------------------------------
