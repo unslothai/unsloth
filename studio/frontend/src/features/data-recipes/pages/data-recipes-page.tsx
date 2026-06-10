@@ -241,7 +241,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md dark:enabled:hover:shadow-none disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
