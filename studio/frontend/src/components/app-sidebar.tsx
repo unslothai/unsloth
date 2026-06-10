@@ -217,7 +217,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:mx-auto"
+          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
@@ -558,7 +558,7 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      variant === "project" ? "pl-[37px]" : "pl-2.5",
+      variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
@@ -784,7 +784,7 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 pt-[9px] pb-px shrink-0">
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.5 pt-[9px] pb-px shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -824,7 +824,7 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 py-0 shrink-0">
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.5 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -875,7 +875,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-1.5">
+              <SidebarGroupContent className="pl-1.5 pr-1.5">
                 <SidebarMenu>
                   <NavItem
                     icon={TestTubeOutlineIcon}
@@ -926,7 +926,7 @@ export function AppSidebar() {
                 </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="px-1.5">
+                <SidebarGroupContent className="pl-1.5 pr-1.5">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -948,7 +948,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-2">
+              <SidebarGroupContent className="pl-2 pr-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -966,7 +966,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-full pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-full pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
