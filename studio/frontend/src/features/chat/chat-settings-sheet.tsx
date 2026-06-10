@@ -1552,10 +1552,14 @@ function ChatTemplateFields() {
     setEditorOpen(true);
   };
   const saveEditor = () => {
-    setOverride(
-      draft.trim().length === 0 || draft === defaultTemplate ? null : draft,
-    );
+    const cleared = draft.trim().length === 0 || draft === defaultTemplate;
+    setOverride(cleared ? null : draft);
     setEditorOpen(false);
+    toast.success(
+      cleared
+        ? "Chat template reset to default. It applies on the next model reload."
+        : "Chat template saved. It applies on the next model reload.",
+    );
   };
 
   return (
