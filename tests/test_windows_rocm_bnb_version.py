@@ -30,9 +30,7 @@ from pathlib import Path
 
 import pytest
 
-_IMPORT_FIXES_PATH = (
-    Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
-)
+_IMPORT_FIXES_PATH = Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
 
 
 def _load_import_fixes():
@@ -65,9 +63,7 @@ def clean_env(monkeypatch):
 def _force(import_fixes, monkeypatch, *, win, rocm, detected):
     monkeypatch.setattr(import_fixes.sys, "platform", "win32" if win else "linux")
     monkeypatch.setattr(import_fixes, "_is_hip_torch_build", lambda: rocm)
-    monkeypatch.setattr(
-        import_fixes, "_detect_installed_bnb_rocm_version", lambda: detected
-    )
+    monkeypatch.setattr(import_fixes, "_detect_installed_bnb_rocm_version", lambda: detected)
 
 
 # ---------------------------------------------------------------------------
@@ -162,9 +158,7 @@ def _fake_torch(hip):
 
 
 def test_hip_build_true_from_wheel_tag(import_fixes, monkeypatch):
-    monkeypatch.setattr(
-        import_fixes, "importlib_version", lambda name: "2.11.0+rocm7.13.0"
-    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.11.0+rocm7.13.0")
     assert import_fixes._is_hip_torch_build() is True
 
 
@@ -175,9 +169,7 @@ def test_hip_build_true_from_torch_version_hip(import_fixes, monkeypatch):
     assert import_fixes._is_hip_torch_build() is True
 
 
-def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(
-    import_fixes, monkeypatch
-):
+def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(import_fixes, monkeypatch):
     """The Codex-flagged scenario: Windows box with HIP_PATH/ROCM_PATH set (HIP
     SDK installed) but a CUDA torch. The strict gate must say False even though
     _is_rocm_torch_build()'s runtime hints would say True -- otherwise
@@ -185,9 +177,7 @@ def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(
     build."""
     monkeypatch.setenv("HIP_PATH", r"C:\Program Files\AMD\ROCm\6.2")
     monkeypatch.setenv("ROCM_PATH", r"C:\Program Files\AMD\ROCm\6.2")
-    monkeypatch.setattr(
-        import_fixes, "importlib_version", lambda name: "2.9.0+cu126"
-    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.9.0+cu126")
     monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch(None))
     assert import_fixes._is_hip_torch_build() is False
 

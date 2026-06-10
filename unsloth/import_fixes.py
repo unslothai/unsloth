@@ -1875,7 +1875,6 @@ def _is_hip_torch_build():
         pass
     try:
         import torch
-
         return bool(getattr(torch.version, "hip", None))
     except Exception:
         return False
