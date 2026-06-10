@@ -2373,6 +2373,21 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
+    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X, native or WSL): the base unsloth
+    # package does not depend on bitsandbytes and the cuXXX extras that normally
+    # add it are x86_64-oriented, so 4-bit QLoRA fails with ModuleNotFoundError
+    # out of the box. bitsandbytes ships working aarch64 manylinux wheels
+    # (verified on sm_121 Blackwell via PTX JIT), so add it best-effort -- a
+    # platform without a wheel just keeps 16-bit LoRA / full finetuning.
+    if { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
+            && command -v nvidia-smi >/dev/null 2>&1 \
+            && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+            && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then
+        substep "installing bitsandbytes (aarch64 wheels; enables 4-bit QLoRA)..."
+        if ! uv pip install --python "$_VENV_PY" "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0" >/dev/null 2>&1; then
+            substep "(no bitsandbytes wheel for this platform; 16-bit LoRA + full finetuning still work)"
+        fi
+    fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then
