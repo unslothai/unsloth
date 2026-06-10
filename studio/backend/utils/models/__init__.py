@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Model and LoRA configuration handling
-"""
+"""Model and LoRA configuration handling."""
 
 from .model_config import (
     ModelConfig,

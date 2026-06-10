@@ -189,21 +189,17 @@ class ChatMessagesBatchResponse(BaseModel):
 
 
 class ChatImportLedgerResponse(BaseModel):
-    # Plain list of legacy thread ids. Keeping the payload key-less keeps
-    # the client diff to a single Set construction.
     threadIds: list[str]
 
 
 class ChatImportLedgerRecordRequest(BaseModel):
-    # 10k cap keeps the request body bounded; real users have << 1k threads.
+    # 10k cap bounds the request body; real users have << 1k threads.
     threadIds: list[str] = Field(default_factory = list, max_length = 10_000)
 
 
 class ChatImportLedgerRecordResponse(BaseModel):
     # accepted: deduped non-empty input count. inserted: rows actually new
-    # (ON CONFLICT DO NOTHING skips already-recorded ids). The client uses
-    # `accepted >= 0` as the "endpoint exists" signal and ignores the split
-    # otherwise.
+    # (ON CONFLICT DO NOTHING skips already-recorded ids).
     accepted: int
     inserted: int
 
@@ -352,8 +348,7 @@ async def get_thread_messages(thread_id: str, current_subject: str = Depends(get
 async def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """One round-trip per sidebar/search rebuild instead of N. Unknown thread
-    ids are returned as empty lists so callers don't need a pre-flight."""
+    """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
     for m in list_chat_messages_for_threads(payload.threadIds):
         tid = m["threadId"]
@@ -444,11 +439,10 @@ async def count_threads(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/import-ledger", response_model = ChatImportLedgerResponse)
 async def get_import_ledger(current_subject: str = Depends(get_current_subject)):
-    """Legacy-Dexie import ledger. Returns the set of legacy thread ids
-    already copied into chat_threads / chat_messages. The frontend
-    uses this on every fresh tab open to decide whether to re-run the
-    Dexie -> studio.db import. Source of truth lives inside studio.db
-    so a studio.db wipe makes the import recoverable."""
+    """Legacy-Dexie import ledger: legacy thread ids already copied into chat tables.
+
+    The frontend checks this on tab open to decide whether to re-run the Dexie -> studio.db import.
+    """
     return ChatImportLedgerResponse(threadIds = list_chat_legacy_imports())
 
 
@@ -480,8 +474,7 @@ async def put_settings(
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
         raise HTTPException(status_code = 400, detail = exc.errors()) from exc
-    # Atomic read + deep-merge + write inside one BEGIN IMMEDIATE so two
-    # concurrent slider drags can't drop each other's updates.
+    # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
             settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))

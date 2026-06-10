@@ -3,10 +3,10 @@
 
 """Tests for LlamaCppBackend._wait_for_health resilience.
 
-The probe loop must swallow transient httpx errors and fall through to
-the subprocess.poll() branch so a crashed llama-server surfaces a
-structured "exited with code X" log instead of bubbling an opaque
-exception up to the /api/inference/load route.
+The probe loop must swallow transient httpx errors and fall through to the
+subprocess.poll() branch so a crashed llama-server surfaces a structured
+"exited with code X" log instead of bubbling an opaque exception up to the
+/api/inference/load route.
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match the stubbing pattern in sibling tests so the module imports in
-# a lightweight env without fastapi.
+# Mirror sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -33,11 +32,10 @@ import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Sibling tests in this directory install lightweight httpx stubs via
-# sys.modules.setdefault. When collected together, our `httpx` symbol
-# may be one of those stubs, which lacks `get`. Ensure the production
-# code finds a working `httpx.get` and the standard exception types
-# regardless of collection order by adding the missing attributes.
+# Sibling tests install lightweight httpx stubs via sys.modules.setdefault.
+# When collected together, our `httpx` may be such a stub lacking `get`. Add
+# the missing attributes so production code finds a working `httpx.get` and
+# the standard exception types regardless of collection order.
 if not hasattr(httpx, "get"):
     httpx.get = None  # placeholder; every test below monkeypatches it
 for _exc_name in (
@@ -52,9 +50,7 @@ for _exc_name in (
 
 
 def _make_backend(port: int = 12345) -> LlamaCppBackend:
-    """Build a barebones LlamaCppBackend instance with only the
-    attributes _wait_for_health touches. Bypasses __init__ so we do not
-    pull in the full subprocess + logging stack."""
+    """Barebones LlamaCppBackend with only the attributes _wait_for_health touches (bypasses __init__)."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._port = port
     b._stdout_thread = None
@@ -72,14 +68,9 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
-        """WinError 10054 maps to httpx.ReadError. The loop must swallow
-        it and the next iteration must detect the dead subprocess via
-        poll() != None, returning False with a structured exit-code log
-        instead of bubbling the ReadError."""
+        """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
-        # First iteration: process alive (so we reach the httpx probe).
-        # Second iteration: process has exited (so we hit the structured
-        # exit-code branch and return False).
+        # Iter 1: alive (reach probe); iter 2: exited (exit-code branch -> False).
         b._process.poll.side_effect = [None, 1]
         b._process.returncode = 1
         b._stdout_lines = ["llama-server: ggml-cuda.dll failed to load"]
@@ -89,12 +80,12 @@ class TestWaitForHealthResilience:
 
         monkeypatch.setattr(httpx, "get", raise_read_error)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
-        # Both iterations of the loop ran -- the ReadError did not bubble.
+        # Both loop iterations ran -- the ReadError did not bubble.
         assert b._process.poll.call_count >= 2
 
     def test_remote_protocol_error_also_swallowed(self, monkeypatch):
-        """Partial / malformed response on the probe (server crashed
-        mid-headers) raises RemoteProtocolError -- also non-fatal."""
+        """A partial/malformed probe response (server crashed mid-headers)
+        raises RemoteProtocolError -- also non-fatal."""
         b = _make_backend()
         b._process.poll.side_effect = [None, -1]
         b._process.returncode = -1
@@ -121,8 +112,8 @@ class TestWaitForHealthResilience:
         assert b._process.poll.call_count >= 2
 
     def test_connect_error_swallowed_until_success(self, monkeypatch):
-        """Sanity: existing ConnectError swallowing still works -- the
-        loop retries until llama-server eventually answers 200."""
+        """Sanity: existing ConnectError swallowing still works -- the loop
+        retries until llama-server answers 200."""
         b = _make_backend()
         b._process.poll.return_value = None
         calls = {"n": 0}
@@ -139,8 +130,8 @@ class TestWaitForHealthResilience:
         assert calls["n"] >= 3
 
     def test_dead_process_before_probe_returns_false(self, monkeypatch):
-        """If poll() != None on entry, _wait_for_health must return
-        False immediately without calling httpx at all."""
+        """poll() != None on entry: _wait_for_health returns False
+        immediately without calling httpx."""
         b = _make_backend()
         b._process.poll.return_value = 137
         b._process.returncode = 137

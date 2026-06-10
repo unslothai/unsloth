@@ -3,18 +3,12 @@
 
 """Unit tests for _rocm_classify_unified_memory (ROCm OOM-guard classifier).
 
-Covers the three classification paths:
-  Path 1 – canonical gcnArchName attribute present.
-  Path 2 – gcnArchName absent, alternate-spelling attribute present.
-  Path 3 – ALL arch attrs absent; falls back to device-name substring match.
+Three paths: (1) canonical gcnArchName, (2) alternate-spelling attr, (3) all
+arch attrs absent -> device-name substring match.
 
-Regression for: Strix Halo (gfx1151) misclassified as discrete on AMD SDK /
-Radeon wheels that populate props.name = "Radeon 8060S Graphics" but do NOT
-set any gcnArchName attribute.  Without the 8060s/8050s name patterns the
-fallback returned is_unified=False, applying the discrete 0.90 fraction
-instead of the unified cap (0.80 on Linux, where mem_get_info spans nearly
-all RAM; budget-exact 1.0 on native Windows, where the total is already the
-WDDM grant and the OS share lives outside it).
+Regression: Strix Halo (gfx1151) was misclassified as discrete on Radeon wheels
+that set props.name="Radeon 8060S Graphics" but no gcnArchName, applying the
+wrong headroom factor on a 128 GiB unified-memory pool.
 """
 
 from __future__ import annotations
@@ -65,7 +59,7 @@ class TestCanonicalGcnArchName:
         assert is_unified is True
 
     def test_canonical_attr_wins_over_name(self) -> None:
-        """Arch attr takes priority; device name should be ignored."""
+        """Arch attr takes priority; device name is ignored."""
         # Discrete arch, but name looks like a unified SKU — arch must win.
         props = _props(gcnArchName = "gfx1100", name = "Radeon 890M")
         gcn, is_unified = _rocm_classify_unified_memory(props)
@@ -100,7 +94,7 @@ class TestAlternateSpellingFallback:
         assert is_unified is False
 
     def test_first_non_empty_attr_wins(self) -> None:
-        """When multiple alternate attrs are present the first non-empty one wins."""
+        """With multiple alternate attrs, the first non-empty one wins."""
         props = _props(gcn_arch_name = "gfx1151", arch_name = "gfx1100", name = "irrelevant")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
@@ -150,7 +144,7 @@ class TestDeviceNameFallback:
             "Radeon RX 6900 XT",
             "Radeon Pro W7900",
             "AMD Instinct MI300X",
-            # Names that contain superficially similar substrings but are discrete
+            # Superficially similar substrings but discrete
             "Radeon RX 580",
             "Radeon VII",
         ],
@@ -164,7 +158,7 @@ class TestDeviceNameFallback:
         ), f"discrete device {device_name!r} should NOT be classified as unified-memory"
 
     def test_empty_name_returns_false(self) -> None:
-        """Completely absent name must not crash and must default to discrete."""
+        """Absent name must not crash and must default to discrete."""
         props = _props()  # no 'name' attr at all
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""

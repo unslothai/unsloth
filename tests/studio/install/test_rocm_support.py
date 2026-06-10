@@ -232,9 +232,7 @@ UPSTREAM_ASSETS = {
 }
 
 
-# =============================================================================
 # TEST: install_llama_prebuilt.py -- resolve_upstream_asset_choice
-# =============================================================================
 
 
 class TestResolveUpstreamAssetChoice:
@@ -332,9 +330,7 @@ class TestResolveUpstreamAssetChoice:
             resolve_upstream_asset_choice(host, LLAMA_TAG)
 
 
-# =============================================================================
 # TEST: install_llama_prebuilt.py -- runtime_patterns_for_choice
-# =============================================================================
 
 
 class TestRuntimePatterns:
@@ -398,9 +394,7 @@ class TestRuntimePatterns:
         assert "lib*.dylib" in patterns
 
 
-# =============================================================================
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
-# =============================================================================
 
 
 class TestHostInfoRocm:
@@ -449,9 +443,7 @@ class TestHostInfoRocm:
         assert "hipinfo" in source or "amd-smi" in source
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _detect_rocm_version
-# =============================================================================
 
 
 class TestDetectRocmVersion:
@@ -548,9 +540,7 @@ class TestDetectRocmVersion:
                     assert result is None
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _ensure_rocm_torch
-# =============================================================================
 
 
 class TestEnsureRocmTorch:
@@ -707,9 +697,7 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
-# =============================================================================
 
 
 class TestRocmTorchIndex:
@@ -766,9 +754,7 @@ class TestRocmTorchIndex:
         assert tag == "rocm6.4"
 
 
-# =============================================================================
 # TEST: hardware.py -- IS_ROCM flag and detect_hardware
-# =============================================================================
 
 
 class TestHardwareRocmFlag:
@@ -850,9 +836,7 @@ class TestHardwareRocmFlag:
             assert attr in source, f"distributed stub for '{attr}' missing from hardware.py"
 
 
-# =============================================================================
 # TEST: tokenizer_utils.py -- error message
-# =============================================================================
 
 
 class TestTokenizerErrorMessage:
@@ -871,9 +855,7 @@ class TestTokenizerErrorMessage:
         assert "docs.unsloth.ai" in source or "No GPU detected" in source
 
 
-# =============================================================================
 # TEST: install.sh -- structural checks
-# =============================================================================
 
 
 class TestInstallShStructure:
@@ -1014,9 +996,7 @@ class TestInstallShStructure:
         assert darwin_pos < rocm_pos, "macOS check should come before ROCm detection"
 
 
-# =============================================================================
 # TEST: Live regression on current host (NVIDIA B200 expected)
-# =============================================================================
 
 
 class TestLiveRegression:
@@ -1062,9 +1042,7 @@ class TestLiveRegression:
         assert "cu1" in url or "cuda" in url.lower(), f"Expected CUDA URL, got: {url}"
 
 
-# =============================================================================
 # TEST: worker.py -- ROCm Mamba/SSM source build path
-# =============================================================================
 
 # Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
@@ -1151,9 +1129,7 @@ class TestWorkerRocmMambaSsm:
         assert "timeout" in source
 
 
-# =============================================================================
 # TEST: amd.py -- AMD GPU monitoring
-# =============================================================================
 
 
 class TestAmdGpuMonitoring:
@@ -1228,9 +1204,8 @@ class TestAmdGpuMonitoring:
             pytest.skip("Could not load amd module")
 
         # _first_visible_amd_gpu_id() short-circuits to None when any of
-        # HIP / ROCR / CUDA_VISIBLE_DEVICES is set to "" or "-1". CI runners
-        # often unset CUDA at the env level by setting CUDA_VISIBLE_DEVICES
-        # to "" so the test must not inherit that.
+        # HIP / ROCR / CUDA_VISIBLE_DEVICES is "" or "-1". CI often sets
+        # CUDA_VISIBLE_DEVICES="", so the test must not inherit that.
         for var in (
             "HIP_VISIBLE_DEVICES",
             "ROCR_VISIBLE_DEVICES",
@@ -1317,9 +1292,7 @@ class TestAmdGpuMonitoring:
         assert result["available"] is False
 
 
-# =============================================================================
 # TEST: hardware.py -- IS_ROCM branching to amd.py
-# =============================================================================
 
 
 class TestHardwareAmdBranching:
@@ -1374,9 +1347,7 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in func_body
 
 
-# =============================================================================
 # TEST: hardware.py -- apply_gpu_ids ROCm fallback (issue #5180)
-# =============================================================================
 
 
 class TestApplyGpuIdsRocmFallback:
@@ -1410,9 +1381,7 @@ class TestApplyGpuIdsRocmFallback:
         assert "except Exception" in func_body
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- Windows AMD warning
-# =============================================================================
 
 
 class TestWindowsRocmWarning:
@@ -1435,9 +1404,7 @@ class TestWindowsRocmWarning:
         assert "docs.unsloth.ai/get-started/install-and-update/amd" in source
 
 
-# =============================================================================
 # TEST: unsloth/kernels/utils.py -- is_rdna() expansion
-# =============================================================================
 
 
 class TestIsRdnaExpansion:
@@ -1502,9 +1469,7 @@ class TestIsRdnaExpansion:
         assert "gfx1100" not in func_body
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _windows_rocm_index_url arch mapping
-# =============================================================================
 
 
 class TestWindowsRocmIndexUrl:
@@ -1561,9 +1526,7 @@ class TestWindowsRocmIndexUrl:
         assert url is not None
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _detect_windows_gfx_arch
-# =============================================================================
 
 
 class TestDetectWindowsGfxArch:
@@ -1620,9 +1583,7 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1201"
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _install_bnb_windows_rocm
-# =============================================================================
 
 
 class TestInstallBnbWindowsRocm:
@@ -1767,9 +1728,7 @@ class TestDetectBnbRocmDllVer:
             assert stack_mod._detect_bnb_rocm_dll_ver() == "713"
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- UNSLOTH_ROCM_TORCH_INSTALLED early-return path
-# =============================================================================
 
 
 class TestRocmTorchInstalledEnvVar:
@@ -1838,9 +1797,7 @@ class TestRocmTorchInstalledEnvVar:
         mock_bnb.assert_not_called()
 
 
-# =============================================================================
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
-# =============================================================================
 
 
 class TestWorkerWindowsRocmPatches:
@@ -1976,9 +1933,7 @@ class TestWorkerWindowsRocmPatches:
         assert 'split(".")[:2]' in source or ".split('.')[:2]" in source
 
 
-# =============================================================================
 # TEST: install_python_stack.py -- _ROCM_TORCH_PKG_SPECS mapping
-# =============================================================================
 
 
 class TestRocmTorchPkgSpecs:
@@ -2025,9 +1980,7 @@ class TestRocmTorchPkgSpecs:
             assert mapping.get(arch) == "gfx110X-all", f"{arch} missing from mapping"
 
 
-# =============================================================================
 # TEST: setup.ps1 / install.ps1 -- Strix Halo gfx arch detection
-# =============================================================================
 
 _SETUP_PS1_PATH = PACKAGE_ROOT / "studio" / "setup.ps1"
 _INSTALL_PS1_PATH = PACKAGE_ROOT / "install.ps1"
@@ -2109,9 +2062,7 @@ class TestStrixHaloGfxArchDetection:
             ), f"gfx arch regex not found in {path.name}"
 
 
-# =============================================================================
 # TEST: HIP SDK tool path resolution via HIP_PATH / ROCM_PATH env vars
-# =============================================================================
 
 
 class TestHipSdkEnvPathResolution:
@@ -2228,9 +2179,7 @@ class TestHipSdkEnvPathResolution:
         assert "PATH" in source and ("SetEnvironmentVariable" in source or "Add" in source)
 
 
-# =============================================================================
 # TEST: HIP SDK detected substep -- path + hipconfig version shown in terminal
-# =============================================================================
 
 
 class TestHipSdkDetectedSubstep:
@@ -2283,9 +2232,7 @@ class TestHipSdkDetectedSubstep:
         assert "ROCmVersionFull" in source and "rocm" in source
 
 
-# =============================================================================
 # TEST: install.sh -- Strix Halo rocm7.1 → rocm7.2 override
-# =============================================================================
 
 _INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
@@ -2349,9 +2296,7 @@ class TestStrixRocm71Override:
         assert "rocm/whl/gfx" in source
 
 
-# =============================================================================
 # TEST: setup.sh -- gcc-install-dir fix for Ubuntu 24.04 + ROCm 7.x clang-20
-# =============================================================================
 
 
 class TestSetupShGccInstallDir:
@@ -2390,9 +2335,7 @@ class TestSetupShGccInstallDir:
         assert "gcc install dir" in source or "GCC_INSTALL_DIR" in source
 
 
-# =============================================================================
 # TEST: main.py -- BNB_ROCM_VERSION server startup + distributed stubs
-# =============================================================================
 
 _MAIN_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "main.py"
 _HARDWARE_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
@@ -2512,9 +2455,7 @@ class TestServerStartupRocmFixes:
         assert "_distributed_rpc" in source
 
 
-# =============================================================================
 # TEST: install.ps1 / setup.ps1 -- HipSdkInstalled flag (SDK found, device inaccessible)
-# =============================================================================
 
 
 class TestHipSdkInstalledButDeviceInaccessible:
@@ -2584,11 +2525,9 @@ class TestHipSdkInstalledButDeviceInaccessible:
         assert "GPU not ROCm-accessible" in source
 
 
-# =============================================================================
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
 # to install_llama_prebuilt.py so the lemonade HIP prebuilt is selected even when
 # the installer's own hipinfo/amd-smi probe cannot report it.
-# =============================================================================
 
 _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 

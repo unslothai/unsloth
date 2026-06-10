@@ -99,7 +99,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # Treat warnings as errors
+    warnings.simplefilter("error")
     try:
         model.save_pretrained_merged("orpheus", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -135,7 +135,6 @@ print(f"{'='*80}")
 
 FastLanguageModel.for_inference(model)  # Enable native 2x faster inference
 
-# Moving snac_model cuda to cpu
 snac_model.to("cpu")
 prompts = [
     "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person.",
@@ -263,7 +262,6 @@ try:
 except Exception as e:
     assert False, f"Inference failed with exception: {e}"
 
-# Verify the file exists
 import os
 
 assert os.path.exists(output_path), f"Audio file not found at {output_path}"

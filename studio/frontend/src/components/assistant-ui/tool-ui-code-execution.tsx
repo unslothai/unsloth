@@ -23,12 +23,9 @@ import {
 } from "./tool-fallback";
 
 /**
- * Renders the synthetic `_toolEvent` chunks emitted by
- * `_stream_anthropic` when Anthropic's `code_execution_20250825` tool
- * fires. The backend collapses Anthropic's two sub-tools
- * (`bash_code_execution`, `text_editor_code_execution`) into a single
- * `tool_name: "code_execution"`, with `arguments.kind` ("bash" or
- * "text_editor") and a per-kind argument shape:
+ * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
+ * `code_execution_20250825` tool. The backend collapses Anthropic's two
+ * sub-tools into `tool_name: "code_execution"` with `arguments.kind`:
  *
  *   kind=bash:        { command: "<shell command>" }
  *   kind=text_editor: { command: "view"|"create"|"str_replace", path, ... }
@@ -141,9 +138,8 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     completedLabel = commandLabel ? `Ran \`${commandLabel}\`` : "Ran command";
   }
 
-  // Collapse the card once the model has resumed streaming prose after
-  // the tool call. Mirrors WebSearchToolUI's behavior so the tool-card
-  // doesn't crowd the final answer once the run is done.
+  // Collapse the card once the model resumes streaming prose after the tool
+  // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>
