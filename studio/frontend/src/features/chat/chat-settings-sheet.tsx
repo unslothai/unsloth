@@ -497,16 +497,12 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
-  const chatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
   const setChatTemplateOverride = useChatRuntimeStore(
     (s) => s.setChatTemplateOverride,
   );
-  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -972,7 +968,7 @@ export function ChatSettingsPanel({
               </>
             )}
             <ChatTemplateFields />
-            {(modelSettingsDirty || templateDirty) && (
+            {modelSettingsDirty && (
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Button
                   type="button"
@@ -1564,12 +1560,11 @@ function ChatTemplateFields() {
 
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
-            Chat Template
-          </span>
-          <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[13px] font-medium tracking-nav text-nav-fg">
+          Chat Template
+        </span>
+        <div className="flex items-center gap-1">
           {isModified && (
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -1618,18 +1613,7 @@ function ChatTemplateFields() {
               Edit template
             </TooltipContent>
           </Tooltip>
-          </div>
         </div>
-        <button
-          type="button"
-          onClick={openEditor}
-          aria-label="Edit chat template"
-          className="panel-text-surface mt-1 flex w-full cursor-pointer items-start px-3.5 py-2.5 text-left text-[10px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
-        >
-          <span className="block line-clamp-4 whitespace-pre-wrap break-words">
-            {displayValue}
-          </span>
-        </button>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent
@@ -1663,13 +1647,24 @@ function ChatTemplateFields() {
             <Button
               type="button"
               variant="ghost"
-              onClick={() => setEditorOpen(false)}
+              onClick={() => setDraft(defaultTemplate)}
+              disabled={draft === defaultTemplate}
+              className="text-muted-foreground"
             >
-              Cancel
+              Reset
             </Button>
-            <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
-              Save
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setEditorOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
+                Save
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
