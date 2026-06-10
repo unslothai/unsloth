@@ -539,7 +539,7 @@ export function ExportPage() {
           description="Select source, method, and quantization"
           accent="emerald"
           featured={true}
-          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
+          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           {/* Loading / error states */}
           {loadingCheckpoints && (
