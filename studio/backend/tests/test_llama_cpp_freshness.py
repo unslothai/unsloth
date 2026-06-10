@@ -3,8 +3,8 @@
 
 """Tests for the llama.cpp prebuilt freshness check.
 
-Pins the marker parser, the disk+memory cache, the stale decision
-matrix, and fail-open behaviour on missing data.
+Pins the marker parser, disk+memory cache, stale-decision matrix, and
+fail-open behaviour on missing data.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
 
 
 def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
-    """Stub llama-server under one of the supported install layouts."""
+    """Stub llama-server under a supported install layout."""
     if layout == "cmake":
         bin_dir = install_dir / "build" / "bin"
         bin_name = "llama-server"
@@ -77,7 +77,7 @@ def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
 
 @pytest.fixture(autouse = True)
 def _reset(monkeypatch, tmp_path):
-    # Isolate disk cache per-test; never touch the user's real cache.
+    # Isolate disk cache per-test; never touch the real cache.
     monkeypatch.setattr(fr, "_cache_dir", lambda: tmp_path / ".freshness")
     fr.reset_caches()
     yield
@@ -107,8 +107,8 @@ def test_read_install_marker_finds_root_layout(tmp_path):
 
 
 def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
-    # Windows cmake puts the .exe under build/bin/Release/, so the
-    # marker is four levels above the binary.
+    # Windows cmake puts the .exe under build/bin/Release/, so the marker
+    # is four levels above the binary.
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b8888")
     bin_path = _fake_binary(install_dir, layout = "windows")
@@ -119,10 +119,9 @@ def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
 
 @pytest.mark.parametrize("repo", ["unslothai/llama.cpp", "ggml-org/llama.cpp"])
 def test_read_install_marker_carries_published_repo_dynamically(tmp_path, repo):
-    # The freshness check queries whichever release repo the marker
-    # records, so CUDA Linux (unslothai), CPU Linux x86_64 / macOS
-    # (ggml-org), and ROCm source-build (unslothai upstream label)
-    # all surface the right "latest" tag.
+    # The freshness check queries whichever release repo the marker records,
+    # so CUDA (unslothai), CPU/macOS (ggml-org), and ROCm all get the right
+    # "latest" tag.
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9000", published_repo = repo)
     bin_path = _fake_binary(install_dir, layout = "cmake")
@@ -172,9 +171,7 @@ def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
     assert fr.latest_published_release("unslothai/llama.cpp") is None
 
 
-def test_latest_published_release_keeps_old_cache_on_transient_failure(
-    monkeypatch, tmp_path
-):
+def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypatch, tmp_path):
     # Disk entry older than TTL + network fail -> return cached value.
     cache_dir = tmp_path / ".freshness"
     cache_dir.mkdir()
@@ -188,9 +185,7 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(
 # check_prebuilt_freshness end-to-end.
 
 
-def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -200,9 +195,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
     assert info["stale"] is True
@@ -222,9 +215,7 @@ def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["installed_tag"] == "b9300"
@@ -242,9 +233,7 @@ def test_check_prebuilt_freshness_not_stale_within_threshold(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] == 1
@@ -257,9 +246,7 @@ def test_check_prebuilt_freshness_fails_open_without_marker(tmp_path):
     assert info["stale"] is False
 
 
-def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -276,15 +263,11 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
     assert info["latest_tag"] is None
 
 
-def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9190", installed_at_utc = "not-a-date")
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] is None
@@ -300,9 +283,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path), threshold_days = 1)
     assert info["stale"] is True
 
@@ -311,9 +292,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
 
 
 def test_format_stale_warning_contains_actionable_command():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5})
     assert "b9190" in msg
     assert "b9300" in msg
     assert "5 days" in msg
@@ -321,8 +300,6 @@ def test_format_stale_warning_contains_actionable_command():
 
 
 def test_format_stale_warning_singular_day():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1})
     assert "1 day" in msg
     assert "1 days" not in msg
