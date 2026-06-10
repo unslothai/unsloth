@@ -772,26 +772,25 @@ class TestHasRocmGpuKfdVendorGuard:
     def test_vendor_regex_pattern_anchored(self):
         """The vendor_id regex must use a word boundary to avoid partial matches."""
         import re as _re
+
         src = self._src()
         # The pattern should have a word boundary before and after the number
         # so "vendor_id 41098" doesn't match "vendor_id 4098".
-        assert _re.search(r'\\b.*vendor_id.*\\b', src) or "\\bvendor_id" in src, (
-            "_has_rocm_gpu vendor_id check should use word boundary anchors"
-        )
+        assert (
+            _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src
+        ), "_has_rocm_gpu vendor_id check should use word boundary anchors"
 
     def test_sysfs_fallback_guarded_by_non_win32(self):
         """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
         src = self._src()
-        assert "win32" in src, (
-            "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
-        )
+        assert "win32" in src, "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
 
     def test_cpu_node_excluded(self):
         """gpu_id == '0' must be excluded (CPU topology nodes)."""
         src = self._src()
-        assert '!= "0"' in src or "== '0'" in src or '!= \'0\'' in src or '"0"' in src, (
-            "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
-        )
+        assert (
+            '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src
+        ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
 
     def test_install_sh_has_vendor_check(self):
         """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
@@ -800,12 +799,8 @@ class TestHasRocmGpuKfdVendorGuard:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert "vendor_id" in func_body, (
-            "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
-        )
-        assert "4098" in func_body, (
-            "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
-        )
+        assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
+        assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
 
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
@@ -1117,9 +1112,9 @@ class TestInstallShStructure:
         torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
         backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
         assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
-        assert backend_pos > torch_url_pos, (
-            "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
-        )
+        assert (
+            backend_pos > torch_url_pos
+        ), "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
         # Verify all three cases are covered
         assert '"cuda"' in source[backend_pos : backend_pos + 500]
         assert '"rocm"' in source[backend_pos : backend_pos + 500]
@@ -1140,12 +1135,12 @@ class TestInstallShStructure:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert "vendor_id" in func_body, (
-            "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
-        )
-        assert "4098" in func_body, (
-            "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
-        )
+        assert (
+            "vendor_id" in func_body
+        ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
+        assert (
+            "4098" in func_body
+        ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)
