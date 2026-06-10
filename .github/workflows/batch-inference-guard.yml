@@ -6,6 +6,12 @@
 #   attention mask (gibberish for padded rows, #1066); #2216 fixed the mask,
 #   #4100 fixed position_ids. Both bugs shipped because nothing tested this
 #   path. The two CPU tests below fail on either bug pattern.
+#
+# Fully deterministic on GPU-less hosted runners: layer 1 is stdlib-only AST
+# checks, layer 2 is a CPU-torch unit test through tests/conftest.py's CUDA
+# spoof. The matching staging proof lives on danielhanchen/unsloth-staging-2
+# (PR 170 green on clean code; PR 171 red within seconds at the AST step
+# after reintroducing the pre-#4100 bug).
 name: Batch inference guard
 
 on:
