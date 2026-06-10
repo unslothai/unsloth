@@ -8,7 +8,9 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-const STUDIO_UPDATE_CMD = "unsloth studio update";
+const STUDIO_UPDATE_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
+const STUDIO_UPDATE_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
+const STUDIO_UPDATE_COPY_CMD = `${STUDIO_UPDATE_UNIX_CMD}\n${STUDIO_UPDATE_WINDOWS_CMD}`;
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -36,7 +38,7 @@ export function WebUpdateBanner({
   }
 
   async function handleCopyCommand() {
-    if (!(await copyToClipboard(STUDIO_UPDATE_CMD))) {
+    if (!(await copyToClipboard(STUDIO_UPDATE_COPY_CMD))) {
       return;
     }
     setCopiedVersion(status?.latestVersion ?? null);
@@ -90,8 +92,23 @@ export function WebUpdateBanner({
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   Installed package: {status.currentVersion}. To update Studio,
-                  run this in your terminal, then restart Studio.
+                  run the command for your OS in a terminal, then restart
+                  Studio.
                 </p>
+                <div className="mt-2 space-y-1">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    macOS / Linux
+                  </p>
+                  <code className="block overflow-x-auto rounded bg-muted/60 px-2 py-1 font-mono text-[11px] text-foreground">
+                    {STUDIO_UPDATE_UNIX_CMD}
+                  </code>
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    Windows (PowerShell)
+                  </p>
+                  <code className="block overflow-x-auto rounded bg-muted/60 px-2 py-1 font-mono text-[11px] text-foreground">
+                    {STUDIO_UPDATE_WINDOWS_CMD}
+                  </code>
+                </div>
               </div>
             </div>
 

@@ -3451,8 +3451,9 @@ class LlamaCppBackend:
                 logger.warning(
                     "Requested MTP speculative decoding but "
                     "llama-server lacks --spec-type mtp/draft-mtp; "
-                    "run `unsloth studio update`. Loading without "
-                    "speculative decoding."
+                    "update by running curl -fsSL https://unsloth.ai/install.sh | sh "
+                    "(macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex "
+                    "(Windows). Loading without speculative decoding."
                 )
                 return False
             draft_n_max = _resolved_draft_n_max()

@@ -30,7 +30,7 @@ fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflic
         );
     }
     format!(
-        "A Studio server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
+        "A Studio server for this install is already running from a terminal on port {}. Stop that server, or update by running curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows) from that terminal before using desktop repair/update.",
         conflict.port
     )
 }
