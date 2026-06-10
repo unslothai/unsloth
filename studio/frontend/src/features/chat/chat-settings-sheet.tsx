@@ -194,8 +194,8 @@ function NumericValueInput({
       type="text"
       inputMode="decimal"
       size={sizeAttr}
-      /* Width hugs the value; ch tracks tabular digits in every engine. */
-      style={{ width: `calc(${Math.max(displayed.length, 1)}ch + 18px)` }}
+      /* Fixed 4ch pill; grows only when a longer value would clip. */
+      style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
       value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
