@@ -990,6 +990,21 @@ function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
         if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
       }
     }
+    if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          if (part.type !== "audio") continue;
+          const audioPart = (
+            part as unknown as {
+              type: "audio";
+              audio: string | { data: string; format: string };
+            }
+          ).audio;
+          const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+          if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+        }
+      }
+    }
   }
 
   // Runtime store (main composer's audio upload).

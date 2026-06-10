@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/flac,audio/mp4";
+// MIME types plus extensions — browsers often omit or misreport audio MIME on pick.
+export const AUDIO_ACCEPT =
+  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/flac,audio/mp4,.mp3,.wav,.webm,.ogg,.flac,.m4a";
 export const MAX_AUDIO_SIZE = 50 * 1024 * 1024;
 
 export function fileToBase64(file: File): Promise<string> {
@@ -16,3 +18,4 @@ export function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+

@@ -67,6 +67,11 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  AUDIO_ACCEPT,
+  MAX_AUDIO_SIZE,
+  fileToBase64,
+} from "@/lib/audio-utils";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
@@ -398,6 +403,47 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     this.active.delete(attachment.id);
     this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class AudioAttachmentAdapter implements AttachmentAdapter {
+  accept = AUDIO_ACCEPT;
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    if (file.size > MAX_AUDIO_SIZE) {
+      throw new Error("Audio size exceeds 50MB limit");
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      type: "file",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const base64 = await fileToBase64(attachment.file);
+    const format = attachment.name.match(/\.(\w+)$/)?.[1]?.toLowerCase() ?? "wav";
+    return {
+      id: attachment.id,
+      type: "file",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "audio",
+          audio: { data: base64, format: format as "mp3" | "wav" },
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {
     return Promise.resolve();
   }
 }
@@ -988,6 +1034,7 @@ function useStudioRuntimeAdapters(
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
         new OpenDocumentAttachmentAdapter(),
+        new AudioAttachmentAdapter(),
       ]),
     [],
   );
