@@ -19,6 +19,7 @@ export {
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+export { isExternalModelId } from "./external-providers";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
