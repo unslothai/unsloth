@@ -24,7 +24,9 @@ repos:
       # heal without a human in the loop.
       - id: sync-allow-scripts-pins
         name: Sync allowScripts pins with the frontend lockfile
-        entry: scripts/sync_allow_scripts_pins.py
+        # `python <script>` not a direct exec: autofix commits can drop the
+        # executable bit, which kills shebang-style entries.
+        entry: python scripts/sync_allow_scripts_pins.py
         args: [--fix]
         language: python
         files: ^studio/frontend/(package\.json|package-lock\.json)$
