@@ -2257,11 +2257,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-[200px]">
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
@@ -2285,6 +2281,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger
                 disabled={!activeThreadId || messageCount === 0}

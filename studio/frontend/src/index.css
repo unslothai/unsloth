@@ -524,7 +524,7 @@
 	}
 
 	.nav-icon-btn {
-		@apply inline-flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
 	}
 
 	/* Standard icon size — drives every nav/menu/action-bar icon
@@ -544,19 +544,16 @@
 	.sidebar-nav-btn {
 		color: var(--nav-fg);
 	}
-	/* Gemini-style: hovering the row action (3 dots) shows only the action's
-	   circle, so the row hover is suppressed while the action is hovered. */
+	/* Gemini-style: hovering or opening the row action (3 dots) shows only
+	   the action's circle; the row highlights only when hovering the row
+	   itself. */
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
 	}
@@ -564,13 +561,9 @@
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.dark .group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.dark .group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.dark .group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.dark .group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
 
@@ -593,7 +586,9 @@
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
-		@apply bg-nav-surface-hover text-nav-fg;
+		@apply text-nav-fg;
+		/* A step darker than the row hover so the circle reads on top of it. */
+		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
