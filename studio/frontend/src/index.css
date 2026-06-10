@@ -942,6 +942,15 @@
 		box-shadow: none;
 	}
 
+	/* List menus: one radius in both themes, slightly tighter than --radius-lg
+	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"] {
+		border-radius: 14px !important;
+	}
+
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
 	   none in dark. !important so it also overrides the bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
