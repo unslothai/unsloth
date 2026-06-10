@@ -1891,15 +1891,11 @@ def _iter_hipinfo_paths():
         root = os.environ.get(env_key, "").strip()
         if root:
             candidates.append(os.path.join(root, "bin", "hipInfo.exe"))
-    rocm_root = os.path.join(
-        os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
-    )
+    rocm_root = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm")
     try:
         if os.path.isdir(rocm_root):
             for version_dir in sorted(os.listdir(rocm_root), reverse = True):
-                candidates.append(
-                    os.path.join(rocm_root, version_dir, "bin", "hipInfo.exe")
-                )
+                candidates.append(os.path.join(rocm_root, version_dir, "bin", "hipInfo.exe"))
     except Exception:
         pass
 
@@ -1919,7 +1915,6 @@ def _iter_hipinfo_paths():
 def _run_hipinfo(hipinfo_path):
     """Run hipInfo.exe and return its stdout, or "" on any failure."""
     import subprocess
-
     try:
         result = subprocess.run(
             [hipinfo_path],
@@ -1940,7 +1935,6 @@ def _unsloth_get_rocm_gpu_arch():
     path, then a quiet "unknown" (upstream logs ERROR + WARNING here)."""
     try:
         import torch
-
         if not getattr(getattr(torch, "version", None), "hip", None):
             return "unknown"
     except Exception:
@@ -1955,14 +1949,11 @@ def _unsloth_get_rocm_gpu_arch():
         except Exception:
             pass
     for hipinfo_path in _iter_hipinfo_paths():
-        match = re.search(
-            r"gcnArchName:\s+gfx([a-zA-Z\d]+)", _run_hipinfo(hipinfo_path)
-        )
+        match = re.search(r"gcnArchName:\s+gfx([a-zA-Z\d]+)", _run_hipinfo(hipinfo_path))
         if match:
             return "gfx" + match.group(1)
     _log_rocm_detection(
-        "Unsloth: Could not detect the ROCm GPU architecture - "
-        "bitsandbytes will see `unknown`."
+        "Unsloth: Could not detect the ROCm GPU architecture - bitsandbytes will see `unknown`."
     )
     return "unknown"
 
@@ -1973,7 +1964,6 @@ def _unsloth_get_rocm_warpsize():
     wrong on RDNA (wave 32) and mis-sizes 4-bit blocksizes."""
     try:
         import torch
-
         if not getattr(getattr(torch, "version", None), "hip", None):
             return 32  # upstream behavior: NVIDIA warp size is always 32
     except Exception:
@@ -1986,9 +1976,7 @@ def _unsloth_get_rocm_warpsize():
             if isinstance(warp_size, int) and warp_size in (32, 64):
                 return warp_size
     for hipinfo_path in _iter_hipinfo_paths():
-        match = re.search(
-            r"^\s*warpSize:\s+(\d+)", _run_hipinfo(hipinfo_path), re.MULTILINE
-        )
+        match = re.search(r"^\s*warpSize:\s+(\d+)", _run_hipinfo(hipinfo_path), re.MULTILINE)
         if match and int(match.group(1)) in (32, 64):
             return int(match.group(1))
     _log_rocm_detection(
@@ -2073,9 +2061,7 @@ class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
         try:
             _patch_bnb_cuda_specs_module(module)
         except Exception as e:
-            _log_rocm_detection(
-                f"Unsloth: bitsandbytes ROCm detection patch failed: {e}"
-            )
+            _log_rocm_detection(f"Unsloth: bitsandbytes ROCm detection patch failed: {e}")
         # One-shot; kept armed if exec_module raised so a retry is patched.
         _remove_bnb_rocm_fix_finder()
 
@@ -2091,16 +2077,19 @@ class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _BNB_ROCM_FIX_FINDER_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname != _BNB_CUDA_SPECS_MODULE:
             return None
         # Delegate to the remaining finders (PathFinder, editable installs,
         # frozen apps) and wrap whatever loader would actually be used.
         spec = None
         for finder in sys.meta_path:
-            if finder is self or getattr(
-                finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False
-            ):
+            if finder is self or getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
                 continue
             finder_find_spec = getattr(finder, "find_spec", None)
             if finder_find_spec is None:
@@ -2144,15 +2133,10 @@ def _repair_imported_bitsandbytes_rocm_constants():
     for module_name, module in list(sys.modules.items()):
         if module is None or module is cuda_specs:
             continue
-        if module_name != "bitsandbytes" and not module_name.startswith(
-            "bitsandbytes."
-        ):
+        if module_name != "bitsandbytes" and not module_name.startswith("bitsandbytes."):
             continue
         try:
-            if (
-                arch != "unknown"
-                and getattr(module, "ROCM_GPU_ARCH", None) == "unknown"
-            ):
+            if arch != "unknown" and getattr(module, "ROCM_GPU_ARCH", None) == "unknown":
                 module.ROCM_GPU_ARCH = arch
             if warp_size_64 is not None and isinstance(
                 getattr(module, "ROCM_WARP_SIZE_64", None), bool
@@ -2160,9 +2144,7 @@ def _repair_imported_bitsandbytes_rocm_constants():
                 module.ROCM_WARP_SIZE_64 = warp_size_64
         except Exception:
             continue
-    logger.info(
-        "Unsloth: Repaired bitsandbytes ROCm arch / warp-size constants in place."
-    )
+    logger.info("Unsloth: Repaired bitsandbytes ROCm arch / warp-size constants in place.")
 
 
 def fix_bitsandbytes_rocm_arch_detection():
@@ -2196,9 +2178,7 @@ def fix_bitsandbytes_rocm_arch_detection():
         if getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
             return  # Already installed -- idempotent.
     sys.meta_path.insert(0, _BnbCudaSpecsPatchFinder())
-    _log_rocm_detection(
-        "Unsloth: Installed the bitsandbytes ROCm arch detection patch hook."
-    )
+    _log_rocm_detection("Unsloth: Installed the bitsandbytes ROCm arch detection patch hook.")
 
 
 def _is_causal_conv1d_name(module_name: str) -> bool:
