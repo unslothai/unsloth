@@ -1177,8 +1177,10 @@ def patch_dgx_spark_dataloader_defaults():
         return
     _orig_post_init = Base.__post_init__
 
-    def __post_init__(self):
-        _orig_post_init(self)
+    # Forward *args/**kwargs so a future TrainingArguments (or a subclass) that
+    # adds InitVar parameters to __post_init__ keeps working through the wrapper.
+    def __post_init__(self, *args, **kwargs):
+        _orig_post_init(self, *args, **kwargs)
         if getattr(self, "dataloader_pin_memory", None) is True:
             self.dataloader_pin_memory = False
 

@@ -1808,7 +1808,13 @@ shell.Run cmd, 0, False
                     # pass only space-free args, avoiding Start-Process mis-splitting `bash -lc <str>`.
                     $_pathLine = 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib:$PATH"' + "`n"
                     $_jobsLine = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)`n" } else { "" }
-                    $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
+                    # Bridge llama.cpp pins into WSL: the provisioner honors UNSLOTH_LLAMA_TAG /
+                    # UNSLOTH_LLAMA_PR, but Windows env vars don't cross into WSL on their own --
+                    # without these exports a user's pin would be silently ignored by the
+                    # deferred background build. sh-single-quoted (tags/PRs are simple tokens).
+                    $_tagLine = if ($env:UNSLOTH_LLAMA_TAG) { "export UNSLOTH_LLAMA_TAG='$($env:UNSLOTH_LLAMA_TAG)'`n" } else { "" }
+                    $_prLine = if ($env:UNSLOTH_LLAMA_PR) { "export UNSLOTH_LLAMA_PR='$($env:UNSLOTH_LLAMA_PR)'`n" } else { "" }
+                    $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + $_tagLine + $_prLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
                     $_runnerB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_runner))
                     $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
                     $_fetchOut = & wsl.exe -d $distro --cd /root -u root -- bash -lc $_fetchCmd 2>$null

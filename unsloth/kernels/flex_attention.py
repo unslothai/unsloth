@@ -27,8 +27,12 @@ torch_compile_options = {
 
 
 def _flex_is_dgx_spark():
-    # Inlined copy of _utils.is_dgx_spark() to avoid a circular import.
-    # Spark = aarch64 + NVIDIA CUDA + a Spark device-name token.
+    # Inlined CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (kept local to
+    # avoid a circular import). Spark = aarch64 + a Spark device name via nvidia-smi.
+    # Must NOT touch torch.cuda: this runs at module import, and vision.py imports
+    # ..kernels before ._utils -- a device-name query here would initialize the CUDA
+    # allocator before patch_dgx_spark_memory_config() can set PYTORCH_CUDA_ALLOC_CONF
+    # on the very Spark hosts this check targets.
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True
@@ -39,11 +43,13 @@ def _flex_is_dgx_spark():
 
         if platform.machine().lower() not in ("aarch64", "arm64"):
             return False
-        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-            return False
-        names = " ".join(
-            str(torch.cuda.get_device_name(i)).upper() for i in range(torch.cuda.device_count())
+        import subprocess
+
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True, text = True, timeout = 5,
         )
+        names = (out.stdout or "").upper()
         return any(t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110"))
     except Exception:
         return False

@@ -390,13 +390,17 @@ function Uninstall-UnslothStudio {
             # /root/.local/bin/unsloth symlink (its target under /root/.unsloth is gone but the link still
             # resolves on PATH). Scope STRICTLY to /root: the WoA fallback installs there (wsl -u root), so
             # touching /home/*/.unsloth would erase an unrelated WSL user's own Unsloth/cache that this
-            # installer never created. pkill patterns use the [x]-regex self-exclusion trick: '[u]nsloth_studio'
-            # keeps the shell's own argv from matching while real processes still match. Same for '[l]lama-server'.
+            # installer never created.
             # The port-8888 kill is gated on an Unsloth install actually existing in the
             # distro (checked BEFORE the rm deletes the marker): a probed distro with an
-            # unrelated listener on 8888 (Jupyter etc.) must not lose it. The pkills are
-            # already Unsloth-specific, so they stay unconditional.
-            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
+            # unrelated listener on 8888 (Jupyter etc.) must not lose it. The process kill is
+            # scoped to argv referencing /root/.unsloth/ -- the fallback's install dir, which
+            # its Studio server, llama-server, and build runner all reference -- instead of
+            # bare name patterns that would also kill a user's own unrelated llama-server or
+            # a /home Studio in that distro. The backslash in '/root/\.unslot[h]/' keeps the
+            # pattern from matching this command's own argv (whose literal text contains the
+            # escaped form, not the resolved path) -- same idea as the [x]-bracket trick.
+            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
             $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
             if ($_recordedDistro) { $_cands = @($_recordedDistro) + $_cands }
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
