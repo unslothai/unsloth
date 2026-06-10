@@ -510,7 +510,7 @@ _VLM_MODEL_TYPES = {
 _AUDIO_ONLY_MODEL_TYPES = {"csm", "whisper"}
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
-# Vision check uses 5.5.0 (newest, recognizes all architectures).
+# Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_DIR = str(_studio_root() / ".venv_t5_550")
