@@ -154,7 +154,7 @@ export function ProjectsPage() {
               value={sortMode}
               onValueChange={(v) => setSortMode(v as SortMode)}
             >
-              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none">
+              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
