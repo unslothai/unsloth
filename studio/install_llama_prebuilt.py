@@ -1297,6 +1297,14 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
+        if host.has_rocm:
+            # Lemonade first, mirroring the Windows ROCm branch above, so a
+            # ROCm host routed to ggml-org does not silently get the CPU build.
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+            )
+            if lemonade_choice is not None:
+                attempts.append(lemonade_choice)
         asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:

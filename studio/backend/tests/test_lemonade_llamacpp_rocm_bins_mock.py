@@ -482,3 +482,37 @@ def test_fork_scan_windows_rocm_resolves_lemonade_by_requested_tag():
     assert not any(
         "lemonade-sdk" in u and "/releases/tags/" in u for u in seen_urls
     ), f"lemonade lookup was pinned to the fork release tag: {seen_urls}"
+
+
+@pytest.mark.skipif(
+    direct_upstream_release_plan is None,
+    reason = "direct release planners not present on this branch",
+)
+def test_direct_upstream_plan_includes_lemonade_for_linux_rocm_host():
+    """A Linux ROCm host on the ggml-org direct path (e.g. a --published-repo
+    override) must plan lemonade before the CPU tarball, mirroring the Windows
+    branch. The lemonade planning previously lived in the removed
+    --simple-policy dispatcher, so without this leg such hosts silently
+    install the CPU build."""
+    host = _make_rocm_host("gfx1151")
+    release = {
+        "tag_name": "b9022",
+        "name": "b9022",
+        "assets": [
+            {
+                "name": "llama-b9022-bin-ubuntu-x64.tar.gz",
+                "browser_download_url": (
+                    "https://github.com/ggml-org/llama.cpp/releases/download/"
+                    "b9022/llama-b9022-bin-ubuntu-x64.tar.gz"
+                ),
+            }
+        ],
+    }
+    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
+    assert plan is not None, "Linux ROCm host should produce a direct plan"
+    kinds = [a.install_kind for a in plan.attempts]
+    sources = [a.source_label for a in plan.attempts]
+    assert "linux-rocm" in kinds, f"lemonade ROCm attempt missing; got {kinds}"
+    assert sources[0] == "lemonade", f"lemonade must be the first attempt; got {sources}"
+    assert "gfx1151" in plan.attempts[0].name
