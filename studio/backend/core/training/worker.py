@@ -1353,7 +1353,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "(unsloth_zoo.mlx.loader / unsloth_zoo.mlx.trainer). Reinstall via "
             "install.sh on Apple Silicon."
         ) from e
-    from datasets import load_dataset
+    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if mx.metal.is_available():
         info = mx.device_info()
@@ -2879,7 +2879,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         from sentence_transformers.losses import MultipleNegativesRankingLoss
         from sentence_transformers.training_args import BatchSamplers
-        from datasets import load_dataset, Dataset
+        from datasets import Dataset
+        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
         from transformers import TrainerCallback
         from utils.paths import datasets_root, resolve_output_dir
     except ImportError as e:
