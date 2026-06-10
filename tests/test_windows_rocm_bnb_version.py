@@ -64,7 +64,7 @@ def clean_env(monkeypatch):
 
 def _force(import_fixes, monkeypatch, *, win, rocm, detected):
     monkeypatch.setattr(import_fixes.sys, "platform", "win32" if win else "linux")
-    monkeypatch.setattr(import_fixes, "_is_rocm_torch_build", lambda: rocm)
+    monkeypatch.setattr(import_fixes, "_is_hip_torch_build", lambda: rocm)
     monkeypatch.setattr(
         import_fixes, "_detect_installed_bnb_rocm_version", lambda: detected
     )
@@ -149,3 +149,53 @@ def test_explicit_opt_out(import_fixes, clean_env):
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# _is_hip_torch_build (the strict gate -- regression for the HIP-SDK-on-a-
+# CUDA-box false positive: env hints like HIP_PATH must NOT count)
+# ---------------------------------------------------------------------------
+
+
+def _fake_torch(hip):
+    return types.SimpleNamespace(version = types.SimpleNamespace(hip = hip))
+
+
+def test_hip_build_true_from_wheel_tag(import_fixes, monkeypatch):
+    monkeypatch.setattr(
+        import_fixes, "importlib_version", lambda name: "2.11.0+rocm7.13.0"
+    )
+    assert import_fixes._is_hip_torch_build() is True
+
+
+def test_hip_build_true_from_torch_version_hip(import_fixes, monkeypatch):
+    # Custom/source HIP build without the +rocm tag.
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.11.0")
+    monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch("7.2.0"))
+    assert import_fixes._is_hip_torch_build() is True
+
+
+def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(
+    import_fixes, monkeypatch
+):
+    """The Codex-flagged scenario: Windows box with HIP_PATH/ROCM_PATH set (HIP
+    SDK installed) but a CUDA torch. The strict gate must say False even though
+    _is_rocm_torch_build()'s runtime hints would say True -- otherwise
+    BNB_ROCM_VERSION gets set and bitsandbytes raises at import on its CUDA
+    build."""
+    monkeypatch.setenv("HIP_PATH", r"C:\Program Files\AMD\ROCm\6.2")
+    monkeypatch.setenv("ROCM_PATH", r"C:\Program Files\AMD\ROCm\6.2")
+    monkeypatch.setattr(
+        import_fixes, "importlib_version", lambda name: "2.9.0+cu126"
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch(None))
+    assert import_fixes._is_hip_torch_build() is False
+
+
+def test_hip_build_false_when_torch_absent(import_fixes, monkeypatch):
+    def _raise(name):
+        raise Exception("no torch dist")
+
+    monkeypatch.setattr(import_fixes, "importlib_version", _raise)
+    monkeypatch.setitem(__import__("sys").modules, "torch", None)
+    assert import_fixes._is_hip_torch_build() is False

@@ -1856,6 +1856,31 @@ def configure_amdgpu_asic_id_table_path():
 _BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
 
 
+def _is_hip_torch_build():
+    """Strict check that the installed torch is actually a HIP/ROCm build.
+
+    ``_is_rocm_torch_build()`` also accepts environment / filesystem hints
+    (``HIP_PATH``, ``ROCM_PATH``, ...) that are routinely present on Windows
+    machines with the AMD HIP SDK installed but a CUDA or CPU torch.
+    ``BNB_ROCM_VERSION`` must follow the torch build itself, not the host:
+    bitsandbytes raises at import on its CUDA build when the ROCm override
+    is set. Check the wheel version tag first (no torch import needed); fall
+    back to ``torch.version.hip`` for custom/source HIP builds without the
+    tag -- unsloth imports torch moments later anyway.
+    """
+    try:
+        if "rocm" in str(importlib_version("torch")).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        import torch
+
+        return bool(getattr(torch.version, "hip", None))
+    except Exception:
+        return False
+
+
 def _detect_installed_bnb_rocm_version():
     """Return the highest ``libbitsandbytes_rocm<NN>.dll`` suffix that is
     actually installed (as a string, e.g. ``"72"``), or ``None`` when no ROCm
@@ -1899,8 +1924,11 @@ def maybe_set_windows_rocm_bnb_version():
     ``BNB_ROCM_VERSION`` so the right backend loads. This must run before
     bitsandbytes is first imported.
 
-    Strict no-op unless ALL of: running on Windows, a ROCm torch build, the var
-    is unset, and a ``libbitsandbytes_rocm*.dll`` is actually installed. Linux
+    Strict no-op unless ALL of: running on Windows, torch is actually a
+    HIP/ROCm build (``_is_hip_torch_build()`` -- NOT the broader runtime-hint
+    helper, which would misfire on CUDA/CPU boxes that merely have the HIP
+    SDK's ``HIP_PATH`` set and make bitsandbytes raise at import), the var is
+    unset, and a ``libbitsandbytes_rocm*.dll`` is actually installed. Linux
     ROCm is untouched (its multi-backend bitsandbytes resolves the backend
     correctly from ``torch.version.hip``). Honors a user-provided
     ``BNB_ROCM_VERSION`` and an explicit opt-out
@@ -1912,7 +1940,7 @@ def maybe_set_windows_rocm_bnb_version():
         return None
     if "BNB_ROCM_VERSION" in os.environ:
         return None
-    if not _is_rocm_torch_build():
+    if not _is_hip_torch_build():
         return None
     version = _detect_installed_bnb_rocm_version()
     if version is None:
