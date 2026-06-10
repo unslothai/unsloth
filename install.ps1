@@ -1556,6 +1556,12 @@ shell.Run cmd, 0, False
         }
 
         $distro = if ($env:UNSLOTH_WSL_DISTRO) { $env:UNSLOTH_WSL_DISTRO } else { "Ubuntu-24.04" }
+        # For cmd-context uses of the name (the generated .cmd shim, copy-paste hints):
+        # wsl.exe parses its raw command line itself, and a QUOTED space-free name
+        # ('wsl -d "Ubuntu-24.04"') fails with WSL_E_DISTRO_NOT_FOUND (verified live on
+        # 2.x) -- while a bare spaced name would split after -d. So quote ONLY when the
+        # name contains whitespace.
+        $_distroArg = if ($distro -match '\s') { '"' + $distro + '"' } else { $distro }
         # Detect the distro by exit code (encoding-proof; wsl --list emits UTF-16 that PS mis-parses).
         $haveDistro = $false
         $global:LASTEXITCODE = -1
@@ -1680,9 +1686,9 @@ shell.Run cmd, 0, False
                 New-Item -ItemType Directory -Force -Path $shimDir *> $null
                 $shimLines = @(
                     '@echo off',
-                    # Quote the distro: an UNSLOTH_WSL_DISTRO with spaces (e.g. "Ubuntu Preview")
-                    # would otherwise split after -d and break every `unsloth ...` invocation.
-                    "wsl.exe -d `"$distro`" -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
+                    # $_distroArg: quoted only if the name has spaces -- wsl.exe rejects a
+                    # quoted space-free name (WSL_E_DISTRO_NOT_FOUND) but splits a bare spaced one.
+                    "wsl.exe -d $_distroArg -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
                 )
                 Set-Content -LiteralPath (Join-Path $shimDir "unsloth.cmd") -Value $shimLines -Encoding ASCII
                 # A fresh Windows profile may have no HKCU 'Path' value at all -> $userPath is null
@@ -1699,7 +1705,7 @@ shell.Run cmd, 0, False
                 substep "    unsloth studio        # runs in WSL; opens http://localhost:8888" "Cyan"
                 substep "    unsloth studio run    # also forwarded into WSL" "Cyan"
             } catch {
-                substep "(shim creation failed; launch manually):  wsl -d `"$distro`" -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
+                substep "(shim creation failed; launch manually):  wsl -d $_distroArg -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
             }
             # Desktop + Start Menu shortcuts: launch the WSL Studio and open the browser when ready.
             try {
@@ -1799,13 +1805,13 @@ shell.Run cmd, 0, False
                         Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
-                        substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d `"$distro`" -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
+                        substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $_distroArg -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
                     }
                 } catch {} finally { $ErrorActionPreference = $prevEapL }
             }
         } else {
             step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
-            substep "retry, or launch manually:  wsl -d `"$distro`" -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
+            substep "retry, or launch manually:  wsl -d $_distroArg -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
         }
         if ($torchOk) {
             # WSL GPU install succeeded. On this path the Windows venv is vestigial (everything
