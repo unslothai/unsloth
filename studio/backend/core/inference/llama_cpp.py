@@ -2663,11 +2663,7 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                     # Auto-download mmproj for vision models unless opted out.
-                    if (
-                        is_vision
-                        and not mmproj_path
-                        and not extra_args_disable_mmproj(extra_args)
-                    ):
+                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
