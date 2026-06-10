@@ -175,14 +175,14 @@ export function ProjectsPage() {
       </div>
 
       <div className="relative mt-6">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+        <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-muted-foreground">
           <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
         </span>
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="h-11 rounded-full border-none bg-background pl-10 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
+          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.09)] dark:bg-card dark:shadow-none"
           aria-label="Search projects"
         />
       </div>
