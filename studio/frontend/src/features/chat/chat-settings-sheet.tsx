@@ -1283,7 +1283,7 @@ export function ChatSettingsPanel({
             onClick={openSystemPromptEditor}
             aria-label="Edit system prompt"
             className={cn(
-              "panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              "panel-text-surface -mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
               params.systemPrompt
                 ? "text-nav-fg"
                 : "text-muted-foreground",
