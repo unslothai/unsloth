@@ -26,10 +26,8 @@ from .kernels.tuning import (
 )
 
 logger = logging.getLogger(__name__)
-# Set formatter to include timestamp, pathname and lineno
 formatter = logging.Formatter("%(asctime)s::%(levelname)s,%(pathname)s:%(lineno)d:: %(message)s")
 
-# Add console handler
 ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -45,7 +43,7 @@ def _check_tma_support():
     import triton.language as tl
 
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
-    # Check for both old experimental and new stable API names
+    # Support both old experimental and new stable API names
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -62,23 +60,18 @@ def supports_tma():
     return _SUPPORTS_TMA
 
 
-# Helper to support allow_in_graph
 try:
     from torch.compiler import allow_in_graph
 except ImportError:
     from torch._dynamo import allow_in_graph
 
 
-# Helper to detect if we're in tracing/compilation mode
 def _is_tracing(*tensors):
     """
-    Check if tensors are fake tensors used during torch.compile tracing.
-    During tracing, tensors are FakeTensor/FunctionalTensor and we can't run Triton kernels.
-    During execution, tensors are real Tensors and we MUST run the kernels.
+    True if tensors are fake tensors used during torch.compile tracing (Triton can't run).
 
-    NOTE: We do NOT use torch.compiler.is_compiling() because it returns True
-    during both tracing AND execution. We only want to skip kernels during tracing
-    when tensors are actually fake.
+    NOTE: We do NOT use torch.compiler.is_compiling() because it returns True during both
+    tracing AND execution; we only want to skip kernels during tracing on fake tensors.
     """
     for t in tensors:
         name = type(t).__name__
@@ -129,9 +122,9 @@ def grouped_gemm_forward(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning - manual kernel params will be ignored if autotune is True
+    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
-    # Kernel tuning params if not autotuning -- NOTE: these params need to be tuned, otherwise performance will be poor
+    # Kernel tuning params (must be tuned, else poor performance)
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -140,7 +133,7 @@ def grouped_gemm_forward(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # software pipelining -- set to True for now, won't impact until loop is re-written
+    # software pipelining; no effect until loop is re-written
     flatten: bool = True,
     # debugging
     debug: bool = False,
@@ -829,9 +822,7 @@ def check_valid_config_fwd(
     fuse_mul_post,
     is_first_gemm,
 ):
-    """
-    Check if the configuration is valid for the forward pass.
-    """
+    """Check if the configuration is valid for the forward pass."""
     is_second_gemm = not is_first_gemm
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
@@ -855,9 +846,7 @@ def check_valid_config_bwd_dW(
     fuse_mul_post,
     is_first_gemm,
 ):
-    """
-    Check if the configuration is valid for the backward pass of dW.
-    """
+    """Check if the configuration is valid for the backward pass of dW."""
     is_second_gemm = not is_first_gemm
     if fuse_mul_post:
         assert False, "Cannot fuse_mul is not supported for backward pass"
@@ -876,9 +865,7 @@ def check_valid_config_bwd_dX(
     fuse_mul_post,
     is_first_gemm,
 ):
-    """
-    Check if the configuration is valid for the backward pass of dW.
-    """
+    """Check if the configuration is valid for the backward pass of dW."""
     is_second_gemm = not is_first_gemm
     if fuse_mul_post:
         assert False, "Cannot fuse_mul is not supported for backward pass"

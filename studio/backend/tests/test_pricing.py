@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the per-session cost calculator. Verifies math
-against ``core/inference/pricing.py`` and graceful degradation."""
+"""Unit tests for the per-session cost calculator: math against
+``core/inference/pricing.py`` plus graceful degradation."""
 
 import math
 
@@ -462,12 +462,12 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
 
 
 # ── longest-prefix match: dated mini variant must not collide with the
-#    shorter family prefix. ──
+#    shorter family prefix ──
 
 
 def test_longest_prefix_match_wins_for_dated_mini_snapshot():
-    """`gpt-5.4-mini-2026-...` must inherit the mini rate, not the
-    shorter `gpt-5.4` rate (longest prefix wins)."""
+    """`gpt-5.4-mini-2026-...` inherits the mini rate, not the shorter
+    `gpt-5.4` rate (longest prefix wins)."""
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini-2026-04-23",
@@ -493,7 +493,7 @@ def test_longest_prefix_match_wins_for_dated_pro_snapshot():
 
 
 def test_openai_chat_style_usage_keys_priced_correctly():
-    """Chat-style envelope (`prompt_tokens` / `completion_tokens`) must
+    """Chat-style envelope (`prompt_tokens`/`completion_tokens`) must
     produce a non-zero cost (previously silently zeroed)."""
     out = calculate_cost(
         "openai",
@@ -577,7 +577,7 @@ def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
 
 def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
     """Chat-style envelope ships cached under prompt_tokens_details;
-    calculator must honour both this and input_tokens_details."""
+    calculator must honour both that and input_tokens_details."""
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     raw = calculate_cost(
         "openai",

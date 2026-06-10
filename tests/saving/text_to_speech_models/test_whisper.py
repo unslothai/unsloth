@@ -153,7 +153,6 @@ import torch
 
 FastModel.for_inference(model)
 model.eval()
-# Create pipeline without specifying the device
 whisper = pipeline(
     "automatic-speech-recognition",
     model = model,
@@ -161,9 +160,8 @@ whisper = pipeline(
     feature_extractor = tokenizer.feature_extractor,
     processor = tokenizer,
     return_language = True,
-    torch_dtype = torch.float16,  # Remove the device parameter
+    torch_dtype = torch.float16,
 )
-# Example usage
 audio_file = "Speech_12dB_s16.flac"
 transcribed_text = whisper(audio_file)
 # audio, sr = sf.read(audio_file)

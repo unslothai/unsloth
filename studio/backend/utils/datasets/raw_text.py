@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Shared helpers for raw-text dataset preparation.
-"""
+"""Shared helpers for raw-text dataset preparation."""
 
 from dataclasses import dataclass
 from typing import Literal

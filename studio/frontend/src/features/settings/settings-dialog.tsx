@@ -116,21 +116,20 @@ export function SettingsDialog() {
         showCloseButton={false}
         overlayClassName="bg-background/40"
         onCloseAutoFocus={(e) => {
-          // Restore focus to the element that triggered openDialog().
-          // Radix's FocusScope races our rAF-scheduled tab-button focus
-          // and loses the previous-focus reference, so we restore by hand.
+          // Restore focus to the element that triggered openDialog(). Radix's
+          // FocusScope races our rAF-scheduled tab focus and loses the
+          // previous-focus reference, so restore it by hand.
           if (opener && opener.isConnected) {
             e.preventDefault();
             opener.focus({ preventScroll: true });
           }
         }}
         className={cn(
-          // Cap at 820px but shrink to the viewport so we don't clip
-          // on iPad-portrait widths (640-820px) where the fixed
-          // `w-[820px]` overflows by 26px on each side.
+          // Cap at 820px but shrink to the viewport so it doesn't clip on
+          // iPad-portrait widths (640-820px) where fixed `w-[820px]` overflows.
           "settings-surface !max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
-          // Soft shadow only, no outline ring. Pin --radius to the light value
-          // so the corner rounding is the same in dark mode.
+          // Soft shadow, no outline ring. Pin --radius to the light value so
+          // corner rounding matches in dark mode.
           "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
           "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}

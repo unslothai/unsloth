@@ -156,34 +156,13 @@ def _offload_frozen_module_for_training(
     device_type: str,
     offload_device: Optional[str] = "cpu",
 ) -> None:
+    """Move the trainable copy to ``device_type`` and offload the frozen original.
+
+    float16 is promoted to float32 for GPU compatibility (e.g. Tesla T4).
+    ``offload_device`` currently only supports "cpu"; None leaves the frozen
+    module in place. Modifies ``module`` in-place.
+    See https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32).
     """
-    Offload frozen module to CPU and configure trainable copy for mixed precision training.
-
-    This function optimizes memory usage by:
-    1. Moving the trainable copy to the target device with appropriate precision
-    2. Optionally offloading the original frozen module to CPU/disk to free VRAM
-    3. Converting float16 to float32 for compatibility with certain GPUs (e.g., Tesla T4)
-
-    Args:
-        module: The module to configure. Must be a ModulesToSaveWrapper with a
-            `modules_to_save` attribute containing trainable and original modules.
-        device_type: Target device string for training (e.g., "cuda:0", "xpu:0")
-        offload_device: Device to offload frozen parameters (default: "cpu").
-            If None, the original frozen module remains on its current device.
-            Note: Currently only "cpu" is supported; disk offloading is planned.
-
-    Returns:
-        None (modifies module in-place)
-
-    Note:
-        - Float16 weights are automatically promoted to float32 for GPU compatibility
-        - When offload_device is specified, frozen parameters are moved to free VRAM
-        - Future versions will support disk-based offloading for even larger models
-
-    See Also:
-        - https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32 requirement)
-    """
-    # Early return with explicit None if module doesn't support mixed precision training
     if not hasattr(module, "modules_to_save"):
         return None
 
@@ -213,8 +192,7 @@ def _fast_prepare_inputs_for_generation(
     past_key_values = kwargs.get("past_key_values", None)
     original_attention_mask = attention_mask
 
-    # Handle inputs_embeds - only use on FIRST generation step (no cache)
-    # This fixes GitHub issue #3798: inputs_embeds was ignored
+    # Only use inputs_embeds on the first step (no cache). Fixes issue #3798.
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
     if input_ids is not None and input_ids.numel() > 0:
@@ -470,11 +448,10 @@ def LlamaAttention_fast_forward_inference(
 
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
-    # ensure correct shape
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
-    # Transformers 5.x generate() accumulates position_ids as [batch, full_seq_len]
-    # across decode steps. In single-token inference we only need the last position.
+    # Transformers 5.x accumulates position_ids as [batch, full_seq_len] across
+    # decode steps; single-token inference only needs the last position.
     if position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     position_ids = position_ids.to(Qn.device)
@@ -1152,12 +1129,8 @@ def LlamaModel_fast_forward(
         IS_ATTENTION_REFACTOR
         and (hasattr(self, "rotary_emb") or not hasattr(self.layers[0].self_attn, "rotary_emb"))
     ) or IS_GRANITE:
-        # Transformers main has made it mandatory to pass position_embeddings
-        # https://github.com/huggingface/transformers/pull/34858
-        # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
-        # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
-        # so let granite always use the attention refactor implementation.
-
+        # position_embeddings is mandatory on main: https://github.com/huggingface/transformers/pull/34858
+        # granite always had the attention refactor, so let it always use this path.
         self.rotary_emb.extend_rope_embedding(hidden_states, self.config.max_position_embeddings)
         position_embeddings = self.rotary_emb.get_cached(
             self.config.max_position_embeddings, hidden_states.device.index
@@ -1264,8 +1237,7 @@ def _LlamaModel_fast_forward_inference(
     attention_fast_forward_inference = LlamaAttention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
-    # This makes the attention and MLP customisable.
-    # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
+    # Makes attention and MLP customisable for models like qwen3/cohere.
     def LlamaModel_fast_forward_inference_custom(
         self,
         input_ids,
@@ -1533,8 +1505,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         if self.config.model_type == "granite":
-            # granite uses logit_scaling as key and they divide by the scale unlike cohere
-            # notice that for granite, logits_scale is 16 and for cohere it is 0.125 (aka 1/8) in their respective configs
+            # granite divides by logits_scaling (16) unlike cohere which multiplies by 0.125.
             # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
             # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
@@ -2019,11 +1990,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
-    # If the model starts out in training mode, restore training mode after generation
+    # Restore training mode after generation if we started in it
     restore_training_mode = self.training
-    # why: snapshot the actual GC mode value (e.g. "unsloth") before for_inference
-    # clears it, so the post-generate restore preserves the caller's configured GC
-    # mode rather than collapsing it to a plain bool.
+    # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it,
+    # so the restore preserves it rather than collapsing to a plain bool.
     use_gradient_checkpointing = next(
         (v for v in (getattr(m, "gradient_checkpointing", False) for m in self.modules()) if v),
         False,
@@ -2031,11 +2001,9 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     FastLlamaModel.for_inference(self)
 
-    # Unpack BatchEncoding passed as input_ids for backwards compatibility.
-    # Old notebooks do model.generate(input_ids=tokenizer(...)) where the tokenizer
-    # output is a BatchEncoding (dict-like). Transformers v5 generate() calls
-    # .shape on it directly and crashes. Unpack into separate kwargs so both
-    # v4 and v5 work transparently.
+    # Unpack BatchEncoding passed as input_ids (old notebooks do
+    # generate(input_ids=tokenizer(...))). v5 generate() calls .shape on it and
+    # crashes; unpack into separate kwargs so v4 and v5 both work.
     _maybe_encoding = kwargs.get("input_ids", None)
     if (
         _maybe_encoding is not None
@@ -2067,8 +2035,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep.
-    # Pop both, re-emit under the spelling forward() accepts.
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep; pop both,
+    # re-emit under the spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)
     _provided_logits = kwargs.pop("logits_to_keep", None)
     _provided = _provided_logits if _provided_logits is not None else _provided_num
@@ -2352,7 +2320,20 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
+        from .loader_utils import check_and_disable_bitsandbytes_loading
+        from unsloth_zoo.utils import get_quant_type
+
+        # Extract load_in_8bit from kwargs if provided
+        load_in_8bit = kwargs.get("load_in_8bit", False)
+
+        # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
+        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+        )
+
         bnb_config = None
+        _ckpt_qcfg = getattr(model_config, "quantization_config", None)
+
         if load_in_4bit:
             llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy()
             if IS_FALCON_H1:
@@ -2365,14 +2346,11 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
-            # For pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit),
-            # transformers uses the quantization_config baked into the
-            # checkpoint's config.json and ignores the runtime BitsAndBytesConfig
-            # we pass via kwargs. Merge our skip list into that bundled config
-            # so task heads like `score` (for *ForSequenceClassification) stay
-            # in the compute dtype. See unslothai/unsloth#5027.
-            _ckpt_qcfg = getattr(model_config, "quantization_config", None)
-            if _ckpt_qcfg is not None:
+            # Pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit) use the
+            # quantization_config baked into config.json, ignoring our runtime
+            # BitsAndBytesConfig. Merge our skip list into the bundled config so
+            # task heads like `score` stay in compute dtype. See unslothai/unsloth#5027.
+            if _ckpt_quant_method == "bitsandbytes" and _ckpt_qcfg is not None:
                 if isinstance(_ckpt_qcfg, dict):
                     _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
                     for _m in llm_int8_skip_modules:
@@ -2424,10 +2402,8 @@ class FastLlamaModel:
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
-            # Defensive: make sure the task head ended up in a floating dtype.
-            # The primary protection is SKIP_QUANTIZATION_MODULES plus the skip
-            # list merge above; this guards against a downstream path accidentally
-            # leaving the head in an integer storage. See unslothai/unsloth#5027.
+            # Defensive: ensure the task head is in a floating dtype, guarding
+            # against any path leaving it as integer storage. See unslothai/unsloth#5027.
             for _head_name in ("score", "classifier", "qa_outputs"):
                 _head = getattr(model, _head_name, None)
                 if (
@@ -2700,12 +2676,10 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
-        # lm_head. When weights are tied, zeroing the padding row also zeros
-        # the corresponding lm_head row, forcing logit = 0 for the pad token.
-        # This is higher than the (negative) logits for real tokens in models
-        # like Gemma, causing the decoder to emit <pad> and produce gibberish.
-        # Skip entirely if eos_token == pad_token to avoid zeroing EOS embedding.
+        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when
+        # tied, zeroing the row forces pad logit = 0, which beats the (negative)
+        # logits of real tokens (e.g. Gemma) and makes the decoder emit <pad>.
+        # Skip if eos_token == pad_token to avoid zeroing the EOS embedding.
         eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
         pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
         if tokenizer is not None and eos_token_id != pad_token_id:
