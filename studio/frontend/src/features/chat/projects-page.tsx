@@ -174,7 +174,7 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      <div className="relative mt-6">
+      <div className="relative mx-auto mt-10 w-full max-w-[640px]">
         <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-muted-foreground">
           <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
         </span>
@@ -182,7 +182,7 @@ export function ProjectsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.09)] dark:bg-card dark:shadow-none"
+          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.13)] dark:bg-card dark:shadow-none"
           aria-label="Search projects"
         />
       </div>
