@@ -980,26 +980,18 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
-    const checkpoint = s.params.checkpoint;
-    if (!checkpoint || s.modelLoading) {
-      return false;
-    }
-    const activeModel = s.models.find((m) => m.id === checkpoint);
-    return Boolean(activeModel?.hasAudioInput);
-  });
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
-        ...(audioAttachmentsEnabled ? [new AudioAttachmentAdapter()] : []),
+        new AudioAttachmentAdapter(),
         new TextAttachmentAdapter(),
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
         new OpenDocumentAttachmentAdapter(),
       ]),
-    [audioAttachmentsEnabled],
+    [],
   );
   const adapters = useMemo(
     () => ({ history, dictation, attachments }),
