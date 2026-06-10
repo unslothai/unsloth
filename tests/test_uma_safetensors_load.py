@@ -35,18 +35,11 @@ torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 import safetensors  # noqa: E402
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "unsloth"
-    / "models"
-    / "_uma_safetensors.py"
-)
+_MODULE_PATH = Path(__file__).resolve().parent.parent / "unsloth" / "models" / "_uma_safetensors.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "uma_safetensors_under_test", _MODULE_PATH
-    )
+    spec = importlib.util.spec_from_file_location("uma_safetensors_under_test", _MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

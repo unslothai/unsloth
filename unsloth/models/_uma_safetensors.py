@@ -170,9 +170,7 @@ def patch_unified_memory_safetensors_load():
             return _ClonedSlice(self._real.get_slice(name), self._device)
 
         def get_tensor(self, name):
-            return (
-                self._real.get_tensor(name).clone().to(self._device, non_blocking = False)
-            )
+            return self._real.get_tensor(name).clone().to(self._device, non_blocking = False)
 
     @functools.wraps(real_safe_open)
     def _uma_safe_open(*args, **kwargs):
