@@ -48,6 +48,7 @@ import {
 } from "../api/prompts-api";
 import {
   listStoredChatMessages,
+  listStoredChatThreads,
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
@@ -491,6 +492,36 @@ export async function exportBulkConversationsSeparate(
     `${basename}.zip`,
     "application/zip",
   );
+}
+
+// Scope-level bulk export shared by the sidebar Recents menu and
+// Settings -> Chat -> Data. "recents" = chats outside projects; "all" adds
+// project chats.
+export async function bulkExportConversationsByScope(
+  scope: "recents" | "all",
+  format: ConvExportFormat,
+  merged: boolean,
+): Promise<void> {
+  try {
+    const threads = await listStoredChatThreads({
+      includeArchived: false,
+      ...(scope === "recents" ? { projectId: null } : {}),
+    });
+    const ids = [...new Set(threads.map((t) => t.id))];
+    if (ids.length === 0) {
+      toast.info("No conversations to export.");
+      return;
+    }
+    const ts = new Date().toISOString().slice(0, 10);
+    const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+    if (merged) {
+      await exportBulkConversationsMerged(ids, format, basename);
+    } else {
+      await exportBulkConversationsSeparate(ids, format, basename);
+    }
+  } catch {
+    toast.error("Export failed.");
+  }
 }
 
 export async function exportProjectConversations(

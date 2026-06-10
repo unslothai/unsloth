@@ -30,6 +30,11 @@ export {
 } from "./artifacts/store";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
+  EXPORT_FORMATS_LIST,
+  bulkExportConversationsByScope,
+  importConversationsFromFile,
+} from "./prompt-storage/prompt-storage-dialog";
+export {
   deleteChatItem,
   renameChatItem,
   useChatSidebarItems,
