@@ -1,50 +1,29 @@
 #!/usr/bin/env python3
 """Smoke test: N parallel install.sh runs with distinct UNSLOTH_STUDIO_HOME
-values must produce N fully isolated installs whose backends can run
-side by side without clashing.
+values must produce N fully isolated installs whose backends run side by side.
 
-Covers the env-override path added in #5190:
+Covers the env-override path from #5190:
 
     install-time
-        * N concurrent ``install.sh --local --no-torch`` runs against
-          this checkout, each pinned to its own UNSLOTH_STUDIO_HOME and
-          a redirected HOME, all exit 0.
-        * Each STUDIO_HOME contains its own bin/, share/, llama.cpp/
-          and unsloth_studio/ venv, with no cross-install absolute
-          paths.
-        * share/studio_install_id is unique across the N installs.
-        * share/studio.conf exports UNSLOTH_EXE, UNSLOTH_STUDIO_HOME
-          and UNSLOTH_LLAMA_CPP_PATH, all pointing inside this install.
-        * share/launch-studio.sh has @@DATA_DIR@@ substituted to its
-          own share/ at install time.
-        * bin/unsloth is a symlink that resolves into its own venv.
-        * The redirected HOME is left clean: no shell-rc append, no
-          .desktop file, no Studio.app stub, no shared marker.
+        * N concurrent ``install.sh --local --no-torch`` runs, each pinned to
+          its own UNSLOTH_STUDIO_HOME + redirected HOME, all exit 0.
+        * Each STUDIO_HOME has its own bin/share/llama.cpp/unsloth_studio venv,
+          a unique share/studio_install_id, and a studio.conf / launch-studio.sh
+          pointing only inside this install. bin/unsloth resolves into its venv.
+        * The redirected HOME is left clean (no rc append, .desktop, app stub).
 
     runtime
-        * N concurrent ``bin/unsloth studio`` launches each bind their
-          own dynamically allocated free port and stay healthy.
-        * /api/health is 200, status is healthy, chat_only is true
-          under --no-torch.
-        * The studio_root_id reported by /api/health on each backend
-          equals that install's share/studio_install_id, so the
-          runtime resolver agrees with the install-time write.
-        * studio_root_id values are pairwise distinct.
-        * GET / and GET /api/chat are 200 on every backend.
-        * The Python interpreter behind each PID is the install's own
-          venv python (the bin/unsloth shim does not cross-resolve).
+        * N ``bin/unsloth studio`` launches each bind a free port and report
+          /api/health 200, healthy, chat_only true under --no-torch.
+        * studio_root_id equals the install's studio_install_id and is pairwise
+          distinct; GET / and /api/chat are 200; each PID's python is its venv.
 
-This is an integration smoke runner, not a pytest unit test. It does
-real installs (~1 minute end to end on a warm uv cache) and is meant
-to be invoked explicitly:
+Integration smoke runner (not pytest); ~1 minute on a warm uv cache. Invoke:
 
-    python tests/studio/install/smoke_test_parallel_studio_home.py
-    python tests/studio/install/smoke_test_parallel_studio_home.py --n 6 --keep
+    python tests/studio/install/smoke_test_parallel_studio_home.py [--n 6 --keep]
 
-Exits 0 on PASS, 1 on FAIL, 2 on infrastructure error. Artifacts land
-under a temporary directory and are removed on PASS unless --keep is
-set; on FAIL or ERROR they are kept regardless so logs can be
-inspected.
+Exits 0 PASS / 1 FAIL / 2 error. Artifacts removed on PASS unless --keep;
+kept on FAIL/ERROR for inspection.
 """
 
 from __future__ import annotations

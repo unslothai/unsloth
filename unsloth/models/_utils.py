@@ -92,6 +92,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import copy
 import re
 from dataclasses import dataclass, field
 import functools
@@ -196,8 +197,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
     """
     Apply gradient checkpointing with smart heuristics.
 
-    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
-    is not worth it. Benchmarks show standard gc is faster for small sequences.
+    For seq < 512, gc="unsloth" offloading overhead isn't worth it; standard gc is faster.
 
     Args:
         use_gradient_checkpointing: "unsloth", True, False, or None
@@ -208,9 +208,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
         The effective use_gradient_checkpointing value (may change from "unsloth" to True)
     """
     if use_gradient_checkpointing == "unsloth":
-        # Gradient offloading overhead is not worth it for small sequences.
-        # Benchmarks show crossover point is around seq_len 384-512.
-        # For seq < 512, standard gradient checkpointing is faster.
+        # Offloading not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
             unpatch_unsloth_smart_gradient_checkpointing()
             return True
@@ -473,6 +471,98 @@ def resolve_model_class(auto_model, config):
         if result is None:
             return None
     return result[0] if isinstance(result, (list, tuple)) else result
+
+
+def _is_family_text_decoder(parent_model_type, text_model_type):
+    # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
+    # reused decoder (llava -> llama) would load random weights, so keep the full model.
+    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+
+
+def _get_text_only_config(model_config, model_name):
+    # Text sub-config of a vision-language config so FastLanguageModel skips the vision tower (PR #5816).
+    text_config = None
+    if hasattr(model_config, "get_text_config"):
+        text_config = model_config.get_text_config()
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None:
+        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # Carry over quantization_config; copy first since get_text_config() shares the parent's object.
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config = copy.copy(text_config)
+        text_config.quantization_config = _remap_text_only_skip_modules(qc)
+    return text_config
+
+
+def _remap_text_only_skip_modules(qc):
+    # Remap llm_int8_skip_modules off the VLM wrapper prefix (language_model.model.* ->
+    # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
+    is_dict = isinstance(qc, dict)
+    skip = (
+        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    )
+    if not skip:
+        return qc
+    remapped = []
+    for name in skip:
+        for pref in (
+            "language_model.model.",
+            "model.language_model.",
+            "language_model.",
+        ):
+            if name.startswith(pref):
+                name = (
+                    ("model." + name[len(pref) :])
+                    if pref != "language_model."
+                    else name[len(pref) :]
+                )
+                break
+        if name.startswith(
+            (
+                "vision_tower",
+                "multi_modal_projector",
+                "audio_tower",
+                "modality_projection",
+            )
+        ):
+            continue
+        remapped.append(name)
+    remapped = list(dict.fromkeys(remapped))
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    if is_dict:
+        qc["llm_int8_skip_modules"] = remapped
+    else:
+        qc.llm_int8_skip_modules = remapped
+    return qc
+
+
+def _get_text_only_key_mapping(parent_config, text_config):
+    # transformers >=5 stopped auto-stripping the VLM wrapper prefix (base_model_prefix
+    # changed language_model -> model), so remap the text weights onto the decoder keys.
+    # None on tf <5 (still strips; a mapping would break the load) or non-family. See PR #5816.
+    if Version(transformers_version) < Version("5.0.0"):
+        return None
+    if not _is_family_text_decoder(
+        getattr(parent_config, "model_type", ""),
+        getattr(text_config, "model_type", ""),
+    ):
+        return None
+    return {
+        r"^language_model\.model\.": "model.",
+        r"^model\.language_model\.": "model.",
+        r"^language_model\.lm_head\.": "lm_head.",
+    }
+
+
+def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
+    # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
+    mapping = _get_text_only_key_mapping(parent_config, text_config)
+    if not mapping:
+        return
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
 def resolve_attention_implementation(
@@ -1807,16 +1897,7 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 
 # to move multiple tensors to the same device
 def move_to_device(target_device, *tensors):
-    """
-    Move multiple tensors to target device if they're not already there.
-
-    Args:
-        target_device: The target device to move tensors to
-        *tensors: Variable number of tensors to potentially move
-
-    Returns:
-        tuple: The tensors on the target device (same objects if already on device, new if moved)
-    """
+    """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):
         target_device = torch.device(target_device)
     elif isinstance(target_device, str):

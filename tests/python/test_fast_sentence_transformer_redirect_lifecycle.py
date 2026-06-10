@@ -18,8 +18,8 @@ import pytest
 
 
 def _stub_module(name: str) -> types.ModuleType:
-    # __spec__ must be set so importlib.util.find_spec(name) does not raise
-    # ValueError if a downstream test imports the real package.
+    # __spec__ set so find_spec(name) doesn't raise if a later test imports
+    # the real package.
     mod = types.ModuleType(name)
     mod.__spec__ = importlib.util.spec_from_loader(name, loader = None)
     return mod

@@ -60,13 +60,12 @@ def check_package_installed(package_name, package_manager = None):
 def require_package(package_name, executable_name = None):
     """Require a package to be installed, exit if not found"""
 
-    # First check if executable is in PATH (most reliable)
+    # Executable in PATH is the most reliable signal
     if executable_name:
         if shutil.which(executable_name):
             print(f"✓ {executable_name} is available")
             return
 
-    # Then check with package manager
     pm = detect_package_manager()
     is_installed = check_package_installed(package_name, pm)
 
@@ -74,7 +73,6 @@ def require_package(package_name, executable_name = None):
         print(f"✓ Package {package_name} is installed")
         return
 
-    # Package not found - show installation instructions
     print(f"❌ Error: {package_name} is not installed")
     print(f"\nPlease install {package_name} using your system package manager:")
 

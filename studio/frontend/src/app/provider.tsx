@@ -9,8 +9,10 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { LlamaUpdateBanner } from "@/components/llama-update-banner";
+import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -49,11 +51,10 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
 
   const win = getCurrentWindow();
   // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window itself after restoreStateCurrent is unreliable:
-  // on GTK, set_size against a hidden window is deferred until show(), so
-  // innerSize() reads a stale value and any baseline fallback would overwrite the
-  // queued restore. On macOS the same probe works, hence the inconsistency
-  // between previous iterations of this code.
+  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
+  // set_size on a hidden window is deferred until show(), so innerSize() reads a
+  // stale value and a baseline fallback would overwrite the queued restore. On
+  // macOS the same probe works, hence the inconsistency between prior iterations.
   const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
@@ -61,9 +62,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
 
   if (hasSavedState) {
-    // Subsequent launch: the plugin handles size, position, and maximized,
-    // with built-in off-screen protection (monitor-intersection check) for
-    // positions saved on a now-disconnected display.
+    // Subsequent launch: plugin restores size/position/maximized, with built-in
+    // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
       StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
     );
@@ -88,8 +88,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
   await win.show();
   if (!isCurrent()) return;
-  // Apply constraints after restore/show. Setting constraints before plugin restore
-  // can emit a Resized event and overwrite the plugin's cached saved size.
+  // Apply constraints after restore/show: doing so before plugin restore can emit
+  // a Resized event and overwrite the plugin's cached saved size.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
 }
 
@@ -258,6 +258,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
+        <DownloadManagerPanel />
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
         <LlamaUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
@@ -276,6 +277,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
+      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen
@@ -294,7 +296,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  if (!shouldUseCustomWindowTitlebar()) return content;
+  if (!shouldUseCustomWindowTitlebar()) {
+    // macOS desktop uses the native titlebar (no custom chrome), so it returns
+    // here before the custom-titlebar branch below. Mount the updater banner on
+    // this path too, otherwise macOS desktop never sees the in-app update.
+    return (
+      <>
+        {content}
+        <LlamaUpdateBanner
+          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+        />
+      </>
+    );
+  }
 
   const showSidebarSurface =
     showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
@@ -315,17 +329,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
-      <TauriWrapper>
-        {children}
-      </TauriWrapper>
-      <Toaster
-        position="top-right"
-        visibleToasts={2}
-        expand={true}
-        closeButton={true}
-        // Clear the chat header buttons on the right.
-        offset={{ top: 12, right: 64 }}
-      />
+      <TooltipProvider>
+        <TauriWrapper>
+          {children}
+        </TauriWrapper>
+        <Toaster
+          position="top-right"
+          visibleToasts={2}
+          expand={true}
+          closeButton={true}
+          // Clear the chat header buttons on the right.
+          offset={{ top: 12, right: 64 }}
+        />
+      </TooltipProvider>
     </ThemeProvider>
   );
 }

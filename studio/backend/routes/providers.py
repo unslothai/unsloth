@@ -4,12 +4,12 @@
 """
 API routes for external LLM provider management.
 
-Provides endpoints for:
-  - Discovering available provider types (registry)
+Endpoints:
+  - Discover available provider types (registry)
   - CRUD for saved provider configurations (no API keys stored)
-  - Fetching the RSA public key for API key encryption
-  - Testing provider connectivity
-  - Listing models from a provider
+  - Fetch the RSA public key for API key encryption
+  - Test provider connectivity
+  - List models from a provider
 """
 
 import uuid
@@ -54,11 +54,8 @@ router = APIRouter()
 async def get_public_key(current_subject: str = Depends(get_current_subject)):
     """Return the RSA public key PEM for client-side API key encryption.
 
-    The ``fingerprint`` field is a short SHA256 of the PEM and is meant
-    purely for diagnostics — a mismatch between what the frontend
-    captured at encrypt time and what the server reports here is a
-    clear signal that the keypair rotated mid-flight (e.g. the server
-    re-ran ``init_key_pair`` for any reason).
+    ``fingerprint`` is a short SHA256 of the PEM; a mismatch with what the
+    frontend captured at encrypt time signals the keypair rotated mid-flight.
     """
     return {
         "public_key": get_public_key_pem(),
@@ -80,10 +77,8 @@ async def list_registry(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/pricing")
 async def get_pricing_snapshot(current_subject: str = Depends(get_current_subject)):
-    """Static per-MTok pricing table the frontend uses to convert
-    upstream usage chunks into a per-turn USD cost. See
-    ``core/inference/pricing.py`` for sourcing notes; values reflect
-    the published prices as of the file's last update."""
+    """Static per-MTok pricing table the frontend uses to convert upstream
+    usage into per-turn USD cost. See ``core/inference/pricing.py`` for sourcing."""
     return pricing_snapshot()
 
 
@@ -196,7 +191,7 @@ async def test_provider(
     Test connectivity to an external provider.
 
     Makes a lightweight GET /models call to verify the API key works.
-    The encrypted_api_key is decrypted server-side and never stored.
+    encrypted_api_key is decrypted server-side and never stored.
     """
     info = get_provider_info(payload.provider_type)
     if info is None:
@@ -267,7 +262,7 @@ async def list_provider_models(
     """
     List models available from an external provider.
 
-    The encrypted_api_key is decrypted server-side and never stored.
+    encrypted_api_key is decrypted server-side and never stored.
     """
     info = get_provider_info(payload.provider_type)
     if info is None:
@@ -308,16 +303,10 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        # Registry-level model-id filters are scoped to the canonical
-        # native Gemini base. A custom Gemini OAI-compatible proxy
-        # (LiteLLM, deployment gateway) returns IDs like
-        # `google/gemini-2.5-flash`, `gemini/gemini-2.5-flash`, or
-        # team-prefixed deployment aliases; the native allowlist regex
-        # would strip those out and leave the picker empty even though
-        # the chat path now routes them via the OAI-compatible
-        # dispatcher (the same gate ExternalProviderClient applies for
-        # request building). Match the host check here so the model
-        # list and chat dispatch agree on what counts as "native".
+        # Registry model-id filters only apply to the native Gemini base. A
+        # custom OAI-compatible proxy returns prefixed IDs the native allowlist
+        # would strip, leaving the picker empty; match the host check here so the
+        # model list and chat dispatch agree on what counts as "native".
         apply_registry_model_filters = True
         if payload.provider_type == "gemini":
             try:
@@ -344,11 +333,8 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Apply an optional cap after filtering so registry entries with a
-        # large remote catalog (e.g. HF Inference Providers) can stay
-        # picker-sized. No popularity sort happens server-side, so this is
-        # "first N matches" — pair with default_models for any must-have
-        # flagship ids.
+        # Optional cap after filtering to keep large catalogs picker-sized.
+        # Unsorted, so "first N matches"; pair with default_models for flagships.
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]
