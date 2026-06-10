@@ -423,3 +423,69 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
     assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
+
+
+# ---------------------------------------------------------------------------
+# Fork release scan: Windows ROCm must resolve lemonade by the REQUESTED tag
+# ---------------------------------------------------------------------------
+
+_resolve_release_asset_choice = getattr(_mod, "resolve_release_asset_choice", None)
+_ApprovedReleaseChecksums = getattr(_mod, "ApprovedReleaseChecksums", None)
+
+
+@pytest.mark.skipif(
+    _resolve_release_asset_choice is None or _ApprovedReleaseChecksums is None,
+    reason = "fork release planner not present on this branch",
+)
+def test_fork_scan_windows_rocm_resolves_lemonade_by_requested_tag():
+    """Windows ROCm host planned from a fork release scan: the lemonade lookup
+    must use the user's requested tag ("latest" -> lemonade /releases/latest),
+    NOT the scanned fork release's upstream tag. Lemonade publishes its own
+    tag series (b1262, ...) that never contains upstream tag numbers
+    (b9457, ...), so pinning lemonade to the per-release tag 404s on every
+    scanned release; the scan then walks the whole release history (two
+    lemonade fetches per release) and AMD Windows ends in a rate-limited
+    fatal error or a HIP source build instead of the lemonade prebuilt."""
+    host = _make_rocm_host("gfx1151", windows = True)
+    # The fork bundle carries no windows-rocm artifact (current reality until
+    # the prebuilt pipeline publishes ROCm bundles).
+    bundle = _rocm_bundle("gfx1151", ["gfx1151"])
+    checksums = _ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        upstream_tag = "b9457",
+        source_repo = None,
+        source_repo_url = None,
+        source_ref_kind = None,
+        artifacts = {},
+    )
+    seen_urls: list[str] = []
+
+    def _fake_fetch(api_url, *args, **kwargs):
+        seen_urls.append(api_url)
+        if "lemonade-sdk" in api_url:
+            if api_url.endswith("/releases/latest"):
+                return _stub_lemonade_release()
+            raise RuntimeError(f"unexpected pinned lemonade fetch: {api_url}")
+        # ggml-org per-release asset listing used for the upstream HIP/CPU
+        # filename fallbacks; empty assets is fine for this test.
+        return {"tag_name": "b9457", "assets": []}
+
+    with patch.object(_mod, "fetch_json", side_effect = _fake_fetch):
+        attempts = _resolve_release_asset_choice(
+            host,
+            "b9457",  # concrete per-release upstream tag from the scan loop
+            bundle,
+            checksums,
+            requested_tag = "latest",
+        )
+
+    lemonade = [a for a in attempts if a.source_label == "lemonade"]
+    assert lemonade, f"lemonade attempt missing for Windows ROCm host; got {attempts}"
+    assert "gfx1151" in lemonade[0].name
+    assert any(
+        u.endswith("/releases/latest") for u in seen_urls
+    ), f"lemonade was never resolved via /releases/latest; fetches: {seen_urls}"
+    assert not any(
+        "lemonade-sdk" in u and "/releases/tags/" in u for u in seen_urls
+    ), f"lemonade lookup was pinned to the fork release tag: {seen_urls}"
