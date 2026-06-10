@@ -182,7 +182,7 @@ export function ProjectsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.07)] dark:bg-card dark:shadow-none"
+          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.07)] dark:bg-card dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
           aria-label="Search projects"
         />
       </div>
@@ -192,7 +192,7 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[160px] rounded-[14px] bg-card p-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+              className="min-h-[160px] rounded-[14px] bg-card p-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
             >
               <Skeleton className="h-5 w-2/3 rounded-[6px]" />
               <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
@@ -211,7 +211,7 @@ export function ProjectsPage() {
           {projects.length === 0 && (
             <Button
               variant="outline"
-              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
+              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
               onClick={() => {
                 setNameDraft("");
                 setCreating(true);
@@ -236,7 +236,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] bg-card p-5 text-left shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-accent/40 dark:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] bg-card p-5 text-left shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-accent/40 dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
                 <h2 className="truncate pr-2 text-[16px] font-semibold text-foreground">

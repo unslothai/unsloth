@@ -840,13 +840,9 @@
 			var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 	}
 
+	/* Dark: chatbox geometry, stronger color so it reads on dark surfaces. */
 	.dark .shadow-border {
-		box-shadow: none;
-	}
-
-	/* Settings dialog: no shadow in dark mode. */
-	.dark .settings-surface.shadow-border {
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	/* Lift the dialog off the page bg; halfway to --card keeps the inner
@@ -900,7 +896,7 @@
 	}
 
 	.dark .chat-search-surface {
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	.menu-soft-surface,
@@ -917,17 +913,11 @@
 			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 				var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
+	/* Dark: chatbox geometry, stronger color. */
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
-		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
-		--menu-soft-offset-y: 8px;
-		--menu-soft-blur: 28px;
-		--menu-soft-spread: -6px;
-	}
-	.dark .menu-soft-surface-up {
-		--menu-soft-offset-y: -6px;
-		--menu-soft-spread: -8px;
+		--menu-soft-shadow: rgba(0, 0, 0, 0.5);
 	}
 
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
@@ -939,7 +929,7 @@
 	}
 
 	.dark .unsloth-model-selector-menu.menu-soft-surface {
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -958,7 +948,7 @@
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
-		box-shadow: 0 4px 14px var(--background) !important;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5) !important;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
@@ -972,7 +962,7 @@
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	.chat-composer-surface {
@@ -988,7 +978,7 @@
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	.composer-pill-btn {
@@ -1082,7 +1072,7 @@
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
@@ -1231,8 +1221,7 @@
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
-		/* Shadow tinted to the page bg so it blends, not a dark halo. */
-		box-shadow: 0 4px 14px var(--background);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	/* Compact items; also applied to portaled sub-content. */
@@ -1318,7 +1307,7 @@
 	}
 
 	.dark .artifact-panel-shell {
-		box-shadow: none;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
 	}
 
 	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
@@ -1684,7 +1673,7 @@
 /* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: none !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */

@@ -449,7 +449,7 @@ export function DataRecipesPage(): ReactElement {
             </p>
           </div>
         ) : recipes.length === 0 ? (
-          <Empty className="mt-8 border border-dashed border-border/70">
+          <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <HugeiconsIcon icon={CookBookIcon} className="size-5" />
