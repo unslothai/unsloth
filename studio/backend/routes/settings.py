@@ -16,6 +16,12 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.helper_precache_settings import (
+    DEFAULT_HELPER_PRECACHE_ENABLED,
+    get_helper_precache_enabled,
+    helper_model_disabled_by_env,
+    set_helper_precache_enabled,
+)
 
 router = APIRouter()
 
@@ -35,12 +41,29 @@ class UploadLimitResponse(BaseModel):
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
 
 
+class HelperPrecachePayload(BaseModel):
+    enabled: bool
+
+
+class HelperPrecacheResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
+    disabled_by_env: bool
+
+
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
     return UploadLimitResponse(
         max_upload_size_mb = limit_mb,
         max_upload_size_bytes = upload_limit_bytes(limit_mb),
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
+    )
+
+
+def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResponse:
+    return HelperPrecacheResponse(
+        enabled = get_helper_precache_enabled() if enabled is None else enabled,
+        disabled_by_env = helper_model_disabled_by_env(),
     )
 
 
@@ -64,3 +87,27 @@ def update_upload_limit(
             log = logger,
         ) from exc
     return _upload_limit_response(limit_mb)
+
+
+@router.get("/helper-precache", response_model = HelperPrecacheResponse)
+def get_helper_precache(
+    current_subject: str = Depends(get_current_subject),
+) -> HelperPrecacheResponse:
+    return _helper_precache_response()
+
+
+@router.put("/helper-precache", response_model = HelperPrecacheResponse)
+def update_helper_precache(
+    payload: HelperPrecachePayload, current_subject: str = Depends(get_current_subject)
+) -> HelperPrecacheResponse:
+    try:
+        enabled = set_helper_precache_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Helper LLM pre-cache setting."),
+            event = "settings.update_helper_precache_failed",
+            log = logger,
+        ) from exc
+    return _helper_precache_response(enabled)
