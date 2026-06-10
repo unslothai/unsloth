@@ -7,6 +7,7 @@ Main FastAPI application for Unsloth UI Backend
 
 import os
 import sys
+import threading
 from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
