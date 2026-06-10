@@ -2611,8 +2611,6 @@ class TestDirectLinuxNvidiaCpuGate:
         assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
-
-
 # ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
 # ===========================================================================
