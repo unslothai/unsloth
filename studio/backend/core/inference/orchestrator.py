@@ -837,8 +837,11 @@ class InferenceOrchestrator:
 
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
 
-        def _single_turn(conv: list):
-            # ``conv`` already carries any system message.
+        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+            # ``conv`` already carries any system message. ``active_tools`` lets
+            # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
+            # later same-response prompts.
+            turn_tools = active_tools if active_tools is not None else tools
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -850,7 +853,7 @@ class InferenceOrchestrator:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
-                tools = tools,
+                tools = turn_tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,

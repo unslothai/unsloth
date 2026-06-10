@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
   CursorInfo02Icon,
+  DashboardCircleIcon,
   Delete02Icon,
   Download01Icon,
   DownloadSquare01Icon,
@@ -877,6 +878,15 @@ export function AppSidebar() {
                 }
                 onClick={() => {
                   navigate({ to: "/projects" });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={DashboardCircleIcon}
+                label={t("shell.navigation.hub")}
+                active={pathname === "/hub" || pathname.startsWith("/hub/")}
+                onClick={() => {
+                  navigate({ to: "/hub" });
                   closeMobileIfOpen();
                 }}
               />

@@ -8,6 +8,8 @@ Main FastAPI application for Unsloth UI Backend
 import os
 import sys
 from pathlib import Path as _Path
+import asyncio
+from dataclasses import asdict
 
 # Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -218,6 +220,16 @@ from routes import (
     training_history_router,
     training_router,
 )
+from hub.routes import (
+    inventory_router as hub_inventory_router,
+    datasets_router as hub_datasets_router,
+)
+from hub.schemas.downloads import TransportCapabilities
+from hub.utils.download_registry import (
+    get_download_transport_capabilities,
+    reap_orphan_workers as reap_hub_orphan_workers,
+    terminate_active_downloads as terminate_hub_downloads,
+)
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from auth import storage
@@ -282,6 +294,27 @@ def _desktop_owner() -> dict[str, str] | None:
     return _DESKTOP_OWNER
 
 
+def _start_helper_precache_if_enabled() -> None:
+    """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
+    try:
+        from utils.helper_precache_settings import should_preload_helper_on_startup
+        if not should_preload_helper_on_startup():
+            return
+    except Exception:
+        return
+
+    import threading
+
+    def _precache():
+        try:
+            from utils.datasets.llm_assist import precache_helper_gguf
+            precache_helper_gguf()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -294,6 +327,9 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets the DEVICE global used everywhere.
     detect_hardware()
+
+    # Reap download workers orphaned by a previous crash before new downloads start.
+    reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
     # Both cached; freshness has a 24h disk TTL.
@@ -337,18 +373,7 @@ async def lifespan(app: FastAPI):
         import structlog
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
-    # Pre-cache the helper GGUF model for LLM-assisted dataset detection,
-    # in a background thread so it doesn't block server startup.
-    import threading
-
-    def _precache():
-        try:
-            from utils.datasets.llm_assist import precache_helper_gguf
-            precache_helper_gguf()
-        except Exception:
-            pass  # non-critical
-
-    threading.Thread(target = _precache, daemon = True).start()
+    _start_helper_precache_if_enabled()
 
     # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
     def _warm_rag_embedder():
@@ -384,6 +409,7 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
+    await asyncio.to_thread(terminate_hub_downloads)
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 
@@ -406,8 +432,8 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-# Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
-# kept for legacy web-search faviconV2 paths. All else is same-origin.
+# img/media-src allow any https origin so HF model-card assets render (mirrors
+# tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
@@ -452,9 +478,8 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
 
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https://t0.gstatic.com "
-        "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com https://www.google.com; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' data: blob: https:; "
         f"connect-src {connect_src}; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
@@ -508,6 +533,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
+    "/api/hub",
     "/api/chat",
     "/api/settings",
     "/api/train",
@@ -733,6 +759,8 @@ app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["dat
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
+app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 
 
 # ============ Health and System Endpoints ============
@@ -800,6 +828,14 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     return get_studio_update_status(UNSLOTH_VERSION)
 
 
+@app.get(
+    "/api/studio/download-transport-capabilities",
+    response_model = TransportCapabilities,
+)
+def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
+    return asdict(get_download_transport_capabilities())
+
+
 @app.post("/api/shutdown")
 async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
@@ -807,7 +843,6 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     Called by the frontend quit dialog so users can stop the server from the UI
     without the CLI or killing the process manually.
     """
-    import asyncio
 
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first

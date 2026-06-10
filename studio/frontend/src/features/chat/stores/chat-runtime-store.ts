@@ -23,6 +23,7 @@ import {
 } from "../utils/chat-settings-storage";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
+const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
@@ -313,6 +314,15 @@ function saveString(key: string, value: string): void {
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
+function notifyHfTokenChanged(value: string): void {
+  if (!canUseStorage()) return;
+  try {
+    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
   } catch {
     // ignore
   }
@@ -876,11 +886,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) =>
-    set(() => {
-      saveString(HF_TOKEN_KEY, hfToken);
-      return { hfToken };
-    }),
+  setHfToken: (hfToken) => {
+    saveString(HF_TOKEN_KEY, hfToken);
+    set({ hfToken });
+    notifyHfTokenChanged(hfToken);
+  },
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
