@@ -8,6 +8,7 @@ Self-contained; can be moved to any directory.
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -673,6 +674,95 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
     return None, attempted
 
 
+class _TeeStream:
+    """Mirror writes to the original stream and a session log file.
+
+    Console behavior is unchanged (writes/returns delegate to the original
+    stream; Tauri's structured-stdout protocol and isatty probes see exactly
+    what they saw before). The file copy is best-effort: a full disk or a
+    closed handle must never break the console."""
+
+    def __init__(self, stream, log_fh):
+        self._stream = stream
+        self._log_fh = log_fh
+
+    def write(self, data):
+        try:
+            self._log_fh.write(data)
+        except Exception:
+            pass
+        return self._stream.write(data)
+
+    def flush(self):
+        try:
+            self._log_fh.flush()
+        except Exception:
+            pass
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _setup_server_disk_logging():
+    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim
+    faulthandler at the same file so hard crashes (access violations /
+    SIGSEGV in the GPU runtime) leave a stack trace on disk.
+
+    Also exports PYTHONFAULTHANDLER=1 so child Python processes (training
+    workers) dump native-crash stacks to their captured stderr. Keeps the
+    newest 20 session logs. Opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1.
+    Returns the log path, or None when disabled/unavailable.
+    """
+    if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
+        return None
+    try:
+        from utils.paths import studio_root
+
+        log_dir = Path(studio_root()) / "logs" / "server"
+    except Exception:
+        home = (
+            os.environ.get("UNSLOTH_STUDIO_HOME")
+            or os.environ.get("STUDIO_HOME")
+            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
+        )
+        log_dir = Path(home) / "logs" / "server"
+    try:
+        log_dir.mkdir(parents = True, exist_ok = True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
+        # Line-buffered so the tail survives a hard kill; errors="replace"
+        # so a console encoding quirk can never take the server down.
+        log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
+    except Exception:
+        return None
+
+    import faulthandler
+
+    try:
+        faulthandler.enable(file = log_fh, all_threads = True)
+    except Exception:
+        pass
+    # Children (training workers) inherit: their native-crash stacks land on
+    # the stderr the server already captures.
+    os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+
+    sys.stdout = _TeeStream(sys.stdout, log_fh)
+    sys.stderr = _TeeStream(sys.stderr, log_fh)
+
+    # Best-effort retention: keep the newest 20 session logs.
+    try:
+        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
+        for old in logs[:-20]:
+            old.unlink(missing_ok = True)
+    except Exception:
+        pass
+    return log_path
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -704,6 +794,16 @@ def run_server(
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
+
+    # Persist a session log + native-crash stacks BEFORE importing main, so
+    # even import-time failures leave evidence on disk. Field report: Studio
+    # "terminates without a warning" -- a native crash in the GPU runtime
+    # kills the process with no Python traceback, and a desktop-shortcut
+    # console closes before anything can be read. Console-only logging made
+    # that undiagnosable.
+    _session_log = _setup_server_disk_logging()
+    if _session_log is not None and not silent:
+        print(f"Session log: {_session_log}")
 
     # Set env var BEFORE importing main so CORS middleware picks it up.
     if api_only:
