@@ -2076,12 +2076,12 @@ export function ChatPage(): ReactElement {
 
   if (!isCurrentChatRoute) {
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-[#fcfcfd] dark:bg-background" />
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
     );
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-[#fcfcfd] dark:bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
@@ -2090,12 +2090,12 @@ export function ChatPage(): ReactElement {
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-[#fcfcfd] dark:from-background to-transparent"
+            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-[#fcfcfd] dark:bg-background",
+            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",

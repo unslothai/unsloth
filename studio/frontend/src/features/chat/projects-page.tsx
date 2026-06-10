@@ -182,7 +182,7 @@ export function ProjectsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.11)] dark:bg-card dark:shadow-none"
+          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.09)] dark:bg-card dark:shadow-none"
           aria-label="Search projects"
         />
       </div>
