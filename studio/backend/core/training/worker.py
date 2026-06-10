@@ -2009,9 +2009,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
                 import shutil as _shutil
                 if not _shutil.which("hipinfo.exe"):
-                    os.environ["PATH"] = (
-                        _scripts_dir + os.pathsep + os.environ.get("PATH", "")
-                    )
+                    os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
 
             # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
             # wheel may ship a DLL whose suffix doesn't match. Detect the actual
@@ -2244,6 +2242,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 if _is_unified and sys.platform == "win32":
                     try:
                         import psutil as _psutil
+
                         _phys = _psutil.virtual_memory().total
                         _granted = _torch_mem.cuda.mem_get_info(0)[1]
                         if _granted < 0.75 * _phys:

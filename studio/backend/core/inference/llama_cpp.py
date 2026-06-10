@@ -3198,8 +3198,7 @@ class LlamaCppBackend:
                         log_dir = _swa_cache_path().parent / "logs" / "llama-server"
                         log_dir.mkdir(parents = True, exist_ok = True)
                         self._llama_log_path = (
-                            log_dir
-                            / f"llama-{int(time.time())}-port-{self._port}.log"
+                            log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
                         )
                         self._llama_log_fh = open(
                             self._llama_log_path,
@@ -3207,9 +3206,7 @@ class LlamaCppBackend:
                             encoding = "utf-8",
                             buffering = 1,
                         )
-                        logger.info(
-                            f"llama-server stdout/stderr -> {self._llama_log_path}"
-                        )
+                        logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                     except OSError as e:
                         # Best-effort; never block the load on logging.
                         logger.debug(f"Could not open llama-server log file: {e}")
@@ -3231,8 +3228,7 @@ class LlamaCppBackend:
                     if self._wait_for_health(timeout = 600.0):
                         break
                     _startup_crashed = (
-                        self._process.poll() is not None
-                        and self._process.returncode != 0
+                        self._process.poll() is not None and self._process.returncode != 0
                     )
                     if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
                         logger.warning(

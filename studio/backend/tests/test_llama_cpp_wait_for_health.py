@@ -162,9 +162,7 @@ class TestCrashLogTail:
 
         records: list = []
         fake_logger = mock.Mock()
-        fake_logger.error = mock.Mock(
-            side_effect = lambda msg, *a, **k: records.append(msg)
-        )
+        fake_logger.error = mock.Mock(side_effect = lambda msg, *a, **k: records.append(msg))
         monkeypatch.setattr(_llama_mod, "logger", fake_logger)
         return records
 
