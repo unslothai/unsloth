@@ -717,13 +717,12 @@
 	/* Inline numeric input — used for slider values and Context Length.
 	   Designed to read as *editable text* rather than a pill button so
 	   it doesn't mirror the Select/dropdown components on the panel.
-	   Default: transparent box, no border, no ring, width hugging the
-	   value via field-sizing (the `size` attribute is the fallback for
-	   engines without it). Hover/focus: very light bg fade-in, just
-	   enough to read as interactive without competing with the slider
-	   row's quiet aesthetic. */
+	   Default: transparent box, no border, no ring; the component sets
+	   an inline width that hugs the value. Hover/focus: very light bg
+	   fade-in, just enough to read as interactive without competing
+	   with the slider row's quiet aesthetic. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors field-sizing-content hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
+		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];

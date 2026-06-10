@@ -187,12 +187,16 @@ function NumericValueInput({
     }
   };
 
+  const displayed = focused ? draft : (displayValue ?? String(value));
+
   return (
     <input
       type="text"
       inputMode="decimal"
       size={sizeAttr}
-      value={focused ? draft : (displayValue ?? String(value))}
+      /* Width hugs the value; ch tracks tabular digits in every engine. */
+      style={{ width: `calc(${Math.max(displayed.length, 1)}ch + 18px)` }}
+      value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
