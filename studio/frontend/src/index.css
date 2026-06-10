@@ -621,7 +621,7 @@
 	   prompt button, and the chat-template textarea so all three read
 	   as one quiet gray family, matching the focused-edit-number tint. */
 	.panel-input-group {
-		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[14px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
 		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
