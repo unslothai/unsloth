@@ -887,7 +887,7 @@ export function HubModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search Hugging Face models"
+          placeholder="Search models"
           className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
         />
         {isLoading && (
