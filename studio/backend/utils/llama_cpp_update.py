@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -146,20 +147,58 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     }
 
 
-def _run_update(install_dir: Path, repo: str, from_tag: Optional[str], script: Path) -> None:
-    """Worker: unload the running model, run the installer, refresh caches."""
-    model_was_loaded = False
+def _rocm_install_args(asset: Optional[str]) -> list[str]:
+    """Reproduce setup.sh/setup.ps1 ROCm forwarding from the install marker.
+
+    setup forwards --rocm-gfx (or --has-rocm) because install_llama_prebuilt.py's
+    own probe can miss the AMD gfx arch on amd-smi-only / name-inferred hosts;
+    without it, re-running on such a host would mis-plan a non-HIP asset or fail.
+    The marker's asset name carries the gfx family for lemonade HIP bundles
+    (e.g. app-...-rocm-gfx110X...) and only 'rocm'/'hip' for the fork ROCm-version
+    bundles (e.g. ...-rocm-6.4-x64...), so derive the same forwarding from it.
+    Works for markers written before this field mattered (asset always present)."""
+    if not asset:
+        return []
+    low = asset.lower()
+    if "rocm" not in low and "hip" not in low:
+        return []
+    gfx = re.search(r"-gfx[0-9a-z]+", low)
+    if gfx:
+        # _normalize_forwarded_gfx accepts the family form (gfx110x -> gfx110X).
+        return ["--rocm-gfx", gfx.group(0).lstrip("-")]
+    return ["--has-rocm"]
+
+
+def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path) -> None:
+    """Worker: put the backend into a maintenance state, run the installer for
+    the latest prebuilt, then refresh caches so the next load uses the new build."""
+    backend = None
+    model_was_active = False
     try:
-        # Release the binary so the atomic swap can replace files in use.
+        # Coordinate with the inference backend so a concurrent model load cannot
+        # spawn a llama-server from the half-swapped binary (and so the old binary
+        # is released for the atomic swap). Setting the flag under _serial_load_lock
+        # drains any in-flight load; load_model() then rejects fast while it is set.
+        # Fails open: with no backend (e.g. hermetic tests) the install still runs.
         try:
             from routes.inference import get_llama_cpp_backend
-
             backend = get_llama_cpp_backend()
-            model_was_loaded = bool(getattr(backend, "is_loaded", False))
-            if model_was_loaded:
-                backend.unload_model()
         except Exception as exc:
-            logger.debug("llama update: unload before install failed", error = str(exc))
+            logger.debug("llama update: backend unavailable, skipping load coordination", error = str(exc))
+            backend = None
+
+        if backend is not None:
+            try:
+                with backend._serial_load_lock:
+                    backend._llama_update_in_progress = True
+                    # is_active (process exists) covers the loading / unhealthy
+                    # window that is_loaded misses; on Windows a live process
+                    # would also keep the executable locked during the swap.
+                    if getattr(backend, "is_active", False):
+                        model_was_active = True
+                        backend.unload_model()
+            except Exception as exc:
+                logger.debug("llama update: load coordination failed", error = str(exc))
 
         cmd = [
             sys.executable,
@@ -171,6 +210,7 @@ def _run_update(install_dir: Path, repo: str, from_tag: Optional[str], script: P
             "--published-repo",
             repo,
         ]
+        cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
         proc = subprocess.run(
             cmd,
@@ -193,7 +233,7 @@ def _run_update(install_dir: Path, repo: str, from_tag: Optional[str], script: P
                 state = _JOB_SUCCESS,
                 message = (
                     f"Updated llama.cpp to {new_tag}."
-                    + (" Reload your model to use it." if model_was_loaded else "")
+                    + (" Reload your model to use it." if model_was_active else "")
                 ),
                 to_tag = new_tag,
                 error = None,
@@ -209,6 +249,13 @@ def _run_update(install_dir: Path, repo: str, from_tag: Optional[str], script: P
                 error = str(exc),
                 finished_at = _utcnow(),
             )
+    finally:
+        # Lift the maintenance state so model loads work again, success or not.
+        if backend is not None:
+            try:
+                backend._llama_update_in_progress = False
+            except Exception:  # pragma: no cover - defensive
+                pass
 
 
 def start_update() -> dict:
@@ -238,6 +285,7 @@ def start_update() -> dict:
         }
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     from_tag = marker.get("tag") or marker.get("release_tag")
+    asset = marker.get("asset")
 
     with _job_lock:
         if _job["state"] == _JOB_RUNNING:
@@ -255,7 +303,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, from_tag, script),
+        args = (install_dir, repo, asset, script),
         name = "llama-cpp-update",
         daemon = True,
     )
