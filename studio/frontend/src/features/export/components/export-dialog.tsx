@@ -26,9 +26,8 @@ import { streamExportLogs, type ExportLogEntry } from "../api/export-api";
 import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
 
-// Max log lines kept in the dialog's local state. Matches the backend
-// ring buffer's maxlen so the UI shows the full scrollback captured
-// server side.
+// Max log lines kept in local state. Matches the backend ring buffer's maxlen
+// so the UI shows the full server-side scrollback.
 const MAX_LOG_LINES = 4000;
 
 interface UseExportLogsResult {
@@ -38,14 +37,10 @@ interface UseExportLogsResult {
 }
 
 /**
- * Subscribe to the live export log SSE stream while `exporting` is
- * true, and accumulate lines in local state. Lines from a previous
- * action are cleared:
- *
- *   - when a new export starts (`exporting` flips to true), and
- *   - when the user switches export method, dialog opens fresh, or
- *     the dialog closes — so re-opening into a different action's
- *     screen doesn't show the prior screen's saved output.
+ * Subscribe to the live export log SSE stream while `exporting` is true and
+ * accumulate lines. Prior-action lines are cleared when a new export starts and
+ * when the user switches method / reopens / closes the dialog, so reopening
+ * into a different action doesn't show stale output.
  */
 function useExportLogs(
   exporting: boolean,
@@ -56,10 +51,9 @@ function useExportLogs(
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset log state whenever the user moves to a different screen --
-  // either by switching export method or by reopening the dialog -- so
-  // each (open × method) tuple shows only its own run history. The
-  // streaming effect below additionally clears on new export start.
+  // Reset log state on screen change (method switch or dialog reopen) so each
+  // (open × method) shows only its own run history. The streaming effect below
+  // additionally clears on new export start.
   useEffect(() => {
     setLines([]);
     setError(null);
@@ -74,17 +68,15 @@ function useExportLogs(
 
     const abortCtrl = new AbortController();
     let cancelled = false;
-    // Track the highest seq we've observed on a `log` event so we can
-    // resume the stream via `since=` / `Last-Event-ID` after a drop.
-    // The backend's SSE `id:` field carries this as ExportLogEvent.id.
+    // Highest seq seen on a `log` event, to resume via `since=` / Last-Event-ID
+    // after a drop. The backend's SSE `id:` field carries this as ExportLogEvent.id.
     let lastSeq: number | null = null;
-    // Exponential backoff with jitter, capped. Reset on every
-    // successful connection so flaky networks don't accumulate delay.
+    // Capped exponential backoff with jitter; reset on each successful connect
+    // so flaky networks don't accumulate delay.
     let backoffMs = 500;
     const MAX_BACKOFF_MS = 5000;
-    // Flipped by a terminal event (explicit `complete` from the
-    // backend or a non-transient error we choose not to retry). Stops
-    // the outer reconnect loop even if `exporting` is still true.
+    // Set by a terminal event (backend `complete` or a non-retryable error) to
+    // stop the reconnect loop even while `exporting` is still true.
     let terminated = false;
 
     const run = async () => {
@@ -115,9 +107,8 @@ function useExportLogs(
                   return next;
                 });
               } else if (event.event === "complete") {
-                // Backend signalled the run is fully drained -- stop
-                // trying to reconnect even though `exporting` may not
-                // have flipped false yet on this tick.
+                // Run fully drained -- stop reconnecting even if `exporting`
+                // hasn't flipped false yet on this tick.
                 terminated = true;
               } else if (event.event === "error" && event.error) {
                 setError(event.error);
@@ -128,17 +119,15 @@ function useExportLogs(
           if (cancelled) return;
           if (err instanceof DOMException && err.name === "AbortError") return;
           setError(err instanceof Error ? err.message : String(err));
-          // Fall through to the backoff path below; a fetch-level
-          // failure is retryable the same way a clean EOF is.
+          // Fall through to backoff; a fetch-level failure retries like a clean EOF.
         }
 
         setConnected(false);
         if (cancelled || terminated) return;
 
-        // Exponential backoff with jitter before reconnecting. The
-        // backend's ring buffer plus Last-Event-ID resume means we
-        // don't lose lines across the retry as long as the reconnect
-        // happens within the buffer's lifetime (~4000 lines).
+        // Exponential backoff with jitter before reconnecting. Ring buffer +
+        // Last-Event-ID resume means no lines lost across the retry as long as
+        // the reconnect lands within the buffer's lifetime (~4000 lines).
         const delay = backoffMs + Math.floor(Math.random() * 250);
         backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
         try {
@@ -163,9 +152,8 @@ function useExportLogs(
       }
     };
 
-    // run()'s own try/catch handles every failure path we care about;
-    // swallow anything that somehow escapes so React's dev overlay
-    // doesn't flag an unhandled rejection on dialog close.
+    // run() handles every failure path; swallow stragglers so React's dev
+    // overlay doesn't flag an unhandled rejection on dialog close.
     void run().catch(() => {});
 
     return () => {
@@ -179,10 +167,9 @@ function useExportLogs(
 }
 
 /**
- * Tick every second while `exporting` is true and report elapsed
- * seconds. Powers the "Working… 27s" badge in the log header so the
- * panel doesn't look frozen during long single-step phases (cache
- * file copy, GGUF conversion) when no new lines are arriving.
+ * Tick every second while `exporting` is true and report elapsed seconds.
+ * Powers the "Working… 27s" badge so the panel doesn't look frozen during long
+ * single-step phases (cache copy, GGUF conversion) with no new lines.
  */
 function useElapsedSeconds(exporting: boolean): number {
   const [elapsed, setElapsed] = useState(0);
@@ -209,8 +196,7 @@ function formatElapsed(seconds: number): string {
 }
 
 function formatLogLine(entry: ExportLogEntry): string {
-  // Strip trailing carriage returns that tqdm-style progress leaves
-  // in the stream so the scrollback doesn't render funky boxes.
+  // Strip trailing CRs from tqdm-style progress so scrollback doesn't render boxes.
   return entry.line.replace(/\r+$/g, "");
 }
 
@@ -240,9 +226,8 @@ interface ExportDialogProps {
   exportError: string | null;
   exportSuccess: boolean;
   /**
-   * Resolved on-disk realpath of the most recent successful export.
-   * Surfaced on the Export Complete screen so users can find their
-   * model. Null when the export only pushed to the Hub.
+   * Resolved on-disk realpath of the latest successful export, shown on the
+   * Export Complete screen. Null when the export only pushed to the Hub.
    */
   exportOutputPath: string | null;
 }
@@ -272,8 +257,7 @@ export function ExportDialog({
   exportSuccess,
   exportOutputPath,
 }: ExportDialogProps) {
-  // Live log capture is useful for any export path executed by the
-  // backend worker, including LoRA adapter-only export.
+  // Live log capture applies to any backend-worker export path, incl. LoRA-only.
   const showLogPanel =
     exportMethod === "merged" ||
     exportMethod === "gguf" ||
@@ -285,8 +269,7 @@ export function ExportDialog({
   const elapsedSeconds = useElapsedSeconds(exporting && showLogPanel);
 
   const logScrollRef = useRef<HTMLDivElement | null>(null);
-  // Auto-scroll to bottom whenever a new line arrives, unless the
-  // user has scrolled up to read earlier output.
+  // Auto-scroll to bottom on each new line, unless the user scrolled up.
   const [followTail, setFollowTail] = useState(true);
 
   useEffect(() => {
@@ -461,9 +444,8 @@ export function ExportDialog({
               )}
             </AnimatePresence>
 
-            {/* Success banner for log-driven exports.
-                Keep users on the log screen after completion so they can
-                inspect conversion output before closing. */}
+            {/* Success banner: keep users on the log screen after completion so
+                they can inspect conversion output before closing. */}
             {exportSuccess && showLogPanel && (
               <div className="flex items-start gap-2 rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
                 <HugeiconsIcon icon={CheckmarkCircle02Icon} className="mt-0.5 size-4 shrink-0" />

@@ -3,7 +3,7 @@
 
 """Terminal banner for Studio startup.
 
-Stdlib only — safe to import without the rest of the backend (no structlog/uvicorn).
+Stdlib only — safe to import without the rest of the backend.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
 
 
 def print_studio_stop_hint() -> None:
-    """Print the trailing stop hint + closing divider. Separate from the main
+    """Print the trailing stop hint + closing divider, separate from the
     banner so callers can interleave content (e.g. a reachability check)."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
@@ -67,7 +67,7 @@ def print_studio_access_banner(
     display_host: str,
     include_stop_hint: bool = True,
 ) -> None:
-    """Pretty-print URLs after the server is listening. Set
+    """Pretty-print URLs once the server is listening. Set
     ``include_stop_hint=False`` to omit the trailing stop block; pair with
     :func:`print_studio_stop_hint` after inserting your own content."""
     use_color = stdout_supports_color()
@@ -96,8 +96,8 @@ def print_studio_access_banner(
     listen_all = bind_host in ("0.0.0.0", "::")
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
-    # Use loopback URL only when the server is reachable on loopback;
-    # otherwise show the actual bound address.
+    # Use the loopback URL only when reachable on loopback; otherwise show
+    # the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
     tip_url = alt_local if listen_all or loopback_bind else external_url
     api_base = primary_url
