@@ -3156,6 +3156,8 @@ async def openai_chat_completions(
                     "search_knowledge_base to look for more. Do not answer from "
                     "memory when the attached documents are relevant."
                 )
+                # Prefix the date when the tool nudge is empty (RAG-only tool set).
+                _date_line = f"The current date is {_date.today().isoformat()}."
                 _nudge = _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
 
             if _nudge:
@@ -3675,6 +3677,8 @@ async def openai_chat_completions(
                 "search_knowledge_base to look for more. Do not answer from "
                 "memory when the attached documents are relevant."
             )
+            # Prefix the date when the tool nudge is empty (RAG-only tool set).
+            _sf_date_line = f"The current date is {_date.today().isoformat()}."
             _sf_nudge = (
                 _sf_date_line + " " + _sf_rag_nudge
                 if not _sf_nudge
