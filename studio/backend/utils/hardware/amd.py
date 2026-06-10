@@ -82,6 +82,19 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             )
             _amd_smi_disabled = True
         return None
+    if shutil.which("amd-smi") is None:
+        # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
+        # ship a CLI) and can be absent on minimal Linux installs. Disable the
+        # poller in one step instead of burning the 3-strike circuit breaker
+        # on guaranteed FileNotFoundError spawns. Studio's VRAM display falls
+        # back to torch mem_get_info.
+        if not _amd_smi_disabled:
+            logger.info(
+                "amd-smi not found on PATH; GPU utilization polling via "
+                "amd-smi unavailable (VRAM falls back to torch mem_get_info)."
+            )
+            _amd_smi_disabled = True
+        return None
     _amd_env = child_env_without_native_path_secret()
     if platform.system() == "Windows":
         # RunAsInvoker belt-and-suspenders for any manifest-elevating helper;
@@ -98,8 +111,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
-            # amd-smi ships with Adrenalin, not the HIP SDK; absence is expected
-            # on HIP SDK-only Windows setups.
+            # Raced a PATH change after the which() check above; absence is
+            # expected on Windows (no AMD product ships an amd-smi CLI there).
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)

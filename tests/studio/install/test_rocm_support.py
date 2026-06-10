@@ -550,9 +550,13 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     def test_no_rocm_skips(self, mock_nvidia, mock_pip):
         """No ROCm toolchain should skip entirely."""
-        with patch("os.path.isdir", return_value = False):
-            with patch("shutil.which", return_value = None):
-                _ensure_rocm_torch()
+        # _detect_windows_gfx_arch pinned to None: on a real AMD test host its
+        # WMI name fallback would otherwise answer and defeat the "no ROCm
+        # anywhere" premise of this test.
+        with patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = None):
+            with patch("os.path.isdir", return_value = False):
+                with patch("shutil.which", return_value = None):
+                    _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
@@ -692,8 +696,12 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
     def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_nvidia, mock_pip):
         """ROCm tools present but no actual AMD GPU should skip entirely."""
-        with patch("os.path.isdir", return_value = True):
-            _ensure_rocm_torch()
+        # Pin the Windows arch probe to None: on a real AMD test host the WMI
+        # name fallback would otherwise answer and defeat the "no actual GPU"
+        # premise (the Linux path under test uses _has_rocm_gpu, mocked False).
+        with patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = None):
+            with patch("os.path.isdir", return_value = True):
+                _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
 
@@ -1533,8 +1541,13 @@ class TestDetectWindowsGfxArch:
     """Verify hipinfo parsing for GPU arch detection on Windows."""
 
     def test_returns_none_when_hipinfo_not_on_path(self):
+        # Also neutralise the venv-hipInfo and WMI-name fallbacks: this test
+        # pins "no probe source available -> None", and the suite may run on a
+        # real AMD host where WMI would legitimately answer.
         with patch("shutil.which", return_value = None):
-            result = stack_mod._detect_windows_gfx_arch()
+            with patch("os.path.isfile", return_value = False):
+                with patch("subprocess.run", side_effect = FileNotFoundError):
+                    result = stack_mod._detect_windows_gfx_arch()
         assert result is None
 
     def test_parses_gcnarchname_from_hipinfo_output(self):
@@ -1556,11 +1569,21 @@ class TestDetectWindowsGfxArch:
         assert result is None
 
     def test_returns_none_when_no_gcnarchname_in_output(self):
+        # hipinfo answers but without a gcnArchName line. Route only the
+        # hipinfo/amd-smi probes to the mock; the WMI fallback must get
+        # nothing (FileNotFoundError) -- otherwise the mocked device name
+        # would legitimately resolve via the name table.
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"deviceName : Radeon RX 9060 XT\n"
+        mock_result.stdout = b"deviceName : SomeUnknownDevice\n"
+
+        def _run(cmd, **kwargs):
+            if cmd and "powershell" in str(cmd[0]).lower():
+                raise FileNotFoundError(cmd[0])
+            return mock_result
+
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
-            with patch("subprocess.run", return_value = mock_result):
+            with patch("subprocess.run", side_effect = _run):
                 result = stack_mod._detect_windows_gfx_arch()
         assert result is None
 
@@ -1581,6 +1604,101 @@ class TestDetectWindowsGfxArch:
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1201"
+
+
+# TEST: install_python_stack.py -- GPU-name / WMI fallback (no amd-smi, no hipinfo)
+
+
+class TestGfxArchNameFallback:
+    """amd-smi does not exist on Windows (neither Adrenalin consistently nor
+    the HIP SDK ship a CLI) and driver-only hosts lack hipinfo too. The
+    detection chain must still resolve the arch from the GPU marketing name
+    (WMI), mirroring setup.ps1's $nameArchTable."""
+
+    @pytest.mark.parametrize(
+        "name, expected",
+        [
+            ("AMD Radeon(TM) 8060S Graphics", "gfx1151"),
+            ("AMD Ryzen AI MAX+ 395 w/ Radeon 8060S", "gfx1151"),
+            ("AMD Radeon(TM) 890M", "gfx1150"),
+            ("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", "gfx1150"),
+            ("AMD Radeon RX 9070 XT", "gfx1201"),
+            ("AMD Radeon RX 9070", "gfx1200"),
+            ("AMD Radeon RX 7700S", "gfx1102"),  # (?!S) lookahead must not hit gfx1100
+            ("AMD Radeon RX 7700 XT", "gfx1100"),
+            ("AMD Radeon(TM) 780M", "gfx1103"),
+            ("NVIDIA GeForce RTX 4090", None),
+            ("Microsoft Basic Display Adapter", None),
+            ("", None),
+        ],
+    )
+    def test_name_to_arch_mapping(self, name, expected):
+        assert stack_mod._gfx_arch_from_gpu_name(name) == expected
+
+    def test_wmi_fallback_resolves_arch_without_any_tools(self):
+        """hipinfo absent everywhere + amd-smi absent -> WMI name fallback."""
+        ps_result = MagicMock()
+        ps_result.returncode = 0
+        ps_result.stdout = (
+            b"AMD Radeon(TM) 8060S Graphics\r\nMicrosoft Basic Display Adapter\r\n"
+        )
+
+        def _run(cmd, **kwargs):
+            if cmd and "powershell.exe" in str(cmd[0]).lower():
+                return ps_result
+            raise FileNotFoundError(cmd[0])
+
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in (
+                "HIP_PATH",
+                "ROCM_PATH",
+                "UNSLOTH_ROCM_GFX_ARCH",
+                "UNSLOTH_ENABLE_AMD_SMI",
+            ):
+                os.environ.pop(_v, None)
+            with patch("shutil.which", return_value = None):
+                with patch("os.path.isfile", return_value = False):
+                    with patch("subprocess.run", side_effect = _run):
+                        result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1151"
+
+    def test_wmi_fallback_returns_none_for_non_amd_hosts(self):
+        ps_result = MagicMock()
+        ps_result.returncode = 0
+        ps_result.stdout = b"NVIDIA GeForce RTX 4090\r\n"
+
+        def _run(cmd, **kwargs):
+            if cmd and "powershell.exe" in str(cmd[0]).lower():
+                return ps_result
+            raise FileNotFoundError(cmd[0])
+
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in ("HIP_PATH", "ROCM_PATH", "UNSLOTH_ROCM_GFX_ARCH"):
+                os.environ.pop(_v, None)
+            with patch("shutil.which", return_value = None):
+                with patch("os.path.isfile", return_value = False):
+                    with patch("subprocess.run", side_effect = _run):
+                        result = stack_mod._detect_windows_gfx_arch()
+        assert result is None
+
+    def test_stack_probes_venv_hipinfo(self):
+        """The venv Scripts dir hipInfo.exe (shipped by AMD torch wheels) must
+        be a probe candidate so `studio update` works on driver-only hosts."""
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        assert 'os.path.join(os.path.dirname(sys.executable), "hipInfo.exe")' in source
+
+    def test_prebuilt_resolve_exe_probes_venv_dir(self):
+        """install_llama_prebuilt's _resolve_exe must include the venv Scripts
+        candidate for the same driver-only standalone-rerun scenario."""
+        source = _PREBUILT_PATH.read_text(encoding = "utf-8")
+        assert "_venv_candidate" in source
+
+    def test_runtime_monitor_guards_amd_smi_absence(self):
+        """amd.py must which()-check amd-smi before spawning so absence
+        disables the poller in one step (no FileNotFoundError strikes)."""
+        amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        source = amd_path.read_text(encoding = "utf-8")
+        assert 'shutil.which("amd-smi") is None' in source
 
 
 # TEST: install_python_stack.py -- _install_bnb_windows_rocm

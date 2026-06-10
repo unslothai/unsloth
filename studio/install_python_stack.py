@@ -326,6 +326,14 @@ def _detect_windows_gfx_arch() -> str | None:
                 if os.path.isfile(_candidate):
                     hipinfo = _candidate
                     break
+    if not hipinfo:
+        # 2b. AMD torch wheels ship hipInfo.exe into the venv Scripts dir
+        # (next to python.exe); resolvable even on driver-only hosts with no
+        # SDK install at all. Lets `studio update` re-detect the arch on a
+        # venv that already has the AMD wheel.
+        _venv_hipinfo = os.path.join(os.path.dirname(sys.executable), "hipInfo.exe")
+        if os.path.isfile(_venv_hipinfo):
+            hipinfo = _venv_hipinfo
     if hipinfo:
         try:
             result = subprocess.run(
@@ -377,6 +385,74 @@ def _detect_windows_gfx_arch() -> str | None:
                     return _pick
             except Exception:
                 continue
+
+    # 4. Last resort: GPU marketing name via WMI → arch table. Driver-only
+    #    hosts (Adrenalin, no HIP SDK) have neither hipinfo nor amd-smi
+    #    (amd-smi does not exist on Windows at all), but the display driver
+    #    always knows the GPU name. Mirrors setup.ps1's $nameArchTable so a
+    #    standalone `studio update` can repair a CPU-only venv on such hosts.
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_VideoController).Name",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0:
+            _tokens = []
+            for _name in result.stdout.decode(errors = "replace").splitlines():
+                _arch = _gfx_arch_from_gpu_name(_name.strip())
+                if _arch:
+                    _tokens.append(_arch)
+            _pick = _dedup_pick(_tokens)
+            if _pick:
+                print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
+                return _pick
+    except Exception:
+        pass
+    return None
+
+
+# GPU marketing-name → gfx arch table, mirroring setup.ps1's $nameArchTable.
+# Most-specific first; first match wins. Covers only arches the lemonade-sdk
+# prebuilts / AMD Windows torch indexes support; unknown names return None
+# (callers then fall back cleanly to CPU).
+_WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
+    (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
+    (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
+    # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+    (r"8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+    (
+        r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
+        r"|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33",
+        "gfx1150",
+    ),
+    # RDNA 3 desktop / workstation (Navi 31)
+    (r"RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700", "gfx1100"),
+    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710", "gfx1102"),  # Navi 33
+    # RDNA 3 iGPU (Phoenix / Hawk Point)
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
+    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
+    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
+    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),  # Navi 24
+]
+
+
+def _gfx_arch_from_gpu_name(name: str) -> "str | None":
+    """Map a GPU marketing name to its gfx arch via _WIN_GPU_NAME_ARCH_TABLE."""
+    if not name:
+        return None
+    for _pat, _arch in _WIN_GPU_NAME_ARCH_TABLE:
+        if re.search(_pat, name, re.IGNORECASE):
+            return _arch
     return None
 
 
