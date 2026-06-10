@@ -989,20 +989,16 @@ function useStudioRuntimeAdapters(
     return Boolean(activeModel?.hasAudioInput);
   });
   const attachments = useMemo(
-    () => {
-      const adapters: AttachmentAdapter[] = [
+    () =>
+      new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
+        ...(audioAttachmentsEnabled ? [new AudioAttachmentAdapter()] : []),
         new TextAttachmentAdapter(),
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
         new OpenDocumentAttachmentAdapter(),
-      ];
-      if (audioAttachmentsEnabled) {
-        adapters.splice(1, 0, new AudioAttachmentAdapter());
-      }
-      return new CompositeAttachmentAdapter(adapters);
-    },
+      ]),
     [audioAttachmentsEnabled],
   );
   const adapters = useMemo(
