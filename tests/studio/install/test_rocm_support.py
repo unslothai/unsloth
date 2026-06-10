@@ -1840,24 +1840,16 @@ class TestRuntimeBnbRocmSourceGuards:
     """Runtime entrypoints redetect managed defaults but keep caller overrides."""
 
     _MAIN_PATH = PACKAGE_ROOT / "studio" / "backend" / "main.py"
-    _TRAINING_WORKER_PATH = (
-        PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
-    )
+    _TRAINING_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
 
     def test_main_gate_redetects_persisted_default(self):
         source = self._MAIN_PATH.read_text(encoding = "utf-8")
-        assert (
-            'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"'
-            in source
-        )
+        assert 'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"' in source
         assert 'os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"' in source
 
     def test_worker_gate_redetects_persisted_default(self):
         source = self._TRAINING_WORKER_PATH.read_text(encoding = "utf-8")
-        assert (
-            'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"'
-            in source
-        )
+        assert 'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"' in source
         assert 'os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"' in source
 
     def test_fallback_prefers_seeded_value_over_hardcoded_72(self):
