@@ -11,7 +11,7 @@ import {
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { useIsHubDesktop } from "@/features/hub/hooks/use-is-hub-desktop";
 import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
@@ -199,7 +199,11 @@ export function ModelsPage() {
         const store = useChatRuntimeStore.getState();
         if (
           !isExternalModelId(store.params.checkpoint) &&
-          !modelIdsMatch(store.params.checkpoint, status.active_model)
+          (!modelIdsMatch(store.params.checkpoint, status.active_model) ||
+            !ggufVariantsMatch(
+              store.activeGgufVariant,
+              status.gguf_variant ?? null,
+            ))
         ) {
           store.setCheckpoint(status.active_model, status.gguf_variant ?? null);
         }
