@@ -554,6 +554,7 @@ def test_real_collator_restores_formatting_func_when_super_raises(
     real_collator_classes, monkeypatch
 ):
     """formatting_func is restored even when the base raises."""
+
     def boom(self, examples):
         raise RuntimeError("base collator failed")
 
