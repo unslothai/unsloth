@@ -4,12 +4,10 @@
 import { authFetch, getAuthToken } from "@/features/auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// First check shortly after load, then re-surface as an hourly reminder.
-const FIRST_CHECK_DELAY_MS = 8000;
+// First check shortly after load, then re-surface as an hourly reminder. The
+// banner stays up until the user dismisses it (click outside / X) or updates.
+const FIRST_CHECK_DELAY_MS = 1000;
 const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
-// The banner fades on its own after this long (non-invasive). It re-appears on
-// the next hourly reminder while an update is still available.
-const AUTO_HIDE_MS = 10000;
 // While an update is applying, poll the job state at this cadence.
 const JOB_POLL_INTERVAL_MS = 3000;
 
@@ -48,7 +46,9 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   };
 }
 
-async function fetchStatus(forceRefresh = false): Promise<LlamaUpdateStatus | null> {
+async function fetchStatus(
+  forceRefresh = false,
+): Promise<LlamaUpdateStatus | null> {
   if (!getAuthToken()) return null;
   try {
     const res = await authFetch(
@@ -73,27 +73,17 @@ export interface LlamaApplyResult {
 
 /**
  * Polls the backend for a newer llama.cpp prebuilt. When one exists, `visible`
- * is true for a 10s window (fades on its own), and re-surfaces every ~hour as a
- * gentle reminder. `apply()` triggers the in-place swap and tracks the job.
+ * becomes true ~1s after load and stays up until the user dismisses it (click
+ * outside / X) or updates; it re-surfaces every ~hour as a reminder. `apply()`
+ * triggers the in-place swap and tracks the job.
  */
-export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptions = {}) {
+export function useLlamaUpdateCheck({
+  enabled = true,
+}: UseLlamaUpdateCheckOptions = {}) {
   const [status, setStatus] = useState<LlamaUpdateStatus | null>(null);
   const [visible, setVisible] = useState(false);
   const [applying, setApplying] = useState(false);
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const clearHideTimer = useCallback(() => {
-    if (hideTimer.current) {
-      clearTimeout(hideTimer.current);
-      hideTimer.current = null;
-    }
-  }, []);
-
-  const armAutoHide = useCallback(() => {
-    clearHideTimer();
-    hideTimer.current = setTimeout(() => setVisible(false), AUTO_HIDE_MS);
-  }, [clearHideTimer]);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current) {
@@ -118,20 +108,19 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
           setVisible(false);
           onDone?.({ ok: true, tag: s.job.to_tag });
         } else if (s.job.state === "error") {
-          armAutoHide();
+          // Leave the banner up so the user can retry; clearing applying drops
+          // the "Updating..." state.
           onDone?.({ ok: false, error: s.job.error });
         } else {
-          // idle without a terminal result (job reset): stop so the banner
-          // does not stick on "Updating...".
-          armAutoHide();
+          // idle without a terminal result (job reset): stop tracking.
           onDone?.({ ok: false, error: "update did not complete" });
         }
       }, JOB_POLL_INTERVAL_MS);
     },
-    [armAutoHide, clearPollTimer],
+    [clearPollTimer],
   );
 
-  // Surface the banner for the auto-hide window when an update is available.
+  // Surface the banner when an update is available; it stays up until dismissed.
   const surfaceIfAvailable = useCallback(
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
@@ -141,16 +130,14 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
         // job so "Updating..." clears when it finishes instead of sticking.
         setApplying(true);
         setVisible(true);
-        clearHideTimer();
         if (!pollTimer.current) startJobPoll();
         return;
       }
       if (next.update_available) {
         setVisible(true);
-        armAutoHide();
       }
     },
-    [armAutoHide, clearHideTimer, startJobPoll],
+    [startJobPoll],
   );
 
   useEffect(() => {
@@ -173,21 +160,18 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
       canceled = true;
       clearTimeout(firstTimer);
       clearInterval(reminder);
-      clearHideTimer();
       clearPollTimer();
     };
-  }, [enabled, surfaceIfAvailable, clearHideTimer, clearPollTimer]);
+  }, [enabled, surfaceIfAvailable, clearPollTimer]);
 
   const dismiss = useCallback(() => {
-    clearHideTimer();
     setVisible(false);
-  }, [clearHideTimer]);
+  }, []);
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
     setApplying(true);
     setVisible(true);
-    clearHideTimer();
     let action: {
       started?: boolean;
       reason?: string | null;
@@ -197,7 +181,6 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
       const res = await authFetch("/api/llama/update", { method: "POST" });
       if (!res.ok) {
         setApplying(false);
-        armAutoHide();
         return { ok: false, error: `HTTP ${res.status}` };
       }
       try {
@@ -207,24 +190,28 @@ export function useLlamaUpdateCheck({ enabled = true }: UseLlamaUpdateCheckOptio
       }
     } catch (e) {
       setApplying(false);
-      armAutoHide();
       return { ok: false, error: String(e) };
     }
 
     // 200 without a started job (no marker / installer missing) leaves it idle,
     // so surface the reason instead of polling forever. already_running is the
     // exception: a job is in flight, so track it to completion below.
-    if (action && action.started === false && action.reason !== "already_running") {
+    if (
+      action &&
+      action.started === false &&
+      action.reason !== "already_running"
+    ) {
       setApplying(false);
-      armAutoHide();
       return {
         ok: false,
         error: action.message ?? action.reason ?? "update was not started",
       };
     }
 
-    return await new Promise<LlamaApplyResult>((resolve) => startJobPoll(resolve));
-  }, [applying, armAutoHide, clearHideTimer, startJobPoll]);
+    return await new Promise<LlamaApplyResult>((resolve) =>
+      startJobPoll(resolve),
+    );
+  }, [applying, startJobPoll]);
 
   return {
     status: enabled ? status : null,
