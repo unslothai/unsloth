@@ -19,6 +19,7 @@ Unsloth's autoregressive kernel/compile patching and load the unmodified HF mode
 bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit loading, PEFT LoRA, the
 (model, tokenizer) API, and for_inference/for_training. Extend DIFFUSION_MODEL_TYPES as more land.
 """
+
 import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
@@ -31,8 +32,13 @@ DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 # Default LoRA targets: standard nn.Linear modules in the shared Gemma-4 backbone. The 128 MoE experts
 # are fused 3D Parameters (gate_up_proj/down_proj), not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
-    "q_proj", "k_proj", "v_proj", "o_proj",   # attention
-    "gate_proj", "up_proj", "down_proj",       # dense (non-expert) MLP
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",  # attention
+    "gate_proj",
+    "up_proj",
+    "down_proj",  # dense (non-expert) MLP
 ]
 
 # Vision tower uses a custom Linear with the same suffix names; exclude it so only the text path is wrapped.
@@ -49,6 +55,7 @@ def is_diffusion_model_type(model_types):
 def _resolve_diffusion_model_class(config):
     """Resolve the HF model class for a diffusion checkpoint from config.architectures."""
     import transformers
+
     archs = getattr(config, "architectures", None) or []
     for arch in archs:
         cls = getattr(transformers, arch, None)
@@ -75,16 +82,23 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
     type/arch names in-memory, and rebuild."""
     try:
         return AutoConfig.from_pretrained(
-            model_name, token = token, trust_remote_code = trust_remote_code,
-            revision = revision, local_files_only = local_files_only,
+            model_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            local_files_only = local_files_only,
         )
     except ValueError as e:
         if "diffusion_gemma" not in str(e):
             raise
         import json
         from transformers.utils import cached_file
+
         cfg_path = cached_file(
-            model_name, "config.json", token = token, revision = revision,
+            model_name,
+            "config.json",
+            token = token,
+            revision = revision,
             local_files_only = local_files_only,
         )
         with open(cfg_path, encoding = "utf-8") as f:
@@ -96,6 +110,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
         if isinstance(cd.get("vision_config"), dict):
             cd["vision_config"]["model_type"] = "diffusion_gemma4_vision"
         from transformers import DiffusionGemma4Config
+
         return DiffusionGemma4Config.from_dict(cd)
 
 
@@ -105,7 +120,7 @@ class FastDiffusionModel:
     @staticmethod
     def from_pretrained(
         model_name = "google/diffusiongemma-26B-A4B-it",
-        max_seq_length = None,         # API-compat; diffusion uses canvas_length
+        max_seq_length = None,  # API-compat; diffusion uses canvas_length
         dtype = None,
         load_in_4bit = False,
         load_in_8bit = False,
@@ -130,7 +145,11 @@ class FastDiffusionModel:
                 or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             )
         config = _load_diffusion_config(
-            model_name, token, trust_remote_code, revision, local_files_only,
+            model_name,
+            token,
+            trust_remote_code,
+            revision,
+            local_files_only,
         )
         model_type = getattr(config, "model_type", None)
         if not is_diffusion_model_type(model_type):
@@ -161,7 +180,13 @@ class FastDiffusionModel:
                     bnb_4bit_use_double_quant = True,
                     bnb_4bit_quant_type = "nf4",
                     bnb_4bit_compute_dtype = dtype,
-                    llm_int8_skip_modules = ["lm_head", "embed_tokens", "experts", "self_conditioning", "router"],
+                    llm_int8_skip_modules = [
+                        "lm_head",
+                        "embed_tokens",
+                        "experts",
+                        "self_conditioning",
+                        "router",
+                    ],
                 )
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
@@ -169,7 +194,9 @@ class FastDiffusionModel:
 
         print(f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))==")
         print(f"   Model: {model_name}  | class: {model_cls.__name__}  | model_type: {model_type}")
-        print(f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}")
+        print(
+            f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}"
+        )
 
         model = model_cls.from_pretrained(model_name, **load_kwargs).eval()
         # Mark before any early return so get_peft_model/for_* route to the slow path.
@@ -182,13 +209,19 @@ class FastDiffusionModel:
         # "tokenizer" to match the Unsloth (model, tokenizer) contract.
         try:
             tokenizer = AutoProcessor.from_pretrained(
-                model_name, token = token, trust_remote_code = trust_remote_code,
-                revision = revision, local_files_only = local_files_only,
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                revision = revision,
+                local_files_only = local_files_only,
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
-                model_name, token = token, trust_remote_code = trust_remote_code,
-                revision = revision, local_files_only = local_files_only,
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                revision = revision,
+                local_files_only = local_files_only,
             )
 
         return model, tokenizer
