@@ -1156,7 +1156,7 @@ export function AppSidebar() {
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
                   className="sidebar-nav-btn !h-[44px] gap-[9px] px-2 py-[3px] rounded-[14px]"
                 >
-                  <div className="shrink-0">
+                  <div className="flex shrink-0 items-center">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
