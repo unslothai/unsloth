@@ -2441,7 +2441,11 @@ class TestBlackwellCuda124Exclusion:
             compute_caps = ["120"],
         )
 
-    def _upstream_cuda(self, minor, tag = "b9365"):
+    def _upstream_cuda(
+        self,
+        minor,
+        tag = "b9365",
+    ):
         return AssetChoice(
             repo = "ggml-org/llama.cpp",
             tag = tag,
@@ -2492,9 +2496,7 @@ class TestBlackwellCuda124Exclusion:
             max_sm = 80,
         )
         assert (
-            INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(
-                self._bw_host(), [bundle]
-            )
+            INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(self._bw_host(), [bundle])
             == []
         )
 

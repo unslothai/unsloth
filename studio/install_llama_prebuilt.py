@@ -3361,8 +3361,7 @@ def _drop_blackwell_incapable_windows_cuda(
     return [
         attempt
         for attempt in attempts
-        if attempt.install_kind != "windows-cuda"
-        or _windows_cuda_attempt_covers_blackwell(attempt)
+        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
     ]
 
 
