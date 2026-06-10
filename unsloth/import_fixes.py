@@ -2242,13 +2242,19 @@ def maybe_set_windows_rocm_bnb_version():
     ROCm is untouched (its multi-backend bitsandbytes resolves the backend
     correctly from ``torch.version.hip``). Honors a user-provided
     ``BNB_ROCM_VERSION`` and an explicit opt-out
-    (``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``). Returns the value set, else ``None``.
+    (``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``). Values seeded by Studio's venv
+    ``sitecustomize.py`` (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``)
+    are redetectable defaults, not user overrides: the installed wheel may have
+    changed since the installer persisted them. Returns the value set, else
+    ``None``.
     """
     if sys.platform != "win32":
         return None
     if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
         return None
-    if "BNB_ROCM_VERSION" in os.environ:
+    if "BNB_ROCM_VERSION" in os.environ and (
+        os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") != "sitecustomize"
+    ):
         return None
     if not _is_hip_torch_build():
         return None
@@ -2256,6 +2262,7 @@ def maybe_set_windows_rocm_bnb_version():
     if version is None:
         return None
     os.environ["BNB_ROCM_VERSION"] = version
+    os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
             f"Unsloth: set BNB_ROCM_VERSION={version} "

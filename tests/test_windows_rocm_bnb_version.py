@@ -53,10 +53,18 @@ def clean_env(monkeypatch):
     """Start with both env vars unset; guarantee they are removed afterwards
     (the function writes ``os.environ`` directly, which monkeypatch will not
     auto-revert)."""
-    for var in ("BNB_ROCM_VERSION", "UNSLOTH_SKIP_BNB_ROCM_VERSION"):
+    for var in (
+        "BNB_ROCM_VERSION",
+        "UNSLOTH_SKIP_BNB_ROCM_VERSION",
+        "UNSLOTH_BNB_ROCM_VERSION_SOURCE",
+    ):
         monkeypatch.delenv(var, raising = False)
     yield monkeypatch
-    for var in ("BNB_ROCM_VERSION", "UNSLOTH_SKIP_BNB_ROCM_VERSION"):
+    for var in (
+        "BNB_ROCM_VERSION",
+        "UNSLOTH_SKIP_BNB_ROCM_VERSION",
+        "UNSLOTH_BNB_ROCM_VERSION_SOURCE",
+    ):
         os.environ.pop(var, None)
 
 
@@ -110,6 +118,7 @@ def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() == "72"
     assert os.environ["BNB_ROCM_VERSION"] == "72"
+    assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "detected"
 
 
 def test_noop_off_windows(import_fixes, clean_env):
@@ -145,6 +154,36 @@ def test_explicit_opt_out(import_fixes, clean_env):
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
+
+
+def test_redetects_sitecustomize_seeded_default(import_fixes, clean_env):
+    # Studio's installer persists a default via the venv sitecustomize.py; the
+    # wheel may have changed since, so the seeded value must be redetected.
+    clean_env.setenv("BNB_ROCM_VERSION", "72")
+    clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() == "713"
+    assert os.environ["BNB_ROCM_VERSION"] == "713"
+    assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "detected"
+
+
+def test_sitecustomize_default_kept_when_no_dll_found(import_fixes, clean_env):
+    # A failed redetect must not discard the seeded value.
+    clean_env.setenv("BNB_ROCM_VERSION", "72")
+    clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = None)
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
+    assert os.environ["BNB_ROCM_VERSION"] == "72"
+    assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "sitecustomize"
+
+
+def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_env):
+    # Only the sitecustomize marker makes a value redetectable.
+    clean_env.setenv("BNB_ROCM_VERSION", "999")
+    clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "detected")
+    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
+    assert os.environ["BNB_ROCM_VERSION"] == "999"
 
 
 # ---------------------------------------------------------------------------
