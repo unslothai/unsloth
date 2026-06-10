@@ -1704,9 +1704,21 @@ _find_no_torch_runtime() {
 }
 
 # ── AMD ROCm GPU detection helper ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before any
+# rocminfo probe or a ROCDXG WSL host is misdetected as CPU-only.
+_ensure_rocm_probe_env() {
+    export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+    if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+        PATH="$PATH:/opt/rocm/bin"
+    fi
+}
+
 # Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
 # KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
 _has_amd_rocm_gpu() {
+    _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
@@ -1984,6 +1996,7 @@ _maybe_bootstrap_rocm_wsl() {
     # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
     # would skip this bootstrap while the real GPU is still unusable. awk consumes
     # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
         return 0
@@ -2187,6 +2200,7 @@ if _has_usable_nvidia_gpu; then
     step "gpu" "NVIDIA GPU detected"
 elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
+    _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
     _gpu_disp_mkt=""
     if command -v rocminfo >/dev/null 2>&1; then

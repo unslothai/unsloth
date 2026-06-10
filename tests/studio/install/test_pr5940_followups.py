@@ -150,12 +150,12 @@ def test_radeon_8060s_resolves_to_gfx1151():
     assert matched == "gfx1151"
 
 
-def _sh_name_arch_rows(text):
-    """Parse install.sh's `case "$_gpu_disp_mkt" in ... ) _gpu_disp_gfx="gfxNNNN"`
-    name->arch table into [(substr_tokens, arch), ...] preserving order."""
+def _sh_name_arch_rows(text, var = "_gpu_disp_gfx"):
+    """Parse a bash `case "$..._mkt" in ... ) <var>="gfxNNNN"` name->arch
+    table into [(substr_tokens, arch), ...] preserving order."""
     rows = []
     for line in text.splitlines():
-        m = re.search(r'_gpu_disp_gfx="(gfx[0-9a-z]+)"', line)
+        m = re.search(var + r'="(gfx[0-9a-z]+)"', line)
         if not m or '*"' not in line:
             continue
         tokens = re.findall(r'\*"([^"]+)"\*', line)
@@ -193,6 +193,32 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
         if expect is not None:  # cross-check bash agrees with the PowerShell table
             ps = next((a for p, a in ps_rows if re.search(p, name)), None)
             assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
+
+
+def test_setup_sh_name_arch_table_in_sync_with_install_sh():
+    """studio/setup.sh keeps its own copy of the bash name->arch table (over
+    `_setup_gfx`); it must stay row-for-row identical to install.sh's, both in
+    tokens and in match order (order carries the RX 7700S -> gfx1102 rule)."""
+    install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
+    setup_rows = _sh_name_arch_rows(
+        (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
+        var = "_setup_gfx",
+    )
+    assert setup_rows, "no name->arch case table found in studio/setup.sh"
+    assert install_rows == setup_rows, (
+        "bash name->arch tables drifted:\n"
+        f"install.sh={install_rows}\nstudio/setup.sh={setup_rows}"
+    )
+    # The historical drift this guards against: Strix Point SKUs must be
+    # gfx1150, and the spaceless RX 7700S must match gfx1102 before gfx1100.
+    for name, expect in {
+        "AMD Radeon 890M Graphics": "gfx1150",
+        "AMD Ryzen AI 9 HX 370 w/ Radeon 890M": "gfx1150",
+        "AMD Radeon(TM) 8060S Graphics": "gfx1151",
+        "AMD Radeon RX 7700S": "gfx1102",
+    }.items():
+        got = _sh_resolve(setup_rows, name)
+        assert got == expect, f"setup.sh: {name!r} -> {got!r}, expected {expect!r}"
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────

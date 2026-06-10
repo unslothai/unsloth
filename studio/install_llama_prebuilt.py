@@ -2898,6 +2898,12 @@ def detect_host() -> HostInfo:
     has_rocm = False
     rocm_gfx_target: str | None = None
     if is_linux:
+        # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
+        # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
+        # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
+        # drop-in reaches login shells only). Probe accordingly or a ROCDXG
+        # WSL host is misdetected as CPU-only.
+        _dxg_probe_env = {**os.environ, "HSA_ENABLE_DXG_DETECTION": "1"}
         for _cmd, _check in (
             # rocminfo: a real gfx GPU id (3-4 chars, nonzero first digit).
             # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines
@@ -2910,10 +2916,18 @@ def detect_host() -> HostInfo:
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
+            if not _exe and _cmd[0] == "rocminfo":
+                _opt_rocminfo = "/opt/rocm/bin/rocminfo"
+                if os.access(_opt_rocminfo, os.X_OK):
+                    _exe = _opt_rocminfo
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+                _result = run_capture(
+                    [_exe, *_cmd[1:]],
+                    timeout = 10,
+                    env = _dxg_probe_env if _cmd[0] == "rocminfo" else None,
+                )
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
