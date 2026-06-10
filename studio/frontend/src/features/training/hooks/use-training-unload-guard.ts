@@ -31,10 +31,9 @@ export function useTrainingUnloadGuard() {
 }
 
 /**
- * Removes the active beforeunload guard (if any).
- * Call this before intentionally ending the session (e.g. shutting down
- * the Studio server) so the "Server stopped" page can render without
- * the browser prompting the user to confirm leaving.
+ * Removes the active beforeunload guard (if any). Call before intentionally
+ * ending the session (e.g. shutting down the server) so the "Server stopped"
+ * page renders without the browser prompting to confirm leaving.
  */
 export function removeTrainingUnloadGuard() {
   if (currentHandler) {

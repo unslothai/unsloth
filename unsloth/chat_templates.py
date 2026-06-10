@@ -1964,11 +1964,8 @@ def get_chat_template(
         elif map_eos_token and (stop_word != "eos_token"):
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
-            # Replaces the old EOS token with a new one.
-            # Useful for ChatML <|im_end|> for example.
-            # Usually we train 2 more tokens <|im_start|> and <|im_end|>
-            # But training the lm_head and embeddings are slow!
-            # This is a HACK!
+            # HACK: replace old EOS with a new one (e.g. ChatML <|im_end|>) to
+            # avoid the slow lm_head/embedding retraining of new tokens.
             # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
 
             old_bos_token = getattr(tokenizer, "bos_token", None)
@@ -2193,18 +2190,14 @@ def to_sharegpt(
     random_state = 3407,
 ):
     """
-    Converts a dataset to ShareGPT style.
-    ShareGPT requires only 1 input and 1 output field.
-    This means one has to merge multiple columns into 1 for 1 input field.
-    Use `conversation_extension` to increase the length of each conversation by randomnly
-    selecting a few and packing them into 1.
+    Converts a dataset to ShareGPT style (1 input + 1 output field).
+    Merge multiple columns into 1 input via `merged_prompt`; use
+    `conversation_extension` to pack several convos into one.
 
     merged_prompt = "",                 Prompt to merge columns into 1 input
     merged_column_name = "instruction", Final column name for the input  field
     output_column_name = "output",      Final column name for the output field
-    remove_unused_columns = True,
-    conversation_extension = 1,         Automatically combines `conversation_extension` convos into 1
-    random_state = 3407,
+    conversation_extension = 1,         Combines this many convos into 1
     """
     if "conversations" in dataset.column_names:
         convo = dataset[0]["conversations"]
