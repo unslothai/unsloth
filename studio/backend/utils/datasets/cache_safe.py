@@ -28,7 +28,6 @@ def studio_datasets_cache() -> str:
 def load_dataset_cache_safe(*args, **kwargs):
     """datasets.load_dataset, retried in a Studio-owned cache on EACCES."""
     from datasets import load_dataset
-
     try:
         return load_dataset(*args, **kwargs)
     except PermissionError as error:
