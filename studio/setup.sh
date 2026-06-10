@@ -670,6 +670,7 @@ fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
 _setup_amd_detected=false
+_setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
 if command -v rocminfo >/dev/null 2>&1 && \
@@ -690,6 +691,7 @@ fi
 
 if command -v nvidia-smi >/dev/null 2>&1 && \
    nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+    _setup_nvidia_usable=true
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -767,12 +769,25 @@ _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 # CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
 # use unslothai.
 _LINUX_HAS_GPU=false
-for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
-    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-        _LINUX_HAS_GPU=true
-        break
-    fi
-done
+# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
+# actually enumerated (_setup_nvidia_usable, from the nvidia-smi -L probe above)
+# AND not hidden via CUDA_VISIBLE_DEVICES=-1 -- mirroring install_llama_prebuilt.py's
+# has_usable_nvidia. Mere nvidia-smi presence (CPU-only CUDA-toolkit containers,
+# broken drivers) or a hidden GPU therefore takes the ggml-org CPU prebuilt
+# instead of a slow source build. AMD is deliberately left on tooling presence,
+# not usability: an unusable NVIDIA host has a good CPU prebuilt to fall back to,
+# whereas tightening AMD would regress ROCm hosts exposing only hipconfig/hipinfo
+# into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+    _LINUX_HAS_GPU=true
+else
+    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
+        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+            _LINUX_HAS_GPU=true
+            break
+        fi
+    done
+fi
 
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \

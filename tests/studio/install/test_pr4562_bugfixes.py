@@ -694,6 +694,18 @@ class TestSourceCodePatterns:
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
+    def test_setup_sh_routes_to_fork_only_on_usable_gpu(self):
+        """Linux fork-vs-ggml routing must gate NVIDIA on actual GPU usability,
+        not mere nvidia-smi presence, so CPU-only / hidden-GPU hosts (e.g.
+        CUDA_VISIBLE_DEVICES=-1) get the ggml CPU prebuilt instead of a source
+        build. Guards against a silent revert to the old presence-only loop."""
+        content = SETUP_SH.read_text()
+        assert '[ "$_setup_nvidia_usable" = true ]' in content
+        assert "CUDA_VISIBLE_DEVICES" in content
+        # nvidia-smi must NOT be back in the bare presence loop.
+        assert "for _GPU_TOOL in nvidia-smi" not in content
+        assert "for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo" in content
+
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
         content = SETUP_SH.read_text()
