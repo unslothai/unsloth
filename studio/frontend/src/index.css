@@ -114,7 +114,7 @@
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
-	--background: #fefdfc;
+	--background: #fefefd;
 	--foreground: oklch(0.2686 0 0);
 	--card: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
@@ -1007,8 +1007,7 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		/* A hair warmer than pure white. */
-		background-color: #fffefd;
+		background-color: #ffffff;
 		/* Gemini-style composer shadow. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 		transition: box-shadow 0.1s;
@@ -1097,8 +1096,7 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		/* A hair warmer than pure white. */
-		background-color: #fffefd;
+		background-color: #ffffff;
 		/* Gemini-style composer shadow. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 		transition: box-shadow 0.1s;
