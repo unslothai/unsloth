@@ -97,9 +97,8 @@
 	.hub-page .elevated-card {
 		border: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
 		border-radius: 20px;
-		box-shadow:
-			0 12px 48px -8px color-mix(in srgb, var(--foreground) 8%, transparent),
-			0 0 100px 20px color-mix(in srgb, var(--foreground) 3%, transparent);
+		/* No ambient glow: it tinted the white page gray around the card. */
+		box-shadow: 0 12px 48px -8px color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
 
 	@media (min-width: 640px) {
@@ -131,7 +130,7 @@
 	}
 
 	html:not(.dark) .hub-page {
-		background-color: var(--background);
+		background-color: #fff;
 	}
 
 	html:not(.dark) .hub-page > div > section .border-b,

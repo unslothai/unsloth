@@ -59,8 +59,9 @@ fi
 # ── Output helpers ──
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
+# Usage: substep <message> [color]         (color defaults to C_DIM)
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
+substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
@@ -152,6 +153,107 @@ _nvcc_meets_llama_minimum() {
         echo "ok"
     fi
     echo "$_raw"
+}
+
+_cuda_driver_max_version() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 0
+    nvidia-smi 2>/dev/null \
+        | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
+        | head -1 || true
+}
+
+_cuda_version_gt() {
+    local _left=${1:-}
+    local _right=${2:-}
+    if ! [[ "$_left" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _left_major=$((10#${BASH_REMATCH[1]}))
+    local _left_minor=$((10#${BASH_REMATCH[2]}))
+    if ! [[ "$_right" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _right_major=$((10#${BASH_REMATCH[1]}))
+    local _right_minor=$((10#${BASH_REMATCH[2]}))
+
+    if [ "$_left_major" -gt "$_right_major" ]; then
+        return 0
+    fi
+    if [ "$_left_major" -eq "$_right_major" ] && [ "$_left_minor" -gt "$_right_minor" ]; then
+        return 0
+    fi
+    return 1
+}
+
+_cuda_toolkit_major_gt_driver() {
+    local _toolkit_version=${1:-}
+    local _driver_version=${2:-}
+    if ! [[ "$_toolkit_version" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _toolkit_major=$((10#${BASH_REMATCH[1]}))
+    if ! [[ "$_driver_version" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _driver_major=$((10#${BASH_REMATCH[1]}))
+    [ "$_toolkit_major" -gt "$_driver_major" ]
+}
+
+_cuda_nvcc_candidate_paths() {
+    if command -v nvcc >/dev/null 2>&1; then
+        command -v nvcc
+    fi
+    if [ -x /usr/local/cuda/bin/nvcc ]; then
+        printf '%s\n' "/usr/local/cuda/bin/nvcc"
+    fi
+    ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V -r 2>/dev/null || true
+}
+
+_cuda_find_compatible_nvcc_for_driver() {
+    local _driver_version=$1
+    local _exclude_path=${2:-}
+    local _candidate _seen _check _status _version
+    local _best_path="" _best_version=""
+    _seen="
+"
+    while IFS= read -r _candidate; do
+        [ -n "$_candidate" ] || continue
+        [ "$_candidate" != "$_exclude_path" ] || continue
+        [ -x "$_candidate" ] || continue
+        case "$_seen" in
+            *"
+$_candidate
+"*) continue ;;
+        esac
+        _seen="${_seen}${_candidate}
+"
+        _check="$(_nvcc_meets_llama_minimum "$_candidate")"
+        _status="$(printf '%s\n' "$_check" | sed -n '1p')"
+        _version="$(printf '%s\n' "$_check" | sed -n '2p')"
+        [ "$_status" = "ok" ] || continue
+        [ -n "$_version" ] || continue
+        if _cuda_toolkit_major_gt_driver "$_version" "$_driver_version"; then
+            continue
+        fi
+        if [ -z "$_best_version" ] || _cuda_version_gt "$_version" "$_best_version"; then
+            _best_path="$_candidate"
+            _best_version="$_version"
+        fi
+    done <<EOF
+$(_cuda_nvcc_candidate_paths)
+EOF
+    [ -n "$_best_path" ] || return 1
+    printf '%s\n%s\n' "$_best_path" "$_best_version"
+}
+
+_print_cuda_driver_toolkit_mismatch() {
+    local _toolkit_version=$1
+    local _driver_version=$2
+    local _toolkit_major=${_toolkit_version%%.*}
+    local _driver_major=${_driver_version%%.*}
+    substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
+    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
 print_llama_error_log() {
@@ -333,7 +435,9 @@ verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NP
 # avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     substep "installing bun..."
-    if run_maybe_quiet npm install -g bun && command -v bun &>/dev/null; then
+    # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
+    # postinstall fetches its binary; without it the install is a broken stub.
+    if run_maybe_quiet npm install -g bun --allow-scripts=bun && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -669,6 +773,14 @@ fi
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before the
+# probes or a ROCDXG WSL host is misdetected as CPU-only.
+export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+    PATH="$PATH:/opt/rocm/bin"
+fi
 _setup_amd_detected=false
 _setup_gfx_all=""
 _setup_mkt=""
@@ -706,14 +818,20 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        # Kept in sync with the table in install.sh (and the PS nameArchTable).
+        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                 _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                      _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)       _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                        _setup_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                             _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
@@ -1162,38 +1280,58 @@ else
                     GPU_BACKEND=""
                     _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
-                    CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                    CUDA_ARCHS=""
-                    if command -v nvidia-smi &>/dev/null; then
-                        _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                        while IFS= read -r _cap; do
-                            _cap=$(echo "$_cap" | tr -d '[:space:]')
-                            if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                # Append if not already present
-                                case ";$CUDA_ARCHS;" in
-                                    *";$_arch;"*) ;;
-                                    *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                esac
-                            fi
-                        done <<< "$_raw_caps"
+                    _DRIVER_MAX_CUDA="$(_cuda_driver_max_version)"
+                    _CUDA_TOOLKIT_ALLOWED=true
+                    if [ -n "$_NVCC_VER" ] && [ -n "$_DRIVER_MAX_CUDA" ] && \
+                       _cuda_toolkit_major_gt_driver "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
+                        _BLOCKED_NVCC_VER="$_NVCC_VER"
+                        if _ALT_NVCC_CHECK="$(_cuda_find_compatible_nvcc_for_driver "$_DRIVER_MAX_CUDA" "$NVCC_PATH")"; then
+                            NVCC_PATH="$(printf '%s\n' "$_ALT_NVCC_CHECK" | sed -n '1p')"
+                            _NVCC_VER="$(printf '%s\n' "$_ALT_NVCC_CHECK" | sed -n '2p')"
+                            GPU_BACKEND="cuda"
+                            export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                            substep "CUDA Toolkit $_BLOCKED_NVCC_VER is a major-version mismatch with driver CUDA $_DRIVER_MAX_CUDA; using compatible CUDA Toolkit $_NVCC_VER at $NVCC_PATH." "$C_WARN"
+                        else
+                            _print_cuda_driver_toolkit_mismatch "$_NVCC_VER" "$_DRIVER_MAX_CUDA"
+                            substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
+                            NVCC_PATH=""
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA toolkit major > driver)"
+                            _CUDA_TOOLKIT_ALLOWED=false
+                        fi
                     fi
 
-                    if [ -n "$CUDA_ARCHS" ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
-                        _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
-                    else
-                        _BUILD_DESC="building (CUDA)"
+                    if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
+                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+
+                        CUDA_ARCHS=""
+                        if command -v nvidia-smi &>/dev/null; then
+                            _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                            while IFS= read -r _cap; do
+                                _cap=$(echo "$_cap" | tr -d '[:space:]')
+                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                                    case ";$CUDA_ARCHS;" in
+                                        *";$_arch;"*) ;;
+                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                                    esac
+                                fi
+                            done <<< "$_raw_caps"
+                        fi
+
+                        if [ -n "$CUDA_ARCHS" ]; then
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                        else
+                            _BUILD_DESC="building (CUDA)"
+                        fi
+
+                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+
+                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
+                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
-
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                    # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
-                    # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
-                    # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
-                    # word-splitting.
-                    export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
                 # Resolve hipcc symlinks to find the real ROCm root

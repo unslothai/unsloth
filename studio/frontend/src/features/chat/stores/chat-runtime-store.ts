@@ -36,6 +36,92 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
+export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
+export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
+  "unsloth_chat_rag_autoinject_min_score";
+
+export type RagSource =
+  | { type: "thread" }
+  | { type: "kb"; kbId: string };
+
+export type RagMode = "hybrid" | "lexical" | "dense";
+
+export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+export const DEFAULT_RAG_MODE: RagMode = "hybrid";
+export const DEFAULT_RAG_TOP_K = 5;
+// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
+export type RagAutoInject = "auto" | "on" | "off";
+export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
+export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+
+function loadRagSource(): RagSource {
+  if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_SOURCE_KEY);
+    if (!raw) return DEFAULT_RAG_SOURCE;
+    const parsed = JSON.parse(raw) as RagSource;
+    if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
+      return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "thread") return { type: "thread" };
+    return DEFAULT_RAG_SOURCE;
+  } catch {
+    return DEFAULT_RAG_SOURCE;
+  }
+}
+
+function saveRagSource(value: RagSource): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+  } catch {
+  }
+}
+
+function loadRagMode(): RagMode {
+  const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
+  return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagAutoInject(): RagAutoInject {
+  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  // Legacy boolean migration: false -> Off, else Auto.
+  return raw === "false" ? "off" : "auto";
+}
+
+function loadRagTopK(): number {
+  if (typeof window === "undefined") return DEFAULT_RAG_TOP_K;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_TOP_K_KEY);
+    if (raw === null) return DEFAULT_RAG_TOP_K;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
+  } catch {
+    return DEFAULT_RAG_TOP_K;
+  }
+}
+
+// Preserves a stored 0 (score floors can legitimately be 0).
+function loadRagNumber(
+  key: string,
+  fallback: number,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = integer ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  } catch {
+    return fallback;
+  }
+}
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings omits `checkpoint`
@@ -309,6 +395,13 @@ type ChatRuntimeStore = {
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
+  ragEnabled: boolean;
+  ragSource: RagSource;
+  ragMode: RagMode;
+  ragTopK: number;
+  // autoInject = forced first-pass retrieval before answering.
+  ragAutoInject: RagAutoInject;
+  ragAutoInjectMinScore: number;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -386,6 +479,12 @@ type ChatRuntimeStore = {
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
+  setRagEnabled: (enabled: boolean) => void;
+  setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
+  setRagTopK: (topK: number) => void;
+  setRagAutoInject: (value: RagAutoInject) => void;
+  setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -646,6 +745,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
+  // RAG is opt-in per session: always starts off, never restored from storage.
+  ragEnabled: false,
+  ragSource: loadRagSource(),
+  ragMode: loadRagMode(),
+  ragTopK: loadRagTopK(),
+  ragAutoInject: loadRagAutoInject(),
+  ragAutoInjectMinScore: loadRagNumber(
+    CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
+    { min: 0, max: 1 },
+  ),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -860,6 +970,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
+      // Only the per-session enable pill resets; source/mode/top_k persist.
+      ragEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -959,6 +1071,35 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
       return { webFetchToolsEnabled };
+    }),
+  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagSource: (ragSource) =>
+    set(() => {
+      saveRagSource(ragSource);
+      return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set(() => {
+      saveString(CHAT_RAG_MODE_KEY, ragMode);
+      return { ragMode };
+    }),
+  setRagTopK: (ragTopK) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
+      return { ragTopK };
+    }),
+  setRagAutoInject: (ragAutoInject) =>
+    set(() => {
+      saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      return { ragAutoInject };
+    }),
+  setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
+    set(() => {
+      saveString(
+        CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+        String(ragAutoInjectMinScore),
+      );
+      return { ragAutoInjectMinScore };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

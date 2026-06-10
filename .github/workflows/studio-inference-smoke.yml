@@ -20,7 +20,7 @@
 #        enable_tools / enabled_tools, and enable_thinking on/off.
 #
 #   3. JSON, images
-#        Qwen3-VL-2B-Instruct UD-IQ2_XXS (~570 MiB) + mmproj-F16 (~780 MiB).
+#        Qwen3-VL-2B-Instruct UD-Q4_K_XL (~1.1 GiB) + mmproj-F16 (~780 MiB).
 #        response_format JSON-schema decoding and OpenAI image_url
 #        (data URI) plus Anthropic source/base64 image inputs.
 #
@@ -792,8 +792,14 @@ jobs:
     timeout-minutes: 30
     env:
       GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
-      GGUF_VARIANT: UD-IQ2_XXS
-      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
+      # UD-Q4_K_XL, not UD-IQ2_XXS: at 2-bit the temp-0 answer to the JSON
+      # step's capital-of-France probe flips with the host's SIMD kernels
+      # (GitHub runners deterministically answered France while other CPUs
+      # answer Paris; seeds do not rescue it, 1/5 Paris at temp 0.7). The
+      # Q4 quant answered Paris 13/13 across temps and seeds on the same
+      # runners, so the hard Paris assertion below stays reliable.
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18890'
       HF_HOME: ${{ github.workspace }}/hf-cache

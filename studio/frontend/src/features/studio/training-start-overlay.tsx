@@ -311,7 +311,7 @@ export function TrainingStartOverlay({
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
-      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
+      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center">
         <img
           src="/unsloth-gem.png"
           alt="Unsloth Studio"
@@ -358,7 +358,7 @@ export function TrainingStartOverlay({
             </AlertDialogContent>
           </AlertDialog>
           <Terminal
-            className="w-full min-h-[390px] rounded-2xl px-7 py-6 text-left"
+            className="w-full min-h-[390px] rounded-2xl border-0 px-7 py-6 text-left"
             startOnView={false}
             instant={alreadyAnimated}
           >

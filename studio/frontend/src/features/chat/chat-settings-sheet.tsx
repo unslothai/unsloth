@@ -54,6 +54,7 @@ import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   ArrowTurnBackwardIcon,
+  Edit03Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
@@ -90,6 +91,7 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -186,12 +188,16 @@ function NumericValueInput({
     }
   };
 
+  const displayed = focused ? draft : (displayValue ?? String(value));
+
   return (
     <input
       type="text"
       inputMode="decimal"
       size={sizeAttr}
-      value={focused ? draft : (displayValue ?? String(value))}
+      /* Fixed 4ch pill; grows only when a longer value would clip. */
+      style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
+      value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
@@ -262,7 +268,7 @@ function ParamSlider({
           onChange={onChange}
           displayValue={displayValue}
           ariaLabel={label}
-          size={valueSize ?? 6}
+          size={valueSize ?? 4}
         />
       </div>
       <Slider
@@ -836,7 +842,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ArrowDown01Icon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[60px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -876,7 +882,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ArrowDown01Icon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[120px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
                       >
                         <SelectValue />
@@ -927,7 +933,7 @@ export function ChatSettingsPanel({
                       }}
                       data-test-id="spec-draft-n-max-input"
                       aria-label="Speculative decoding draft tokens"
-                      className="h-7 w-[72px] rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                      className="h-7 w-[76px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
                     />
                   </div>
                 )}
@@ -1057,7 +1063,7 @@ export function ChatSettingsPanel({
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
-                sideOffset={6}
+                sideOffset={0}
                 className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
               >
                 {presets.map((p, index) => (
@@ -1091,7 +1097,7 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav",
+                  "h-9 w-full rounded-full text-[13px] font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1106,7 +1112,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1362,6 +1368,12 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
         ) : null}
+
+        {!isExternalModel ? (
+          <CollapsibleSection label="Retrieval">
+            <RetrievalSettingsSection />
+          </CollapsibleSection>
+        ) : null}
       </div>
       </div>
       </div>
@@ -1552,11 +1564,15 @@ function ChatTemplateFields() {
 
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
-            Chat Template
-          </span>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={openEditor}
+          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
+        >
+          Chat Template
+        </button>
+        <div className="flex items-center gap-1">
           {isModified && (
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -1582,17 +1598,30 @@ function ChatTemplateFields() {
               </TooltipContent>
             </Tooltip>
           )}
+          <Tooltip>
+            <TooltipPrimitive.Trigger asChild>
+              <button
+                type="button"
+                onClick={openEditor}
+                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                aria-label="Edit chat template"
+              >
+                <HugeiconsIcon
+                  icon={Edit03Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipPrimitive.Trigger>
+            <TooltipContent
+              side="top"
+              sideOffset={6}
+              className="tooltip-compact"
+            >
+              Edit template
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <button
-          type="button"
-          onClick={openEditor}
-          aria-label="Edit chat template"
-          className="panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
-        >
-          <span className="block line-clamp-3 whitespace-pre-wrap break-words">
-            {displayValue}
-          </span>
-        </button>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent

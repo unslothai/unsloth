@@ -64,6 +64,15 @@ BUDGET_EXHAUSTED_NUDGE = (
     "any more tools."
 )
 
+# The exact-args dup guard misses paraphrased re-searches, so also cap executed
+# KB searches per turn, then nudge.
+RAG_MAX_SEARCHES_PER_TURN = 3
+RAG_SEARCH_CAP_NUDGE = (
+    "You have already searched the knowledge base several times this turn. "
+    "Do not search again. Answer the question using the passages already "
+    "retrieved above; if they do not contain the answer, say so plainly."
+)
+
 
 # Pre-compiled patterns reused by ``parse_tool_calls_from_text``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")

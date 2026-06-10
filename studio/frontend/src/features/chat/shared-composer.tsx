@@ -27,28 +27,39 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  CheckIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Download01Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
+} from "./prompt-storage/prompt-storage-dialog";
+import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
@@ -389,11 +400,15 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  model1ThreadId,
+  model2ThreadId,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  model1ThreadId?: string;
+  model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -415,6 +430,26 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      setRecentPrompts(
+        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
+      );
+    } catch {
+    }
+  }, []);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
+  const queueRef = useRef<string[]>([]);
+  const queueIndexRef = useRef(0);
+  const isQueueRunningRef = useRef(false);
+  const prevRunningRef = useRef(false);
+  const prevComparingRef = useRef(false);
+  const compareStepSucceededRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -485,6 +520,13 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
+  );
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  // Empty until a compare run; gates Export chat off.
+  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
+    (id): id is string => Boolean(id),
   );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
@@ -614,11 +656,17 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
+  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
+  // Disable only when a loaded model can't run it; with no model the toggle
+  // can still be pre-selected, matching Web search/Code/MCP.
+  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
+  const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
   // Code always show; the rest are conditional.
   const pillsCompact =
     3 +
       (showImagePill ? 1 : 0) +
+      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -646,6 +694,55 @@ export function SharedComposer({
     }, 200);
     return () => clearInterval(id);
   }, [handlesRef]);
+
+  function advanceQueue() {
+    const nextIndex = queueIndexRef.current + 1;
+    if (nextIndex >= queueRef.current.length) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.success("Prompt queue complete");
+      return;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    const next = queueRef.current[nextIndex];
+    toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
+      description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+    });
+    setText(next);
+    setTimeout(() => { sendRef.current?.(); }, 100);
+  }
+
+  // Compare mode: advance the queue on cycle end, but stop on a failed step so we
+  // don't burn prompts on incomplete results.
+  useEffect(() => {
+    const wasComparing = prevComparingRef.current;
+    prevComparingRef.current = comparing;
+    if (!isQueueRunningRef.current || !wasComparing || comparing) return;
+    if (!compareStepSucceededRef.current) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.error("Prompt queue stopped", {
+        description: "A compare step failed — remaining prompts were not sent.",
+      });
+      return;
+    }
+    prevRunningRef.current = false;
+    advanceQueue();
+  }, [comparing]);
+
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = running;
+    if (!isQueueRunningRef.current || !wasRunning || running || comparing) return;
+    advanceQueue();
+  }, [running, comparing]);
 
   // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
   useEffect(() => {
@@ -946,8 +1043,10 @@ export function SharedComposer({
           await done;
         }
 
+        compareStepSucceededRef.current = true;
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
+        compareStepSucceededRef.current = false;
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -963,6 +1062,7 @@ export function SharedComposer({
       }
     }
   }
+  sendRef.current = send;
 
   function stop() {
     if (isDictating) stopDictation();
@@ -1018,6 +1118,41 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
+      <PromptStorageDialog
+        open={promptStorageOpen}
+        onOpenChange={setPromptStorageOpen}
+        onUse={(t) => {
+          setText(t);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }}
+        onRunList={(items) => {
+          const filtered = items.filter((p) => p.trim());
+          if (!filtered.length) return;
+          const hasCompareHandles = Boolean(
+            handlesRef.current["model1"] || handlesRef.current["model2"],
+          );
+          const isGeneralizedCompare =
+            hasCompareHandles && Boolean(model1?.id && model2?.id);
+          if (hasCompareHandles && !isGeneralizedCompare) {
+            toast.error("Pick a model in each pane to compare", {
+              description:
+                "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
+          setPromptStorageOpen(false);
+          queueRef.current = filtered;
+          queueIndexRef.current = 0;
+          isQueueRunningRef.current = true;
+          setIsQueueRunning(true);
+          setQueueProgress({ current: 1, total: filtered.length });
+          toast(`Prompt 1 / ${filtered.length}`, {
+            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+          });
+          setText(filtered[0]);
+          setTimeout(() => { sendRef.current?.(); }, 100);
+        }}
+      />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
         className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
@@ -1120,7 +1255,11 @@ export function SharedComposer({
           />
           {/* Same + menu as single-chat (ComposerToolsMenu), wired to the
               compare composer's own file/audio inputs and tools. */}
-          <DropdownMenu>
+          <DropdownMenu
+            onOpenChange={(open) => {
+              if (open) void refreshRecentPrompts();
+            }}
+          >
             <DropdownMenuTrigger asChild={true}>
               <button
                 type="button"
@@ -1133,7 +1272,7 @@ export function SharedComposer({
             <DropdownMenuContent
               side="top"
               align="start"
-              sideOffset={2}
+              sideOffset={0}
               avoidCollisions={true}
               className="unsloth-plus-menu w-[212px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
@@ -1170,7 +1309,11 @@ export function SharedComposer({
                 <GlobeIcon />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -1182,14 +1325,20 @@ export function SharedComposer({
                 }
                 onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
               >
+                {/* Scale, not width: an oversized box pushed the label out of
+                    line. */}
                 <HugeiconsIcon
                   icon={CodeIcon}
                   strokeWidth={2}
-                  className="size-[1.175rem]!"
+                  className="scale-[1.12]"
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               {showImagePill && (
@@ -1205,20 +1354,33 @@ export function SharedComposer({
                   <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
-                    <CheckIcon className="ml-auto" />
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
                   ) : null}
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                disabled={ragDisabled}
                 className={
-                  artifactsEnabled ? "text-primary font-medium" : undefined
+                  ragEnabled && !ragDisabled
+                    ? "text-primary font-medium"
+                    : undefined
                 }
-                onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+                onSelect={() => setRagEnabled(!ragEnabled)}
               >
-                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                Canvas
-                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+                Chat with Files
+                {ragEnabled && !ragDisabled ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={!supportsTools}
@@ -1229,19 +1391,122 @@ export function SharedComposer({
               >
                 <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
                 MCP
-                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
+                {mcpEnabledForChat ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
               </DropdownMenuItem>
               {/* RAG hidden temporarily */}
-              {/* Always active: this menu only renders in compare mode. Ticked
-                  like Web search/Code; click toggles it off. */}
-              <DropdownMenuItem
-                className="text-primary font-medium"
-                onSelect={handleExitCompare}
-              >
-                <Columns2Icon />
-                Compare chat
-                <CheckIcon className="ml-auto" />
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  {/* Always active: this menu only renders in compare mode. Ticked
+                      like Web search/Code; click toggles it off. */}
+                  <DropdownMenuItem
+                    className="text-primary font-medium"
+                    onSelect={handleExitCompare}
+                  >
+                    <Columns2Icon />
+                    Compare chat
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                      Saved prompts
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="unsloth-plus-menu w-[176px]"
+                    >
+                      {recentPrompts.map((p) => (
+                        <DropdownMenuItem
+                          key={p.id}
+                          onSelect={() => {
+                            setText(p.text);
+                            requestAnimationFrame(() =>
+                              textareaRef.current?.focus(),
+                            );
+                          }}
+                        >
+                          <span className="truncate">{p.name}</span>
+                        </DropdownMenuItem>
+                      ))}
+                      {recentPrompts.length > 0 ? (
+                        <DropdownMenuSeparator />
+                      ) : null}
+                      <DropdownMenuItem
+                        onSelect={() => setPromptStorageOpen(true)}
+                      >
+                        All saved prompts…
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger
+                      disabled={exportThreadIds.length === 0}
+                    >
+                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                      Export chat
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="unsloth-plus-menu w-[176px]"
+                    >
+                      {[
+                        { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                        { label: "CSV", fn: exportConversationCsv },
+                        {
+                          label: "ShareGPT JSONL",
+                          fn: exportConversationShareGPT,
+                        },
+                      ].map(({ label, fn }) => (
+                        <DropdownMenuItem
+                          key={label}
+                          disabled={exportThreadIds.length === 0}
+                          onSelect={() => {
+                            if (!exportThreadIds.length) {
+                              toast.error("No conversation to export yet.");
+                              return;
+                            }
+                            Promise.all(
+                              exportThreadIds.map((id) => fn(id)),
+                            ).catch(() => toast.error("Export failed."));
+                          }}
+                        >
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuItem
+                    className={
+                      artifactsEnabled ? "text-primary font-medium" : undefined
+                    }
+                    onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+                  >
+                    <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                    Canvas
+                    {artifactsEnabled ? (
+                      <HugeiconsIcon
+                        icon={Tick02Icon}
+                        strokeWidth={2}
+                        className="ml-auto"
+                      />
+                    ) : null}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
@@ -1358,6 +1623,7 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
+          {showRagPill && <KnowledgeBaseComposerButton side="top" />}
           {showWebFetchPill && (
             <button
               type="button"
@@ -1445,7 +1711,9 @@ export function SharedComposer({
                             setPreserveThinking(false);
                           }}
                         >
-                          <CheckIcon
+                          <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                             className={cn(
                               "unsloth-tick size-4",
                               effectiveReasoningVisualEnabled && "opacity-0",
@@ -1474,7 +1742,9 @@ export function SharedComposer({
                               }
                             }}
                           >
-                            <CheckIcon
+                            <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                               className={cn(
                                 "unsloth-tick size-4",
                                 !(
@@ -1505,7 +1775,9 @@ export function SharedComposer({
                           }
                         }}
                       >
-                        <CheckIcon
+                        <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
                             !effectiveReasoningEnabled && "opacity-0",
@@ -1529,7 +1801,9 @@ export function SharedComposer({
                         }
                       }}
                     >
-                      <CheckIcon
+                      <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
                           !preserveThinking && "opacity-0",
@@ -1606,7 +1880,26 @@ export function SharedComposer({
               )}
             </>
           )}
-          {busy ? (
+          {isQueueRunning ? (
+            <button
+              type="button"
+              onClick={() => {
+                isQueueRunningRef.current = false;
+                setIsQueueRunning(false);
+                queueRef.current = [];
+                queueIndexRef.current = 0;
+                setQueueProgress({ current: 0, total: 0 });
+                stop();
+              }}
+              aria-label="Stop prompt queue"
+              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <SquareIcon className="size-2.5 shrink-0 fill-current" />
+              <span className="tabular-nums">
+                Stop queue {queueProgress.current}/{queueProgress.total}
+              </span>
+            </button>
+          ) : busy ? (
             <Button
               type="button"
               variant="default"

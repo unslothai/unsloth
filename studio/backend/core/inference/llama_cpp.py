@@ -50,6 +50,8 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
@@ -3344,51 +3346,88 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
-                # Defensive kill: drop an orphan Popen a concurrent load may
-                # have stored before we overwrite the reference (#5161).
-                self._kill_process()
-
+                # One-shot --fit off retry: recent llama.cpp runs a "fitting
+                # params to device memory" step by default (--fit defaults to
+                # 'on') even when -ngl is explicit. That step has aborted on
+                # some ROCm hosts (ggml-cuda.cu ROCm error during worst-case
+                # estimation, e.g. MTP + mmproj models on gfx1151). When
+                # Studio's own VRAM math already placed the model
+                # (use_fit=False), the step is redundant second-guessing --
+                # retry once with --fit off before declaring the load failed.
+                # Never retry when fit was requested (use_fit) or the caller
+                # passed an explicit fit flag via extra args.
                 def _spawn_and_wait(run_cmd, *, label = ""):
-                    """Start llama-server with run_cmd and wait for health."""
-                    self._stdout_lines = []
-                    # Tee llama-server output to a dedicated log file so a
-                    # post-mortem has the full trail even when the parent only
-                    # kept the last 50 lines. Path is under the studio home.
-                    # ``label`` keeps the retry attempt from overwriting the
-                    # first attempt's log when both land in the same second.
-                    self._llama_log_fh = None
-                    try:
-                        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
-                        log_dir.mkdir(parents = True, exist_ok = True)
-                        self._llama_log_path = (
-                            log_dir / f"llama-{int(time.time())}{label}-port-{self._port}.log"
-                        )
-                        self._llama_log_fh = open(
-                            self._llama_log_path,
-                            "w",
-                            encoding = "utf-8",
-                            buffering = 1,
-                        )
-                        logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-                    except OSError as e:
-                        # Best-effort; never block the load on logging.
-                        logger.debug(f"Could not open llama-server log file: {e}")
-                        self._llama_log_path = None
-                    self._process = subprocess.Popen(
-                        run_cmd,
-                        stdout = subprocess.PIPE,
-                        stderr = subprocess.STDOUT,
-                        text = True,
-                        env = env,
-                        **_windows_hidden_subprocess_kwargs(),
-                    )
+                    """Start llama-server with run_cmd and wait for health.
 
-                    # Background thread to drain stdout (prevents pipe deadlock)
-                    self._stdout_thread = threading.Thread(
-                        target = self._drain_stdout, daemon = True, name = "llama-stdout"
-                    )
-                    self._stdout_thread.start()
-                    return self._wait_for_health(timeout = 600.0)
+                    Retries once with --fit off when the first attempt
+                    crashes during startup and run_cmd is eligible (see
+                    _fit_off_retry_eligible).
+                    """
+                    _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
+                    for _spawn_attempt in (0, 1):
+                        # Defensive kill: drop an orphan Popen a concurrent load may
+                        # have stored before we overwrite the reference (#5161).
+                        # Also reaps the crashed first attempt on the retry pass.
+                        self._kill_process()
+
+                        self._stdout_lines = []
+                        # Tee llama-server output to a dedicated log file so a
+                        # post-mortem has the full trail even when the parent only
+                        # kept the last 50 lines. Path is under the studio home.
+                        # ``label`` (MTP fallback) and the attempt index (--fit
+                        # off retry) keep a respawn within the same epoch second
+                        # from truncating the crash log a retry warning just
+                        # pointed the user at.
+                        self._llama_log_fh = None
+                        try:
+                            log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                            log_dir.mkdir(parents = True, exist_ok = True)
+                            self._llama_log_path = log_dir / (
+                                f"llama-{int(time.time())}{label}-port-{self._port}"
+                                f"-try{_spawn_attempt}.log"
+                            )
+                            self._llama_log_fh = open(
+                                self._llama_log_path,
+                                "w",
+                                encoding = "utf-8",
+                                buffering = 1,
+                            )
+                            logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
+                        except OSError as e:
+                            # Best-effort; never block the load on logging.
+                            logger.debug(f"Could not open llama-server log file: {e}")
+                            self._llama_log_path = None
+                        self._process = subprocess.Popen(
+                            run_cmd,
+                            stdout = subprocess.PIPE,
+                            stderr = subprocess.STDOUT,
+                            text = True,
+                            env = env,
+                            **_windows_hidden_subprocess_kwargs(),
+                        )
+
+                        # Background thread to drain stdout (prevents pipe deadlock)
+                        self._stdout_thread = threading.Thread(
+                            target = self._drain_stdout, daemon = True, name = "llama-stdout"
+                        )
+                        self._stdout_thread.start()
+                        if self._wait_for_health(timeout = 600.0):
+                            return True
+                        _startup_crashed = (
+                            self._process.poll() is not None and self._process.returncode != 0
+                        )
+                        if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
+                            logger.warning(
+                                "llama-server crashed during startup (exit code %s) "
+                                "with the default memory-fit step enabled; Studio "
+                                "already verified the model fits, retrying once "
+                                "with --fit off. Crash log: %s",
+                                self._process.returncode,
+                                self._llama_log_path,
+                            )
+                            run_cmd = [*run_cmd, "--fit", "off"]
+                            continue
+                        return False
 
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
@@ -4183,6 +4222,23 @@ class LlamaCppBackend:
         """atexit handler to ensure llama-server is terminated."""
         self._kill_process()
 
+    @staticmethod
+    def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
+        """Whether a llama-server startup crash may be retried with --fit off.
+
+        Only when Studio's own VRAM math placed the model (use_fit=False)
+        and nothing on the command line set the fit mode explicitly
+        (-fit / --fit, space- or equals-form). --fit-ctx / --fit-target /
+        -fitc / -fitt tune the fit step but do not select the mode, so
+        they do not block the retry.
+        """
+        if use_fit:
+            return False
+        for a in cmd:
+            if a in ("-fit", "--fit") or a.startswith(("-fit=", "--fit=")):
+                return False
+        return True
+
     def _wait_for_health(
         self,
         timeout: float = 120.0,
@@ -4199,9 +4255,17 @@ class LlamaCppBackend:
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
+                # Keep the TAIL: crash details (abort reason, ROCm/CUDA error
+                # text) print last, after the long startup banner. Head
+                # truncation has cut off exactly the diagnostic line before.
+                _log_hint = (
+                    f" Full log: {self._llama_log_path}"
+                    if getattr(self, "_llama_log_path", None)
+                    else ""
+                )
                 logger.error(
                     f"llama-server exited with code {self._process.returncode}. "
-                    f"Output: {output[:2000]}"
+                    f"Output (tail): {output[-2000:]}{_log_hint}"
                 )
                 return False
 
@@ -4571,6 +4635,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
     ) -> Generator[dict, None, None]:
@@ -4582,12 +4647,21 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import execute_tool
+        from core.inference.tools import build_rag_autoinject, execute_tool
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+
+        # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
+        # the same tool card + citations a real call would.
+        _auto = build_rag_autoinject(conversation, rag_scope)
+        if _auto:
+            for _ev in _auto["events"]:
+                yield _ev
+            conversation.extend(_auto["messages"])
+
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -4624,6 +4698,9 @@ class LlamaCppBackend:
 
         _MAX_BUFFER_CHARS = 32
         _append_budget_exhausted_nudge = True
+        # RAG: cap knowledge-base searches per assistant turn. The controller is
+        # tool-agnostic, so this gate stays in the loop.
+        _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -5264,13 +5341,23 @@ class LlamaCppBackend:
                     yield decision.tool_start_event()
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                    result = execute_tool(
-                        decision.tool_name,
-                        decision.arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # RAG: cap paraphrased KB re-searches that slip past the dup guard.
+                    if (
+                        decision.tool_name == "search_knowledge_base"
+                        and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+                    ):
+                        result = RAG_SEARCH_CAP_NUDGE
+                    else:
+                        result = execute_tool(
+                            decision.tool_name,
+                            decision.arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                            rag_scope = rag_scope,
+                        )
+                        if decision.tool_name == "search_knowledge_base":
+                            _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
