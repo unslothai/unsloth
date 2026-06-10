@@ -81,6 +81,34 @@ def _install_httpcore_asyncgen_silencer() -> None:
 _install_httpcore_asyncgen_silencer()
 
 
+def _loaded_chat_template() -> Optional[str]:
+    """Chat template of the currently loaded GGUF model, if any."""
+    try:
+        return get_llama_cpp_backend().chat_template
+    except Exception:
+        return None
+
+
+def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
+    """A chat-template raise_exception message to surface, but only when it appears
+    verbatim in chat_template (simple substring check), so we never leak arbitrary
+    llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
+    if not chat_template:
+        return None
+    marker = "Jinja Exception:"
+    idx = error_text.find(marker)
+    if idx == -1:
+        return None
+    candidate = error_text[idx + len(marker) :]
+    # llama-server appends JSON after the message; cut at the first boundary.
+    for stop in ('"', "\n"):
+        cut = candidate.find(stop)
+        if cut != -1:
+            candidate = candidate[:cut]
+    candidate = candidate.strip()
+    return candidate if candidate and candidate in chat_template else None
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     # httpx transport failures from the async pass-through helpers. Any
@@ -106,6 +134,9 @@ def _friendly_error(exc: Exception) -> str:
         return (
             "Lost connection to the model server. It may have crashed -- try reloading the model."
         )
+    template_msg = _template_raise_message(msg, _loaded_chat_template())
+    if template_msg:
+        return f"An internal error occurred: {template_msg}"
     return "An internal error occurred"
 
 
@@ -3088,6 +3119,12 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # Drop the RAG tool without a scope: nothing to search over.
+            if not payload.rag_scope:
+                tools_to_use = [
+                    t for t in tools_to_use if t["function"]["name"] != "search_knowledge_base"
+                ]
+
             if _mcp_allowed:
                 tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
@@ -3107,6 +3144,21 @@ async def openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
             )
+
+            # Nudge the model to ground in attached documents instead of memory.
+            _tool_names = {(t.get("function") or {}).get("name") for t in (tools_to_use or [])}
+            _rag_active = "search_knowledge_base" in _tool_names and payload.rag_scope
+            if _rag_active:
+                _rag_nudge = (
+                    "The user has attached documents to this conversation. Relevant "
+                    "passages are retrieved and provided to you automatically; base "
+                    "your answer on them and cite them. You can also call "
+                    "search_knowledge_base to look for more. Do not answer from "
+                    "memory when the attached documents are relevant."
+                )
+                # Prefix the date when the tool nudge is empty (RAG-only tool set).
+                _date_line = f"The current date is {_date.today().isoformat()}."
+                _nudge = _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -3153,6 +3205,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 )
 
@@ -3592,6 +3645,12 @@ async def openai_chat_completions(
         else:
             _sf_tools_to_use = ALL_TOOLS
 
+        # Drop the RAG tool unless the request carries a retrieval scope.
+        if not payload.rag_scope:
+            _sf_tools_to_use = [
+                t for t in _sf_tools_to_use if t["function"]["name"] != "search_knowledge_base"
+            ]
+
         if _sf_mcp_allowed:
             _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
@@ -3606,6 +3665,25 @@ async def openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
         )
+
+        # RAG nudge, mirroring the GGUF path.
+        _sf_tool_names = {(t.get("function") or {}).get("name") for t in (_sf_tools_to_use or [])}
+        _sf_rag_active = "search_knowledge_base" in _sf_tool_names and payload.rag_scope
+        if _sf_rag_active:
+            _sf_rag_nudge = (
+                "The user has attached documents to this conversation. Relevant "
+                "passages are retrieved and provided to you automatically; base "
+                "your answer on them and cite them. You can also call "
+                "search_knowledge_base to look for more. Do not answer from "
+                "memory when the attached documents are relevant."
+            )
+            # Prefix the date when the tool nudge is empty (RAG-only tool set).
+            _sf_date_line = f"The current date is {_date.today().isoformat()}."
+            _sf_nudge = (
+                _sf_date_line + " " + _sf_rag_nudge
+                if not _sf_nudge
+                else _sf_nudge + " " + _sf_rag_nudge
+            )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -3658,6 +3736,7 @@ async def openai_chat_completions(
                 if payload.tool_call_timeout is not None
                 else 300,
                 session_id = payload.session_id,
+                rag_scope = payload.rag_scope,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -5439,6 +5518,8 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                # Anthropic passthrough has no rag_scope field (RAG is local-only).
+                rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
             )
 

@@ -90,6 +90,7 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -1360,6 +1361,12 @@ export function ChatSettingsPanel({
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
+          </CollapsibleSection>
+        ) : null}
+
+        {!isExternalModel ? (
+          <CollapsibleSection label="Retrieval">
+            <RetrievalSettingsSection />
           </CollapsibleSection>
         ) : null}
       </div>

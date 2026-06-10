@@ -45,6 +45,16 @@
 		height: 40px;
 		background: linear-gradient(to top, var(--sidebar), transparent);
 	}
+	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
+	   the scroll fold (JS-toggled). */
+	.rag-docs-bottom-fade {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
 }
 
 @layer base {
