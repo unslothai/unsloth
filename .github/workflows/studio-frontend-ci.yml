@@ -62,6 +62,19 @@ jobs:
         with:
           node-version: '22'
 
+      # node 22 bundles npm 10.x, which predates allowScripts. Move to the
+      # 11.x line and fail loudly if the gate is still missing, so the
+      # strict flag below can never silently degrade into a warning.
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
       # Run the structural lockfile scan BEFORE npm ci. A compromised
       # tarball runs its `prepare` / `postinstall` during `npm ci`,
       # so any catch has to fire upstream of that. The scanner is
@@ -84,7 +97,9 @@ jobs:
         # covered by `allowScripts` in package.json (npm >=11.16, default in
         # npm 12). The pre-install lockfile audit above stays the first line
         # of defence -- it fires before any tarball can run code.
-        run: npm ci --no-fund --no-audit
+        # --strict-allow-scripts: any unreviewed install script hard-fails
+        # the job; the sync hook keeps the pins fresh after bumps.
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
 
       - name: npm ci must not have modified the working tree
         working-directory: ${{ github.workspace }}
