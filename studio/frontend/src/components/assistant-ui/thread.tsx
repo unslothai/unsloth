@@ -1943,6 +1943,21 @@ const ToolStatusDisplay: FC = () => {
 };
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
+const AUDIO_ACCEPT_TOKEN_RE =
+  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+
+function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
+  if (audioEnabled || accept === "*") {
+    return accept;
+  }
+  const filtered = accept
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+    .join(",");
+  return filtered || accept;
+}
+
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
@@ -1966,6 +1981,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    if (!activeCheckpoint || s.modelLoading) {
+      return false;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -2028,6 +2051,40 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
+  const composerCanAddAttachments = useAuiState(
+    ({ composer }) => composer.isEditing,
+  );
+  const pickAttachment = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.hidden = true;
+
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    if (attachmentAccept !== "*") {
+      input.accept = attachmentAccept;
+    }
+
+    document.body.appendChild(input);
+    input.onchange = (event) => {
+      const files = (event.target as HTMLInputElement).files;
+      if (files) {
+        for (const file of files) {
+          void aui.composer().addAttachment(file);
+        }
+      }
+      document.body.removeChild(input);
+    };
+    input.oncancel = () => {
+      if (!input.files || input.files.length === 0) {
+        document.body.removeChild(input);
+      }
+    };
+    input.click();
+  }, [aui, audioAttachmentsEnabled]);
   // Disable Export chat until the thread has content.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
@@ -2079,12 +2136,13 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
-        <ComposerPrimitive.AddAttachment asChild={true}>
-          <DropdownMenuItem>
-            <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
-            Add photos &amp; files
-          </DropdownMenuItem>
-        </ComposerPrimitive.AddAttachment>
+        <DropdownMenuItem
+          disabled={!composerCanAddAttachments}
+          onSelect={() => pickAttachment()}
+        >
+          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          Add photos &amp; files
+        </DropdownMenuItem>
         <DropdownMenuItem
           disabled={searchDisabled}
           className={
