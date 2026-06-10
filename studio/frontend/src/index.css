@@ -831,14 +831,15 @@
 
 	/* Elevated surface shadow (use ring-* for borders) */
 	.shadow-border {
-		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-		--tw-shadow-colored: 0 4px 16px var(--tw-shadow-color);
+		/* Chatbox shadow; dark mode drops it. */
+		--tw-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		--tw-shadow-colored: 0 2px 8px -2px var(--tw-shadow-color);
 		box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
 			var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 	}
 
 	.dark .shadow-border {
-		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+		box-shadow: none;
 	}
 
 	/* Settings dialog: no shadow in dark mode. */
@@ -976,6 +977,8 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
+		/* A hair warmer than pure white. */
+		background-color: #fffefd;
 		/* Gemini-style composer shadow. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 		transition: box-shadow 0.1s;
@@ -1064,6 +1067,8 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
+		/* A hair warmer than pure white. */
+		background-color: #fffefd;
 		/* Gemini-style composer shadow. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 		transition: box-shadow 0.1s;
