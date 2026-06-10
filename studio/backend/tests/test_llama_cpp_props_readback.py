@@ -205,3 +205,52 @@ def test_props_failure_keeps_studio_value(monkeypatch):
     _stub_props(monkeypatch, exc = RuntimeError("boom"))
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 98304
+
+
+# ---------------------------------------------------------------------------
+# _ctx_integrity_flags: keep the per-request window equal to the advertised ctx
+# ---------------------------------------------------------------------------
+
+_CAPS_ALL = {"supports_kv_unified": True, "supports_fit_ctx": True}
+_CAPS_NONE = {"supports_kv_unified": False, "supports_fit_ctx": False}
+
+
+def test_kv_unified_added_for_multi_slot():
+    """Explicit --parallel N disables llama-server's auto-slots kv-unified
+    default, splitting -c into per-slot windows of -c/N; Studio must restore
+    the shared pool so one request can use the full advertised context."""
+    flags = LlamaCppBackend._ctx_integrity_flags(4, False, 98304, 98304, _CAPS_ALL)
+    assert "--kv-unified" in flags
+
+
+def test_kv_unified_skipped_for_single_slot_or_old_build():
+    assert "--kv-unified" not in LlamaCppBackend._ctx_integrity_flags(
+        1, False, 98304, 98304, _CAPS_ALL
+    )
+    assert "--kv-unified" not in LlamaCppBackend._ctx_integrity_flags(
+        4, False, 98304, 98304, _CAPS_NONE
+    )
+
+
+def test_fit_ctx_floors_explicit_request_under_fit():
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 98304, 98304, _CAPS_ALL)
+    assert flags[flags.index("--fit-ctx") + 1] == "98304"
+
+
+def test_fit_ctx_skipped_without_fit_or_explicit_ctx_or_support():
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, False, 98304, 98304, _CAPS_ALL
+    )
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, 0, 262144, _CAPS_ALL
+    )
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, 98304, 98304, _CAPS_NONE
+    )
+
+
+def test_probe_missing_binary_reports_new_capabilities_false():
+    info = LlamaCppBackend.probe_server_capabilities(binary = "/nonexistent/llama-server")
+    assert info["found"] is False
+    assert info["supports_kv_unified"] is False
+    assert info["supports_fit_ctx"] is False

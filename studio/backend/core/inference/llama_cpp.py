@@ -1081,6 +1081,8 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "supports_kv_unified": False,
+                "supports_fit_ctx": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1094,6 +1096,8 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        supports_kv_unified = False
+        supports_fit_ctx = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1181,6 +1185,9 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+
+            supports_kv_unified = _is_real("--kv-unified")
+            supports_fit_ctx = _is_real("--fit-ctx")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1191,6 +1198,8 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "supports_kv_unified": supports_kv_unified,
+            "supports_fit_ctx": supports_fit_ctx,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -2941,6 +2950,16 @@ class LlamaCppBackend:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
 
+                cmd.extend(
+                    self._ctx_integrity_flags(
+                        n_parallel,
+                        use_fit,
+                        requested_ctx,
+                        effective_ctx,
+                        self.probe_server_capabilities(binary),
+                    )
+                )
+
                 # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
                 # so we don't inherit llama-server's internal default, which
                 # has varied (hardware concurrency incl. hyperthreads on some
@@ -4016,6 +4035,35 @@ class LlamaCppBackend:
 
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
+
+    @staticmethod
+    def _ctx_integrity_flags(
+        n_parallel: int,
+        use_fit: bool,
+        requested_ctx: int,
+        effective_ctx: int,
+        caps: dict,
+    ) -> list[str]:
+        """Flags that keep the per-request window equal to the advertised ctx.
+
+        Explicit ``--parallel`` disables llama-server's auto-slots
+        ``--kv-unified`` default, silently splitting ``-c`` into per-slot
+        windows of ``-c / N``; restore the shared pool so one request can use
+        the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
+        at an explicitly requested ctx (default floor is 4096) so it offloads
+        or fails instead of silently shrinking the window.
+        """
+        flags: list[str] = []
+        if n_parallel > 1 and caps.get("supports_kv_unified"):
+            flags.append("--kv-unified")
+        if (
+            use_fit
+            and requested_ctx > 0
+            and effective_ctx > 0
+            and caps.get("supports_fit_ctx")
+        ):
+            flags.extend(["--fit-ctx", str(effective_ctx)])
+        return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:
         """Per-slot context llama-server actually allocated, from ``/props``.
