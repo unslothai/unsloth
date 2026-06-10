@@ -1405,7 +1405,9 @@ if ($IsPipInstall) {
         substep "installing bun (faster frontend package installs)..."
         $prevEAP_bun = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        Invoke-SetupCommand { npm install -g bun } | Out-Null
+        # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
+        # postinstall fetches its binary; without it the install is a broken stub.
+        Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
         $ErrorActionPreference = $prevEAP_bun
         Refresh-Environment
         if (Get-Command bun -ErrorAction SilentlyContinue) {
