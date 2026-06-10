@@ -3703,7 +3703,9 @@ def resolve_lemonade_rocm_choice(
 
 
 def resolve_upstream_asset_choice(
-    host: HostInfo, llama_tag: str, lemonade_tag: "str | None" = None
+    host: HostInfo,
+    llama_tag: str,
+    lemonade_tag: "str | None" = None,
 ) -> AssetChoice:
     # lemonade_tag: tag for the lemonade lookup only. The release scan pins
     # llama_tag to per-release upstream tags (b9518, ...) that lemonade's own
@@ -3866,7 +3868,9 @@ def resolve_upstream_asset_choice(
 
 
 def resolve_asset_choice(
-    host: HostInfo, llama_tag: str, lemonade_tag: "str | None" = None
+    host: HostInfo,
+    llama_tag: str,
+    lemonade_tag: "str | None" = None,
 ) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
         raise PrebuiltFallback(
