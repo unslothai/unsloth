@@ -1239,8 +1239,12 @@ class TestAmdGpuMonitoring:
         mock_result.returncode = 0
         mock_result.stdout = mock_json
 
-        with patch.object(subprocess, "run", return_value = mock_result):
-            result = amd_mod.get_primary_gpu_utilization()
+        # The premise is "amd-smi exists and answers": the absence guard
+        # which()-checks before spawning, so hosts without a real amd-smi
+        # (Linux CI, driver-only Windows) need which mocked too.
+        with patch.object(amd_mod.shutil, "which", return_value = "/usr/bin/amd-smi"):
+            with patch.object(subprocess, "run", return_value = mock_result):
+                result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is True
         assert result["gpu_utilization_pct"] == 50.0
         assert result["temperature_c"] == 65.0

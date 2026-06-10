@@ -3197,8 +3197,13 @@ class LlamaCppBackend:
                     try:
                         log_dir = _swa_cache_path().parent / "logs" / "llama-server"
                         log_dir.mkdir(parents = True, exist_ok = True)
-                        self._llama_log_path = (
-                            log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+                        # Include the attempt index: the --fit off retry can
+                        # respawn within the same epoch second, and reusing the
+                        # name would truncate the crash log the retry warning
+                        # just pointed the user at.
+                        self._llama_log_path = log_dir / (
+                            f"llama-{int(time.time())}-port-{self._port}"
+                            f"-try{_spawn_attempt}.log"
                         )
                         self._llama_log_fh = open(
                             self._llama_log_path,

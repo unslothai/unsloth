@@ -199,6 +199,20 @@ class TestCrashLogTail:
         assert crash_logs and "llama-123-port-1234.log" in crash_logs[-1]
 
 
+class TestRetryLogFilenameUnique:
+    """The --fit off retry can respawn within the same epoch second; the log
+    filename must carry the attempt index or the second open ("w") truncates
+    the crash log the retry warning just referenced (found by simulation:
+    frozen time.time -> single file, crash evidence gone)."""
+
+    def test_log_name_includes_attempt_index(self):
+        src = (
+            Path(__file__).resolve().parent.parent
+            / "core" / "inference" / "llama_cpp.py"
+        ).read_text(encoding = "utf-8")
+        assert "-try{_spawn_attempt}.log" in src
+
+
 class TestFitOffRetryEligible:
     """Gate for the one-shot --fit off startup-crash retry.
 
