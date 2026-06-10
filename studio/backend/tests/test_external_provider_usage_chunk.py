@@ -1,27 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the prompt-cache accounting chunk emitted by the external-
-provider streaming proxy.
+"""Unit tests for the prompt-cache accounting chunk from the external-provider proxy.
 
-The streaming Anthropic + OpenAI Responses paths now emit one extra
-``include_usage``-style SSE chunk (``choices: []`` with a populated
-``usage`` block) just before ``[DONE]`` / after the final
-``finish_reason`` chunk. This lets clients surface cache savings
-without scraping the structlog stream.
-
-Covers:
-- Helper alone: shape for Anthropic / OpenAI usage payloads, missing
-  fields treated as 0, all-zero usage suppressed.
-- Anthropic stream: ``message_start.usage`` + ``message_delta.usage``
-  with ``cache_creation_input_tokens`` and ``cache_read_input_tokens``
-  produce the expected usage chunk before ``[DONE]``.
-- OpenAI Responses stream: ``response.completed.usage`` with
-  ``input_tokens_details.cached_tokens`` produces the expected usage
-  chunk after the ``stop`` finish_reason chunk.
-- OpenAI Responses ``response.incomplete`` also emits the usage chunk
-  so length-truncated turns still report cached tokens.
+The streaming Anthropic + OpenAI Responses paths emit one extra include_usage
+SSE chunk (``choices: []`` with a ``usage`` block) before ``[DONE]`` so clients
+see cache savings. Covers the helper directly plus the Anthropic stream and the
+OpenAI Responses completed/incomplete streams.
 """
 
 import asyncio
@@ -57,9 +42,9 @@ def test_build_usage_chunk_anthropic_shape():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     usage = payload["usage"]
-    # Anthropic's input_tokens excludes cache buckets; prompt_tokens
-    # must add all three input components together so downstream
-    # context / cost displays see the real prompt size.
+    # Anthropic's input_tokens excludes cache buckets; prompt_tokens must
+    # sum all three input components so downstream context/cost displays
+    # see the real prompt size.
     assert usage["prompt_tokens"] == 8 + 1367 + 18901
     assert usage["completion_tokens"] == 862
     assert usage["total_tokens"] == 8 + 1367 + 18901 + 862
@@ -92,9 +77,8 @@ def test_build_usage_chunk_openai_shape():
 
 
 def test_build_usage_chunk_missing_fields_default_to_zero():
-    # OpenAI Responses can return a usage object without
-    # input_tokens_details when prompt caching is unused; the helper
-    # should still emit a chunk with cached_tokens=0.
+    # OpenAI Responses can omit input_tokens_details when prompt caching is
+    # unused; the helper should still emit a chunk with cached_tokens=0.
     line = _build_usage_chunk(
         "chatcmpl-z",
         "openai",
@@ -107,7 +91,7 @@ def test_build_usage_chunk_missing_fields_default_to_zero():
 
 def test_build_usage_chunk_returns_none_when_all_zero():
     # If upstream errored before any usage event, suppress the chunk to
-    # avoid surfacing a misleading "0 tokens" line.
+    # avoid a misleading "0 tokens" line.
     assert _build_usage_chunk("id", "anthropic", {}) is None
     assert _build_usage_chunk("id", "anthropic", None) is None
     assert _build_usage_chunk("id", "openai", {}) is None

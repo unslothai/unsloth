@@ -1643,13 +1643,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 flags = re.DOTALL,
             )
 
-    # Remove TRL's unconditional bfloat16 cast of trainable params (added in
-    # TRL 0.26.0). TRL hardcodes bfloat16 for QLoRA per the original paper's
-    # recommendation, but this is wrong: it ignores the user's requested dtype
-    # and breaks GradScaler when training with fp16=True. Unsloth already
-    # handles adapter dtype correctly via patch_model_and_tokenizer, so the
-    # entire block is unnecessary. For GRPOTrainer the enclosing peft init
-    # block is already removed above, making this a no-op for GRPO.
+    # Remove TRL 0.26.0's unconditional bfloat16 cast of trainable params. It
+    # hardcodes bfloat16 for QLoRA, ignoring the user's dtype and breaking
+    # GradScaler with fp16=True. Unsloth already handles adapter dtype via
+    # patch_model_and_tokenizer, so the block is unnecessary (and already a
+    # no-op for GRPO, whose peft init block is removed above).
     RLTrainer_source = RLTrainer_source.replace(
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
         "if False:",
@@ -1664,13 +1662,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
-        # Do NOT override _is_vlm -- let TRL detect VLM models naturally.
-        # In TRL 0.27.1+, forcing _is_vlm=False causes a ValueError when
-        # vision datasets are used with VLM models.
-        #
-        # However, some notebooks pass a bare tokenizer (processor.tokenizer) as
-        # processing_class. TRL then sets _is_vlm=False even for VLM models.
-        # Add a model-architecture-based override before the validation check.
+        # Do NOT override _is_vlm -- let TRL detect VLM models naturally
+        # (forcing _is_vlm=False errors on vision datasets in TRL 0.27.1+).
+        # But some notebooks pass a bare tokenizer as processing_class, so TRL
+        # sets _is_vlm=False even for VLMs; add an architecture-based override
+        # before the validation check.
         _vlm_check_original = (
             '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
             "        if self._is_vision_dataset and not self._is_vlm:"
@@ -1689,13 +1685,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _vlm_check_original in RLTrainer_source:
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
-        # Fix TRL 0.22.x: VLM models with text-only datasets.
-        # TRL 0.22.x checks _is_vlm (model type) not _is_vision_dataset (dataset
-        # content, added in 0.25.1+). When _is_vlm=True, signature columns are
-        # vision-only ["messages","prompt","completion","images"], which have zero
-        # overlap with tokenized text columns. Fix: merge both column sets into the
-        # VLM branch. Extra columns not in the dataset are harmlessly ignored by
-        # _remove_unused_columns (it only raises when zero columns match).
+        # Fix TRL 0.22.x: VLM models with text-only datasets. It checks _is_vlm
+        # (model type), not _is_vision_dataset (added in 0.25.1+); with
+        # _is_vlm=True the vision-only signature columns don't overlap tokenized
+        # text columns. Fix: merge both column sets into the VLM branch. Extra
+        # columns are ignored by _remove_unused_columns (raises only on zero match).
         _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'
@@ -2161,26 +2155,15 @@ def patch_trl_rl_trainers():
 def patch_trl_disable_gradient_checkpointing():
     # TRL 1.0.0+ wraps generation in:
     #   with torch.no_grad(), disable_gradient_checkpointing(self.model, ...):
-    # The toggle exists only to suppress a cosmetic PyTorch warning
-    # ("None of the inputs have requires_grad=True"). Inside torch.no_grad()
-    # the gradient checkpointing state has no functional effect on the
-    # forward pass.
+    # The toggle only suppresses a cosmetic PyTorch warning; under no_grad it
+    # has no functional effect. But on exit it calls
+    # gradient_checkpointing_enable(), overwriting Unsloth's custom
+    # "unsloth" wrapper -- for Gemma-4 this corrupts forward numerics and
+    # blows GRPO KL divergence up to ~10^12 at step 1.
     #
-    # On exit, the context manager calls model.gradient_checkpointing_enable()
-    # which dispatches to HuggingFace's generic implementation and overwrites
-    # Unsloth's custom `use_gradient_checkpointing="unsloth"` wrapper. For
-    # Gemma-4 (and likely other models) this corrupts the forward numerics
-    # enough to make GRPO KL divergence explode to ~10^12 at step 1.
-    #
-    # Replacing the context manager with a no-op preserves Unsloth's custom
-    # gradient checkpointing wrapper across generation/inference passes.
-    #
-    # Backwards compatibility:
-    #   - trl < 1.0.0 (no disable_gradient_checkpointing): early return.
-    #   - trl >= 1.0.0: noop is functionally equivalent for forward
-    #     correctness. The only loss is a cosmetic warning being emitted
-    #     by PyTorch when use_reentrant=True (which is exactly the warning
-    #     TRL added the toggle to suppress in the first place).
+    # Replacing the context manager with a no-op preserves Unsloth's wrapper.
+    # trl < 1.0.0 (no disable_gradient_checkpointing): early return.
+    # trl >= 1.0.0: noop is correct; only loss is the cosmetic warning.
     try:
         import trl.models.utils as _tmu
     except ImportError:
@@ -2203,12 +2186,9 @@ def patch_trl_disable_gradient_checkpointing():
     _tmu.disable_gradient_checkpointing = _noop_disable_gradient_checkpointing
 
     # Also rebind any trl.* module that already imported the symbol by
-    # reference, so the noop applies even when the trainer module cached the
-    # original at import time. We walk sys.modules dynamically rather than
-    # hardcoding a list, so this picks up every trainer that does
-    # `from ...models.utils import disable_gradient_checkpointing`
-    # (grpo, dpo, rloo, dppo, gfpo, grpo_with_replay_buffer, and any future
-    # TRL trainer module).
+    # reference (cached at import time). Walk sys.modules dynamically so this
+    # catches every trainer doing
+    # `from ...models.utils import disable_gradient_checkpointing`.
     for _mod_name, _mod in list(sys.modules.items()):
         if _mod is None or not _mod_name.startswith("trl."):
             continue
@@ -2272,12 +2252,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return
     # Install the disable_gradient_checkpointing noop BEFORE
-    # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
-    # submodules while generating the compiled cache; any new trl.* modules
-    # imported after the sys.modules walk would keep their original (broken)
-    # binding of disable_gradient_checkpointing. Running the noop install
-    # first ensures the canonical trl.models.utils symbol is already replaced
-    # before those submodules bind it.
+    # patch_trl_rl_trainers, which imports extra trl.* submodules; any module
+    # imported after the sys.modules walk would keep the original broken
+    # binding. Installing first ensures the canonical symbol is replaced before
+    # those submodules bind it.
     patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()

@@ -61,9 +61,9 @@ export function StudioPage(): ReactElement {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
 
-  // Derive activeTab: auto-switch to "current-run" only while training is
-  // genuinely running.  Once training ends, honour whatever tab the user clicks.
-  // If requestedTab is "current-run" but there's nothing to show, fall back to "configure".
+  // Auto-switch to "current-run" only while training runs; afterward honour
+  // the user's clicked tab. If "current-run" has nothing to show, use
+  // "configure".
   const activeTab =
     isTrainingRunning && requestedTab !== "history"
       ? "current-run"

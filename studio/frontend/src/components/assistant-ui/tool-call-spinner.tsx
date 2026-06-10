@@ -6,11 +6,7 @@
 import { Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/**
- * Spinner shown while a tool call is running: a clean circular arc with a
- * rounded cap (lucide Loader2 / LoaderCircle), animated. Inherits the current
- * text color so it matches the surrounding font.
- */
+/** Spinner shown while a tool call runs. Inherits text color to match its surroundings. */
 export function ToolCallSpinner({ className }: { className?: string }) {
   return (
     <Loader2Icon

@@ -33,9 +33,7 @@ class ModelInfo:
     base_name: str
     version: str
     size: int
-    name: str = (
-        None  # full model name, constructed from base_name, version, and size unless provided
-    )
+    name: str = None  # constructed from base_name, version, size unless provided
     is_multimodal: bool = False
     instruct_tag: str = None
     quant_type: QuantType = None
@@ -168,7 +166,7 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
                 _quant_types = quant_types
             for quant_type in _quant_types:
                 # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
-                _org = "unsloth"  # unsloth models -- these are all quantized versions of the original model
+                _org = "unsloth"  # quantized versions of the original model
                 register_model(
                     model_info_cls = model_info_cls,
                     org = _org,

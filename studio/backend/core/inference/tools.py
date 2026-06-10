@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tool definitions and executors for LLM tool calling.
-
-Supports web search (DuckDuckGo), Python code execution, and terminal commands.
-"""
+"""Tool definitions and executors for LLM tool calling: web search
+(DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
 import http.client
@@ -44,9 +41,11 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Pre-import modules used in _sandbox_preexec at module level so that
-# the preexec_fn closure does not trigger the import machinery in the
-# forked child (which can deadlock in multi-threaded servers).
+# Splits the UI source-map from the result; loops strip it (like __IMAGES__).
+RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
+
+# Import these at module level so the preexec_fn closure triggers no imports in
+# the forked child (which can deadlock multi-threaded servers).
 _libc = None
 if sys.platform == "linux":
     try:
@@ -66,8 +65,8 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Strict raster-image allowlist for sandbox file serving.
-# No .svg (XSS risk via embedded scripts), no .html, no .pdf.
+# Raster-image allowlist for sandbox file serving.
+# No .svg (XSS via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BLOCKED_COMMANDS_COMMON = frozenset(
@@ -146,9 +145,9 @@ _BLOCKED_COMMANDS = _compute_blocked_commands(sys.platform)
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
-# Bash keywords that introduce a new command position (then $cmd, do $cmd, etc.).
+# Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
 _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
-# Wrappers whose next non-flag argument is itself the command Bash will exec.
+# Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
         "env",
@@ -211,21 +210,18 @@ _INTERP_DANGER_RE = re.compile(
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
-    A token is at command position if it is the first token, or if the
-    preceding token is a shell separator / brace-group opener / keyword
-    that starts a new command (`then`, `do`, etc.), or a command-prefix
-    wrapper like `env` / `time` / `xargs` (the next token is the real
-    command). Tokens in argument position (`grep -r curl .`,
-    `echo source the data`, `ls /usr/bin/curl`) are passed through.
-    Also scans `find ... -exec CMD` and recurses into bash -c / cmd /c.
+    A token is at command position if it is the first token, or follows a
+    shell separator / brace-group opener / new-command keyword (`then`, `do`,
+    etc.), or a command-prefix wrapper like `env` / `time` / `xargs` (next
+    token is the real command). Tokens in argument position (`grep -r curl .`,
+    `echo source the data`, `ls /usr/bin/curl`) pass through. Also scans
+    `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
     blocked: set[str] = set()
 
-    # shlex with punctuation_chars splits `;`, `&&`, `||`, `|`, `(`, `)`, `` ` ``
-    # off as their own tokens so we can detect command position even when a
-    # caller writes `echo done; rm -rf x` (no whitespace) or quote-splits the
-    # command name itself (`r''m` collapses to a single token `rm` at command
-    # position after the `;` separator).
+    # punctuation_chars splits separators into their own tokens, so command
+    # position is detected even in `echo done; rm -rf x` (no whitespace) or
+    # quote-split names (`r''m` collapses to `rm` after `;`).
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -237,9 +233,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         tokens = command.split()
 
     def _token_basename(tok: str) -> str:
-        # shlex may glue trailing meta-chars onto a token (`rm;`); strip them
-        # so the basename match still hits `rm`. Leading shell-state chars
-        # likewise.
+        # Strip glued-on meta-chars (`rm;`) so the basename still matches `rm`.
         tok = tok.strip(";&|()`{}")
         base = os.path.basename(tok).lower()
         stem, ext = os.path.splitext(base)
@@ -248,33 +242,31 @@ def _find_blocked_commands(command: str) -> set[str]:
         return base
 
     expect_command = True  # start of string is a command position
-    prefix_pending = False  # last command-position token was env/time/timeout/xargs/...
+    prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     for token in tokens:
         if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
             expect_command = True
             prefix_pending = False
             continue
         if token.startswith("-"):
-            # Flags belong to the active command. While a wrapper prefix is
-            # waiting for its command (`stdbuf -oL cmd`, `xargs -- cmd`),
-            # keep expect_command intact.
+            # Flags belong to the active command, but keep expect_command while a
+            # wrapper prefix awaits its command (`stdbuf -oL cmd`, `xargs -- cmd`).
             if not prefix_pending:
                 expect_command = False
             continue
         if not expect_command:
             continue
-        # FOO=bar prefix: assignment list, next non-assignment token is the command.
+        # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
-        # `timeout 1 cmd` / `nice -n 5 cmd` style numeric wrapper arg.
+        # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
-        # Wrappers (`env` / `time` / `xargs` / `sudo`) consume one command; the
-        # next non-flag, non-numeric token is the real command. `sudo` is
-        # already in _BLOCKED_COMMANDS, so it's flagged AND we keep walking.
+        # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
+        # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
             continue
@@ -323,10 +315,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue
             blocked |= _find_blocked_commands(prev)
 
-    # Regex: blocked words at shell command boundaries that shlex won't see,
-    # e.g. inside an unquoted $(rm -rf), <(rm), backtick chain, or appended to
-    # a separator with no whitespace ("foo;rm"). Anchored to command-position
-    # delimiters; does not match in argument position.
+    # Regex catches blocked words at command boundaries shlex misses: inside
+    # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
+    # delimiters, so it doesn't match in argument position.
     lowered = command.lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
@@ -417,13 +408,10 @@ def _normalized_sys_executable() -> str:
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
-    Whitelist-built from scratch -- the parent process env is NOT inherited.
-    Only PATH / HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV
-    or Windows SystemRoot when applicable) reach the child. HF_TOKEN,
-    WANDB_API_KEY, AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and
-    every other parent var are absent by construction. HOME points at the
-    sandbox workdir so HF / wandb / aws SDKs cannot read cached credentials
-    from the operator's real ~/.
+    Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
+    TMPDIR/LANG/TERM/PYTHONIOENCODING (+VIRTUAL_ENV or Windows SystemRoot) reach
+    the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
+    points at the sandbox workdir so SDKs can't read the operator's cached creds.
     """
     # Start with the directory containing the running Python interpreter
     # so that subprocess calls to 'python', 'pip', etc. resolve to the
@@ -444,7 +432,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
-    # Deduplicate while preserving order
+    # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
     env = {
@@ -457,7 +445,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
-    # Windows needs SystemRoot for Python/subprocess to work
+    # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
     return env
@@ -496,9 +484,9 @@ def _sandbox_preexec_impl(apply_no_new_privs: bool, apply_nproc: bool = True):
         except (OSError, AttributeError):
             pass
 
-        # CLONE_NEWNET intentionally not applied: where userns is enabled it
-        # blocks all egress, including allowlisted hosts. Network policy is
-        # enforced by the AST host check and the bash blocklist.
+        # CLONE_NEWNET not applied: with userns enabled it blocks all egress,
+        # including allowlisted hosts. Network policy is enforced by the AST
+        # host check and the bash blocklist.
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
@@ -523,11 +511,9 @@ def _sandbox_preexec_impl(apply_no_new_privs: bool, apply_nproc: bool = True):
         except (ValueError, OSError, AttributeError):
             pass
         try:
-            # Default high enough for multi-shard safetensors mmaps + Python's
-            # own handle count; tunable via env for installs that hit the cap.
+            # High enough for multi-shard safetensors mmaps; tunable via env.
             # Clamp to the inherited hard limit so setrlimit doesn't ValueError
-            # on machines where the parent's hard cap is below the requested
-            # value (would otherwise leave NOFILE at the parent's default).
+            # when the parent's hard cap is below the request.
             nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
             _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
             target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
@@ -662,8 +648,7 @@ def _get_shell_cmd(command: str) -> list[str]:
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
-# Falls back to a shared ~/studio_sandbox/_default for API callers without a
-# session_id.
+# Falls back to ~/studio_sandbox/_default for callers without a session_id.
 _workdirs: dict[str, str] = {}
 
 
@@ -827,13 +812,46 @@ RENDER_HTML_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, RENDER_HTML_TOOL]
+# Duplicated (not imported from core.rag.tool) so the registry never pulls in
+# the RAG stack; dispatch imports it lazily.
+SEARCH_KNOWLEDGE_BASE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge_base",
+        "description": (
+            "Search the user's uploaded documents and knowledge bases for "
+            "relevant passages. Use this whenever the question may be answered "
+            "by the attached documents, then cite the returned chunks."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max chunks to return.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+ALL_TOOLS = [
+    WEB_SEARCH_TOOL,
+    PYTHON_TOOL,
+    TERMINAL_TOOL,
+    RENDER_HTML_TOOL,
+    SEARCH_KNOWLEDGE_BASE_TOOL,
+]
 
 
-# OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
-# streaming starts. MCP servers can return tool names containing '.', '/',
-# spaces, etc., which the prefix scheme would forward to OpenAI verbatim
-# and 400 the whole request. Validate up front and skip with a warning.
+# OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
+# MCP tool names with '.', '/', spaces, etc. would 400 the whole request, so we
+# validate up front and skip with a warning.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -848,9 +866,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
         name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
-        # OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad chars
-        # (., /, spaces, etc.) or oversized names would 400 the whole
-        # request. Skip + warn so the rest of the tools still ship.
+        # Bad chars or oversized names would 400 the whole request; skip + warn
+        # so the rest of the tools still ship.
         if not _OPENAI_FN_NAME_RE.fullmatch(name):
             logger.warning(
                 "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
@@ -860,8 +877,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 name,
             )
             continue
-        # Same MCP server returning duplicate tool names would also 400
-        # OpenAI ("tools[N].function.name duplicates ..."). Drop dupes.
+        # Duplicate tool names would also 400 OpenAI; drop dupes.
         if name in seen_names:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
@@ -882,7 +898,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
     # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
-    # carried over from a desktop install onto a Colab / network deployment).
+    # carried from a desktop install onto a Colab/network deployment).
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
@@ -943,15 +959,19 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    rag_scope: dict | None = None,
 ) -> str:
-    """Execute a tool by name with the given arguments. Returns result as a string.
+    """Execute a tool by name with the given arguments; returns a string.
 
-    ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
-    unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
-    ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
+    ``timeout``: int seconds, ``None`` = no limit, unset = ``_EXEC_TIMEOUT``.
+    ``session_id``: optional ID for per-conversation sandbox isolation.
+    ``rag_scope``: hidden per-request RAG context the model never sees; consumed
+    by ``search_knowledge_base``.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "search_knowledge_base":
+        return _search_knowledge_base(arguments, rag_scope)
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -988,11 +1008,212 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-_MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
-# Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
-# embed large <head> sections (CSS, JS, SVGs) that are stripped during
-# HTML-to-Markdown conversion.  512 KB is enough to reach article content
-# on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
+def _opt_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _scope_retrieval_kwargs(scope: dict) -> dict:
+    """Retrieval mode from rag_scope; candidate pools and RRF come from config."""
+    mode = scope.get("mode")
+    return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
+
+
+def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
+    """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model
+    supplies only ``query``/``top_k``). Lazy import; missing sqlite-vec degrades
+    to a friendly message."""
+    scope = rag_scope or {}
+    query = (arguments or {}).get("query", "")
+    if not query or not str(query).strip():
+        return "Error: query is empty."
+    try:
+        from storage import rag_db
+        if not rag_db.RAG_AVAILABLE:
+            return "Knowledge base search is unavailable on this server."
+        from core.rag.tool import search_knowledge_base_with_sources
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG tool unavailable: %s", exc)
+        return "Knowledge base search is unavailable on this server."
+
+    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
+    text, sources = search_knowledge_base_with_sources(
+        query = str(query),
+        scope_kb_id = scope.get("kb_id"),
+        scope_thread_id = scope.get("thread_id"),
+        top_k = top_k,
+        **_scope_retrieval_kwargs(scope),
+    )
+    # Append the UI source-map after the sentinel; loops strip it before the model.
+    if sources:
+        import json as _json
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    return text
+
+
+# Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
+# on-topic queries, skips weak ones) and helps small models that under-call the tool.
+# Tunable via RAG_AUTOINJECT_MIN_SCORE.
+_AUTOINJECT_DEFAULT_FLOOR = 0.70
+
+
+def _autoinject_enabled() -> bool:
+    return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _autoinject_floor() -> float:
+    raw = os.environ.get("RAG_AUTOINJECT_MIN_SCORE")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_FLOOR
+
+
+# Lean: injecting the full top_k every turn prefills thousands of tokens.
+_AUTOINJECT_DEFAULT_TOP_K = 4
+
+
+def _autoinject_top_k() -> int:
+    raw = os.environ.get("RAG_AUTOINJECT_TOP_K")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_TOP_K
+
+
+def _last_user_text(conversation: list[dict]) -> str:
+    """Plain text of the most recent user turn (text parts only)."""
+    for msg in reversed(conversation):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+            ]
+            return " ".join(t for t in parts if t).strip()
+        return ""
+    return ""
+
+
+def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+    """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
+    ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
+    Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
+    ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``).
+
+    Also the small-model fallback: models below ~4B often answer from memory
+    instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
+    attachments consulted regardless of model size."""
+    if not rag_scope:
+        return None
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    if not enabled:
+        return None
+    query = _last_user_text(conversation)
+    if not query:
+        return None
+    try:
+        from storage import rag_db
+        if not rag_db.RAG_AVAILABLE:
+            return None
+        from core.rag.tool import search_for_autoinject
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject unavailable: %s", exc)
+        return None
+
+    floor_override = rag_scope.get("autoinject_min_score")
+    floor = float(floor_override) if floor_override is not None else _autoinject_floor()
+    # Cap at the lean top_k, but honor a lower user setting.
+    lean_k = _autoinject_top_k()
+    sidebar_k = _opt_int(rag_scope.get("default_top_k"))
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    try:
+        found = search_for_autoinject(
+            query = query,
+            scope_kb_id = rag_scope.get("kb_id"),
+            scope_thread_id = rag_scope.get("thread_id"),
+            top_k = top_k,
+            min_dense_score = floor,
+            **_scope_retrieval_kwargs(rag_scope),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject retrieval failed: %s", exc)
+        return None
+    if not found:
+        logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+        return None
+
+    text, sources = found
+    import json as _json
+    import uuid as _uuid
+
+    call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
+    args = {"query": query}
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    events = [
+        {"type": "status", "text": f"Searching documents: {query[:60]}"},
+        {
+            "type": "tool_start",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "arguments": args,
+        },
+        {
+            "type": "tool_end",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "result": full_result,
+        },
+        {"type": "status", "text": ""},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "search_knowledge_base",
+                        "arguments": _json.dumps(args, ensure_ascii = False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "content": text,
+        },
+    ]
+    logger.info("RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80])
+    return {"events": events, "messages": messages}
+
+
+_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+# Raw download cap > _MAX_PAGE_CHARS because SSR pages embed large <head>
+# sections stripped during conversion; 512 KB reaches article content even
+# where <head> alone is ~200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
 
 _USER_AGENTS = (
@@ -1013,14 +1234,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS connection that connects to a pinned IP but uses a different
-    hostname for SNI and certificate verification.
+    """HTTPS connection to a pinned IP, using a different hostname for SNI and
+    cert verification.
 
-    The SSRF IP-pinning rewrites URLs to raw IPs.  A normal HTTPSConnection
-    would then send no SNI and verify the cert against the IP, both of which
-    fail.  This subclass splits the two concerns: TCP connects to the pinned
-    IP (``host`` parameter) while TLS uses ``sni_hostname`` for the
-    ClientHello and cert check.
+    SSRF IP-pinning rewrites URLs to raw IPs; a normal HTTPSConnection would then
+    send no SNI and verify the cert against the IP (both fail). This splits the
+    concerns: TCP connects to the pinned IP (``host``), TLS uses ``sni_hostname``.
     """
 
     def __init__(self, host: str, *, sni_hostname: str, **kwargs):
@@ -1028,8 +1247,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._sni_hostname = sni_hostname
 
     def connect(self):
-        # TCP connect to the pinned IP stored in self.host (+ tunnel if
-        # a proxy is configured via set_tunnel, though we do not use one).
+        # TCP connect to the pinned IP in self.host.
         http.client.HTTPConnection.connect(self)
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
@@ -1039,11 +1257,11 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 
 class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
-    """HTTPS handler that sends the correct SNI hostname during TLS handshake.
+    """HTTPS handler sending the correct SNI hostname during TLS handshake.
 
-    The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
-    verification.  This handler returns a ``_PinnedHTTPSConnection`` that
-    connects to the pinned IP but verifies TLS against the original hostname.
+    SSRF IP-pinning breaks SNI and cert verification; this returns a
+    ``_PinnedHTTPSConnection`` that connects to the pinned IP but verifies TLS
+    against the original hostname.
     """
 
     def __init__(self, hostname: str):
@@ -1061,9 +1279,9 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
-    Returns ``(ok, reason_or_empty, resolved_ip)``.  The caller should
-    connect to *resolved_ip* (with a ``Host`` header) to prevent DNS
-    rebinding between validation and the actual fetch.
+    Returns ``(ok, reason_or_empty, resolved_ip)``. The caller should connect
+    to *resolved_ip* (with a ``Host`` header) to prevent DNS rebinding between
+    validation and the actual fetch.
     """
     import ipaddress
     import socket
@@ -1078,14 +1296,10 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # `not ip.is_global` rejects every category the denylist below
-        # also rejects PLUS shared address space (100.64.0.0/10 carrier-
-        # grade NAT) and benchmarking/documentation/exchange ranges that
-        # Python classifies with `is_private=False` and `is_global=False`
-        # (see https://docs.python.org/3/library/ipaddress.html#ipaddress.IPv4Address.is_global).
-        # The explicit predicates after it give human-readable categories
-        # in the error message, but a single non-global check is the
-        # source of truth and prevents future ranges from leaking.
+        # `not ip.is_global` is the source of truth: it rejects every category
+        # below PLUS shared/CGNAT (100.64.0.0/10) and benchmarking/doc ranges
+        # Python marks is_private=False and is_global=False. The explicit
+        # predicates only give human-readable categories in the error message.
         if (
             not ip.is_global
             or ip.is_private
@@ -1097,7 +1311,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
         ):
             return False, f"Blocked: refusing to fetch non-public address {ip}.", ""
 
-    # Return the first resolved address for pinning
+    # Return the first resolved address for pinning.
     first_ip = infos[0][4][0]
     return True, "", first_ip
 
@@ -1135,8 +1349,8 @@ def _fetch_page_text(
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
-            # Pin to the validated IP to prevent DNS rebinding.
-            # Rewrite the URL to use the IP and set the Host header.
+            # Pin to the validated IP (prevents DNS rebinding): rewrite URL to
+            # the IP, set the Host header.
             cp = urlparse(current_url)
             # Bracket IPv6 addresses so the netloc is valid in a URL.
             ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
@@ -1176,7 +1390,7 @@ def _fetch_page_text(
                     return reason2
                 current_host = rp.hostname
                 continue
-            # Success -- read capped body
+            # Success: read capped body.
             raw_bytes = resp.read(max_bytes)
             break
         else:
@@ -1189,7 +1403,7 @@ def _fetch_page_text(
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
-    # Convert HTML to Markdown using the builtin converter (no external deps)
+    # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
     text = html_to_markdown(raw_html)
@@ -1211,7 +1425,7 @@ def _web_search(
 
     If ``url`` is provided, fetches that page directly instead of searching.
     """
-    # Direct URL fetch mode
+    # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(url.strip(), timeout = fetch_timeout)
@@ -1243,14 +1457,9 @@ def _web_search(
 
 
 def _check_signal_escape_patterns(code: str):
-    """
-    Check if code contains patterns that could escape signal-based timeouts.
-
-    Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo
-    (which requires GPU drivers and fails on Mac/Apple Silicon).
-
-    Returns (safe: bool, details: dict)
-    """
+    """Check for patterns that could escape signal-based timeouts. Returns
+    (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
+    avoid importing unsloth_zoo (needs GPU drivers; fails on Apple Silicon)."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -1281,7 +1490,7 @@ def _check_signal_escape_patterns(code: str):
             return full_name in names
         return False
 
-    # Dangerous os/subprocess functions that can execute shell commands
+    # Dangerous os/subprocess functions that can execute shell commands.
     _SHELL_EXEC_FUNCS = frozenset(
         {
             "os.system",
@@ -1334,8 +1543,8 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
-    # Keyword argument names that carry command content (as opposed to
-    # control flags like check=True, text=True, capture_output=True).
+    # Kwarg names that carry command content (not control flags like
+    # check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
     def _check_args_for_blocked(args_nodes):
@@ -1356,8 +1565,8 @@ def _check_signal_escape_patterns(code: str):
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
-            # Maps bare function names to their fully-qualified form
-            # for from-import tracking (e.g. "system" -> "os.system")
+            # Bare name -> fully-qualified form for from-import tracking
+            # (e.g. "system" -> "os.system").
             self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
@@ -1393,7 +1602,7 @@ def _check_signal_escape_patterns(code: str):
                     self.os_aliases.add("os")
                 else:
                     self.subprocess_aliases.add("subprocess")
-                # Track from-imports of dangerous functions
+                # Track from-imports of dangerous functions.
                 for alias in node.names:
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
@@ -1460,7 +1669,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # --- Shell escape detection ---
-            # Resolve the fully qualified function name for os.*/subprocess.*
+            # Resolve the FQ function name for os.*/subprocess.*
             shell_func = None
             if isinstance(func, ast.Attribute):
                 if isinstance(func.value, ast.Name):
@@ -1469,11 +1678,11 @@ def _check_signal_escape_patterns(code: str):
                     elif func.value.id in self.subprocess_aliases:
                         shell_func = f"subprocess.{func.attr}"
             elif isinstance(func, ast.Name):
-                # Check from-import aliases: from os import system; system(...)
+                # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                # Expand **kwargs dicts to inspect their keys
+                # Expand **kwargs dicts to inspect their keys.
                 expanded_kwargs: dict[str, ast.AST] = {}
                 has_opaque_kwargs = False
                 for kw in node.keywords:
@@ -1492,7 +1701,7 @@ def _check_signal_escape_patterns(code: str):
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
                 if has_opaque_kwargs:
-                    # Can't inspect dynamic **kwargs -- flag as unsafe
+                    # Can't inspect dynamic **kwargs; flag as unsafe.
                     shell_escapes.append(
                         {
                             "type": "shell_escape_dynamic",
@@ -1512,10 +1721,9 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
                 else:
-                    # Only flag dynamic args for functions that interpret
-                    # strings as shell commands, or when shell= might be
-                    # enabled.  Treat any non-literal-False shell= value
-                    # as potentially True (conservative).
+                    # Only flag dynamic args for funcs that interpret strings as
+                    # shell commands, or when shell= might be on. Any non-literal-
+                    # False shell= is treated as potentially True (conservative).
                     _STRING_SHELL_FUNCS = frozenset(
                         {
                             "os.system",
@@ -1573,11 +1781,9 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
             elif isinstance(node.type, ast.Name):
-                # Only flag BaseException and TimeoutError, NOT Exception.
-                # except Exception does not catch SystemExit or
-                # KeyboardInterrupt, so it cannot suppress timeout
-                # enforcement.  Flagging Exception causes false positives
-                # on normal error-handling patterns.
+                # Flag BaseException/TimeoutError but NOT Exception: `except
+                # Exception` can't catch SystemExit/KeyboardInterrupt, so it
+                # can't suppress timeout enforcement.
                 if node.type.id in ("TimeoutError", "BaseException"):
                     exception_catching.append(
                         {
@@ -1605,9 +1811,9 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside
-    # the trusted allowlist; uploads blocked regardless of host. Dynamic hosts
-    # are caught by the bash blocklist instead.
+    # Static host policy: block metadata hosts and any literal host outside the
+    # trusted allowlist; uploads blocked regardless of host. Dynamic hosts are
+    # caught by the bash blocklist.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
@@ -1853,10 +2059,9 @@ def _check_signal_escape_patterns(code: str):
                     return True
         return False
 
-    # Bare method-name fallback (`x.upload_file(...)`) is intentionally fuzzy,
-    # but should only fire when huggingface_hub / hf_api is actually imported
-    # somewhere in the snippet -- otherwise paramiko.upload_file, boto3
-    # create_commit, etc. hit a false positive. We pre-scan for the imports.
+    # Bare method-name fallback (`x.upload_file(...)`) is fuzzy, so it fires only
+    # when huggingface_hub/hf_api is imported; else paramiko.upload_file,
+    # boto3.create_commit, etc. would false-positive. Pre-scan for the imports.
     _HF_IMPORT_MODULES = (
         "huggingface_hub",
         "hf_api",
@@ -1874,8 +2079,8 @@ def _check_signal_escape_patterns(code: str):
                 if root in _HF_IMPORT_MODULES:
                     return True
             elif isinstance(n, ast.Call) and n.args:
-                # __import__('huggingface_hub'), importlib.import_module('huggingface_hub'),
-                # and bare import_module('huggingface_hub') (via `from importlib import ...`).
+                # __import__('huggingface_hub'), importlib.import_module(...),
+                # and bare import_module(...) (via `from importlib import ...`).
                 arg0 = n.args[0]
                 if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
                     continue
@@ -1894,13 +2099,9 @@ def _check_signal_escape_patterns(code: str):
     _hf_in_scope = _module_has_hf_import(tree)
 
     def _method_call_hf_upload_name(node: ast.Call) -> str | None:
-        """Return the HF upload method name (`upload_file`, ...) or None.
-
-        Catches `HfApi().upload_file(...)` (Attribute) and
-        `from huggingface_hub import upload_file; upload_file(...)` (Name).
-        The bare-name branch fires only when an HF import is in scope, mirroring
-        the Attribute branch's gating so paramiko/boto3 do not false-positive.
-        """
+        """Return the HF upload method name (`upload_file`, ...) or None. Covers
+        the Attribute and bare-Name forms; the bare-name branch fires only when
+        an HF import is in scope so paramiko/boto3 don't false-positive."""
         if not _hf_in_scope:
             return None
         f = node.func
@@ -1910,9 +2111,8 @@ def _check_signal_escape_patterns(code: str):
             return f.id
         return None
 
-    # Kwargs that ship a credential over the wire. Sandbox env strips HF_TOKEN
-    # / WANDB_API_KEY / AWS_* up front, so any value here is hard-coded or
-    # lifted from the parent process.
+    # Kwargs that ship a credential over the wire. The sandbox env strips
+    # credentials up front, so any value here is hard-coded or lifted from parent.
     _HF_SENSITIVE_KWARGS = frozenset(
         {
             "token",
@@ -1935,16 +2135,11 @@ def _check_signal_escape_patterns(code: str):
         )
 
     def _reads_env_or_secret(node: ast.AST | None) -> bool:
-        """True if any node in the subtree resolves to an env / process read.
+        """True if any node in the subtree resolves to an env/process read.
 
-        Walking the subtree (not just the root) means wrapper calls like
-        `str(os.environ)`, `json.dumps(os.environ)`, or
-        `'-'.join(os.environ.values())` are caught too.
-
-        Covers: `os.environ`, `os.environ[K]`, `os.environ.get(K)`, `os.getenv(K)`,
-        bare `getenv(K)` (after `from os import getenv`), and
-        `subprocess.{run,check_output,Popen,getoutput,getstatusoutput}` which
-        the LLM could use to lift parent env via `printenv` / `env` / `set`.
+        Walks the whole subtree (not just the root) to catch wrappers like
+        `str(os.environ)`. Covers os.environ[/.get]/os.getenv, bare getenv, and
+        subprocess.{run,check_output,...} that could lift parent env via printenv.
         """
         if node is None:
             return False
@@ -2014,10 +2209,10 @@ def _check_signal_escape_patterns(code: str):
 
         Policy: HF uploads are allowed only when (a) no sensitive kwarg is set,
         (b) no positional / keyword value reads `os.environ` or related env
-        readers, and (c) the path argument is a sandbox-local literal -- a
-        relative string with no `..`, an `open(<literal>)`, or inline bytes.
-        Dynamic / variable paths are rejected; the policy cannot prove safety
-        statically and the cost of a wrong-allow is a credential exfiltration.
+        readers, and (c) the path arg is a sandbox-local literal: a relative
+        string with no `..`, an `open(<literal>)`, or inline bytes. Dynamic /
+        variable paths are rejected since safety can't be proven statically and
+        a wrong-allow means credential exfiltration.
         """
         for kw in node.keywords or []:
             if kw.arg in _HF_SENSITIVE_KWARGS:
@@ -2076,7 +2271,7 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
             if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
                 a0 = node.args[0]
                 host_lit = None
@@ -2210,9 +2405,8 @@ def _check_code_safety(code: str) -> str | None:
     """
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
-        # SyntaxError from ast.parse -- let these through so the subprocess
-        # produces a normal Python traceback instead of a misleading
-        # "unsafe code detected" message.
+        # Let SyntaxError from ast.parse through so the subprocess produces a
+        # normal Python traceback instead of a misleading "unsafe code" message.
         if info.get("error"):
             return None
 
@@ -2302,7 +2496,7 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
-    # Snapshot image mtimes so we detect both new and overwritten files.
+    # Snapshot image mtimes to detect new and overwritten files.
     _before: dict[str, int] = {}
     if os.path.isdir(workdir):
         for _name in os.listdir(workdir):
@@ -2375,7 +2569,7 @@ def _python_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         result = _truncate(result) if result.strip() else "(no output)"
 
-        # Detect new or overwritten image files and append sentinel for frontend
+        # Detect new/overwritten images and append sentinel for the frontend
         if session_id and os.path.isdir(workdir):
             new_images = []
             for _name in os.listdir(workdir):

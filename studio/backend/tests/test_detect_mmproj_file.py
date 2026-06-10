@@ -46,7 +46,7 @@ def test_returns_none_when_no_mmproj(tmp_path: Path):
 
 
 def test_single_matching_family_mmproj_picked(tmp_path: Path):
-    """Single same-family projector: returned (historical behaviour)."""
+    """Single same-family projector is returned (historical behaviour)."""
     model = _touch(tmp_path / "Qwen3.5-9B-Q4_K_M.gguf")
     mmproj = _touch(tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf")
     assert detect_mmproj_file(str(model)) == str(mmproj.resolve())

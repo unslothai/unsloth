@@ -269,7 +269,8 @@ jobs:
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
             tests/utils/test_attention_masks.py \
-            tests/utils/test_trunc_normal_patch.py
+            tests/utils/test_trunc_normal_patch.py \
+            tests/python/test_fast_language_model_text_only.py
           python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
 
       - name: import_fixes drift detectors (18 tests, HARD GATE)
@@ -332,12 +333,24 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
+      - name: batched left-padding generation guard (HARD GATE)
+        # Guards _fast_prepare_inputs_for_generation against the bug class of
+        # issues #1066 / #3699: position_ids taken from cache_position (which
+        # counts left-pad tokens) or the 2D attention mask truncated to its
+        # last column. Both shipped in cc4c5d77 and were fixed by #2216 and
+        # #4100; nothing tested this path, so each regression reached users.
+        # Layer 1 in the file is stdlib-ast-only (survives unsloth import
+        # breakage), layer 2 calls the real function on CPU via the
+        # tests/conftest.py CUDA spoof. Validated to fail on the pre-#2216
+        # and pre-#4100 code states; staging proof on GPU-less runners:
+        # danielhanchen/unsloth-staging-2 PR 170 (green, gate passed in all combos) / PR 172 (red, gate failed in all combos).
+        run: |
+          python -m pytest -v --tb=short tests/utils/test_prepare_inputs_leftpad.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
-        # 16 tests across 5 files. They live inside tests/saving/ and
-        # tests/utils/, both of which Repo tests (CPU) excludes via --ignore
-        # because their sibling files need real GPUs / real HF weights.
-        # The five files below are pure-Python + AST/protobuf/regex tests
-        # that run cleanly on CPU. Env inherited from the job block.
+        # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
+        # that Repo tests (CPU) --ignores. AST/protobuf/regex plus tiny CPU model
+        # loads; run cleanly here (transformers/torch installed).
         run: |
           python -m pytest -q --tb=short \
             tests/saving/test_save_shell_injection.py \
@@ -345,11 +358,12 @@ jobs:
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
+            tests/python/test_fast_language_model_text_only.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
           # only bound on the module when `flash_attn` is importable. flash_attn
           # requires CUDA + dev toolchain, which the CPU-only ubuntu-latest
-          # runner does not have. The other 15 Bucket-A tests pass cleanly.
+          # runner does not have. The other Bucket-A tests pass cleanly.
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
         # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip

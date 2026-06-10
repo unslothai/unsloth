@@ -239,7 +239,7 @@ def test_consume_refresh_token_second_call_returns_none():
 
 
 def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatch):
-    """64-thread pile-up against one token; DELETE RETURNING permits one winner."""
+    """64-thread pile-up on one token; DELETE RETURNING permits one winner."""
     seed_user()
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta, timezone
@@ -254,7 +254,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         try:
             return storage.consume_refresh_token(raw)
         except sqlite3.OperationalError:
-            # "database is locked" under heavy contention; treat as losing the race.
+            # "database is locked" under contention; treat as losing the race.
             return None
 
     with ThreadPoolExecutor(max_workers = workers) as pool:
@@ -294,8 +294,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
     # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT). The unified API-key path validates as the real admin
-    # user regardless of whether the incoming session was desktop or web.
+    # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -318,8 +317,7 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web
-    # and desktop incoming tokens; auth via get_current_subject works the same.
+    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
@@ -421,6 +419,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     routes_module.__path__ = []
     settings_module = ModuleType("routes.settings")
     settings_module.router = APIRouter()
+    prompts_module = ModuleType("routes.prompts")
+    prompts_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -433,6 +433,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "mcp_servers_router": APIRouter(),
         "models_router": APIRouter(),
         "providers_router": APIRouter(),
+        "rag_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
@@ -442,6 +443,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
+    monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
 
     import studio.backend.main as backend_main
 
