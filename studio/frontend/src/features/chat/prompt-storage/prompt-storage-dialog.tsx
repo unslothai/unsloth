@@ -331,7 +331,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
 }
 
-// ShareGPT training JSONL (human/gpt turns).
+// ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
@@ -339,7 +339,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   const conversations: Array<{ from: string; value: string }> = [];
   for (const msg of messages) {
     const role = msg.role as string;
-    const from = role === "user" ? "human" : "gpt";
+    const from = role === "user" ? "human" : role === "system" ? "system" : "gpt";
     const value = messageToText(msg);
     if (value.trim()) conversations.push({ from, value });
   }
@@ -413,7 +413,7 @@ async function buildThreadContent(
     for (const msg of messages) {
       const role = msg.role as string;
       const value = messageToText(msg);
-      if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
+      if (value.trim()) conversations.push({ from: role === "user" ? "human" : role === "system" ? "system" : "gpt", value });
     }
     if (conversations.length === 0) return null;
     return JSON.stringify({ conversations });
@@ -626,30 +626,16 @@ function sharegptToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  const lines = csvText.split(/\r?\n/);
+  // parseCsv handles quoted newlines, so multi-line message content
+  // round-trips; a naive per-line split would break those records.
+  const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let role = "";
-    let content = "";
-    if (line.startsWith('"')) {
-      const m = line.match(/^"((?:[^"]|"")*)"\s*,\s*([\s\S]*)$/);
-      if (!m) continue;
-      role = m[1].replace(/""/g, '"');
-      content = m[2].startsWith('"')
-        ? m[2].slice(1, m[2].endsWith('"') ? -1 : undefined).replace(/""/g, '"')
-        : m[2];
-    } else {
-      const comma = line.indexOf(",");
-      if (comma === -1) continue;
-      role = line.slice(0, comma);
-      content = line.slice(comma + 1).startsWith('"')
-        ? line.slice(comma + 2, line.endsWith('"') ? -1 : undefined).replace(/""/g, '"')
-        : line.slice(comma + 1);
-    }
+  for (const row of rows) {
+    if (row.length < 2) continue;
+    const role = row[0].trim();
+    const content = row.slice(1).join(",");
     if (!content.trim()) continue;
     const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
     const id = crypto.randomUUID();
