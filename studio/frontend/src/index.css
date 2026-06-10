@@ -741,15 +741,8 @@
 		background-color: #ffffff !important;
 	}
 
-	/* Compact tooltip — small black pill with white text. Used for short
-	   hover labels on chat-area icon buttons (Copy, Edit, Delete,
-	   Refresh, More, code-block actions) and the panel's info-icon
-	   hints. Corner radius is fixed at 8px so it tracks with the
-	   underlying icon button corners (also 8px) — keeps the tooltip
-	   visually anchored to its trigger rather than reading as a much
-	   larger floating pill. */
 	.tooltip-compact {
-		@apply rounded-full border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[9px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -1086,7 +1079,7 @@
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
 		content: attr(data-pill-label);
-		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-[9px] bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
 	}
 
 	/* Compact caret pills (RAG, MCP) open their menu on click instead of
