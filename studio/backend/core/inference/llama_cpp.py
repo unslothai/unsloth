@@ -2668,6 +2668,107 @@ class LlamaCppBackend:
             "Check that the GGUF file is valid and you have enough memory."
         )
 
+    @staticmethod
+    def _is_projector_incompatibility(output: str) -> bool:
+        """True when llama-server aborted because it cannot load the model's
+        vision/audio projector (mmproj), typically an installed llama.cpp
+        that predates the projector format. Conservative: only matches
+        projector-format errors so unrelated failures (OOM, bad GGUF, port
+        bind, ...) keep their own handling, and a bare 'clip'/'mmproj'
+        mention in a normal startup log does not match.
+        """
+        text = (output or "").lower()
+        if any(
+            m in text
+            for m in (
+                "unknown projector type",
+                "unsupported projector",
+                "unsupported mmproj",
+            )
+        ):
+            return True
+        # Builds that phrase it via clip.cpp without the exact words above.
+        return (
+            "clip" in text
+            and "projector" in text
+            and ("unknown" in text or "unsupported" in text or "not supported" in text)
+        )
+
+    @staticmethod
+    def _strip_mmproj_args(cmd: list[str]) -> list[str]:
+        """Return cmd without the '--mmproj <path>' pair (text-only retry).
+        Every other flag is preserved; a no-op when --mmproj is absent.
+        """
+        out: list[str] = []
+        skip_value = False
+        for tok in cmd:
+            if skip_value:
+                skip_value = False
+                continue
+            if tok == "--mmproj":
+                skip_value = True
+                continue
+            out.append(tok)
+        return out
+
+    def _start_llama_process(self, cmd: list[str], env: dict) -> None:
+        """Spawn llama-server from cmd and start draining its output.
+
+        Caller holds self._lock. Resets the stdout buffer, opens a fresh
+        per-attempt tee log, launches the process, and starts the drain
+        thread. Used for the initial start and the text-only mmproj retry.
+        """
+        # Defensive kill: if a concurrent load slipped past Phase 1
+        # (because its `self._process` was None at the time) and already
+        # stored a Popen handle here, drop that orphan before we overwrite
+        # the reference. See issue #5161.
+        self._kill_process()
+
+        self._stdout_lines = []
+        # Tee llama-server output to a dedicated log file so a post-mortem
+        # in CI (or after a remote-debug session) has the full subprocess
+        # trail even when the parent only stored the last 50 lines.
+        self._llama_log_fh = None
+        try:
+            log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+            log_dir.mkdir(parents = True, exist_ok = True)
+            self._llama_log_path = log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+            self._llama_log_fh = open(
+                self._llama_log_path,
+                "w",
+                encoding = "utf-8",
+                buffering = 1,
+            )
+            logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
+        except OSError as e:
+            # Best-effort; never block the load on logging.
+            logger.debug(f"Could not open llama-server log file: {e}")
+            self._llama_log_path = None
+
+        # Log the argv per attempt (the text-only mmproj retry re-enters here
+        # with --mmproj stripped), redacting the API key.
+        _log_cmd = list(cmd)
+        if "--api-key" in _log_cmd:
+            _ki = _log_cmd.index("--api-key") + 1
+            if _ki < len(_log_cmd):
+                _log_cmd[_ki] = "<redacted>"
+        logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+
+        # Start background thread to drain stdout and prevent pipe deadlock
+        self._stdout_thread = threading.Thread(
+            target = self._drain_stdout, daemon = True, name = "llama-stdout"
+        )
+        self._stdout_thread.start()
+
     def load_model(
         self,
         *,
@@ -3346,6 +3447,9 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
+                # Captured before any text-only fallback strips it from cmd.
+                launched_with_mmproj = "--mmproj" in cmd
+
                 # One-shot --fit off retry: recent llama.cpp runs a "fitting
                 # params to device memory" step by default (--fit defaults to
                 # 'on') even when -ngl is explicit. That step has aborted on
@@ -3520,15 +3624,43 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
 
+                # A vision GGUF launched with --mmproj can abort when the
+                # installed llama.cpp is too old for the model's projector
+                # ("Unknown projector type"); in that one case retry once
+                # text-only rather than failing the whole load.
                 if not healthy:
+                    out = "\n".join(self._stdout_lines[-50:])
                     self._kill_process()
-                    raise RuntimeError(
-                        self._classify_llama_start_failure(
-                            "\n".join(self._stdout_lines[-50:]),
-                            gguf_path,
-                            self._model_identifier,
+                    if launched_with_mmproj and self._is_projector_incompatibility(out):
+                        logger.warning(
+                            "llama-server could not load this model's vision "
+                            "projector (--mmproj). The installed llama.cpp build is "
+                            "likely too old for it. Loading text-only for this "
+                            "session; run 'unsloth studio update' to enable vision."
                         )
-                    )
+                        cmd = self._strip_mmproj_args(cmd)
+                        self._is_vision = False
+                        self._mmproj_has_audio = False
+                        self._start_llama_process(cmd, env)
+                        if not self._wait_for_health(timeout = 600.0):
+                            self._kill_process()
+                            raise RuntimeError(
+                                "Vision projector incompatible with this llama.cpp "
+                                "build, and the text-only retry also failed: "
+                                + self._classify_llama_start_failure(
+                                    "\n".join(self._stdout_lines[-50:]),
+                                    gguf_path,
+                                    self._model_identifier,
+                                )
+                            )
+                    else:
+                        raise RuntimeError(
+                            self._classify_llama_start_failure(
+                                out,
+                                gguf_path,
+                                self._model_identifier,
+                            )
+                        )
 
                 self._healthy = True
 
