@@ -184,7 +184,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
     normalized_code_shape = code_shape if code_shape in _OXC_CODE_SHAPES else "auto"
 
     def _validator(df):
-        import pandas as pd  # imported lazily for local callable runtime
+        import pandas as pd  # lazy import for local callable runtime
 
         row_count = int(len(df.index))
         if row_count == 0:

@@ -162,8 +162,7 @@ def test_previously_broken_short_flag_now_passes_through(monkeypatch, flag, valu
 
 
 def test_dash_hf_documented_alias_still_works(monkeypatch):
-    """`-hf` is documented and must keep working (multi-char shorts
-    don't cluster in Click)."""
+    """`-hf` must keep working: multi-char shorts don't cluster in Click."""
     captured = _invoke(
         monkeypatch,
         ["-hf", "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"],
@@ -206,8 +205,7 @@ def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
     captured = _invoke(monkeypatch, ["--model", "X", "-f", "/tmp/dist"])
     assert len(captured) == 1
     argv = captured[0]
-    # Compare via Path so Windows's str(Path("/tmp/dist")) = "\tmp\dist"
-    # doesn't trip the assertion on the same logical path.
+    # Compare via Path: on Windows str(Path("/tmp/dist")) = "\tmp\dist".
     assert Path(argv[argv.index("--frontend") + 1]) == Path("/tmp/dist"), argv
     assert "-f" not in argv, f"-f leaked into child argv: {argv}"
 

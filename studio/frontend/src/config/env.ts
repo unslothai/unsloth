@@ -11,7 +11,7 @@ export const env = {
   BASE_URL: import.meta.env.BASE_URL,
 } as const;
 
-// ── Platform / device type ──────────────────────────────────
+// Platform / device type
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
@@ -22,7 +22,7 @@ interface PlatformState {
   isChatOnly: () => boolean;
 }
 
-// Client-side platform detection as fallback when backend isn't ready yet.
+// Client-side fallback when backend isn't ready yet.
 function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
@@ -55,9 +55,9 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       return deviceType;
     }
   } catch {
-    // Backend not ready — use client-side detection so chat-only guard
-    // still works on initial load (important for macOS). Keep fetched=false
-    // so a later call retries against the backend.
+    // Backend not ready: use client-side detection so chat-only guard works
+    // on initial load (important for macOS). Keep fetched=false so a later
+    // call retries against the backend.
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });

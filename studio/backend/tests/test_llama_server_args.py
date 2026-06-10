@@ -4,8 +4,8 @@
 """Unit tests for the llama-server pass-through args validator.
 
 The validator is the boundary between user CLI/HTTP input and the
-llama-server subprocess. These tests pin denylist behaviour so it
-doesn't quietly regress when new managed flags are added.
+llama-server subprocess. These tests pin denylist behaviour so it doesn't
+regress when new managed flags are added.
 """
 
 from __future__ import annotations
@@ -16,10 +16,8 @@ from pathlib import Path
 
 import pytest
 
-# Load llama_server_args.py directly so this test doesn't drag in the
-# full backend chain (fastapi / structlog / loggers / utils.hardware)
-# via core/inference/__init__.py. The validator is intentionally
-# dependency-free and unit-tests should reflect that.
+# Load llama_server_args.py directly to avoid dragging in the full backend
+# chain via core/inference/__init__.py. The validator is dependency-free.
 _LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
@@ -75,10 +73,9 @@ validate_extra_args = _lsa.validate_extra_args
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed: user-supplied flags last-wins-override Studio's
-        # auto-set version. --parallel / -np / --n-parallel are NOT
-        # here -- they're hard-denied (KV-cache + slot count would
-        # desync). Use `unsloth studio run --parallel N` instead.
+        # Soft-managed: user flags last-wins over Studio's auto-set version.
+        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
+        # count would desync); use `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -127,8 +124,8 @@ def test_non_flag_token_passes_through():
         "-np",
         "--parallel",
         "--n-parallel",
-        # Model identity (every alias; bumping llama.cpp must keep
-        # every form rejected, not just the long).
+        # Model identity (every alias; bumping llama.cpp must keep every
+        # form rejected, not just the long one).
         "-m",
         "--model",
         "-mu",
@@ -176,8 +173,8 @@ def test_non_flag_token_passes_through():
         "--models-max",
         "--models-autoload",
         "--no-models-autoload",
-        # Server-mode flips: --embedding / --rerank would restrict
-        # llama-server to those endpoints and break Studio's chat hop.
+        # Server-mode flips: --embedding / --rerank restrict llama-server to
+        # those endpoints and break Studio's chat hop.
         "--embedding",
         "--embeddings",
         "--rerank",
@@ -194,16 +191,16 @@ def test_denylist_rejects_all_aliases(denied):
 @pytest.mark.parametrize(
     "args,offending",
     [
-        # Pass-through --parallel would last-wins-override the real
-        # slot count while Studio's KV-cache fit + llama_parallel_slots
-        # stay at the typer value -- plan vs. process disagree.
+        # Pass-through --parallel would last-wins-override the real slot
+        # count while Studio's KV-cache fit + llama_parallel_slots stay at
+        # the typer value -- plan vs. process disagree.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
         (["--n-parallel=16"], "--n-parallel"),
         (["-np", "32"], "-np"),
-        # Attached short form: Click clusters it CLI-side; HTTP /load
-        # with `["-np8"]` must still resolve to managed.
+        # Attached short form: Click clusters it CLI-side; HTTP /load with
+        # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
         # Out-of-range values that would bypass the typer 1..64 guard.
@@ -230,8 +227,8 @@ def test_denylist_rejects_equals_form():
     [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np \n", "-np\t"],
 )
 def test_denylist_rejects_whitespace_padded_forms(padded):
-    # `_flag_name` trims whitespace before lookup; otherwise a trailing
-    # space could slip a managed flag past the boundary.
+    # `_flag_name` trims whitespace before lookup; else a trailing space
+    # could slip a managed flag past the boundary.
     with pytest.raises(ValueError, match = "parallel|np"):
         validate_extra_args([padded, "8"])
 
@@ -241,15 +238,15 @@ def test_denylist_rejects_whitespace_padded_forms(padded):
     ["-np8x", "-np-1foo", "-np+1bar", "-np9zzz"],
 )
 def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
-    # Backend `_flag_name` must classify the same forms the CLI
-    # rewriter expands, else HTTP /load could smuggle `-np8x` through.
+    # Backend `_flag_name` must classify the same forms the CLI rewriter
+    # expands, else HTTP /load could smuggle `-np8x` through.
     with pytest.raises(ValueError, match = "np"):
         validate_extra_args([attached])
 
 
 def test_denylist_rejects_short_form_when_long_is_denied():
-    # `-m` is the short form of --model; rejecting only the long
-    # form would leave a trivial bypass.
+    # `-m` is the short form of --model; rejecting only the long form
+    # would leave a trivial bypass.
     with pytest.raises(ValueError, match = "-m"):
         validate_extra_args(["-m", "/some/other/path.gguf"])
 

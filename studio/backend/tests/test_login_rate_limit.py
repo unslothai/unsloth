@@ -4,11 +4,11 @@
 """Tests for the per-(ip, username) login rate limiter.
 
 Covers:
-  - bucket key composition is (client-ip, username.lower())
-  - X-Forwarded-For is honoured only when UNSLOTH_STUDIO_TRUST_FORWARDED is set
+  - bucket key is (client-ip, username.lower())
+  - X-Forwarded-For honoured only when UNSLOTH_STUDIO_TRUST_FORWARDED is set
   - 429 detail body does NOT leak the client IP
-  - One username failing does not lock out a different user from the same IP
-  - One IP failing does not lock out the same user from a different IP
+  - One username failing doesn't lock out a different user from the same IP
+  - One IP failing doesn't lock out the same user from a different IP
 """
 
 import os
@@ -69,8 +69,7 @@ class TestClientIp:
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
         )
-        # The proxy header could be spoofed; without the opt-in we
-        # only trust the direct connection.
+        # Proxy header is spoofable; without the opt-in, trust the direct connection.
         assert _client_ip(req) == "127.0.0.1"
 
     def test_honours_first_xff_when_trust_on(self, env_trust_proxy):
@@ -123,8 +122,8 @@ class TestClientIp:
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
         from routes.auth import _client_ip
 
-        # Multi-element Forwarded must pick the first element only,
-        # otherwise suffix variations create attacker-controlled buckets.
+        # Pick the first Forwarded element only, else suffix variations create
+        # attacker-controlled buckets.
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": "for=198.51.100.42, for=10.0.0.1;proto=https"},
@@ -155,7 +154,7 @@ class TestBucketKeyAndBlocking:
         for _ in range(_LOGIN_MAX_FAILS):
             _record_login_failure(_bucket_key(req, "alice"))
         assert _login_blocked(_bucket_key(req, "alice")) > 0
-        # bob's account from the same IP is unaffected by alice's typos.
+        # bob's account from the same IP is unaffected by alice's typos
         assert _login_blocked(_bucket_key(req, "bob")) == 0
 
     def test_record_per_ip_isolates_other_ips(self, env_no_proxy):
@@ -189,9 +188,7 @@ class TestBucketKeyAndBlocking:
         req = _FakeRequest("203.0.113.10")
         for idx in range(5):
             auth_routes._record_login_failure(auth_routes._unknown_user_key(req))
-            # Different "username" each attempt would not have throttled
-            # under per-(ip,username) only; the IP aggregate must.
-        # The next missing-user attempt is blocked.
+            # Per-(ip,username) alone wouldn't throttle distinct usernames; the IP aggregate must.
         assert auth_routes._login_blocked(auth_routes._unknown_user_key(req)) > 0
 
     def test_unknown_user_bucket_is_single_sentinel(self, env_no_proxy):
@@ -202,8 +199,7 @@ class TestBucketKeyAndBlocking:
         unknown_key = auth_routes._unknown_user_key(req)
         for _ in range(20):
             auth_routes._record_login_failure(unknown_key)
-        # Account bucket cardinality stays at exactly one sentinel entry
-        # for this IP regardless of how many distinct usernames sprayed.
+        # Exactly one sentinel bucket for this IP regardless of usernames sprayed.
         ip_keys = [k for k in auth_routes._LOGIN_BUCKETS if k[0] == "203.0.113.11"]
         assert len(ip_keys) == 1
         assert ip_keys[0][1].startswith("\x00")
@@ -216,7 +212,7 @@ class TestBucketKeyAndBlocking:
         req = _FakeRequest("203.0.113.12")
         for idx in range(50):
             auth_routes._record_login_failure((req.client.host, f"user-{idx}"))
-        # Hard cap respected; further keys do not allocate.
+        # Hard cap respected; further keys don't allocate.
         assert len(auth_routes._LOGIN_BUCKETS) <= 10
 
 
@@ -249,7 +245,7 @@ class TestLogin429Body:
     def test_429_detail_does_not_leak_ip(self, env_no_proxy, login_client):
         from routes.auth import _LOGIN_MAX_FAILS
 
-        # Drive 6 failures from the same client IP / username.
+        # Drive 6 failures from the same client IP / username
         for _ in range(_LOGIN_MAX_FAILS):
             r = login_client.post(
                 "/api/auth/login",
@@ -262,8 +258,8 @@ class TestLogin429Body:
         )
         assert r.status_code == 429
         detail = r.json()["detail"]
-        # The 429 body must not interpolate the source IP.
+        # The 429 body must not interpolate the source IP
         assert "127.0.0.1" not in detail
         assert "Too many" in detail
-        # Retry-After header is still set for clients.
+        # Retry-After header is still set for clients
         assert "Retry-After" in r.headers

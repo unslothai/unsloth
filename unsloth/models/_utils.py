@@ -196,8 +196,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
     """
     Apply gradient checkpointing with smart heuristics.
 
-    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
-    is not worth it. Benchmarks show standard gc is faster for small sequences.
+    For seq < 512, gc="unsloth" offloading overhead isn't worth it; standard gc is faster.
 
     Args:
         use_gradient_checkpointing: "unsloth", True, False, or None
@@ -208,9 +207,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
         The effective use_gradient_checkpointing value (may change from "unsloth" to True)
     """
     if use_gradient_checkpointing == "unsloth":
-        # Gradient offloading overhead is not worth it for small sequences.
-        # Benchmarks show crossover point is around seq_len 384-512.
-        # For seq < 512, standard gradient checkpointing is faster.
+        # Offloading not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
             unpatch_unsloth_smart_gradient_checkpointing()
             return True
@@ -1807,16 +1804,7 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 
 # to move multiple tensors to the same device
 def move_to_device(target_device, *tensors):
-    """
-    Move multiple tensors to target device if they're not already there.
-
-    Args:
-        target_device: The target device to move tensors to
-        *tensors: Variable number of tensors to potentially move
-
-    Returns:
-        tuple: The tensors on the target device (same objects if already on device, new if moved)
-    """
+    """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):
         target_device = torch.device(target_device)
     elif isinstance(target_device, str):
