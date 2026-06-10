@@ -103,10 +103,8 @@ def Qwen3Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
-    # Note that using fast_layernorm_compiled causes issues as the dimensions don't match up.
-    # I tried to add a compiled version of the new norm but the numbers don't match up with Transformers
-    # TODO: Check on the differences here.
+    # Qwen3 adds QKNorm (the only difference from Qwen2). A compiled norm
+    # mismatches Transformers' numbers, so use fast_rms_layernorm. TODO: investigate.
     Q = fast_rms_layernorm(self.q_norm, Q)
     K = fast_rms_layernorm(self.k_norm, K)
 
@@ -180,33 +178,12 @@ def Qwen3Attention_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    """
-    https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
-    Fast inference using KV cache.
-    QK^T can be computed in 4 chunks
+    """Fast inference using the KV cache.
 
-    [Q, q] @ [K, k].T where q, k are the new tokens.
-    [QK^T, Qk^T]
-    [qK^T, qk^T]
-
-    Since the attention mask wipes Qk^T, we just get
-    [QK^T,    0]
-    [qK^T, qk^T]
-
-    Since softmax is row-wise, we get
-    softmax([QK^T,    0])
-    softmax([qK^T, qk^T])
-
-    We then multiply by   [V]
-                          [v]
-    softmax([QK^T,    0]) [softmax(QK^T)V] *
-    softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
-
-    But notice * [softmax(QK^T)V] is just the last attention.
-    We just need to compute the last final row.
-
-    This means we can pass in a row of Q, but we need to
-    remember K and V, which are called the KV cache.
+    QK^T splits into 4 chunks; the mask zeroes Qk^T and softmax is row-wise, so
+    softmax(QK^T)V is just the prior step's attention. We therefore only compute
+    the final row: pass one row of Q while remembering K and V (the KV cache).
+    Ref: https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
     """
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -417,11 +394,8 @@ class FastQwen3Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        # Retain old rotary embeddings; static KV cache (transformers 4.38.0)
+        # slowed training. See unslothai/unsloth#168 and transformers#27931.
         import transformers.models.qwen3.modeling_qwen3
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
-"""
-Manual tuning utils
-"""
+"""Manual tuning utils."""
 
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, fields
@@ -258,7 +256,6 @@ class TritonTuningContext:
         self.success = True
 
     def __enter__(self):
-        # Setup code can be added here if needed
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

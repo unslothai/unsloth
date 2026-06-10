@@ -97,6 +97,10 @@ from ._utils import (
     process_vision_info,
     unsloth_compile_transformers,
     fast_inference_setup,
+    _get_text_only_config,
+    resolve_model_class,
+    _is_family_text_decoder,
+    _apply_text_only_key_mapping,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -147,19 +151,11 @@ DISABLE_SDPA_MODEL_NAMES = [
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
-    Transformers v5 initializes models on the meta device, then
-    _move_missing_keys_from_meta_to_device() (modeling_utils.py) replaces ALL
-    non-persistent buffers with torch.empty_like() -- uninitialized memory.
-
-    Vanilla transformers restores inv_freq via _init_weights() which checks for
-    hasattr(module, "original_inv_freq"). Unsloth's LlamaRotaryEmbedding and
-    subclasses do not have this attribute, so inv_freq stays corrupted. This
-    produces wrong positional encodings and causes 5-11x higher training loss.
-
-    This function recomputes inv_freq from the stored base and dim, applies
-    any model-specific scaling, and rebuilds the cos/sin caches.
-
-    Only runs on transformers >= 5.0.0. No-op on v4.
+    v5 inits on meta then replaces all non-persistent buffers with uninitialized
+    memory. Vanilla restores inv_freq via _init_weights() (needs original_inv_freq),
+    but Unsloth rotary classes lack that attr, so inv_freq stays corrupted -> wrong
+    positional encodings and 5-11x higher training loss. Here we recompute inv_freq
+    from base/dim, apply scaling, and rebuild cos/sin caches. No-op on v4.
     """
     if not _NEEDS_ROPE_FIX:
         return model
@@ -264,6 +260,7 @@ class FastLanguageModel(FastLlamaModel):
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
+        text_only = False,  # Skip vision/audio towers and load only the text decoder
         *args,
         **kwargs,
     ):
@@ -350,6 +347,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                text_only = text_only,
                 *args,
                 **kwargs,
             )
@@ -408,7 +406,7 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -695,6 +693,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                text_only = text_only,
                 *args,
                 **kwargs,
             )
@@ -722,6 +721,14 @@ class FastLanguageModel(FastLlamaModel):
         if quantization_config is not None and not fast_inference:
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
+
+        # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled.
+        # Best effort: never crash the load (old unsloth_zoo without the
+        # zoo #710 fix raises NameError here on Python 3.13).
+        try:
+            patch_compiling_bitsandbytes()
+        except Exception as e:
+            print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
@@ -876,6 +883,7 @@ class FastModel(FastBaseModel):
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
         target_parameters = None,  # For MoE expert parameters
+        text_only = False,  # Skip vision/audio towers and load only the text decoder
         *args,
         **kwargs,
     ):
@@ -1005,7 +1013,7 @@ class FastModel(FastBaseModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1416,6 +1424,29 @@ class FastModel(FastBaseModel):
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        load_text_only = text_only and auto_model is None
+        if load_text_only:
+            if hasattr(model_config, "vision_config"):
+                text_config = _get_text_only_config(model_config, old_model_name)
+                # Skip the vision tower only for families with their own text decoder (Gemma 3);
+                # others would load random weights, so keep the full model (use FastVisionModel).
+                text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+                if text_class is None or not _is_family_text_decoder(
+                    getattr(model_config, "model_type", ""),
+                    getattr(text_config, "model_type", ""),
+                ):
+                    load_text_only = False
+                else:
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only; vision/audio towers skipped. "
+                        "Use FastVisionModel for multimodal inputs."
+                    )
+                    # Remap VLM text weights (tf >=5) while model_config is still the parent. #5816
+                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
+                    model_config = text_config
+                    is_vlm = False
+            else:
+                is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
         _num_labels = kwargs.get("num_labels", None)
         if auto_model is None:
@@ -1471,6 +1502,7 @@ class FastModel(FastBaseModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
+            text_only = load_text_only,
             *args,
             **kwargs,
         )
