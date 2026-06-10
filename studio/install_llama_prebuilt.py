@@ -3702,7 +3702,14 @@ def resolve_lemonade_rocm_choice(
     )
 
 
-def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
+def resolve_upstream_asset_choice(
+    host: HostInfo, llama_tag: str, lemonade_tag: "str | None" = None
+) -> AssetChoice:
+    # lemonade_tag: tag for the lemonade lookup only. The release scan pins
+    # llama_tag to per-release upstream tags (b9518, ...) that lemonade's own
+    # tag series (b1292, ...) never contains, so pinning lemonade to them 404s
+    # on every scanned release. Scan callers pass the original request
+    # (normally "latest") here; upstream asset names keep the pinned tag.
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
         # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
@@ -3713,7 +3720,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             # Try lemonade-sdk per-GPU prebuilt first: these are built against
             # specific gfx targets and bundle all required ROCm runtime libs.
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "ubuntu", "linux-rocm", llama_tag = llama_tag
+                host, "ubuntu", "linux-rocm", llama_tag = lemonade_tag or llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
@@ -3799,7 +3806,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "windows", "windows-hip", llama_tag = llama_tag
+                host, "windows", "windows-hip", llama_tag = lemonade_tag or llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
@@ -3858,12 +3865,14 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
     raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
 
 
-def resolve_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
+def resolve_asset_choice(
+    host: HostInfo, llama_tag: str, lemonade_tag: "str | None" = None
+) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
         raise PrebuiltFallback(
             "Linux CUDA installs require a compatible published bundle; upstream fallback is not available"
         )
-    return resolve_upstream_asset_choice(host, llama_tag)
+    return resolve_upstream_asset_choice(host, llama_tag, lemonade_tag = lemonade_tag)
 
 
 def resolve_release_asset_choice(
@@ -3871,6 +3880,7 @@ def resolve_release_asset_choice(
     llama_tag: str,
     release: PublishedReleaseBundle,
     checksums: ApprovedReleaseChecksums,
+    requested_tag: "str | None" = None,
 ) -> list[AssetChoice]:
     if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
         torch_preference = detect_torch_cuda_runtime_preference(host)
@@ -3926,7 +3936,10 @@ def resolve_release_asset_choice(
                 f"{release.repo}@{release.release_tag} {published_choice.name} ({exc})"
             )
 
-    return apply_approved_hashes([resolve_asset_choice(host, llama_tag)], checksums)
+    return apply_approved_hashes(
+        [resolve_asset_choice(host, llama_tag, lemonade_tag = requested_tag)],
+        checksums,
+    )
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:
@@ -5726,6 +5739,7 @@ def _fork_manifest_release_plans(
                     resolved_tag,
                     bundle,
                     checksums,
+                    requested_tag = requested_tag,
                 )
                 if not attempts:
                     raise PrebuiltFallback("no compatible prebuilt asset was found")
