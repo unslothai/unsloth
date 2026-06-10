@@ -11,15 +11,10 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Unit tests for ``maybe_set_windows_rocm_bnb_version`` and its
-``_detect_installed_bnb_rocm_version`` helper in ``unsloth/import_fixes.py``.
+"""Tests for ``maybe_set_windows_rocm_bnb_version`` (unsloth/import_fixes.py).
 
-These pin ``BNB_ROCM_VERSION`` from the installed bitsandbytes ROCm wheel on
-Windows + ROCm torch so the right native backend loads (AMD's Windows wheel
-ships e.g. ``libbitsandbytes_rocm72.dll`` while ``torch.version.hip`` reports
-7.13). The module is loaded in isolation -- its top-level imports are stdlib +
-packaging only, so no torch / GPU is required and unsloth's GPU init never runs.
-"""
+The module is loaded in isolation (stdlib + packaging only), so no torch /
+GPU is required and unsloth's GPU init never runs."""
 
 from __future__ import annotations
 
@@ -50,9 +45,8 @@ def import_fixes():
 
 @pytest.fixture()
 def clean_env(monkeypatch):
-    """Start with both env vars unset; guarantee they are removed afterwards
-    (the function writes ``os.environ`` directly, which monkeypatch will not
-    auto-revert)."""
+    """Unset the env vars and remove them afterwards (the function writes
+    os.environ directly, which monkeypatch does not auto-revert)."""
     for var in (
         "BNB_ROCM_VERSION",
         "UNSLOTH_SKIP_BNB_ROCM_VERSION",
@@ -239,11 +233,8 @@ def test_hip_build_true_from_torch_version_hip(import_fixes, monkeypatch):
 
 
 def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(import_fixes, monkeypatch):
-    """The Codex-flagged scenario: Windows box with HIP_PATH/ROCM_PATH set (HIP
-    SDK installed) but a CUDA torch. The strict gate must say False even though
-    _is_rocm_torch_build()'s runtime hints would say True -- otherwise
-    BNB_ROCM_VERSION gets set and bitsandbytes raises at import on its CUDA
-    build."""
+    """HIP SDK env vars set but CUDA torch: the strict gate must say False,
+    otherwise BNB_ROCM_VERSION gets set and CUDA bitsandbytes raises."""
     monkeypatch.setenv("HIP_PATH", r"C:\Program Files\AMD\ROCm\6.2")
     monkeypatch.setenv("ROCM_PATH", r"C:\Program Files\AMD\ROCm\6.2")
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.9.0+cu126")

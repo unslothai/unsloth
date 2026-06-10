@@ -66,10 +66,8 @@ if already_imported:
     )
 del already_imported, critical_modules
 
-# Pin BNB_ROCM_VERSION from the installed wheel on Windows + ROCm torch. Must
-# run before bitsandbytes is first imported (`import unsloth_zoo` below pulls
-# it in on ROCm hosts). Wired as a self-contained block so it composes with
-# other early fixes without sharing their edit region.
+# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import
+# unsloth_zoo` below pulls it in on ROCm hosts).
 from .import_fixes import maybe_set_windows_rocm_bnb_version
 
 maybe_set_windows_rocm_bnb_version()

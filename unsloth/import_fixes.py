@@ -2168,17 +2168,10 @@ _BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
 
 
 def _is_hip_torch_build():
-    """Strict check that the installed torch is actually a HIP/ROCm build.
-
-    ``_is_rocm_torch_build()`` also accepts environment / filesystem hints
-    (``HIP_PATH``, ``ROCM_PATH``, ...) that are routinely present on Windows
-    machines with the AMD HIP SDK installed but a CUDA or CPU torch.
-    ``BNB_ROCM_VERSION`` must follow the torch build itself, not the host:
-    bitsandbytes raises at import on its CUDA build when the ROCm override
-    is set. Check the wheel version tag first (no torch import needed); fall
-    back to ``torch.version.hip`` for custom/source HIP builds without the
-    tag -- unsloth imports torch moments later anyway.
-    """
+    """True only when torch itself is a HIP/ROCm build. Env hints (HIP_PATH
+    etc.) do not count: CUDA bitsandbytes raises at import when the ROCm
+    override is set. Wheel tag first (no torch import); torch.version.hip
+    fallback for source builds."""
     try:
         if "rocm" in str(importlib_version("torch")).lower():
             return True
@@ -2192,13 +2185,8 @@ def _is_hip_torch_build():
 
 
 def _detect_installed_bnb_rocm_version():
-    """Return the highest ``libbitsandbytes_rocm<NN>.dll`` suffix that is
-    actually installed (as a string, e.g. ``"72"``), or ``None`` when no ROCm
-    bitsandbytes DLL is present.
-
-    Filesystem listing order is not guaranteed, so we always take the numeric
-    maximum (``"713"`` wins over ``"72"`` when both ship).
-    """
+    """Highest installed ``libbitsandbytes_rocm<NN>.dll`` suffix ("72", "713")
+    or ``None``. Listing order is unordered, so take the numeric max."""
     try:
         spec = importlib.util.find_spec("bitsandbytes")
     except Exception:
@@ -2224,36 +2212,23 @@ def _detect_installed_bnb_rocm_version():
 def maybe_set_windows_rocm_bnb_version():
     """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
 
-    bitsandbytes derives its ROCm backend DLL name from ``torch.version.hip``.
-    AMD's Windows bitsandbytes prerelease wheel ships a single
-    ``libbitsandbytes_rocm<NN>.dll`` whose suffix does not always match the
-    torch HIP version (e.g. ``torch==2.11.0+rocm7.13.0`` reports HIP 7.13 but
-    the wheel ships ``libbitsandbytes_rocm72.dll``). When the names disagree
-    bitsandbytes cannot load its native library and the 4-bit / 8-bit paths
-    break. We read the suffix from the actually-installed wheel and pin
-    ``BNB_ROCM_VERSION`` so the right backend loads. This must run before
+    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose
+    suffix can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll),
+    breaking the native 4-bit/8-bit paths. Pin the installed suffix before
     bitsandbytes is first imported.
 
-    Strict no-op unless ALL of: running on Windows, torch is actually a
-    HIP/ROCm build (``_is_hip_torch_build()`` -- NOT the broader runtime-hint
-    helper, which would misfire on CUDA/CPU boxes that merely have the HIP
-    SDK's ``HIP_PATH`` set and make bitsandbytes raise at import), the var is
-    unset, and a ``libbitsandbytes_rocm*.dll`` is actually installed. Linux
-    ROCm is untouched (its multi-backend bitsandbytes resolves the backend
-    correctly from ``torch.version.hip``). Honors a user-provided
-    ``BNB_ROCM_VERSION`` and an explicit opt-out
-    (``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``). Values seeded by Studio's venv
-    ``sitecustomize.py`` (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``)
-    are redetectable defaults, not user overrides: the installed wheel may have
-    changed since the installer persisted them. Returns the value set, else
-    ``None``.
+    No-op unless ALL of: Windows, a real HIP torch build (env hints like
+    HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
+    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
+    (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
+    redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
+    opts out and drops a seeded default. Returns the value set, else None.
     """
     if sys.platform != "win32":
         return None
     if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
-        # Make the opt-out real even when Studio's sitecustomize.py already
-        # seeded the var: drop our managed default so bitsandbytes never sees
-        # it. Explicit user values carry no marker and are left alone.
+        # Real opt-out: drop our seeded default (marker present); explicit
+        # user values carry no marker and are kept.
         if os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize":
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop("UNSLOTH_BNB_ROCM_VERSION_SOURCE", None)
