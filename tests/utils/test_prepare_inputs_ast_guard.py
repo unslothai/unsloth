@@ -115,9 +115,9 @@ def test_mask_derived_position_ids_branch_exists():
         "attention_mask.cumsum(...); reintroducing cache_position-based "
         "positions breaks left-padded batched generation (issue #3699)"
     )
-    assert "masked_fill_" in body_names or "masked_fill" in body_names, (
-        "the attention-mask branch must mask pad positions (masked_fill on mask == 0)"
-    )
+    assert (
+        "masked_fill_" in body_names or "masked_fill" in body_names
+    ), "the attention-mask branch must mask pad positions (masked_fill on mask == 0)"
     assigns_kwargs = any(
         isinstance(stmt, ast.Assign)
         and any(_is_kwargs_position_ids_target(t) for t in stmt.targets)
