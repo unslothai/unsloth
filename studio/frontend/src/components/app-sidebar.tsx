@@ -1169,7 +1169,7 @@ export function AppSidebar() {
         }
       }}
     >
-      <DialogContent className="menu-flat-destructive corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+      <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {confirmingDelete?.kind === "run"
@@ -1249,7 +1249,7 @@ export function AppSidebar() {
         if (!open) setRenamingTarget(null);
       }}
     >
-      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {renamingTarget?.kind === "run"
@@ -1314,7 +1314,7 @@ export function AppSidebar() {
         }
       }}
     >
-      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {projectCreateMoveTarget ? "Move to new project" : "New project"}

@@ -752,6 +752,12 @@
 		@apply rounded-full border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
+	/* Dialog popups: borderless; chatbox shadow in light, flat card
+	   surface in dark. */
+	.dialog-soft-surface {
+		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
+	}
+
 	/* Rich tooltip — used for the context-usage and token-counter
 	   popups (multi-row metric breakdowns). Same black surface as the
 	   compact tooltips so chat-area popovers feel like one family.

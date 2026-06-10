@@ -323,6 +323,7 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 function CollapsibleSection({
   label,
   labelHref,
+  headerAction,
   children,
   defaultOpen = false,
   first = false,
@@ -334,6 +335,12 @@ function CollapsibleSection({
    * are siblings rather than an <a> nested in a <button> (invalid HTML).
    */
   labelHref?: string;
+  /**
+   * Optional control rendered before the chevron (e.g. an edit icon). The
+   * label and chevron become sibling toggles so the action is not a button
+   * nested in a button.
+   */
+  headerAction?: ReactNode;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -382,6 +389,29 @@ function CollapsibleSection({
               className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
             />
           </button>
+        </div>
+      ) : headerAction ? (
+        <div className={headerClasses}>
+          <button
+            type="button"
+            onClick={toggle}
+            className="flex min-w-0 flex-1 cursor-pointer items-center text-left leading-none transition-colors hover:text-nav-fg"
+          >
+            <span className="leading-none">{label}</span>
+          </button>
+          <span className="flex shrink-0 items-center gap-1">
+            {headerAction}
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+              className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+            >
+              <ChevronDown
+                className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+              />
+            </button>
+          </span>
         </div>
       ) : (
         <button
@@ -1219,7 +1249,35 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
         ) : null}
 
-        <CollapsibleSection label="System Prompt" defaultOpen={true}>
+        <CollapsibleSection
+          label="System Prompt"
+          defaultOpen={true}
+          headerAction={
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={openSystemPromptEditor}
+                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  aria-label="Edit system prompt"
+                >
+                  <HugeiconsIcon
+                    icon={Edit03Icon}
+                    strokeWidth={1.75}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent
+                side="top"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
+                Edit prompt
+              </TooltipContent>
+            </Tooltip>
+          }
+        >
           <button
             type="button"
             onClick={openSystemPromptEditor}
@@ -1380,7 +1438,7 @@ export function ChatSettingsPanel({
         }}
       >
         <DialogContent
-          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
           overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
@@ -1411,20 +1469,31 @@ export function ChatSettingsPanel({
             <Button
               type="button"
               variant="ghost"
-              onClick={() => {
-                setSystemPromptDraft(params.systemPrompt);
-                setSystemPromptEditorOpen(false);
-              }}
+              onClick={() => setSystemPromptDraft("")}
+              disabled={systemPromptDraft.length === 0}
+              className="text-muted-foreground"
             >
-              Cancel
+              Reset
             </Button>
-            <Button
-              type="button"
-              onClick={saveSystemPromptEditor}
-              disabled={!systemPromptEditorDirty}
-            >
-              Save
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setSystemPromptDraft(params.systemPrompt);
+                  setSystemPromptEditorOpen(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={saveSystemPromptEditor}
+                disabled={!systemPromptEditorDirty}
+              >
+                Save
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1625,7 +1694,7 @@ function ChatTemplateFields() {
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent
-          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
           overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
