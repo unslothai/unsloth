@@ -1077,6 +1077,20 @@
 		@apply opacity-100;
 	}
 
+	/* Pills whose icon is an off switch (RAG, MCP) only render while the
+	   feature is on, so reveal the X on hover even when the pill is not in
+	   its active look (MCP with no servers enabled, RAG without a model). */
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-x {
+		@apply opacity-100;
+	}
+
 	.composer-input {
 		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
