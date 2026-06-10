@@ -1071,6 +1071,20 @@
 		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
 	}
 
+	/* Compact caret pills (RAG, MCP) open their menu on click instead of
+	   toggling off, so keep the icon and skip the X swap. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)[data-active="true"]:hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		opacity: 1;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)
+		.composer-pill-x {
+		display: none;
+	}
+
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
 	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {

@@ -250,13 +250,19 @@ export function McpComposerButton({
               aria-label="MCP servers"
             >
               {/* Icon doubles as an off switch: hover swaps to an X; clicking
-                  it turns MCP off without opening the menu. */}
+                  it turns MCP off without opening the menu. In compact
+                  icon-only mode the glyph is the whole button, so clicks fall
+                  through to the trigger and open the menu instead. */}
               <span
                 role="button"
                 aria-label="Turn off MCP"
                 tabIndex={-1}
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                }}
                 onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
                   e.stopPropagation();
                   setMcpEnabledForChat(false);
                 }}
