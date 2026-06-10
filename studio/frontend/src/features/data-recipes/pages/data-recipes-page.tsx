@@ -267,7 +267,7 @@ function LearningRecipeCards({
                 <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
                   {template.title}
                 </p>
-                <p className="line-clamp-2 text-xs text-muted-foreground">
+                <p className="line-clamp-2 text-xs text-muted-foreground dark:text-zinc-300">
                   {template.description}
                 </p>
               </div>
@@ -280,7 +280,7 @@ function LearningRecipeCards({
                       <Badge
                         key={`${template.title}-${badge}`}
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         {badge}
                       </Badge>
@@ -288,7 +288,7 @@ function LearningRecipeCards({
                     {extraLearningBadgeCount > 0 ? (
                       <Badge
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         +{extraLearningBadgeCount}
                       </Badge>
@@ -296,7 +296,7 @@ function LearningRecipeCards({
                     {isReady ? null : (
                       <Badge
                         variant="secondary"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         Soon
                       </Badge>

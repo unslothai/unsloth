@@ -961,6 +961,12 @@
 		box-shadow: 0 4px 14px var(--background) !important;
 	}
 
+	/* Model selector and account menu: flat in dark. */
+	.dark .unsloth-model-selector-menu,
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: none !important;
+	}
+
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
 	.app-user-menu.menu-soft-surface {
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
