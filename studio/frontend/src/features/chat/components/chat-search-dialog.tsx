@@ -64,7 +64,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
+      className="chat-search-surface corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
       <Command className="rounded-4xl p-0" filter={chatSearchFilter}>
@@ -117,7 +117,7 @@ export function ChatSearchDialog() {
                   });
                   close();
                 }}
-                className="relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
+                className="relative flex cursor-pointer select-none items-center gap-3 rounded-full px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Message01Icon}

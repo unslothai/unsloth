@@ -181,7 +181,7 @@ export function HubOptionMenu<T extends string>({
       <PopoverContent
         align={align}
         side="bottom"
-        sideOffset={8}
+        sideOffset={0}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
