@@ -17,6 +17,8 @@ on:
       - 'studio/frontend/**'
       - 'scripts/check_frontend_dep_removal.py'
       - 'tests/studio/test_frontend_dep_removal.py'
+      - 'scripts/sync_allow_scripts_pins.py'
+      - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
   push:
     branches: [main, pip]
@@ -67,6 +69,14 @@ jobs:
       - name: Lockfile supply-chain audit (pre-install scan)
         working-directory: ${{ github.workspace }}
         run: python3 scripts/lockfile_supply_chain_audit.py
+
+      # Dependency bumps strand the version-pinned allowScripts entries.
+      # The paired pre-commit hook auto-fixes PRs; this is the backstop.
+      - name: allowScripts pins must match the lockfile
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 tests/studio/test_sync_allow_scripts_pins.py
+          python3 scripts/sync_allow_scripts_pins.py --check
 
       - name: Lockfile must agree with package.json (npm ci is strict)
         # The vite 8 chain (rolldown, lightningcss, tailwind oxide) ships napi

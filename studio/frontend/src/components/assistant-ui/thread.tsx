@@ -740,8 +740,8 @@ function buildWelcome(hour: number, name: string): Welcome {
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
-    g("Ready when you are.", "large sloth thumbs.png"),
+    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
+    g("Ready when you are", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
     g("How can I help?", "sloth sir large.png"),
   ];
@@ -785,7 +785,7 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28.5vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
@@ -2131,7 +2131,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
       <DropdownMenuContent
         side={side}
         align="start"
-        sideOffset={2}
+        sideOffset={0}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
         // Don't refocus the + on close; restored focus showed a stray ring.
@@ -2655,7 +2655,7 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">

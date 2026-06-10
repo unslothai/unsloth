@@ -258,7 +258,7 @@ export function ProjectsPage() {
               value={sortMode}
               onValueChange={(v) => setSortMode(v as SortMode)}
             >
-              <SelectTrigger className="h-9 w-[130px]">
+              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -324,15 +324,15 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      <div className="relative mt-6">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+      <div className="relative mx-auto mt-10 w-full max-w-[720px]">
+        <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-muted-foreground">
           <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
         </span>
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="h-11 pl-10"
+          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.07)] dark:bg-card dark:shadow-none"
           aria-label="Search projects"
         />
       </div>
@@ -342,7 +342,7 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[160px] rounded-[14px] border border-border/70 bg-card p-5"
+              className="min-h-[160px] rounded-[14px] bg-card p-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
             >
               <Skeleton className="h-5 w-2/3 rounded-[6px]" />
               <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
@@ -361,7 +361,7 @@ export function ProjectsPage() {
           {projects.length === 0 && (
             <Button
               variant="outline"
-              className="mt-2"
+              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
               onClick={() => {
                 setNameDraft("");
                 setCreating(true);
@@ -402,7 +402,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] border border-border/70 bg-card p-5 text-left transition-colors hover:border-border hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] bg-card p-5 text-left shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-accent/40 dark:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
                 <h2 className="truncate pr-2 text-[16px] font-semibold text-foreground">
@@ -422,7 +422,7 @@ export function ProjectsPage() {
                   <DropdownMenuContent
                     side="bottom"
                     align="end"
-                    sideOffset={4}
+                    sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
