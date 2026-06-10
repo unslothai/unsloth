@@ -27,12 +27,10 @@ torch_compile_options = {
 
 
 def _flex_is_dgx_spark():
-    # Inlined CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (kept local to
-    # avoid a circular import). Spark = aarch64 + a Spark device name via nvidia-smi.
-    # Must NOT touch torch.cuda: this runs at module import, and vision.py imports
-    # ..kernels before ._utils -- a device-name query here would initialize the CUDA
-    # allocator before patch_dgx_spark_memory_config() can set PYTORCH_CUDA_ALLOC_CONF
-    # on the very Spark hosts this check targets.
+    # Local CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids a circular
+    # import). Runs at module import, before ._utils -- touching torch.cuda here would
+    # init the allocator before patch_dgx_spark_memory_config() can set
+    # PYTORCH_CUDA_ALLOC_CONF on the very Spark hosts this targets.
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True
@@ -57,8 +55,7 @@ def _flex_is_dgx_spark():
         return False
 
 
-# Spark's 48 SMs are below inductor's 68-SM is_big_gpu threshold, so max_autotune
-# is already skipped; disabling it just avoids a wasted compile-time search.
+# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune would only waste search time.
 if _flex_is_dgx_spark():
     torch_compile_options["max_autotune"] = False
 

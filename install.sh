@@ -2360,11 +2360,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
-        # Pre-merge branch testing: install unsloth from a git ref so its bundled
-        # setup.sh + Python patches are exercised (not yet on PyPI). install.ps1 sets
-        # UNSLOTH_INSTALL_REF; gated to the "unsloth" package and a non-"main" ref.
-        # unsloth-zoo is an optional extra (not a base dep) and SKIP_STUDIO_BASE skips
-        # the studio base.txt step, so name it explicitly or it never gets installed.
+        # Pre-merge testing: install unsloth from a git ref (install.ps1 sets
+        # UNSLOTH_INSTALL_REF) so the branch's setup.sh + patches run. unsloth-zoo
+        # is not a base dep and SKIP_STUDIO_BASE skips studio base.txt, so name it
+        # explicitly or it never gets installed.
         substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
         run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
@@ -2373,14 +2372,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
-    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X, native or WSL): the base unsloth
-    # package does not depend on bitsandbytes and the cuXXX extras that normally
-    # add it are x86_64-oriented, so 4-bit QLoRA fails with ModuleNotFoundError
-    # out of the box. bitsandbytes ships working aarch64 manylinux wheels
-    # (verified on sm_121 Blackwell via PTX JIT), so add it best-effort -- a
-    # platform without a wheel just keeps 16-bit LoRA / full finetuning.
-    # Gated on SKIP_TORCH: a --no-torch/UNSLOTH_NO_TORCH (GGUF-only) install must
-    # not have bitsandbytes drag torch back into the venv via its dependencies.
+    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X): base unsloth lacks bitsandbytes
+    # (the cuXXX extras are x86_64-oriented), so 4-bit QLoRA fails out of the box.
+    # aarch64 manylinux wheels work (verified on sm_121 via PTX JIT); best-effort,
+    # no wheel just keeps 16-bit LoRA / full finetuning. SKIP_TORCH gate: a
+    # --no-torch (GGUF-only) install must not let bitsandbytes drag torch back in.
     if [ "$SKIP_TORCH" = false ] \
             && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
             && command -v nvidia-smi >/dev/null 2>&1 \

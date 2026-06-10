@@ -706,23 +706,17 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify an NVIDIA device as Spark-class unified-memory or discrete.
 
-    Returns ``(marker, is_unified)``:
-    - ``marker``: the signal that matched (``"is_integrated"`` or the matching
-      device-name token), else ``""``.
-    - ``is_unified``: ``True`` for Spark-class parts that share one memory pool
-      with the OS (DGX Spark / GB10, N1X "RTX Spark", Grace-Blackwell desksides)
-      — these need the same lower ``set_per_process_memory_fraction`` cap as the
-      ROCm APUs: exhausting the shared pool can stall the whole box instead of
-      raising a catchable OutOfMemoryError.
+    Returns ``(marker, is_unified)``; marker is ``"is_integrated"`` or the matched
+    device-name token, else ``""``. Spark-class parts (DGX Spark / GB10, N1X "RTX
+    Spark") share one memory pool with the OS, so like the ROCm APUs they need a
+    ``set_per_process_memory_fraction`` cap -- exhausting the pool can stall the
+    box instead of raising a catchable OutOfMemoryError.
 
-    Classification priority:
-    1. ``is_integrated`` device property (authoritative on native Linux).
-    2. Device-name token match — WSL2's GPU paravirtualization masks
-       ``is_integrated`` to 0 and renames the device (the N1X reports
-       ``JMJWOA-Generic-GPU`` with ``is_integrated == 0``, verified on
-       hardware), so the property alone misses Spark-under-WSL. Tokens mirror
-       ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated
-       because this guard runs before any ML import).
+    ``is_integrated`` is authoritative on native Linux, but WSL2 paravirtualization
+    masks it to 0 and renames the device (the N1X reports ``JMJWOA-Generic-GPU``,
+    verified on hardware) -- hence the name-token fallback. Tokens mirror
+    ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated
+    because this guard runs before any ML import).
     """
     if getattr(props, "is_integrated", 0):
         return "is_integrated", True
@@ -2225,25 +2219,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 
     # ── 1h. NVIDIA Spark-class unified-memory OOM guard ──
-    # Same failure mode as the ROCm APU guard above, NVIDIA flavor: Spark-class
-    # parts (DGX Spark / GB10, N1X "RTX Spark") share one memory pool with the
-    # OS, so over-allocation can stall the whole box instead of raising a
-    # catchable OutOfMemoryError. Cap the allocator at 0.80 like Strix Halo —
-    # the pool is shared with the host OS and page cache, so 20% headroom stays
-    # with the system. UNSLOTH_SPARK_MEM_FRACTION overrides the cap; any value
-    # outside (0, 1] disables the guard. Discrete NVIDIA GPUs are untouched
-    # (they already raise a graceful OOM). The generic OOM handler in the
-    # training loop surfaces the resulting OutOfMemoryError with remediation.
+    # NVIDIA flavor of the ROCm APU guard above: Spark-class parts share one
+    # memory pool with the OS, so over-allocation can stall the box instead of
+    # raising a catchable OutOfMemoryError. Cap at 0.80 like Strix Halo (20%
+    # headroom stays with the OS/page cache). UNSLOTH_SPARK_MEM_FRACTION
+    # overrides; outside (0, 1] disables. Discrete NVIDIA GPUs untouched.
     else:
         try:
-            # The Spark allocator config must be decided BEFORE this guard's first
-            # CUDA touch: get_device_properties below initializes the CUDA allocator,
-            # after which PYTORCH_CUDA_ALLOC_CONF changes are ignored -- and the later
-            # `import unsloth` (patch_dgx_spark_memory_config) would be too late for
-            # THIS worker process even though it is in time for a plain
-            # `import unsloth`. CUDA-free sniff via nvidia-smi device names (mirrors
-            # _is_dgx_spark_no_cuda_init), with the same append-don't-override and
-            # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out semantics as the library patch.
+            # Set PYTORCH_CUDA_ALLOC_CONF before get_device_properties below inits
+            # the CUDA allocator -- the later `import unsloth` patch is too late for
+            # THIS worker process. CUDA-free nvidia-smi sniff (mirrors
+            # _is_dgx_spark_no_cuda_init), same append-don't-override and
+            # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out as the library patch.
             try:
                 import platform as _plat
 
