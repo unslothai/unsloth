@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { listTrainingRuns } from "../api/history-api";
 import {
   onTrainingRunDeleted,
@@ -60,9 +60,8 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     }
   }, [fetchRuns]);
 
-  // Initial load: bounded retry-with-backoff, then surface a toast on
-  // final failure with a Retry action so the user isn't stuck staring
-  // at an empty sidebar after F5 if the backend was slow to come up.
+  // Initial load: bounded retry-with-backoff, then a toast with Retry on final
+  // failure so the user isn't stuck on an empty sidebar if the backend is slow.
   useEffect(() => {
     if (!enabled) {
       return;
@@ -124,10 +123,9 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [enabled, fetchRuns]);
 
-  // Poll while there's a running run, but only when the tab is visible.
-  // Browsers throttle background timers but don't pause them — gating on
-  // visibility avoids hammering the API for tabs left open in the
-  // background, which is common during long training runs.
+  // Poll while a run is active, but only when the tab is visible. Browsers
+  // throttle background timers but don't pause them, so gating on visibility
+  // avoids hammering the API for tabs left open during long training runs.
   const hasRunning = items.some((r) => r.status === "running");
   useEffect(() => {
     if (!enabled || !hasRunning) {

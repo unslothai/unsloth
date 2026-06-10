@@ -15,6 +15,7 @@ const DataRecipesPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/data-recipes",
+  staticData: { title: "Data Recipes" },
   beforeLoad: () => requireAuth(),
   component: DataRecipesPage,
 });

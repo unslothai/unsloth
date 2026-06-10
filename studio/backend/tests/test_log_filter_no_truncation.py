@@ -2,27 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Regression tests for studio.backend.loggers.handlers.filter_sensitive_data.
+Regression tests for loggers.handlers.filter_sensitive_data.
 
-Context: filter_sensitive_data was originally written with a base64-detection
-heuristic that truncated any string >100 chars containing ',' or '/' down to
-20 chars + '...'. The block was dormant until PR #5246 wired the processor
-into the structlog chain to redact native-path leases. Once active, the
-heuristic ate normal log lines emitted by llama_cpp_backend (GGUF size
-summary, mmproj selection, the full llama-server command line) and any
-exception traceback that happened to contain a file path.
-
-These tests pin two properties:
-
-1. Long, comma- or slash-bearing log messages flow through filter_sensitive_data
-   unchanged. The exact strings exercised match the call sites at
-   studio/backend/core/inference/llama_cpp.py:2117, :2283, and :2312 that
-   were truncated in the original bug report.
-
-2. PR #5246's native-path lease redaction still fires for both the inline
-   ``native_path_lease=...`` regex form and the ``nativePathLease`` dict-key
-   form. This guards against future regressions that strip redaction along
-   with the truncation block.
+Pins two properties: (1) long strings with commas/slashes pass through unchanged
+(the base64-truncation heuristic from PR #5246 was too aggressive), and
+(2) native-path lease redaction still fires for inline and dict-key forms.
 """
 
 from loggers.handlers import filter_sensitive_data

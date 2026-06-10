@@ -169,9 +169,8 @@ export function useHfDatasetSplits(
   // Derive unique subsets
   const subsets = Array.from(new Set(entries.map((e) => e.config)));
 
-  // Derive splits for the active subset.
-  // If dataset has >1 subset and none is selected yet, return no splits so UI
-  // doesn't auto-pick/show a split before subset is chosen.
+  // Splits for the active subset. With >1 subset and none selected, return no
+  // splits so the UI doesn't auto-pick before a subset is chosen.
   const activeSubset =
     selectedSubset ?? (subsets.length === 1 ? subsets[0] : null);
   const filteredEntries = activeSubset

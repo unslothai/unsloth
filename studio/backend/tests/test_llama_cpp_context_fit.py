@@ -5,26 +5,14 @@
 
 Guards two regressions in ``LlamaCppBackend.load_model``:
 
-1. **Auto mode on weights-exceed-VRAM** (``n_ctx == 0``): when the model
-   weights alone exceed 90% of every GPU subset's free memory, the
-   auto-pick loop used to exit without matching, leaving
-   ``effective_ctx`` at the model's native context (e.g. 196608 for
-   MiniMax-M2.7). The intended default per Studio's UI spec is 4096 so
-   the slider lands on a usable value; the user can still drag higher
-   and trigger ``--fit on`` with a warning.
+1. Auto mode (``n_ctx == 0``) when weights exceed every GPU subset's free
+   memory: auto-pick should fall back to 4096 (a usable slider value) rather
+   than leaving native ctx. User can still drag higher onto ``--fit on``.
+2. Explicit ctx must never be silently shrunk: when KV overflows fittable
+   weights, honor the explicit ctx with ``--fit on`` flexing ``-ngl``.
 
-2. **Explicit ctx silently shrunk when KV overflows**: with fittable
-   weights but a requested ctx whose KV cache pushes total memory over
-   90% of VRAM, the old code binary-searched a smaller ctx and emitted
-   ``-c <capped> -ngl -1`` without informing the caller. The UI had
-   already surfaced its "might be slower" warning and expects the user's
-   explicit ctx to be honored with ``--fit on`` flexing ``-ngl`` instead.
-
-Tests avoid GPU probing, subprocess spawning, and GGUF I/O by driving the
-post-metadata decision block directly against a stubbed instance.
-
-Requires no GPU, network, or external libraries beyond pytest.
-Cross-platform: Linux, macOS, Windows, WSL.
+Drives the post-metadata decision block against a stubbed instance: no GPU,
+network, subprocess, or GGUF I/O. Cross-platform.
 """
 
 from __future__ import annotations
@@ -36,24 +24,20 @@ from pathlib import Path
 import pytest
 
 # ---------------------------------------------------------------------------
-# Stub heavy / unavailable external dependencies before importing the
-# module under test.  Same pattern as test_kv_cache_estimation.py.
+# Stub heavy/unavailable deps before importing the module under test.
 # ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -84,6 +68,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +87,7 @@ def _make_backend(
     kv_key_length = 128,
     kv_value_length = 128,
 ):
-    """Create a LlamaCppBackend instance with GGUF metadata fields set and
-    the helpers used by the decision block stubbed out."""
+    """LlamaCppBackend with GGUF metadata set and decision helpers stubbed."""
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._context_length = native_ctx
     inst._n_layers = n_layers
@@ -131,28 +115,36 @@ def _drive(
     native_ctx = 131072,
     kv_per_token_bytes = 325_000,
     can_estimate_kv = True,
+    extra_args = None,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
-    Mirrors the decision block at llama_cpp.py:1137-1296 so we can assert
-    the command that would be built, without subprocesses or GPU probes.
+    Mirrors llama_cpp.py:1137-1296 to assert the built command, without
+    subprocesses or GPU probes.
     """
     inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
     cache_type_kv = None
 
-    def fake_estimate(n_ctx_, _type = None, **_kwargs):
+    def fake_estimate(
+        n_ctx_,
+        _type = None,
+        **_kwargs,
+    ):
         return 0 if n_ctx_ <= 0 else n_ctx_ * kv_per_token_bytes
 
     inst._estimate_kv_cache_bytes = fake_estimate
     inst._can_estimate_kv = lambda: can_estimate_kv
 
     context_length = inst._context_length
+    # Use the production helper, not a reimplementation, to avoid testing our own logic.
+    ctx_override = parse_ctx_override(extra_args)
+    requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
 
-    effective_ctx = n_ctx if n_ctx > 0 else (context_length or 0)
+    effective_ctx = requested_ctx if requested_ctx > 0 else (context_length or 0)
     max_available_ctx = context_length or effective_ctx
-    if n_ctx > 0:
-        effective_ctx = n_ctx
+    if requested_ctx > 0:
+        effective_ctx = requested_ctx
     elif context_length is not None:
         effective_ctx = context_length
     else:
@@ -161,7 +153,7 @@ def _drive(
     max_available_ctx = context_length or effective_ctx
 
     gpu_indices, use_fit = None, True
-    explicit_ctx = n_ctx > 0
+    explicit_ctx = requested_ctx > 0
 
     if gpus and inst._can_estimate_kv() and effective_ctx > 0:
         native_ctx_for_cap = context_length or effective_ctx
@@ -192,6 +184,7 @@ def _drive(
         else:
             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
+            pin_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
             for n_gpus in range(1, len(ranked) + 1):
                 subset = ranked[:n_gpus]
                 pool_mib = sum(free for _, free in subset)
@@ -203,7 +196,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * 0.90:
+                if total_mib <= pool_mib * pin_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
                     use_fit = False
@@ -211,12 +204,21 @@ def _drive(
                     break
             if not matched:
                 effective_ctx = min(FALLBACK_CTX, effective_ctx)
+                # Mirror llama_cpp.py: re-check fit at FALLBACK_CTX.
+                if effective_ctx > 0:
+                    for n_gpus in range(1, len(ranked) + 1):
+                        subset = ranked[:n_gpus]
+                        pool_mib = sum(free for _, free in subset)
+                        kv = inst._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                        total_mib = (model_size + kv) / (1024 * 1024)
+                        if total_mib <= pool_mib * pin_fraction:
+                            gpu_indices = sorted(idx for idx, _ in subset)
+                            use_fit = False
+                            break
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
-            effective_ctx = (
-                min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
-            )
+            effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
 
     return {
         "c_arg": effective_ctx if effective_ctx > 0 else 0,
@@ -224,6 +226,7 @@ def _drive(
         "gpu_indices": gpu_indices,
         "max_available_ctx": max_available_ctx,
         "original_ctx": original_ctx,
+        "ctx_override": ctx_override,
     }
 
 
@@ -245,8 +248,8 @@ class TestAutoModeWeightsExceedVRAM:
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
-        # UI slider ceiling stays at native: user can still drag higher
-        # and get the "might be slower" path.
+        # UI slider ceiling stays at native: user can drag higher and get
+        # the "might be slower" path.
         assert plan["max_available_ctx"] == 196608
 
     def test_multi_gpu_all_subsets_fail(self):
@@ -282,9 +285,8 @@ class TestExplicitCtxRespectsUser:
     """``n_ctx > 0`` must never be silently shrunk."""
 
     def test_fittable_weights_oversized_kv(self):
-        # 8 GB weights + 131k ctx KV on 24 GB VRAM.
-        # Budget = 21.6 GB, KV at 131k >> 13.6 GB remaining, so
-        # _select_gpus flips use_fit=True.
+        # 8 GB weights + 131k ctx KV on 24 GB VRAM. Budget = 21.6 GB, KV
+        # at 131k >> 13.6 GB remaining, so _select_gpus flips use_fit=True.
         plan = _drive(
             n_ctx = 131072,
             model_gib = 8,
@@ -328,13 +330,55 @@ class TestExplicitCtxRespectsUser:
         assert plan["use_fit"] is True
 
     def test_explicit_below_floor_honored(self):
-        # 2048 is below --fit-ctx default; still honored since user set it.
+        # 2048 is below --fit-ctx default; honored since user set it.
         plan = _drive(
             n_ctx = 2048,
             model_gib = 8,
             gpus = [(0, 24_000)],
         )
         assert plan["c_arg"] == 2048
+
+
+# ---------------------------------------------------------------------------
+# Pass-through --ctx-size participates in context fit (#5676).
+# ---------------------------------------------------------------------------
+
+
+class TestExtraArgsCtxOverride:
+    def test_ctx_size_extra_honored_over_auto(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["--ctx-size", "128000"],
+        )
+        assert plan["ctx_override"] == 128000
+        assert plan["original_ctx"] == 128000
+        assert plan["c_arg"] == 128000
+        assert plan["use_fit"] is True
+
+    def test_ctx_size_short_alias_honored_over_auto(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["-c", "128000"],
+        )
+        assert plan["c_arg"] == 128000
+        assert plan["use_fit"] is True
+
+    def test_ctx_size_extra_wins_over_first_class_field(self):
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            extra_args = ["--ctx-size", "128000"],
+        )
+        assert plan["original_ctx"] == 128000
+        assert plan["c_arg"] == 128000
 
 
 # ---------------------------------------------------------------------------
@@ -379,15 +423,137 @@ class TestFittableAutoPickRegressions:
 
 
 # ---------------------------------------------------------------------------
+# #5106 regression: 91-95% utilization must still pin GPU.
+# ---------------------------------------------------------------------------
+
+
+class TestTightFitPinsToGPU:
+    """Models that fit at 91-95% of free VRAM must use the GPU."""
+
+    def test_rtx_4090_qwen_24gb_class(self):
+        # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
+        # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
+
+    def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
+        # Explicit-ctx branch must agree with auto-ctx on headroom.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
+
+    def test_genuine_overflow_still_uses_fit(self):
+        # Beyond 95% must still defer to --fit on.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 23,
+            gpus = [(0, 22_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
+
+
+# ---------------------------------------------------------------------------
 # Platform-agnostic input shape
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("platform_tag", ["linux", "windows", "mac", "rocm"])
 def test_identical_decision_across_platforms(platform_tag):
-    """The decision function takes ``[(gpu_idx, free_mib), ...]`` regardless
-    of how upstream (nvidia-smi / nvidia-smi.exe / Metal / rocm-smi) produced
-    it. Identical inputs must yield identical plans."""
+    """Decision takes ``[(gpu_idx, free_mib), ...]`` regardless of source;
+    identical inputs must yield identical plans."""
     plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag
+
+
+# ---------------------------------------------------------------------------
+# _classify_gpu_offload: detect silent CPU fallback (#5106).
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyGpuOffload:
+    def _backend(self, stdout_lines):
+        inst = LlamaCppBackend.__new__(LlamaCppBackend)
+        inst._stdout_lines = list(stdout_lines)
+        return inst
+
+    def test_cuda_buffer_present_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 33/33 layers to GPU",
+                "load_tensors:        CUDA0 model buffer size = 21000.0 MiB",
+                "load_tensors:   CPU_Mapped model buffer size =     0.6 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_cpu_only_buffer_returns_false(self):
+        # Buffer lines printed but only CPU buffers -- the silent CPU
+        # fallback symptom we want to catch.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+                "load_tensors:          CPU model buffer size =     0.6 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_no_buffer_lines_returns_none(self):
+        # If we can't see buffer-allocation lines at all, don't guess.
+        inst = self._backend(
+            [
+                "INFO [main] starting server",
+                "load_tensors: file format = GGUF V3",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is None
+
+    def test_no_gpus_detected_returns_none(self):
+        # CPU-only systems are valid; suppress the warning entirely.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(False, []) is None
+
+    def test_user_did_not_intend_gpu_returns_none(self):
+        # Studio called start_llama_server without expecting GPU; don't warn.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(False, [(0, 22805)]) is None
+
+    def test_rocm_buffer_marker_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors:        ROCm0 model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_metal_buffer_marker_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors:       Metal model buffer size = 8000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

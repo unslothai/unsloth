@@ -13,13 +13,13 @@ pub use phase_log::append_phase_line;
 #[cfg(target_os = "linux")]
 pub use phase_log::PhaseLogHandle;
 pub use state::{
-    begin_backend_session, begin_install_attempt, begin_repair_child, begin_repair_group,
-    begin_update_attempt, finish_attempt, finish_repair_group, new_diagnostics_state,
-    record_attached_external_backend, record_auth_failure, record_backend_exit,
-    record_backend_intentional_stop, record_backend_port, record_backend_start_failure,
-    record_backend_watchdog, record_diag_marker, record_elevation_packages, record_preflight,
-    record_progress, record_step, AttemptLog, BackendLog, DiagnosticsState,
-    FrontendSupportSnapshot,
+    begin_adopted_backend_session, begin_backend_session, begin_install_attempt,
+    begin_repair_child, begin_repair_group, begin_update_attempt, finish_attempt,
+    finish_repair_group, new_diagnostics_state, record_attached_external_backend,
+    record_auth_failure, record_backend_exit, record_backend_intentional_stop, record_backend_port,
+    record_backend_start_failure, record_backend_watchdog, record_diag_marker,
+    record_elevation_packages, record_preflight, record_progress, record_step, AttemptLog,
+    BackendLog, DiagnosticsState, FrontendSupportSnapshot,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -151,8 +151,10 @@ async fn collect_backend_health(port: u16) -> report::BackendHealthSection {
                     "device_type",
                     "chat_only",
                     "desktop_protocol_version",
+                    "desktop_manageability_version",
                     "supports_api_only",
                     "supports_desktop_auth",
+                    "supports_desktop_backend_ownership",
                 ] {
                     if let Some(value) = json.get(key) {
                         section

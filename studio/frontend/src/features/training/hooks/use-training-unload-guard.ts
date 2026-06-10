@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect } from "react";
-import { useTrainingRuntimeStore } from "@/features/training";
+import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
@@ -13,24 +13,27 @@ let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 export function useTrainingUnloadGuard() {
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (!useTrainingRuntimeStore.getState().isTrainingRunning) return;
+      if (!useTrainingRuntimeStore.getState().isTrainingRunning) {
+        return;
+      }
       e.preventDefault();
       e.returnValue = "";
     };
     currentHandler = handler;
     window.addEventListener("beforeunload", handler);
     return () => {
-      if (currentHandler === handler) currentHandler = null;
+      if (currentHandler === handler) {
+        currentHandler = null;
+      }
       window.removeEventListener("beforeunload", handler);
     };
   }, []);
 }
 
 /**
- * Removes the active beforeunload guard (if any).
- * Call this before intentionally ending the session (e.g. shutting down
- * the Studio server) so the "Server stopped" page can render without
- * the browser prompting the user to confirm leaving.
+ * Removes the active beforeunload guard (if any). Call before intentionally
+ * ending the session (e.g. shutting down the server) so the "Server stopped"
+ * page renders without the browser prompting to confirm leaving.
  */
 export function removeTrainingUnloadGuard() {
   if (currentHandler) {

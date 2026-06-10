@@ -7,6 +7,7 @@ import type {
   UploadDatasetResponse,
 } from "../types/datasets";
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 
 type CheckDatasetFormatArgs = {
   datasetName: string;
@@ -36,8 +37,7 @@ export async function checkDatasetFormat({
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${res.status})`);
+    throw new Error(await readFastApiError(res));
   }
 
   return res.json();
@@ -55,8 +55,7 @@ export async function uploadTrainingDataset(
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Upload failed (${res.status})`);
+    throw new Error(await readFastApiError(res, "Upload failed"));
   }
 
   return res.json();
@@ -107,8 +106,7 @@ export async function aiAssistMapping({
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `AI assist failed (${res.status})`);
+    throw new Error(await readFastApiError(res, "AI assist failed"));
   }
 
   return res.json();
@@ -117,8 +115,7 @@ export async function aiAssistMapping({
 export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
   const res = await authFetch("/api/datasets/local");
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${res.status})`);
+    throw new Error(await readFastApiError(res));
   }
   return res.json();
 }

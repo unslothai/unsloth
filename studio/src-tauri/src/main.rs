@@ -2,6 +2,8 @@
 
 mod commands;
 mod desktop_auth;
+mod desktop_backend_owner;
+mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
@@ -21,6 +23,15 @@ use std::fs;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+
+#[tauri::command]
+fn has_saved_window_state(app: tauri::AppHandle) -> bool {
+    let Ok(dir) = app.path().app_config_dir() else {
+        return false;
+    };
+    dir.join(app.filename()).is_file()
+}
 
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
@@ -171,6 +182,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .skip_initial_state("main")
+                .build(),
+        )
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(native_intents::new_native_intake_state())
@@ -192,6 +209,8 @@ fn main() {
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
+            desktop_update_policy::check_desktop_manual_update,
+            desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
@@ -200,6 +219,7 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            has_saved_window_state,
         ])
         .setup(|app| {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
