@@ -995,9 +995,11 @@ from transformers.modeling_utils import logger as transformers_logger
 # Faster safetensors weight loading on unified-memory (integrated) GPUs: clone
 # each tensor into a normal torch allocation before the host->device move so the
 # fast DMA path is used instead of safetensors' slow mmap-backed GPU copy.
-# Strict no-op on discrete GPUs / CPU / XPU / MLX (gated by the device's
-# `is_integrated` property); accuracy-neutral; opt out with
-# UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+# Strict no-op on discrete GPUs / CPU / XPU / MLX -- the `is_integrated` gate is
+# evaluated lazily inside the wrapper on the first CUDA-target shard load, so
+# installing it here does NOT initialize CUDA at import (fork-safe, and it
+# leaves patch_dgx_spark_memory_config below in time to set the allocator
+# config). Accuracy-neutral; opt out with UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
 from ._uma_safetensors import (
     is_integrated_unified_memory_gpu,
     patch_unified_memory_safetensors_load,

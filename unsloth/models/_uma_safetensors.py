@@ -105,10 +105,17 @@ def patch_unified_memory_safetensors_load():
     (``device="cpu"``) are left untouched. Idempotent (marked via
     ``_unsloth_uma_clone``); opt out with ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
 
+    The integrated-GPU gate is evaluated LAZILY inside the wrapper on the first
+    CUDA-target shard load, never here: querying device properties at install
+    time would initialize the CUDA context during ``import unsloth``, which (a)
+    breaks ``fork``-based multiprocessing, (b) runs before
+    ``patch_dgx_spark_memory_config`` can set ``PYTORCH_CUDA_ALLOC_CONF`` on
+    Spark, defeating that patch, and (c) charges every import a CUDA context
+    even for CPU-only use. By the time a CUDA-target ``safe_open`` happens the
+    caller is initializing CUDA anyway, so the (lru-cached) gate query is free.
+
     Returns ``True`` if the wrapper was installed, else ``False``.
     """
-    if not is_integrated_unified_memory_gpu():
-        return False
     if os.environ.get("UNSLOTH_DISABLE_UMA_CLONE_LOAD") == "1":
         return False
     try:
@@ -176,7 +183,13 @@ def patch_unified_memory_safetensors_load():
     def _uma_safe_open(*args, **kwargs):
         framework = kwargs.get("framework", args[1] if len(args) > 1 else None)
         device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-        if framework in ("pt", "pytorch") and _is_cuda_target(device):
+        # Gate order matters: the device check runs FIRST so non-CUDA loads
+        # never trigger the (CUDA-initializing) integrated-GPU property query.
+        if (
+            framework in ("pt", "pytorch")
+            and _is_cuda_target(device)
+            and is_integrated_unified_memory_gpu()
+        ):
             return _ClonedSafeOpen(args, kwargs)
         return real_safe_open(*args, **kwargs)
 

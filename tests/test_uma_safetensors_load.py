@@ -19,7 +19,10 @@ The module is loaded in isolation (its only imports are ``os``, ``functools``,
 ``torch``), and ``transformers.modeling_utils`` is faked via ``sys.modules`` so
 no heavy transformers import is needed. The CUDA clone-and-move correctness
 check runs only when a GPU is present; everything else (gating, CPU passthrough,
-idempotency, opt-out) is GPU-free.
+idempotency, opt-out) is GPU-free. The integrated-GPU gate is evaluated lazily
+inside the wrapper (never at install time, which would initialize CUDA at
+import), so the wrapper installs everywhere and passes through when the gate
+is off.
 """
 
 from __future__ import annotations
@@ -127,12 +130,37 @@ def test_is_cuda_target_torch_device(uma):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_noop_off_uma(uma, force_uma, monkeypatch):
+def test_wrapper_passes_through_off_uma(uma, force_uma, monkeypatch):
+    """The wrapper installs everywhere, but with the gate OFF every call --
+    including CUDA targets -- must pass straight through to the real
+    safe_open (the gate is evaluated lazily inside the wrapper)."""
     force_uma(False)
-    real = object()
-    fake_mu = _install_fake_modeling_utils(monkeypatch, real)
-    assert uma.patch_unified_memory_safetensors_load() is False
-    assert fake_mu.safe_open is real  # untouched
+    sentinel = object()
+    calls = []
+
+    def fake_safe_open(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    fake_mu = _install_fake_modeling_utils(monkeypatch, fake_safe_open)
+    assert uma.patch_unified_memory_safetensors_load() is True
+    assert getattr(fake_mu.safe_open, "_unsloth_uma_clone", False) is True
+    out = fake_mu.safe_open("shard.safetensors", "pt", "cuda:0")
+    assert out is sentinel
+    assert calls == [(("shard.safetensors", "pt", "cuda:0"), {})]
+
+
+def test_patch_install_does_not_evaluate_gate(uma, monkeypatch):
+    """Installing the wrapper must NOT query the integrated-GPU property:
+    that would initialize CUDA at `import unsloth` (fork-unsafe, and it would
+    run before the Spark allocator config is set)."""
+
+    def _boom():
+        raise AssertionError("gate must not be evaluated at install time")
+
+    _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
+    monkeypatch.setattr(uma, "is_integrated_unified_memory_gpu", _boom)
+    assert uma.patch_unified_memory_safetensors_load() is True
 
 
 def test_patch_noop_when_opted_out(uma, force_uma, monkeypatch):
