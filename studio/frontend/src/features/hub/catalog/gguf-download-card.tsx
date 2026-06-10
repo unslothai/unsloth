@@ -723,7 +723,7 @@ export function GgufDownloadCard({
           <PopoverContent
             align="start"
             side="bottom"
-            sideOffset={8}
+            sideOffset={0}
             avoidCollisions={false}
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >

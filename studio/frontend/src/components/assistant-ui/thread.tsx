@@ -1873,7 +1873,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
       <DropdownMenuContent
         side={side}
         align="start"
-        sideOffset={2}
+        sideOffset={0}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
         // Don't refocus the + on close; restored focus showed a stray ring.

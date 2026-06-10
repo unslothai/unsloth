@@ -1057,7 +1057,7 @@ export function ChatSettingsPanel({
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
-                sideOffset={6}
+                sideOffset={0}
                 className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
               >
                 {presets.map((p, index) => (

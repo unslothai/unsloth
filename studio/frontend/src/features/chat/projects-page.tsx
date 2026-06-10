@@ -256,7 +256,7 @@ export function ProjectsPage() {
                   <DropdownMenuContent
                     side="bottom"
                     align="end"
-                    sideOffset={4}
+                    sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"

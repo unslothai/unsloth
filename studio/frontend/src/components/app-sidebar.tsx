@@ -599,7 +599,7 @@ export function AppSidebar() {
           <DropdownMenuContent
             side="bottom"
             align="start"
-            sideOffset={6}
+            sideOffset={0}
             className="unsloth-plus-menu menu-flat-destructive w-52"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
@@ -612,7 +612,7 @@ export function AppSidebar() {
                 <span>Move to project</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
-                sideOffset={8}
+                sideOffset={0}
                 alignOffset={-4}
                 className="unsloth-plus-menu w-52"
               >
@@ -959,7 +959,7 @@ export function AppSidebar() {
                           <DropdownMenuContent
                             side="bottom"
                             align="end"
-                            sideOffset={4}
+                            sideOffset={0}
                             className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                           >
                             <DropdownMenuItem onSelect={() => openRenameRun(run)}>
@@ -1027,7 +1027,7 @@ export function AppSidebar() {
               <DropdownMenuContent
                 side="top"
                 align="center"
-                sideOffset={6}
+                sideOffset={0}
                 className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-1.5 py-2.5 font-heading rounded-[20px] border-0"
               >
                 <DropdownMenuGroup>

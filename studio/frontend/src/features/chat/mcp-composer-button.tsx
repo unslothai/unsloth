@@ -259,7 +259,7 @@ export function McpComposerButton({
           <DropdownMenuContent
             side={side}
             align="start"
-            sideOffset={2}
+            sideOffset={0}
             avoidCollisions={true}
             className="unsloth-plus-menu mcp-menu w-[232px]"
           >

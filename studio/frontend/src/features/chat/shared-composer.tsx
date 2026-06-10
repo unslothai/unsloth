@@ -1133,7 +1133,7 @@ export function SharedComposer({
             <DropdownMenuContent
               side="top"
               align="start"
-              sideOffset={2}
+              sideOffset={0}
               avoidCollisions={true}
               className="unsloth-plus-menu w-[212px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
