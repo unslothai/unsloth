@@ -802,6 +802,59 @@ class TestHasRocmGpuKfdVendorGuard:
         assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
         assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
+    def test_has_rocm_gpu_returns_false_when_nvidia_present(self):
+        """_has_rocm_gpu must return False immediately when _has_usable_nvidia_gpu is True.
+
+        This is the primary guard: even if rocminfo, amd-smi, or KFD sysfs
+        produce a false positive, an NVIDIA GPU always wins.
+        """
+        with patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True):
+            with patch("shutil.which", return_value = "/usr/bin/rocminfo"):
+                # Simulate rocminfo claiming an AMD GPU is present
+                mock_result = MagicMock()
+                mock_result.returncode = 0
+                mock_result.stdout = "Name: gfx1100\n"
+                with patch("subprocess.run", return_value = mock_result):
+                    assert not stack_mod._has_rocm_gpu(), (
+                        "_has_rocm_gpu must return False when NVIDIA GPU is detected, "
+                        "regardless of what rocminfo reports"
+                    )
+
+    def test_install_sh_has_rocm_gpu_nvidia_guard(self):
+        """_has_amd_rocm_gpu in install.sh must call _has_usable_nvidia_gpu and return 1 if true."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "_has_usable_nvidia_gpu" in func_body, (
+            "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
+        )
+        assert "return 1" in func_body, (
+            "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+        )
+
+    def test_has_usable_nvidia_gpu_proc_fallback_present(self):
+        """`_has_usable_nvidia_gpu` must have a /proc/driver/nvidia fallback."""
+        import inspect
+        src = inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "/proc/driver/nvidia" in src, (
+            "_has_usable_nvidia_gpu must fall back to /proc/driver/nvidia/gpus when "
+            "nvidia-smi subprocess fails, to handle PATH gaps and driver init races"
+        )
+
+    def test_install_sh_has_usable_nvidia_gpu_proc_fallback(self):
+        """_has_usable_nvidia_gpu in install.sh must also have a /proc/driver/nvidia fallback."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_usable_nvidia_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "/proc/driver/nvidia" in func_body, (
+            "_has_usable_nvidia_gpu in install.sh must fall back to "
+            "/proc/driver/nvidia/gpus when nvidia-smi fails"
+        )
+
 
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
 

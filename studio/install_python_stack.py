@@ -557,7 +557,15 @@ def _persist_bnb_rocm_version(version: str) -> bool:
 
 
 def _has_rocm_gpu() -> bool:
-    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
+    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed).
+
+    Always returns False when an NVIDIA GPU is present -- NVIDIA takes
+    priority on mixed hosts and prevents every detection path below
+    (rocminfo, amd-smi, KFD sysfs) from producing a false positive even
+    if ROCm tools are installed alongside the NVIDIA driver.
+    """
+    if _has_usable_nvidia_gpu():
+        return False
     for cmd, check_fn in (
         # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
         # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -639,21 +647,38 @@ def _has_rocm_gpu() -> bool:
 
 
 def _has_usable_nvidia_gpu() -> bool:
-    """Return True only when nvidia-smi exists AND reports at least one GPU."""
+    """Return True when an NVIDIA GPU is present and usable.
+
+    Primary probe: nvidia-smi -L (subprocess).
+    Fallback: /proc/driver/nvidia/gpus/ sysfs (Linux only) -- handles the
+    case where nvidia-smi is present but the subprocess fails (PATH gap,
+    timeout, driver initialisation race). If either probe confirms an
+    NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
+    """
     exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "-L"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0 and "GPU " in result.stdout
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "-L"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0 and "GPU " in result.stdout:
+                return True
+        except Exception:
+            pass
+    # Fallback: the NVIDIA driver exposes one subdirectory per GPU under
+    # /proc/driver/nvidia/gpus/ on Linux regardless of nvidia-smi state.
+    if sys.platform != "win32":
+        try:
+            gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(gpu_dir) and os.listdir(gpu_dir):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _detect_amd_gfx_codes() -> list[str]:
