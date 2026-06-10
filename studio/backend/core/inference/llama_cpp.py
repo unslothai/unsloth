@@ -4118,6 +4118,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        seed: Optional[int] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -4158,6 +4159,8 @@ class LlamaCppBackend:
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
+        if seed is not None:
+            payload["seed"] = seed
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4166,6 +4169,7 @@ class LlamaCppBackend:
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
 
         try:
             # _stream_with_retry uses a 120 s read timeout so prefill can
@@ -4230,6 +4234,9 @@ class LlamaCppBackend:
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     # Reasoning/thinking tokens: llama-server
                                     # sends these as "reasoning_content"; wrap
@@ -4255,14 +4262,18 @@ class LlamaCppBackend:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _metadata_usage = _backfill_usage_from_timings(
                             _metadata_usage, _metadata_timings
                         )
                         yield {
                             "type": "metadata",
-                            "usage": _metadata_usage,
+                            # Never None: a finish-only metadata event (no usage,
+                            # no timings) would otherwise crash consumers that do
+                            # usage.get(...) on the non-streaming paths.
+                            "usage": _metadata_usage or {},
                             "timings": _metadata_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -4295,6 +4306,8 @@ class LlamaCppBackend:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
+        seed: Optional[int] = None,
+        disable_parallel_tool_use: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4409,6 +4422,8 @@ class LlamaCppBackend:
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
+            if seed is not None:
+                payload["seed"] = seed
 
             try:
                 _auth_headers = (
@@ -4434,6 +4449,7 @@ class LlamaCppBackend:
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
+                _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
                 provisional_render_html_tool_call_ids = set()
@@ -4513,6 +4529,9 @@ class LlamaCppBackend:
                                         continue
 
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _iter_finish_reason = _fr
 
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
@@ -4855,6 +4874,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -4930,6 +4950,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -4940,6 +4961,12 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+
+                # disable_parallel_tool_use: execute only the first tool call
+                # this turn. Truncate before building assistant_msg so the
+                # conversation stays consistent and extra calls are never executed.
+                if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
+                    tool_calls = tool_calls[:1]
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
@@ -5065,6 +5092,8 @@ class LlamaCppBackend:
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
+        if seed is not None:
+            stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""
@@ -5074,6 +5103,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
         _stream_done = False
 
         try:
@@ -5132,6 +5162,9 @@ class LlamaCppBackend:
                                 choices = chunk_data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
@@ -5162,7 +5195,7 @@ class LlamaCppBackend:
                     _final_completion = _final_usage.get("completion_tokens", 0)
                     _final_prompt = _final_usage.get("prompt_tokens", 0)
                     _total_completion = _final_completion + _accumulated_completion_tokens
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
                         if _accumulated_predicted_ms or _accumulated_predicted_n:
                             _merged_timings["predicted_ms"] = (
@@ -5185,6 +5218,7 @@ class LlamaCppBackend:
                                 "total_tokens": _final_prompt + _total_completion,
                             },
                             "timings": _merged_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -5193,6 +5227,144 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
+
+    # ── Prompt token counting ──────────────────────────────────
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system = None,
+        tools = None,
+        strict: bool = False,
+    ) -> int:
+        """Count prompt tokens for a chat request via llama-server.
+
+        Non-strict callers keep the historical best-effort behavior and receive
+        0 when a count cannot be determined. Strict callers (public count_tokens
+        endpoints) get an exception instead of a successful-looking zero when
+        tokenizer/template calls fail or a multimodal prompt would fall back to a
+        text-only approximation.
+        """
+        if not self.is_loaded:
+            if strict:
+                raise RuntimeError("llama-server is not loaded")
+            return 0
+
+        def _has_non_text_content(content) -> bool:
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        continue
+                    if not isinstance(block, dict):
+                        return True
+                    if block.get("type") == "text" and isinstance(block.get("text"), str):
+                        continue
+                    if isinstance(block.get("text"), str):
+                        continue
+                    return True
+            return False
+
+        def _has_non_text_prompt_parts() -> bool:
+            if _has_non_text_content(system):
+                return True
+            for msg in messages or []:
+                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
+                    return True
+            return False
+
+        def _block_text(content) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text" and isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                        elif isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "".join(parts)
+            return ""
+
+        # Normalize system into a leading message / plain text.
+        system_text = ""
+        if isinstance(system, str):
+            system_text = system
+        elif isinstance(system, list):
+            system_text = _block_text(system)
+
+        try:
+            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+                def _tokenize(text: str) -> int:
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": True},
+                    )
+                    if r.status_code != 200:
+                        if strict:
+                            raise RuntimeError("llama-server tokenizer failed")
+                        return 0
+                    tokens = r.json().get("tokens", [])
+                    if not isinstance(tokens, list):
+                        if strict:
+                            raise RuntimeError("llama-server tokenizer returned invalid tokens")
+                        return 0
+                    return len(tokens)
+
+                # 1. Try /apply-template to render the real chat prompt.
+                template_messages = list(messages) if messages else []
+                if system_text:
+                    template_messages = [
+                        {"role": "system", "content": system_text}
+                    ] + template_messages
+                apply_template_failed = False
+                try:
+                    # llama-server's /apply-template renders tool declarations
+                    # into the prompt when ``tools`` is supplied, so pass them
+                    # through — otherwise tool-schema tokens go uncounted.
+                    template_body = {"messages": template_messages}
+                    if tools:
+                        template_body["tools"] = tools
+                    resp = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = template_body,
+                    )
+                    if resp.status_code == 200:
+                        prompt = resp.json().get("prompt", "")
+                        if isinstance(prompt, str):
+                            return _tokenize(prompt)
+                    apply_template_failed = True
+                except Exception:
+                    apply_template_failed = True
+
+                if strict and apply_template_failed and _has_non_text_prompt_parts():
+                    raise RuntimeError(
+                        "cannot fall back to text-only token counting for multimodal messages"
+                    )
+
+                # 2. Fallback: concatenate plain text and tokenize. Append a
+                # serialized form of the tools so they still contribute to the
+                # count when /apply-template is unavailable.
+                parts = []
+                if system_text:
+                    parts.append(system_text)
+                for msg in messages or []:
+                    if isinstance(msg, dict):
+                        parts.append(_block_text(msg.get("content", "")))
+                if tools:
+                    try:
+                        parts.append(json.dumps(tools, ensure_ascii = False))
+                    except Exception:
+                        pass
+                return _tokenize("\n".join(p for p in parts if p))
+        except Exception:
+            if strict:
+                raise
+            return 0
 
     # ── TTS support ────────────────────────────────────────────
 
