@@ -14,7 +14,7 @@ from typing import Awaitable, Callable, Optional
 
 from core.inference.llama_server_args import (
     resolve_tensor_parallel,
-    strip_shadowing_flags,
+    strip_split_mode_only,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,16 +67,4 @@ async def load_with_tensor_fallback(
         "(this model may not support tensor parallelism)",
         label,
     )
-    layer_extra_args = (
-        strip_shadowing_flags(
-            extra_args,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = True,
-        )
-        if extra_args
-        else extra_args
-    )
-    return await attempt_load(False, layer_extra_args)
+    return await attempt_load(False, strip_split_mode_only(extra_args))

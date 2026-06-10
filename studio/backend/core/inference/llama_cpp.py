@@ -36,6 +36,7 @@ from core.inference.llama_server_args import (
     resolve_cache_type_kv,
     resolve_requested_ctx,
     resolve_tensor_parallel,
+    strip_split_mode_only,
 )
 from core.tool_healing import (
     _TC_END_TAG_RE,
@@ -3009,6 +3010,10 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
+                        # A user --split-mode tensor in extras is appended after
+                        # Studio's flags, so it would still reach llama-server and
+                        # fail here; strip it so the downgrade actually applies.
+                        extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation: use all usable GPUs, weight

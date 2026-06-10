@@ -353,3 +353,19 @@ def strip_shadowing_flags(
         else:
             i += 1
     return out
+
+
+def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove only ``--split-mode`` / ``-sm`` from ``args``, keeping every other
+    shadow flag. Preserves a None/empty input so the inherit-vs-explicit-empty
+    distinction survives. Used where tensor mode is being forced off."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )

@@ -636,6 +636,23 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _should_strip_split_mode(
+    request: LoadRequest, backend_extra: Optional[list[str]]
+) -> bool:
+    """Whether an inherited --split-mode should be stripped on reload.
+
+    The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
+    layer modes, so only strip when the toggle overrides it: tensor being turned
+    on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
+    survive. Shared by the inheritance strip and the already-loaded stale check
+    so they agree on what reload would do.
+    """
+    fields_set = getattr(request, "model_fields_set", set())
+    return "tensor_parallel" in fields_set and (
+        request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
+    )
+
+
 def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
     """True iff every runtime setting on the request matches the loaded
     server. Caller has already checked model+variant+is_loaded. See #5401."""
@@ -678,7 +695,13 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # strip them instead of leaving a stale override in effect.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
     if request.llama_extra_args is None:
-        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+        # Mirror the reload's conditional split-mode strip, so a preserved
+        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
+        # trigger a needless reload of a healthy server.
+        if backend_extra and strip_shadowing_flags(
+            backend_extra,
+            strip_split_mode = _should_strip_split_mode(request, backend_extra),
+        ) != backend_extra:
             return False
     else:
         if list(request.llama_extra_args) != backend_extra:
@@ -940,14 +963,6 @@ async def load_model(
                     # --chat-template-file survives an Apply that omits
                     # chat_template_override.
                     fields_set = getattr(request, "model_fields_set", set())
-                    # The binary toggle can't carry --split-mode's row/none/layer
-                    # modes, so only strip an inherited split mode when the toggle
-                    # overrides it: tensor turned on, or the inherited mode is
-                    # tensor (toggle turning it off).
-                    strip_split_mode = "tensor_parallel" in fields_set and (
-                        request.tensor_parallel
-                        or resolve_tensor_parallel(llama_backend.extra_args, False)
-                    )
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
@@ -956,7 +971,9 @@ async def load_model(
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
-                        strip_split_mode = strip_split_mode,
+                        strip_split_mode = _should_strip_split_mode(
+                            request, llama_backend.extra_args
+                        ),
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)

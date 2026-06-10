@@ -31,6 +31,7 @@ parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
+strip_split_mode_only = _lsa.strip_split_mode_only
 validate_extra_args = _lsa.validate_extra_args
 
 
@@ -649,3 +650,23 @@ def test_strip_shadowing_flags_defaults_strip_split_mode_too():
     # The route's already-loaded comparator (no kwargs) must see a stored
     # --split-mode as a shadowing flag so it forces a reload.
     assert strip_shadowing_flags(["--split-mode", "tensor"]) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--split-mode", "tensor", "-c", "4096"],
+        ["-sm", "tensor", "-c", "4096"],
+        ["--split-mode=tensor", "-c", "4096"],
+        ["-sm=tensor", "-c", "4096"],
+    ],
+)
+def test_strip_split_mode_only_keeps_other_shadow_flags(args):
+    # Every --split-mode form (long/short, space/=) is dropped; -c survives.
+    assert strip_split_mode_only(args) == ["-c", "4096"]
+
+
+def test_strip_split_mode_only_preserves_none_and_empty():
+    # None means "inherit"; [] means "explicit empty" -- both must round-trip.
+    assert strip_split_mode_only(None) is None
+    assert strip_split_mode_only([]) == []
