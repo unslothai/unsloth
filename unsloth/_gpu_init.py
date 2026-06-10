@@ -38,8 +38,7 @@ from .import_fixes import (
 
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
-# Must run before `import unsloth_zoo` below: on ROCm it imports
-# bitsandbytes at module scope, triggering bnb's broken Windows GPU probes.
+# Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()

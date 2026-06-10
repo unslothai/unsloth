@@ -592,13 +592,10 @@ def test_accelerate_utils_imports_module_present():
 
 
 def test_bitsandbytes_rocm_detection_helpers_recognizable():
-    """``fix_bitsandbytes_rocm_arch_detection``. The fix swaps
-    bitsandbytes.cuda_specs.get_rocm_gpu_arch / get_rocm_warpsize only when
-    the helper still shells out via subprocess and never consults torch
-    device properties. If bitsandbytes rewrites detection some third way,
-    the sniff declines by design and Windows ROCm noise silently returns;
-    fail here so the sniff gets updated. Reads the source file instead of
-    importing bitsandbytes to stay side-effect free."""
+    """``fix_bitsandbytes_rocm_arch_detection`` swaps bnb's ROCm helpers
+    only when they shell out via subprocess and never consult torch device
+    props; a third shape is declined by design, silently restoring Windows
+    ROCm noise. Fail so the sniff gets updated. Reads source, no import."""
     spec = importlib.util.find_spec("bitsandbytes")
     if spec is None:
         pytest.skip("bitsandbytes not installed -- nothing to drift-check.")

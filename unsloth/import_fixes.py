@@ -1824,22 +1824,16 @@ def configure_amdgpu_asic_id_table_path():
 
 
 # ---------------------------------------------------------------------------
-# bitsandbytes Windows ROCm arch / warp-size detection fix
-# ---------------------------------------------------------------------------
-# bitsandbytes computes at import time in cextension.py:
-#     ROCM_GPU_ARCH     = get_rocm_gpu_arch()          (bnb >= 0.47.0)
-#     ROCM_WARP_SIZE_64 = get_rocm_warpsize() == 64    (bnb 0.49.0 - 0.49.2)
-# Both helpers shell out to rocminfo / hipinfo.exe via PATH. On Windows
-# neither is normally on PATH (AMD torch wheels ship hipInfo.exe into the
-# venv Scripts dir, only on PATH while activated), so every import logs an
-# ERROR + WARNING, ROCM_GPU_ARCH becomes "unknown", and bnb 0.49.x warp
-# size defaults to 64: wrong on RDNA (wave 32), mis-gating 4-bit blocksizes
-# and ALLOW_PREQUANTIZED_MODELS. Upstream fix not merged (bitsandbytes#1969),
-# so a one-shot MetaPathFinder swaps both helpers for
-# torch-device-properties-first versions right after bitsandbytes.cuda_specs
-# executes, before cextension reads them: noise prevented, values correct.
-# Must run before `import unsloth_zoo` in _gpu_init.py: on ROCm,
-# unsloth_zoo.device_type imports bitsandbytes at module scope.
+# bitsandbytes Windows ROCm fix: cextension.py runs get_rocm_gpu_arch()
+# (bnb >= 0.47) and get_rocm_warpsize() (0.49.x) at import, shelling out to
+# rocminfo / hipinfo.exe via PATH. Neither is on PATH on Windows (AMD torch
+# wheels put hipInfo.exe in venv Scripts), so every import logs ERROR +
+# WARNING, ROCM_GPU_ARCH becomes "unknown", and warp size defaults to 64:
+# wrong on RDNA (wave 32), breaking 4-bit blocksizes and
+# ALLOW_PREQUANTIZED_MODELS. Upstream fix unmerged (bitsandbytes#1969), so a
+# one-shot MetaPathFinder swaps both helpers for torch-device-props-first
+# versions right after bitsandbytes.cuda_specs executes, before cextension
+# reads them. Must run before `import unsloth_zoo` (imports bnb on ROCm).
 # ---------------------------------------------------------------------------
 
 _BNB_CUDA_SPECS_MODULE = "bitsandbytes.cuda_specs"
@@ -1848,9 +1842,8 @@ _BNB_ROCM_FIX_FUNCTION_FLAG = "__unsloth_bnb_rocm_fix__"
 
 
 def _torch_rocm_device_props():
-    """Device-0 properties on a ROCm torch build with a visible GPU, else
-    None. Never raises; bitsandbytes' own import initializes the device
-    context moments later anyway."""
+    """Device-0 props on a ROCm torch build with a visible GPU, else None.
+    Never raises; bnb's own import initializes the device context anyway."""
     try:
         import torch
 
@@ -1864,9 +1857,8 @@ def _torch_rocm_device_props():
 
 
 def _iter_hipinfo_paths():
-    """Yield existing hipInfo.exe locations, most reliable first: PATH, the
-    interpreter's scripts dir (venv: next to python.exe; conda: the Scripts
-    sibling), then HIP SDK / AMD installer locations."""
+    """Yield existing hipInfo.exe paths: PATH, interpreter scripts dir (venv
+    and conda layouts), then HIP SDK / AMD installer locations."""
     import shutil
     import sysconfig
 
@@ -1930,9 +1922,8 @@ def _run_hipinfo(hipinfo_path):
 
 
 def _unsloth_get_rocm_gpu_arch():
-    """Replacement for bitsandbytes.cuda_specs.get_rocm_gpu_arch: torch
-    device properties first (no subprocess), then hipInfo.exe by absolute
-    path, then a quiet "unknown" (upstream logs ERROR + WARNING here)."""
+    """Replaces bnb's get_rocm_gpu_arch: torch device props first (no
+    subprocess), then hipInfo.exe by absolute path, then a quiet "unknown"."""
     try:
         import torch
         if not getattr(getattr(torch, "version", None), "hip", None):
@@ -1959,9 +1950,8 @@ def _unsloth_get_rocm_gpu_arch():
 
 
 def _unsloth_get_rocm_warpsize():
-    """Replacement for bitsandbytes.cuda_specs.get_rocm_warpsize (bnb
-    0.49.x): upstream defaults to 64 when rocminfo is missing, which is
-    wrong on RDNA (wave 32) and mis-sizes 4-bit blocksizes."""
+    """Replaces bnb 0.49.x get_rocm_warpsize: upstream defaults to 64 when
+    rocminfo is missing, wrong on RDNA (wave 32)."""
     try:
         import torch
         if not getattr(getattr(torch, "version", None), "hip", None):
@@ -1991,9 +1981,8 @@ setattr(_unsloth_get_rocm_warpsize, _BNB_ROCM_FIX_FUNCTION_FLAG, True)
 
 
 def _bnb_rocm_helper_is_broken(function):
-    """True only for upstream's subprocess-only detectors. Uses co_names so
-    it works where inspect.getsource fails (frozen apps). Versions that
-    already consult torch device properties are left untouched."""
+    """True only for upstream's subprocess-only detectors; co_names works
+    where getsource fails. Versions consulting torch props are untouched."""
     if function is None or not callable(function):
         return False
     if getattr(function, _BNB_ROCM_FIX_FUNCTION_FLAG, False):
@@ -2021,7 +2010,7 @@ def _patch_bnb_cuda_specs_module(module):
     ):
         original = getattr(module, attribute_name, None)
         if getattr(original, _BNB_ROCM_FIX_FUNCTION_FLAG, False):
-            patched = True  # Already ours -- idempotent re-entry.
+            patched = True  # Already ours.
             continue
         if not _bnb_rocm_helper_is_broken(original):
             continue
@@ -2066,8 +2055,7 @@ class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
         _remove_bnb_rocm_fix_finder()
 
     def __getattr__(self, name):
-        # Delegate get_source / get_filename / is_package / get_code etc. so
-        # inspect.getsource and import machinery introspection keep working.
+        # Delegate get_source / get_filename etc. so introspection works.
         return getattr(self._loader, name)
 
 
@@ -2085,8 +2073,8 @@ class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
     ):
         if fullname != _BNB_CUDA_SPECS_MODULE:
             return None
-        # Delegate to the remaining finders (PathFinder, editable installs,
-        # frozen apps) and wrap whatever loader would actually be used.
+        # Delegate to remaining finders (editable installs, frozen apps)
+        # and wrap the loader that would actually be used.
         spec = None
         for finder in sys.meta_path:
             if finder is self or getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
@@ -2109,9 +2097,8 @@ class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def _repair_imported_bitsandbytes_rocm_constants():
-    """bitsandbytes was imported before unsloth: the noise already fired,
-    but fix the detectors and cached constants, including by-value copies of
-    ROCM_WARP_SIZE_64 in bnb 0.49.x functional / nn.modules / backends."""
+    """bnb imported before unsloth: noise already fired, but fix detectors
+    and cached constants, incl. by-value ROCM_WARP_SIZE_64 copies."""
     cuda_specs = sys.modules.get(_BNB_CUDA_SPECS_MODULE)
     if cuda_specs is None:
         return
@@ -2148,10 +2135,9 @@ def _repair_imported_bitsandbytes_rocm_constants():
 
 
 def fix_bitsandbytes_rocm_arch_detection():
-    """Fix bitsandbytes' import-time ROCm arch / warp-size detection on
-    Windows (see header block above). Strict no-op on non-Windows, non-ROCm
-    torch, missing bitsandbytes, and versions fixed upstream. Idempotent.
-    Opt out with UNSLOTH_DISABLE_BNB_ROCM_FIX=1."""
+    """Fix bnb's import-time ROCm arch / warp-size detection on Windows
+    (see header above). No-op on non-Windows, non-ROCm, missing or
+    upstream-fixed bnb. Idempotent. Opt out: UNSLOTH_DISABLE_BNB_ROCM_FIX=1."""
     if os.environ.get("UNSLOTH_DISABLE_BNB_ROCM_FIX", "0") == "1":
         return
     if sys.platform != "win32":
@@ -2159,8 +2145,7 @@ def fix_bitsandbytes_rocm_arch_detection():
     if not _is_rocm_torch_build():
         return
 
-    # bitsandbytes already imported (user imported it before unsloth):
-    # prevention is impossible -- repair the values in place instead.
+    # Already imported: prevention impossible, repair in place instead.
     if _BNB_CUDA_SPECS_MODULE in sys.modules:
         try:
             _repair_imported_bitsandbytes_rocm_constants()
