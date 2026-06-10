@@ -721,7 +721,6 @@ def _setup_server_disk_logging():
         return None
     try:
         from utils.paths import studio_root
-
         log_dir = Path(studio_root()) / "logs" / "server"
     except Exception:
         home = (
