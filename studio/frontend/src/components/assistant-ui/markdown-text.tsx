@@ -157,8 +157,7 @@ const UNSAFE_SVG_RE =
 
 function sanitizeSvg(source: string): string | null {
   if (UNSAFE_SVG_RE.test(source)) return null;
-  // Strip XML declaration (<?xml ...?>) -- not needed for data URI
-  // rendering and can cause issues with some renderers.
+  // Strip XML declaration: unneeded for data URIs and breaks some renderers.
   return source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
 }
 
@@ -381,11 +380,10 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
-// Coalesce markdown re-parses to one per animation frame while streaming: the
-// runtime notifies on every token (hundreds/sec) and the monitor can't paint
-// that fast. When not streaming we return live text rather than the throttled
-// state, so the final text never lags and a reused instance (parts are keyed by
-// index) shows a completed message's text immediately instead of a stale frame.
+// Coalesce markdown re-parses to one per frame while streaming: tokens arrive
+// hundreds/sec, faster than the monitor can paint. When not streaming we return
+// live text (not the throttled state) so final text never lags and a reused
+// instance (parts keyed by index) shows completed text instead of a stale frame.
 function useRafCoalescedText(text: string, isStreaming: boolean): string {
   const [displayed, setDisplayed] = useState(text);
   const pendingRef = useRef(text);
@@ -408,9 +406,9 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
     }
   }, [text, isStreaming]);
 
-  // Unmount cleanup. Cancel the in-flight rAF and null the handle so a
-  // StrictMode remount isn't gated out by a stale id. Kept separate from the
-  // scheduling effect so it doesn't cancel mid-stream and defeat the throttle.
+  // Unmount cleanup: cancel the in-flight rAF and null the handle so a
+  // StrictMode remount isn't gated by a stale id. Separate from the scheduling
+  // effect so it doesn't cancel mid-stream and defeat the throttle.
   useEffect(() => {
     return () => {
       if (rafRef.current !== null) {

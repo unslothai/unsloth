@@ -17,12 +17,13 @@ import zipfile
 from pathlib import Path
 
 
-def _atomic_write_text(path: Path, data: str, encoding: str = "utf-8") -> None:
-    """Atomic version of ``Path.write_text``.
-
-    A crash or signal mid-write leaves the prior file intact; the
-    Studio build never reads a partial ``_studio_release_build.py``.
-    """
+def _atomic_write_text(
+    path: Path,
+    data: str,
+    encoding: str = "utf-8",
+) -> None:
+    """Atomic ``Path.write_text``: a crash mid-write leaves the prior file
+    intact, so the build never reads a partial ``_studio_release_build.py``."""
     dirpath = str(path.parent) or "."
     path.parent.mkdir(parents = True, exist_ok = True)
     fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)
@@ -41,9 +42,7 @@ def _atomic_write_text(path: Path, data: str, encoding: str = "utf-8") -> None:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILD_INFO_PATH = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
-)
+BUILD_INFO_PATH = REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
 BUILD_INFO_SUFFIX = "studio/backend/utils/_studio_release_build.py"
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$")
 GIT_DESCRIBE_SUFFIX_RE = re.compile(r"-\d+-g[0-9A-Fa-f]+(?:-dirty)?$")

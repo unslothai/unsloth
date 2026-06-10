@@ -95,7 +95,7 @@ export function HistoricalTrainingView({
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Derive loading from detail/error -- no separate state needed
+  // Derive loading from detail/error; no separate state.
   const loading = detail === null && error === null;
 
   useEffect(() => {
@@ -114,7 +114,7 @@ export function HistoricalTrainingView({
       });
     return () => {
       controller.abort();
-      // Reset on runId change so loading derives correctly for the next fetch
+      // Reset on runId change so loading derives correctly for the next fetch.
       setDetail(null);
       setError(null);
     };

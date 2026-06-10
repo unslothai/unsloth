@@ -14,7 +14,12 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-def _fake_torch(hip, archs, *, cuda_ok = True):
+def _fake_torch(
+    hip,
+    archs,
+    *,
+    cuda_ok = True,
+):
     t = types.ModuleType("torch")
     t.version = types.SimpleNamespace(hip = hip)
     t.cuda = types.SimpleNamespace(

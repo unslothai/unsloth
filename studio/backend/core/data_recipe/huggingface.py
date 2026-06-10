@@ -36,9 +36,7 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     if not resolved.exists():
         raise RecipeDatasetPublishError("Execution artifacts are no longer available.")
     if not resolved.is_dir():
-        raise RecipeDatasetPublishError(
-            "Execution artifact path is not a dataset folder."
-        )
+        raise RecipeDatasetPublishError("Execution artifact path is not a dataset folder.")
 
     return resolved
 
@@ -97,8 +95,7 @@ def publish_recipe_dataset(
             tags = None,
         )
         card.text = card.text.replace(_DATA_DESIGNER_FOOTER, _UNSLOTH_STUDIO_FOOTER)
-        # Data Designer currently drops the explicit token when pushing the
-        # dataset card. Push it ourselves so auth stays request-local.
+        # Data Designer drops the explicit token, so push the card ourselves to keep auth request-local.
         card.push_to_hub(repo_id, token = hf_token, repo_type = "dataset")
 
         client._upload_main_dataset_files(

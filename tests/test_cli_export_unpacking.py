@@ -1,24 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Regression tests for unsloth_cli.commands.export.
+"""Regression tests for unsloth_cli.commands.export.
 
-Context: the studio export dialog live-logs work changed
-ExportOrchestrator.export_{merged_model,base_model,gguf,lora_adapter}
-to return (success, message, output_path) instead of (success, message)
-so the frontend can show the on-disk realpath on the success screen.
-The CLI at unsloth_cli/commands/export.py still unpacks two values,
-so every `unsloth export --format ...` crashes with:
-
-    ValueError: too many values to unpack (expected 2)
-
-These tests pin the CLI to the 3-tuple contract by invoking it against
-a fake ExportBackend and asserting exit_code == 0 for each --format.
-No real ML imports; the fake is installed via sys.modules injection so
-the CLI's deferred `from studio.backend.core.export import ExportBackend`
-binds to it.
-"""
+ExportOrchestrator.export_* now returns (success, message, output_path) so the
+frontend can show the realpath, but the CLI still unpacked two values, crashing
+every `unsloth export` with "too many values to unpack (expected 2)". These
+tests pin the CLI to the 3-tuple contract via a fake ExportBackend injected into
+sys.modules (the CLI's deferred import binds to it), asserting exit_code == 0
+per --format."""
 
 from __future__ import annotations
 
@@ -37,11 +27,8 @@ from typer.testing import CliRunner
 
 
 class _FakeExportBackend:
-    """Stand-in for studio.backend.core.export.ExportBackend.
-
-    All export_* methods return the new 3-tuple contract. load_checkpoint
-    keeps its 2-tuple shape (unchanged by the live-logs work).
-    """
+    """Stand-in for ExportBackend: export_* return the new 3-tuple;
+    load_checkpoint keeps its 2-tuple shape."""
 
     def __init__(self) -> None:
         self.loaded: str | None = None
@@ -67,15 +54,9 @@ class _FakeExportBackend:
 
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject fake studio.backend.core.export into sys.modules.
-
-    The CLI imports ExportBackend lazily inside the command function, so
-    patching sys.modules before invoking the command is sufficient to
-    steer the `from studio.backend.core.export import ExportBackend`
-    statement at the fake. Parent packages (studio, studio.backend,
-    studio.backend.core) are stubbed too so Python's import machinery
-    doesn't try to resolve the real (structlog-dependent) tree.
-    """
+    """Inject fake studio.backend.core.export into sys.modules. The CLI imports
+    ExportBackend lazily, so this steers it at the fake; parent packages are
+    stubbed too so import machinery skips the real structlog-dependent tree."""
     for name in ("studio", "studio.backend", "studio.backend.core"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
@@ -83,9 +64,7 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_mod.ExportBackend = _FakeExportBackend
     monkeypatch.setitem(sys.modules, "studio.backend.core.export", fake_mod)
 
-    # Drop any cached import of the CLI module so the deferred import
-    # inside export() re-resolves against our fake module rather than a
-    # previously cached real one.
+    # Drop cached CLI module so export()'s deferred import re-resolves the fake.
     monkeypatch.delitem(sys.modules, "unsloth_cli.commands.export", raising = False)
 
 
