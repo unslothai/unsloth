@@ -883,7 +883,7 @@
 		   both themes; rounded-4xl here and on the inner Command follow this. */
 		--radius: 0.625rem;
 		/* Match the chat box: soft elevation in light, none in dark. */
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .chat-search-surface {
@@ -892,25 +892,29 @@
 
 	.menu-soft-surface,
 	.menu-soft-surface-up {
+		/* Light: chatbox shadow geometry. */
 		--menu-soft-edge: rgba(0, 0, 0, 0.14);
-		--menu-soft-shadow: rgba(0, 0, 0, 0.18);
-		--menu-soft-offset-y: 8px;
-		--menu-soft-blur: 28px;
-		--menu-soft-spread: -6px;
+		--menu-soft-shadow: rgba(0, 0, 0, 0.16);
+		--menu-soft-offset-y: 2px;
+		--menu-soft-blur: 8px;
+		--menu-soft-spread: -2px;
 		@apply bg-popover text-popover-foreground;
 		box-shadow:
 			inset 0 0 0 1px var(--menu-soft-edge),
 			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 				var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
-	.menu-soft-surface-up {
-		--menu-soft-offset-y: -6px;
-		--menu-soft-spread: -8px;
-	}
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+		--menu-soft-offset-y: 8px;
+		--menu-soft-blur: 28px;
+		--menu-soft-spread: -6px;
+	}
+	.dark .menu-soft-surface-up {
+		--menu-soft-offset-y: -6px;
+		--menu-soft-spread: -8px;
 	}
 
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
@@ -932,7 +936,7 @@
 	[data-slot="select-content"],
 	[data-slot="combobox-content"],
 	[data-slot="popover-content"] {
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
 	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
 	   same-color surface (e.g. a menu overlapping the composer). */
@@ -952,7 +956,7 @@
 
 	/* Account menu: drop the inset edge ring and use the composer's soft shadow. */
 	.app-user-menu.menu-soft-surface-up {
-		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
 		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
@@ -1199,9 +1203,7 @@
 		border-radius: 18px;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
-		box-shadow:
-			0 1px 2px oklch(0 0 0 / 0.04),
-			0 6px 18px oklch(0 0 0 / 0.08);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
@@ -1295,7 +1297,7 @@
 		white-space: nowrap;
 	}
 	.artifact-panel-shell {
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .artifact-panel-shell {
@@ -1627,7 +1629,7 @@
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: 12px 18px !important;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
