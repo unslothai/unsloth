@@ -32,6 +32,7 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
     _config_needs_550_cache,
@@ -202,6 +203,7 @@ class TestCheckConfigNeeds550:
     """Tests for _check_config_needs_550() local config.json checks."""
 
     def setup_method(self):
+        _config_json_cache.clear()
         _config_needs_550_cache.clear()
 
     def test_gemma4_architecture(self, tmp_path: Path):
@@ -264,6 +266,7 @@ class TestCheckConfigNeeds510:
     """Tests for _check_config_needs_510() local config.json checks."""
 
     def setup_method(self):
+        _config_json_cache.clear()
         _config_needs_510_cache.clear()
 
     def test_gemma4_unified_architecture(self, tmp_path: Path):
@@ -279,6 +282,23 @@ class TestCheckConfigNeeds510:
     def test_gemma4_unified_model_type_only(self, tmp_path: Path):
         """config.json with model_type=gemma4_unified should return True."""
         cfg = {"model_type": "gemma4_unified"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_unified_assistant_architecture(self, tmp_path: Path):
+        """Assistant Gemma 4 Unified configs should return True."""
+        cfg = {
+            "architectures": ["Gemma4UnifiedAssistantForCausalLM"],
+            "model_type": "gemma4_unified_assistant",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_unified_assistant_model_type_only(self, tmp_path: Path):
+        """Assistant Gemma 4 Unified model_type should return True."""
+        cfg = {"model_type": "gemma4_unified_assistant"}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert _check_config_needs_510(str(tmp_path)) is True
@@ -330,6 +350,7 @@ class TestGetTransformersTier:
 
     def setup_method(self):
         _tokenizer_class_cache.clear()
+        _config_json_cache.clear()
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
 
@@ -361,6 +382,49 @@ class TestGetTransformersTier:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
+        """Local config.json should prevent false matches from parent directory names."""
+        model_dir = tmp_path / "gemma-4-12b-experiment" / "llama-checkpoint"
+        model_dir.mkdir(parents = True)
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["LlamaForCausalLM"],
+                    "model_type": "llama",
+                }
+            )
+        )
+        (model_dir / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "LlamaTokenizerFast"})
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert get_transformers_tier(str(model_dir)) == "default"
+            mock_urlopen.assert_not_called()
+
+    def test_remote_config_json_is_fetched_once_for_config_tiers(self):
+        """510 and 550 slow-path checks should share one config.json fetch."""
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "architectures": ["Gemma4ForConditionalGeneration"],
+                        "model_type": "gemma4",
+                    }
+                ).encode()
+
+        with patch("urllib.request.urlopen", return_value = _Response()) as mock_urlopen:
+            assert get_transformers_tier("org/no-fast-substring-model") == "550"
+
+        assert mock_urlopen.call_count == 1
 
     def test_qwen35_returns_530(self):
         with (

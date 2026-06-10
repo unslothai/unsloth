@@ -85,9 +85,11 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
 # Checked via config.json (local or HuggingFace).
 _TRANSFORMERS_510_ARCHITECTURES: set[str] = {
     "Gemma4UnifiedForConditionalGeneration",
+    "Gemma4UnifiedAssistantForCausalLM",
 }
 _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
     "gemma4_unified",
+    "gemma4_unified_assistant",
 }
 
 # Architecture classes / model_type values that require transformers 5.5.0.
@@ -108,6 +110,7 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 _tokenizer_class_cache: dict[str, bool] = {}
 
 # Cache for dynamic config.json lookups (architecture/model_type checks).
+_config_json_cache: dict[str, dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
 
@@ -313,6 +316,71 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
+def _load_config_json(model_name: str) -> dict | None:
+    """Return parsed ``config.json`` for *model_name*, checking local files first."""
+    if model_name in _config_json_cache:
+        return _config_json_cache[model_name]
+
+    local_cfg = Path(model_name) / "config.json"
+    if local_cfg.is_file():
+        try:
+            with open(local_cfg) as f:
+                cfg = json.load(f)
+            _config_json_cache[model_name] = cfg
+            return cfg
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_cfg, exc)
+            _config_json_cache[model_name] = None
+            return None
+
+    if _env_offline():
+        _config_json_cache[model_name] = None
+        return None
+
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    try:
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            cfg = json.loads(resp.read().decode())
+        _config_json_cache[model_name] = cfg
+        return cfg
+    except Exception as exc:
+        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        _config_json_cache[model_name] = None
+        return None
+
+
+def _config_matches_tier(
+    cfg: dict,
+    architectures: set[str],
+    model_types: set[str],
+) -> bool:
+    archs = cfg.get("architectures", [])
+    if any(a in architectures for a in archs):
+        return True
+    if cfg.get("model_type") in model_types:
+        return True
+    return False
+
+
+def _config_needs_550(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_550_ARCHITECTURES,
+        _TRANSFORMERS_550_MODEL_TYPES,
+    )
+
+
+def _config_needs_510(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_510_ARCHITECTURES,
+        _TRANSFORMERS_510_MODEL_TYPES,
+    )
+
+
 def _check_config_needs_550(model_name: str) -> bool:
     """True if ``config.json`` has architectures/model_type needing transformers
     5.5.0 (e.g. Gemma 4).
@@ -323,65 +391,23 @@ def _check_config_needs_550(model_name: str) -> bool:
     if model_name in _config_needs_550_cache:
         return _config_needs_550_cache[model_name]
 
-    def _check_cfg(cfg: dict) -> bool:
-        archs = cfg.get("architectures", [])
-        if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
-            return True
-        if cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES:
-            return True
-        return False
-
-    # --- Check local config.json first ------------------------------------
-    local_path = Path(model_name)
-    local_cfg = local_path / "config.json"
-    if local_cfg.is_file():
-        try:
-            with open(local_cfg) as f:
-                cfg = json.load(f)
-            result = _check_cfg(cfg)
-            if result:
-                logger.info(
-                    "Local config.json check: %s needs transformers %s "
-                    "(architectures=%s, model_type=%s)",
-                    model_name,
-                    TRANSFORMERS_550_VERSION,
-                    cfg.get("architectures", []),
-                    cfg.get("model_type"),
-                )
-            _config_needs_550_cache[model_name] = result
-            return result
-        except Exception as exc:
-            logger.debug("Could not read %s: %s", local_cfg, exc)
-
-    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
-    if _env_offline():
+    cfg = _load_config_json(model_name)
+    if cfg is None:
         _config_needs_550_cache[model_name] = False
         return False
 
-    # --- Fall back to fetching from HuggingFace ---------------------------
-    import urllib.request
-
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
-    try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-        with urllib.request.urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
-        result = _check_cfg(cfg)
-        if result:
-            logger.info(
-                "Dynamic config.json check: %s needs transformers %s "
-                "(architectures=%s, model_type=%s)",
-                model_name,
-                TRANSFORMERS_550_VERSION,
-                cfg.get("architectures", []),
-                cfg.get("model_type"),
-            )
-        _config_needs_550_cache[model_name] = result
-        return result
-    except Exception as exc:
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_needs_550_cache[model_name] = False
-        return False
+    result = _config_needs_550(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s "
+            "(architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_550_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_550_cache[model_name] = result
+    return result
 
 
 def _check_config_needs_510(model_name: str) -> bool:
@@ -389,62 +415,23 @@ def _check_config_needs_510(model_name: str) -> bool:
     if model_name in _config_needs_510_cache:
         return _config_needs_510_cache[model_name]
 
-    def _check_cfg(cfg: dict) -> bool:
-        archs = cfg.get("architectures", [])
-        if any(a in _TRANSFORMERS_510_ARCHITECTURES for a in archs):
-            return True
-        if cfg.get("model_type") in _TRANSFORMERS_510_MODEL_TYPES:
-            return True
-        return False
-
-    local_path = Path(model_name)
-    local_cfg = local_path / "config.json"
-    if local_cfg.is_file():
-        try:
-            with open(local_cfg) as f:
-                cfg = json.load(f)
-            result = _check_cfg(cfg)
-            if result:
-                logger.info(
-                    "Local config.json check: %s needs transformers %s "
-                    "(architectures=%s, model_type=%s)",
-                    model_name,
-                    TRANSFORMERS_510_VERSION,
-                    cfg.get("architectures", []),
-                    cfg.get("model_type"),
-                )
-            _config_needs_510_cache[model_name] = result
-            return result
-        except Exception as exc:
-            logger.debug("Could not read %s: %s", local_cfg, exc)
-
-    if _env_offline():
+    cfg = _load_config_json(model_name)
+    if cfg is None:
         _config_needs_510_cache[model_name] = False
         return False
 
-    import urllib.request
-
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
-    try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-        with urllib.request.urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
-        result = _check_cfg(cfg)
-        if result:
-            logger.info(
-                "Dynamic config.json check: %s needs transformers %s "
-                "(architectures=%s, model_type=%s)",
-                model_name,
-                TRANSFORMERS_510_VERSION,
-                cfg.get("architectures", []),
-                cfg.get("model_type"),
-            )
-        _config_needs_510_cache[model_name] = result
-        return result
-    except Exception as exc:
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_needs_510_cache[model_name] = False
-        return False
+    result = _config_needs_510(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s "
+            "(architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_510_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_510_cache[model_name] = result
+    return result
 
 
 def get_transformers_tier(model_name: str) -> str:
@@ -464,10 +451,16 @@ def get_transformers_tier(model_name: str) -> str:
     # trust it before using name heuristics.
     local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
-        if _check_config_needs_510(model_name):
+        cfg = _load_config_json(model_name)
+        if cfg is not None and _config_needs_510(cfg):
             return "510"
-        if _check_config_needs_550(model_name):
+        if cfg is not None and _config_needs_550(cfg):
             return "550"
+        if cfg is not None:
+            local_tc = Path(model_name) / "tokenizer_config.json"
+            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+                return "530"
+            return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
     if any(sub in lowered for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS):
