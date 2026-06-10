@@ -1056,8 +1056,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp", False, _MTP_MODEL, "draft-mtp", "3", False),
         # ── mtp forced on sub-3B: engage anyway ──
         ("mtp", True, _SUB_3B_MTP_MODEL, "draft-mtp", "2", False),
-        # ── mtp forced on non-MTP: engage anyway ──
-        ("mtp", True, _NON_MTP_MODEL, "draft-mtp", "2", False),
+        # ── mtp forced on non-MTP: default back (no head/drafter) ──
+        ("mtp", True, _NON_MTP_MODEL, None, None, False),
         # ── ngram forced: ngram-mod alone on BOTH platforms ──
         ("ngram", True, _MTP_MODEL, "ngram-mod", None, True),
         ("ngram", False, _MTP_MODEL, "ngram-mod", None, True),
@@ -1066,6 +1066,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp+ngram", True, _MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
         ("mtp+ngram", False, _MTP_MODEL, "ngram-mod,draft-mtp", "3", True),
         ("mtp+ngram", True, _SUB_3B_MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
+        # ── mtp+ngram forced on non-MTP: keep ngram, drop draft-mtp ──
+        ("mtp+ngram", True, _NON_MTP_MODEL, "ngram-mod", None, True),
         # ── off: nothing emitted ──
         ("off", True, _MTP_MODEL, None, None, False),
         ("off", False, _MTP_MODEL, None, None, False),
@@ -1178,3 +1180,42 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
     # choice is still reflected in _requested_spec_mode.
     assert backend.requested_spec_mode == "mtp"
     assert backend.speculative_type is None
+
+
+def test_forced_mtp_on_non_mtp_model_defaults_back(monkeypatch):
+    # Forcing MTP on a model with no head/drafter must NOT emit draft-mtp:
+    # llama-server aborts on it ("failed to measure MTP context memory")
+    # rather than no-op'ing. Default back to --spec-default instead.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert "--spec-default" in flags
+    assert backend.speculative_type == "default"
+    assert backend.requested_spec_mode == "mtp"
+
+
+def test_forced_mtp_ngram_on_non_mtp_model_keeps_ngram(monkeypatch):
+    # mtp+ngram on a non-MTP model drops the doomed draft-mtp chain but keeps
+    # the ngram half, which needs no head.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.requested_spec_mode == "mtp+ngram"

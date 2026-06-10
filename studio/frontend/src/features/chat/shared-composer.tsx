@@ -1567,6 +1567,7 @@ export function SharedComposer({
               }
             }}
             className="composer-pill-btn"
+            data-pill-label="Search"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={
               toolsEnabled ? "Disable web search" : "Enable web search"
@@ -1582,6 +1583,7 @@ export function SharedComposer({
             disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
+            data-pill-label="Code"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={
               codeToolsEnabled
@@ -1604,6 +1606,7 @@ export function SharedComposer({
               disabled={imageDisabled}
               onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
               className="composer-pill-btn"
+              data-pill-label="Images"
               data-active={
                 imageToolsEnabled && !imageDisabled ? "true" : "false"
               }
@@ -1630,6 +1633,7 @@ export function SharedComposer({
               disabled={webFetchDisabled}
               onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
               className="composer-pill-btn"
+              data-pill-label="Fetch"
               data-active={
                 webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
               }
@@ -1648,6 +1652,7 @@ export function SharedComposer({
               type="button"
               onClick={() => setArtifactsEnabled(false)}
               className="composer-pill-btn"
+              data-pill-label="Canvas"
               data-active="true"
               aria-label="Disable canvas"
             >

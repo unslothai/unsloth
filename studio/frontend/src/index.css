@@ -524,7 +524,7 @@
 	}
 
 	.nav-icon-btn {
-		@apply inline-flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
 	}
 
 	/* Standard icon size — drives every nav/menu/action-bar icon
@@ -544,31 +544,26 @@
 	.sidebar-nav-btn {
 		color: var(--nav-fg);
 	}
+	/* Gemini-style: hovering or opening the row action (3 dots) shows only
+	   the action's circle; the row highlights only when hovering the row
+	   itself. */
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
-	.group\/project-item:hover .sidebar-nav-btn,
-	.group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.group\/project-chat-item:hover .sidebar-nav-btn,
-	.group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.group\/recent-item:hover .sidebar-nav-btn,
-	.group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.group\/run-item:hover .sidebar-nav-btn,
-	.group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
 	}
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
-	.dark .group\/project-item:hover .sidebar-nav-btn,
-	.dark .group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.dark .group\/project-chat-item:hover .sidebar-nav-btn,
-	.dark .group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.dark .group\/recent-item:hover .sidebar-nav-btn,
-	.dark .group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.dark .group\/run-item:hover .sidebar-nav-btn,
-	.dark .group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
 
@@ -579,19 +574,21 @@
 		@apply opacity-100 pointer-events-auto;
 	}
 	.sidebar-row-action-glyph {
-		@apply inline-flex size-6 items-center justify-center rounded-[10px] text-sidebar-foreground/55;
+		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
-	   (size-8, rounded-[10px]). Height + radius match for visual
+	   (size-8, rounded-full). Height + radius match for visual
 	   alignment, but width is tighter so the small chevron glyph reads
 	   as a compact control rather than a full-size icon button. */
 	.aui-branch-chevron-btn {
-		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
-		@apply bg-nav-surface-hover text-nav-fg;
+		@apply text-nav-fg;
+		/* A step darker than the row hover so the circle reads on top of it. */
+		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -744,15 +741,14 @@
 		background-color: #ffffff !important;
 	}
 
-	/* Compact tooltip — small black pill with white text. Used for short
-	   hover labels on chat-area icon buttons (Copy, Edit, Delete,
-	   Refresh, More, code-block actions) and the panel's info-icon
-	   hints. Corner radius is fixed at 8px so it tracks with the
-	   underlying icon button corners (also 8px) — keeps the tooltip
-	   visually anchored to its trigger rather than reading as a much
-	   larger floating pill. */
 	.tooltip-compact {
-		@apply rounded-[10px] border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[9px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Dialog popups: borderless; chatbox shadow in light, flat card
+	   surface in dark. */
+	.dialog-soft-surface {
+		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
 	}
 
 	/* Rich tooltip — used for the context-usage and token-counter
@@ -1023,6 +1019,12 @@
 		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
+	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
+	   trailing padding is tightened to keep the hover pill balanced. */
+	.composer-pill-btn:has(.composer-pill-caret) {
+		@apply pr-1.5;
+	}
+
 	/* Icon-only (compact) pills drop their label, so make the button a square
 	   and center the glyph; the rounded-full hover highlight then reads as a
 	   circle around the icon rather than a wide rounded rectangle. */
@@ -1066,6 +1068,32 @@
 		.composer-pill-btn:not([data-keep-label])
 		.composer-pill-x {
 		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+	}
+
+	/* Compact pills hide their labels, so surface the name as a hover
+	   tooltip styled like .tooltip-compact. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label] {
+		position: relative;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
+		content: attr(data-pill-label);
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-[9px] bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+	}
+
+	/* Compact caret pills (RAG, MCP) open their menu on click instead of
+	   toggling off, so keep the icon and skip the X swap. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)[data-active="true"]:hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		opacity: 1;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)
+		.composer-pill-x {
+		display: none;
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */

@@ -812,6 +812,7 @@ if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
     PATH="$PATH:/opt/rocm/bin"
 fi
 _setup_amd_detected=false
+_setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
 if command -v rocminfo >/dev/null 2>&1 && \
@@ -832,6 +833,7 @@ fi
 
 if command -v nvidia-smi >/dev/null 2>&1 && \
    nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+    _setup_nvidia_usable=true
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -910,34 +912,46 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
 # Pick the release repo install_llama_prebuilt.py plans against.
-# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
-# x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
-# GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
+# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
+# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
+# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
+# use unslothai.
 _LINUX_HAS_GPU=false
-for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
-    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-        _LINUX_HAS_GPU=true
-        break
-    fi
-done
+# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
+# actually enumerated (_setup_nvidia_usable, from the nvidia-smi -L probe above)
+# AND not hidden via CUDA_VISIBLE_DEVICES=-1 -- mirroring install_llama_prebuilt.py's
+# has_usable_nvidia. Mere nvidia-smi presence (CPU-only CUDA-toolkit containers,
+# broken drivers) or a hidden GPU therefore takes the ggml-org CPU prebuilt
+# instead of a slow source build. AMD is deliberately left on tooling presence,
+# not usability: an unusable NVIDIA host has a good CPU prebuilt to fall back to,
+# whereas tightening AMD would regress ROCm hosts exposing only hipconfig/hipinfo
+# into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+    _LINUX_HAS_GPU=true
+else
+    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
+        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+            _LINUX_HAS_GPU=true
+            break
+        fi
+    done
+fi
 
-if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
+if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && [ "$_LINUX_HAS_GPU" = false ]; then
-    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
-    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
-    # the Linux CUDA bundles, so without this branch the prebuilt
-    # resolver returns 0 attempts on every release and the installer
-    # falls all the way back to a source build. Upstream ggml-org ships
+    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
+    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
+    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
+    # attempts and the installer falls back to a source build. ggml-org ships
     # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
+    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 unset _GPU_TOOL
@@ -1000,7 +1014,6 @@ else
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
-        --simple-policy
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
@@ -1555,7 +1568,6 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "ggml-org/llama.cpp"
-        --simple-policy
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,

@@ -501,7 +501,7 @@ export function ProjectsPage() {
           if (!open) setCreating(false);
         }}
       >
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
           </DialogHeader>
@@ -538,7 +538,7 @@ export function ProjectsPage() {
           if (!open) setRenaming(null);
         }}
       >
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Rename project</DialogTitle>
           </DialogHeader>
@@ -574,7 +574,7 @@ export function ProjectsPage() {
 
       {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Import chats</DialogTitle>
           </DialogHeader>
@@ -609,7 +609,7 @@ export function ProjectsPage() {
           if (!open) setDeleting(null);
         }}
       >
-        <DialogContent className="menu-flat-destructive corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete project</DialogTitle>
           </DialogHeader>
