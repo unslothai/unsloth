@@ -184,7 +184,9 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             from routes.inference import get_llama_cpp_backend
             backend = get_llama_cpp_backend()
         except Exception as exc:
-            logger.debug("llama update: backend unavailable, skipping load coordination", error = str(exc))
+            logger.debug(
+                "llama update: backend unavailable, skipping load coordination", error = str(exc)
+            )
             backend = None
 
         if backend is not None:

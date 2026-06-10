@@ -2713,9 +2713,7 @@ class LlamaCppBackend:
             # rather than start a server from a half-swapped binary. The updater
             # set this under the same lock, so any in-flight load has drained.
             if getattr(self, "_llama_update_in_progress", False):
-                raise RuntimeError(
-                    "llama.cpp is updating; try again in a moment."
-                )
+                raise RuntimeError("llama.cpp is updating; try again in a moment.")
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
             if self._already_in_target_state(

@@ -180,25 +180,23 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
 
 def test_rocm_install_args_lemonade_gfx():
     # Lemonade HIP app bundle: gfx family lives in the asset name.
-    assert upd._rocm_install_args(
-        "app-b9585-linux-x64-rocm-gfx110X.tar.gz"
-    ) == ["--rocm-gfx", "gfx110x"]
-    assert upd._rocm_install_args(
-        "app-b9585-windows-x64-rocm-gfx1150.zip"
-    ) == ["--rocm-gfx", "gfx1150"]
+    assert upd._rocm_install_args("app-b9585-linux-x64-rocm-gfx110X.tar.gz") == [
+        "--rocm-gfx",
+        "gfx110x",
+    ]
+    assert upd._rocm_install_args("app-b9585-windows-x64-rocm-gfx1150.zip") == [
+        "--rocm-gfx",
+        "gfx1150",
+    ]
 
 
 def test_rocm_install_args_fork_version_bundle():
     # Fork ROCm bundles encode a ROCm version, not a gfx -> forward --has-rocm.
-    assert upd._rocm_install_args(
-        "llama-b9334-bin-ubuntu-rocm-6.4-x64.tar.gz"
-    ) == ["--has-rocm"]
+    assert upd._rocm_install_args("llama-b9334-bin-ubuntu-rocm-6.4-x64.tar.gz") == ["--has-rocm"]
 
 
 def test_rocm_install_args_windows_hip():
-    assert upd._rocm_install_args(
-        "llama-b9334-bin-win-hip-radeon-x64.zip"
-    ) == ["--has-rocm"]
+    assert upd._rocm_install_args("llama-b9334-bin-win-hip-radeon-x64.zip") == ["--has-rocm"]
 
 
 def test_rocm_install_args_non_rocm_and_missing():
