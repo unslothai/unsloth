@@ -333,6 +333,20 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
+      - name: batched left-padding generation guard (HARD GATE)
+        # Guards _fast_prepare_inputs_for_generation against the bug class of
+        # issues #1066 / #3699: position_ids taken from cache_position (which
+        # counts left-pad tokens) or the 2D attention mask truncated to its
+        # last column. Both shipped in cc4c5d77 and were fixed by #2216 and
+        # #4100; nothing tested this path, so each regression reached users.
+        # Layer 1 in the file is stdlib-ast-only (survives unsloth import
+        # breakage), layer 2 calls the real function on CPU via the
+        # tests/conftest.py CUDA spoof. Validated to fail on the pre-#2216
+        # and pre-#4100 code states; staging proof on GPU-less runners:
+        # danielhanchen/unsloth-staging-2 PR 170 (green, gate passed in all combos) / PR 172 (red, gate failed in all combos).
+        run: |
+          python -m pytest -v --tb=short tests/utils/test_prepare_inputs_leftpad.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
         # that Repo tests (CPU) --ignores. AST/protobuf/regex plus tiny CPU model
