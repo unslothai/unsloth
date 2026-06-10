@@ -25,26 +25,13 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
+from core.inference.runtime_context import runtime_context_length
 from io import StringIO
 import structlog
 from loggers import get_logger
 
 
 logger = get_logger(__name__)
-
-
-def _runtime_context_length(model, fallback: Optional[int] = None) -> Optional[int]:
-    """Return the effective context length Unsloth attached to a loaded model."""
-    for value in (getattr(model, "max_seq_length", None), fallback):
-        if isinstance(value, bool):
-            continue
-        try:
-            value_int = int(value)
-        except (TypeError, ValueError):
-            continue
-        if value_int > 0:
-            return value_int
-    return None
 
 
 class HarmonyTextStreamer:
@@ -419,7 +406,7 @@ class InferenceBackend:
 
                 # Reject CPU/disk offload for audio models too
                 raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
-                self.models[model_name]["context_length"] = _runtime_context_length(
+                self.models[model_name]["context_length"] = runtime_context_length(
                     self.models[model_name].get("model"),
                     max_seq_length,
                 )
@@ -503,7 +490,7 @@ class InferenceBackend:
                 self.models[model_name]["tokenizer"] = tokenizer
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
-            self.models[model_name]["context_length"] = _runtime_context_length(
+            self.models[model_name]["context_length"] = runtime_context_length(
                 self.models[model_name].get("model"),
                 max_seq_length,
             )

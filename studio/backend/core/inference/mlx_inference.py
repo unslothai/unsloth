@@ -7,22 +7,10 @@ instead of torch/transformers for model loading and generation.
 
 import threading
 from typing import Optional, Generator
+from core.inference.runtime_context import runtime_context_length
 from loggers import get_logger
 
 logger = get_logger(__name__)
-
-
-def _runtime_context_length(model, fallback = None):
-    for value in (getattr(model, "max_seq_length", None), fallback):
-        if isinstance(value, bool):
-            continue
-        try:
-            value_int = int(value)
-        except (TypeError, ValueError):
-            continue
-        if value_int > 0:
-            return value_int
-    return None
 
 
 def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
@@ -188,7 +176,7 @@ class MLXInferenceBackend:
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
-            "context_length": _runtime_context_length(self._model, max_seq_length),
+            "context_length": runtime_context_length(self._model, max_seq_length),
         }
         # Capture chat_template_info so the worker IPC reply ships it back and
         # the route layer classifies capabilities like the other paths.
