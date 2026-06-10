@@ -587,6 +587,7 @@ fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
+VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -700,9 +701,9 @@ else
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
-# Gemma 4 models need transformers>=5.5.0.
+# Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
 # Pre-install into separate directories to avoid runtime pip overhead.
 # The training subprocess prepends the appropriate dir to sys.path.
 #
@@ -737,6 +738,21 @@ _assert_studio_owned_or_absent() {
         exit 1
     fi
 }
+_target_has_pkg_version() {
+    _thpv_dir="$1"
+    _thpv_pkg="$2"
+    _thpv_version="$3"
+    [ -d "$_thpv_dir" ] || return 1
+    _thpv_pkg_norm=$(printf '%s' "$_thpv_pkg" | tr '-' '_')
+    for _thpv_metadata in \
+        "$_thpv_dir"/"$_thpv_pkg_norm"-*.dist-info/METADATA \
+        "$_thpv_dir"/"$_thpv_pkg"-*.dist-info/METADATA
+    do
+        [ -f "$_thpv_metadata" ] || continue
+        grep -qx "Version: $_thpv_version" "$_thpv_metadata" && return 0
+    done
+    return 1
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
@@ -746,6 +762,10 @@ if [ -d "$STUDIO_HOME/.venv_t5" ]; then
 fi
 [ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
 [ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
+[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
 # Also reinstall when python deps were updated (packages may need rebuild)
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
@@ -769,6 +789,16 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
     step "transformers" "5.5.0 pre-installed"
+
+    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
+    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
+    mkdir -p "$VENV_T5_510_DIR"
+    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers 5.10.2" fast_install --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
+    run_quiet "install huggingface_hub for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_510" fast_install --target "$VENV_T5_510_DIR" "tiktoken"
+    step "transformers" "5.10.2 pre-installed"
 fi
 fi
 
@@ -782,6 +812,7 @@ if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
     PATH="$PATH:/opt/rocm/bin"
 fi
 _setup_amd_detected=false
+_setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
 if command -v rocminfo >/dev/null 2>&1 && \
@@ -802,6 +833,7 @@ fi
 
 if command -v nvidia-smi >/dev/null 2>&1 && \
    nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+    _setup_nvidia_usable=true
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -880,34 +912,46 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
 # Pick the release repo install_llama_prebuilt.py plans against.
-# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
-# x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
-# GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
+# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
+# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
+# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
+# use unslothai.
 _LINUX_HAS_GPU=false
-for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
-    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-        _LINUX_HAS_GPU=true
-        break
-    fi
-done
+# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
+# actually enumerated (_setup_nvidia_usable, from the nvidia-smi -L probe above)
+# AND not hidden via CUDA_VISIBLE_DEVICES=-1 -- mirroring install_llama_prebuilt.py's
+# has_usable_nvidia. Mere nvidia-smi presence (CPU-only CUDA-toolkit containers,
+# broken drivers) or a hidden GPU therefore takes the ggml-org CPU prebuilt
+# instead of a slow source build. AMD is deliberately left on tooling presence,
+# not usability: an unusable NVIDIA host has a good CPU prebuilt to fall back to,
+# whereas tightening AMD would regress ROCm hosts exposing only hipconfig/hipinfo
+# into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+    _LINUX_HAS_GPU=true
+else
+    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
+        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+            _LINUX_HAS_GPU=true
+            break
+        fi
+    done
+fi
 
-if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
+if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && [ "$_LINUX_HAS_GPU" = false ]; then
-    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
-    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
-    # the Linux CUDA bundles, so without this branch the prebuilt
-    # resolver returns 0 attempts on every release and the installer
-    # falls all the way back to a source build. Upstream ggml-org ships
+    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
+    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
+    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
+    # attempts and the installer falls back to a source build. ggml-org ships
     # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
+    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 unset _GPU_TOOL
@@ -970,7 +1014,6 @@ else
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
-        --simple-policy
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
@@ -1525,7 +1568,6 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "ggml-org/llama.cpp"
-        --simple-policy
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,

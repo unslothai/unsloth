@@ -36,6 +36,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { MascotImg } from "@/components/mascot-img";
 import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
@@ -74,7 +75,6 @@ import { DocumentPreviewMount } from "@/features/rag/components/document-preview
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -781,17 +781,16 @@ const ThreadWelcome: FC<{
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName]);
 
-  const currentEmojiSrc = `/Sloth emojis/${welcome.sloth}`;
+  const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28.5vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            <img
+            <MascotImg
               src={currentEmojiSrc}
-              alt="Sloth mascot"
               className="size-[44px] -translate-y-[2px]"
             />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -1388,63 +1387,6 @@ function useImeComposerInputHandlers() {
   };
 }
 
-// Audio upload row, only for audio-input models.
-const ComposerAudioMenuItem: FC = () => {
-  const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
-  const activeModel = useChatRuntimeStore((s) => {
-    const checkpoint = s.params.checkpoint;
-    return s.models.find((m) => m.id === checkpoint);
-  });
-
-  const handleAudioFile = useCallback(
-    async (file: File) => {
-      if (file.size > MAX_AUDIO_SIZE) {
-        return;
-      }
-      try {
-        const base64 = await fileToBase64(file);
-        setPendingAudio(base64, file.name);
-      } catch {
-        // skip
-      }
-    },
-    [setPendingAudio],
-  );
-
-  // Build the input on document.body, not in the menu: selecting the item
-  // closes the dropdown, unmounting a menu-rendered input before the OS picker
-  // returns and dropping the file.
-  const pickAudio = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = AUDIO_ACCEPT;
-    input.hidden = true;
-    document.body.appendChild(input);
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) handleAudioFile(file);
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [handleAudioFile]);
-
-  if (!activeModel?.hasAudioInput) {
-    return null;
-  }
-
-  return (
-    <DropdownMenuItem onSelect={() => pickAudio()}>
-      <HeadphonesIcon />
-      Upload audio
-    </DropdownMenuItem>
-  );
-};
-
 // Phosphor microphone. Inlined to avoid a new icon dependency.
 const MicIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -1825,6 +1767,7 @@ const WebSearchToggle: FC = () => {
         }
       }}
       className="composer-pill-btn"
+      data-pill-label="Search"
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
@@ -1860,6 +1803,7 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Code"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
@@ -1901,6 +1845,7 @@ const ImagesToggle: FC = () => {
       disabled={disabled}
       onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Images"
       data-active={imageToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         imageToolsEnabled
@@ -1927,6 +1872,7 @@ const ArtifactsToggle: FC = () => {
       type="button"
       onClick={() => setArtifactsEnabled(false)}
       className="composer-pill-btn"
+      data-pill-label="Canvas"
       data-active="true"
       aria-label="Disable canvas"
     >
@@ -2000,6 +1946,21 @@ const ToolStatusDisplay: FC = () => {
 };
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
+const AUDIO_ACCEPT_TOKEN_RE =
+  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+
+function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
+  if (audioEnabled || accept === "*") {
+    return accept;
+  }
+  const filtered = accept
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+    .join(",");
+  return filtered || accept;
+}
+
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
@@ -2023,6 +1984,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    if (!activeCheckpoint || s.modelLoading) {
+      return false;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -2085,6 +2054,40 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
+  const composerCanAddAttachments = useAuiState(
+    ({ composer }) => composer.isEditing,
+  );
+  const pickAttachment = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.hidden = true;
+
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    if (attachmentAccept !== "*") {
+      input.accept = attachmentAccept;
+    }
+
+    document.body.appendChild(input);
+    input.onchange = (event) => {
+      const files = (event.target as HTMLInputElement).files;
+      if (files) {
+        for (const file of files) {
+          void aui.composer().addAttachment(file);
+        }
+      }
+      document.body.removeChild(input);
+    };
+    input.oncancel = () => {
+      if (!input.files || input.files.length === 0) {
+        document.body.removeChild(input);
+      }
+    };
+    input.click();
+  }, [aui, audioAttachmentsEnabled]);
   // Disable Export chat until the thread has content.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
@@ -2136,13 +2139,13 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
-        <ComposerPrimitive.AddAttachment asChild={true}>
-          <DropdownMenuItem>
-            <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
-            Add photos &amp; files
-          </DropdownMenuItem>
-        </ComposerPrimitive.AddAttachment>
-        <ComposerAudioMenuItem />
+        <DropdownMenuItem
+          disabled={!composerCanAddAttachments}
+          onSelect={() => pickAttachment()}
+        >
+          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          Add photos &amp; files
+        </DropdownMenuItem>
         <DropdownMenuItem
           disabled={searchDisabled}
           className={
@@ -2257,11 +2260,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-[200px]">
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
@@ -2285,6 +2284,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger
                 disabled={!activeThreadId || messageCount === 0}
@@ -2635,7 +2638,7 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
@@ -2715,7 +2718,7 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>

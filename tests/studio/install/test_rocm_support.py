@@ -485,6 +485,21 @@ class TestDetectRocmVersion:
                     result = _detect_rocm_version()
                     assert result == (6, 3)
 
+    def test_dpkg_fallback_without_hipconfig(self, tmp_path):
+        """dpkg rocm-core fallback works when amd-smi and hipconfig are absent
+        (regression: a shadowing local re import raised UnboundLocalError)."""
+
+        def which(cmd):
+            return "/usr/bin/dpkg-query" if cmd == "dpkg-query" else None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "1:6.3.0-1\n"
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", return_value = mock_result):
+                    assert _detect_rocm_version() == (6, 3)
+
     def test_empty_version_file(self, tmp_path):
         """Empty version file should return None."""
         info_dir = tmp_path / ".info"
