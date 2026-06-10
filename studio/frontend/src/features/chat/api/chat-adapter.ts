@@ -3,6 +3,7 @@
 
 import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
+import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
@@ -33,6 +34,7 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  type RagAutoInject,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -73,6 +75,18 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+
+// Small models (<=9B) answer from memory instead of calling search, so "auto"
+// forces retrieval for them and leaves it to larger ones.
+const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  const size = parseParamCountB(checkpoint);
+  // Unknown size -> enable.
+  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
+}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -1467,6 +1481,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         webFetchToolsEnabled,
+        ragEnabled,
+        ragSource,
+        ragMode,
+        ragTopK,
+        ragAutoInject,
+        ragAutoInjectMinScore,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
@@ -2368,10 +2388,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat)
+              mcpEnabledForChat ||
+              ragEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // First so retrieval is the primary tool when Docs is on.
+                    ...(ragEnabled ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(renderHtmlToolEnabledForThisTurn
@@ -2379,6 +2402,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  // Scope: thread_id = this thread's docs, kb_id = a KB.
+                  ...(ragEnabled
+                    ? {
+                        rag_scope: {
+                          ...(ragSource.type === "kb"
+                            ? { kb_id: ragSource.kbId }
+                            : resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          default_top_k: ragTopK,
+                          mode: ragMode,
+                          autoinject: resolveAutoInject(
+                            ragAutoInject,
+                            params.checkpoint,
+                          ),
+                          autoinject_min_score: ragAutoInjectMinScore,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

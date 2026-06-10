@@ -50,6 +50,8 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
@@ -4303,6 +4305,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
     ) -> Generator[dict, None, None]:
@@ -4314,12 +4317,21 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import execute_tool
+        from core.inference.tools import build_rag_autoinject, execute_tool
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+
+        # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
+        # the same tool card + citations a real call would.
+        _auto = build_rag_autoinject(conversation, rag_scope)
+        if _auto:
+            for _ev in _auto["events"]:
+                yield _ev
+            conversation.extend(_auto["messages"])
+
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -4356,6 +4368,9 @@ class LlamaCppBackend:
 
         _MAX_BUFFER_CHARS = 32
         _append_budget_exhausted_nudge = True
+        # RAG: cap knowledge-base searches per assistant turn. The controller is
+        # tool-agnostic, so this gate stays in the loop.
+        _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -4996,13 +5011,23 @@ class LlamaCppBackend:
                     yield decision.tool_start_event()
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                    result = execute_tool(
-                        decision.tool_name,
-                        decision.arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # RAG: cap paraphrased KB re-searches that slip past the dup guard.
+                    if (
+                        decision.tool_name == "search_knowledge_base"
+                        and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+                    ):
+                        result = RAG_SEARCH_CAP_NUDGE
+                    else:
+                        result = execute_tool(
+                            decision.tool_name,
+                            decision.arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                            rag_scope = rag_scope,
+                        )
+                        if decision.tool_name == "search_knowledge_base":
+                            _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
