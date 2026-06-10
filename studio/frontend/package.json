@@ -68,6 +68,7 @@
     "react": "^19.2.4",
     "react-day-picker": "^9.13.2",
     "react-dom": "^19.2.4",
+    "react-pdf": "10.4.1",
     "react-resizable-panels": "^4.6.4",
     "recharts": "3.7.0",
     "shadcn": "^4.2.0",

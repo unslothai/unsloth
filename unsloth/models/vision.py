@@ -34,6 +34,9 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_attention_implementation,
+    _get_text_only_config,
+    _is_family_text_decoder,
+    _apply_text_only_key_mapping,
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
@@ -583,6 +586,7 @@ class FastBaseModel:
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
+        text_only = False,
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -597,6 +601,31 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
+        # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
+        # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
+        if text_only and auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        if text_only and hasattr(auto_config, "vision_config"):
+            parent_config = auto_config
+            text_config = _get_text_only_config(parent_config, model_name)
+            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+            if text_class is not None and _is_family_text_decoder(
+                getattr(parent_config, "model_type", ""),
+                getattr(text_config, "model_type", ""),
+            ):
+                auto_config = text_config
+                auto_model = AutoModelForCausalLM
+                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+        elif text_only and auto_model in [
+            AutoModelForVision2Seq,
+            AutoModelForImageTextToText,
+        ]:
+            # Pure text model requested text-only with a VLM auto class.
+            auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         is_whisper = whisper_language is not None and whisper_task is not None
         auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer

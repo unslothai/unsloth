@@ -7,6 +7,7 @@ Main FastAPI application for Unsloth UI Backend
 
 import os
 import sys
+import threading
 from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
@@ -216,6 +217,7 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    rag_router,
     training_history_router,
     training_router,
 )
@@ -230,6 +232,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.prompts import router as prompts_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -247,6 +250,7 @@ from utils.update_status import (
     get_studio_update_status,
 )
 from utils.studio_version import get_studio_version
+from utils.api_errors import install_api_error_handlers
 
 
 def get_unsloth_version() -> str:
@@ -372,6 +376,21 @@ async def lifespan(app: FastAPI):
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
+
+    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
+    def _warm_rag_embedder():
+        try:
+            from storage import rag_db
+
+            if not rag_db.RAG_AVAILABLE:
+                return
+            from core.rag import embeddings
+
+            embeddings.warm()
+        except Exception:
+            pass
+
+    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
@@ -719,6 +738,7 @@ app.add_middleware(
     allow_headers = ["*"],
 )
 
+
 # ============ Register API Routes ============
 
 # Register routers
@@ -736,12 +756,18 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+
+# Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
+# error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
+install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
@@ -1055,8 +1081,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(request: Request, full_path: str):
+        # Unknown API paths: raise a real 404 so the api_errors handlers can
+        # render the correct envelope for /v1/* (and {"detail":...} for /api/*).
+        # This handler only sees paths NOT matched by a real route. The full
+        # request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
-            return {"error": "API endpoint not found"}
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
         file_path = (build_path / full_path).resolve()
 
