@@ -1119,6 +1119,23 @@ NO_TORCH = _infer_no_torch()
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
 
 
+def _torch_step_label(suffix: str) -> str:
+    """Return a progress label like 'torch check (cuda)' using the known backend.
+
+    Falls back to GPU detection when UNSLOTH_TORCH_BACKEND is not set (e.g.
+    standalone `unsloth studio update` runs that bypass install.sh).
+    """
+    backend = _TORCH_BACKEND
+    if not backend:
+        if _has_usable_nvidia_gpu():
+            backend = "cuda"
+        elif _has_rocm_gpu():
+            backend = "rocm"
+        else:
+            backend = "cpu"
+    return f"torch {suffix} ({backend})"
+
+
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal in-place one-line progress bar.
 # Set UNSLOTH_VERBOSE=1 to restore full per-step output:
@@ -1800,7 +1817,7 @@ def install_python_stack() -> int:
     #     venv got CPU-only torch (common when pip resolves torch from PyPI).
     #     Must follow base packages so torch is present for inspection.
     if not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch check")
+        _progress(_torch_step_label("check"))
         _ensure_rocm_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
@@ -1985,7 +2002,7 @@ def install_python_stack() -> int:
     #     Running the repair last ensures ROCm torch is in place at runtime,
     #     whichever intermediate step clobbered it.
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch (final)")
+        _progress(_torch_step_label("final"))
         _ensure_rocm_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)
