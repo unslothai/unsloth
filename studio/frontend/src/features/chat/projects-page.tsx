@@ -269,7 +269,12 @@ export function ProjectsPage() {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" title="Import / Export projects">
+              <Button
+                variant="outline"
+                size="icon"
+                title="Import / Export projects"
+                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+              >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>
             </DropdownMenuTrigger>

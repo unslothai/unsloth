@@ -146,7 +146,7 @@
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-	--sidebar-border: oklch(0.92 0 0);
+	--sidebar-border: #f2f2f2;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -599,7 +599,7 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[20px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -621,7 +621,7 @@
 	   prompt button, and the chat-template textarea so all three read
 	   as one quiet gray family, matching the focused-edit-number tint. */
 	.panel-input-group {
-		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[14px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
 		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
@@ -904,12 +904,14 @@
 		/* Pin to the dark --radius so the corners are the same (less round) in
 		   both themes; rounded-4xl here and on the inner Command follow this. */
 		--radius: 0.625rem;
-		/* Match the chat box: soft elevation in light, none in dark. */
+		/* Match the chat box: soft elevation. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
+	/* Dark: page-bg shadow so the dialog does not merge into same-color
+	   content behind it (same convention as the dropdowns). */
 	.dark .chat-search-surface {
-		box-shadow: none;
+		box-shadow: 0 4px 14px var(--background);
 	}
 
 	.menu-soft-surface,
@@ -1255,8 +1257,9 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark). */
-		border-radius: 18px;
+		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark).
+		   !important beats the global 14px dropdown radius. */
+		border-radius: 18px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
@@ -1265,7 +1268,7 @@
 	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
 	   the narrower + menu (18 * 232/212 ~= 20px). */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 20px;
+		border-radius: 20px !important;
 	}
 
 	.dark .unsloth-plus-menu[data-slot] {
