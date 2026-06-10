@@ -722,6 +722,14 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
+        # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled.
+        # Best effort: never crash the load (old unsloth_zoo without the
+        # zoo #710 fix raises NameError here on Python 3.13).
+        try:
+            patch_compiling_bitsandbytes()
+        except Exception as e:
+            print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,

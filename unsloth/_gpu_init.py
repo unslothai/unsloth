@@ -35,6 +35,36 @@ from .import_fixes import (
     fix_huggingface_hub,
 )
 
+# Redirect a read-only Hugging Face cache before anything below can import
+# huggingface_hub / transformers / vllm (disable_broken_vllm probes
+# `import vllm`, check_fbgemm_gpu_version imports transformers, and
+# fix_huggingface_hub imports huggingface_hub itself), all of which can
+# freeze Hub's cache constants with the un-redirected paths. unsloth_zoo
+# runs the same redirect at import, but that happens after these probes.
+# hf_cache.py is stdlib-only, so load it straight from its file without
+# triggering the full unsloth_zoo package init this early; the zoo's own
+# call later is an idempotent no-op. Older unsloth_zoo without hf_cache.py
+# is skipped silently.
+try:
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+
+    _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
+    if _zoo_spec is not None and _zoo_spec.origin:
+        _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
+        if _hf_cache_file.is_file():
+            _hf_cache_spec = _importlib_util.spec_from_file_location(
+                "unsloth_zoo._early_hf_cache", _hf_cache_file
+            )
+            _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
+            _hf_cache_spec.loader.exec_module(_hf_cache)
+            _hf_cache.redirect_hf_cache_if_readonly()
+            del _hf_cache, _hf_cache_spec
+        del _hf_cache_file
+    del _zoo_spec, _importlib_util, _Path
+except Exception:
+    pass
+
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
 disable_broken_causal_conv1d()
@@ -65,6 +95,13 @@ if already_imported:
         stacklevel = 2,
     )
 del already_imported, critical_modules
+
+# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import
+# unsloth_zoo` below pulls it in on ROCm hosts).
+from .import_fixes import maybe_set_windows_rocm_bnb_version
+
+maybe_set_windows_rocm_bnb_version()
+del maybe_set_windows_rocm_bnb_version
 
 # Multi-GPU is not yet supported (beta available on request).
 
