@@ -57,23 +57,22 @@ def _compare_blocked_reason(model_config) -> Optional[str]:
 
 
 def _get_base_load_in_4bit(model_config) -> bool:
-    """Determine load_in_4bit for base model based on tuned adapter precision.
-    """
+    """Determine load_in_4bit for base model based on tuned adapter precision."""
     if not model_config.is_lora or not model_config.path:
         # Fallback to default if not a LoRA or no path
         return True
-    
+
     try:
         import json
         from pathlib import Path
-        
+
         adapter_cfg_path = Path(model_config.path) / "adapter_config.json"
         if not adapter_cfg_path.exists():
             return True
-        
+
         with open(adapter_cfg_path) as f:
             adapter_cfg = json.load(f)
-        
+
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora":
             return False
@@ -82,7 +81,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
         elif not training_method:
             # Fallback: check base model name for -bnb-4bit suffix
             if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
-                return False 
+                return False
             return True
         return True
     except Exception:
