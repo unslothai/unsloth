@@ -2080,9 +2080,7 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
         return "wav"
     # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
     # with 0xFF, so the simple sync check doesn't collide).
-    if raw[:3] == b"ID3" or (
-        len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0
-    ):
+    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
         return "mp3"
     return None
 
@@ -2096,9 +2094,7 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
     import io
     import wave
 
-    arr = np.nan_to_num(
-        np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0
-    )
+    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
     if arr.size == 0:
         raise ValueError("decoded audio is empty")
     peak = float(np.abs(arr).max())
@@ -2128,7 +2124,6 @@ def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
 
     try:
         import soundfile as sf
-
         arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
     except Exception:
         try:
@@ -2156,9 +2151,7 @@ def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
     if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
-        raise ValueError(
-            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
-        )
+        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
     return arr, sr
 
 
@@ -2201,9 +2194,7 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
-def _extract_content_parts(
-    messages: list,
-) -> tuple[str, list[dict], "Optional[str]"]:
+def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
 
