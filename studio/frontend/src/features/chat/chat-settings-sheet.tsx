@@ -1091,7 +1091,7 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav",
+                  "h-9 w-full rounded-full text-[13px] font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1106,7 +1106,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
