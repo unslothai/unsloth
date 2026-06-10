@@ -888,10 +888,8 @@ export function ChatSettingsPanel({
                       Speculative Decoding
                     </span>
                     <InfoHint>
-                      Faster generation with 0% accuracy hit. Auto picks
-                      MTP / ngram-mod based on the model and platform.
-                      Pick MTP, Ngram, or MTP+Ngram to force a specific
-                      strategy on both GPU and CPU.
+                      Drafts tokens to speed up generation without changing
+                      results.
                     </InfoHint>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -931,11 +929,8 @@ export function ChatSettingsPanel({
                         Draft Tokens
                       </span>
                       <InfoHint>
-                        Max MTP draft tokens per step
-                        (--spec-draft-n-max). Lower = less wasted
-                        draft decode; higher = bigger speedup when
-                        acceptance stays high. Default: 2 on GPU,
-                        3 on CPU/Mac.
+                        Max draft tokens per step. Lower wastes less compute;
+                        higher can be faster. Default: 2 GPU, 3 CPU/Mac.
                       </InfoHint>
                     </div>
                     <input
