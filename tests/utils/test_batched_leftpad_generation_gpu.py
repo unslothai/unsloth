@@ -19,9 +19,7 @@ import torch
 
 cuda_available = torch.cuda.is_available()
 
-pytestmark = pytest.mark.skipif(
-    not cuda_available, reason = "requires a CUDA GPU"
-)
+pytestmark = pytest.mark.skipif(not cuda_available, reason = "requires a CUDA GPU")
 
 MODEL_NAME = "unsloth/Qwen2.5-0.5B-Instruct"
 MAX_NEW_TOKENS = 32
@@ -29,10 +27,9 @@ PREFIX_TOKENS = 16
 
 PROMPTS = [
     "Give me a short introduction to large language model.",
-    "Here is an experiment log: " + " ".join(
-        f"run {i} completed with stable throughput and no anomalies;"
-        for i in range(1, 41)
-    ) + " In one sentence, what is the overall conclusion?",
+    "Here is an experiment log: "
+    + " ".join(f"run {i} completed with stable throughput and no anomalies;" for i in range(1, 41))
+    + " In one sentence, what is the overall conclusion?",
 ]
 
 
@@ -61,9 +58,9 @@ def _chat(tokenizer, prompt):
 
 
 def _generate(model, tokenizer, texts):
-    inputs = tokenizer(
-        texts, return_tensors = "pt", padding = True, add_special_tokens = False
-    ).to("cuda")
+    inputs = tokenizer(texts, return_tensors = "pt", padding = True, add_special_tokens = False).to(
+        "cuda"
+    )
     with torch.inference_mode():
         out = model.generate(
             **inputs,
@@ -75,7 +72,7 @@ def _generate(model, tokenizer, texts):
             use_cache = True,
             pad_token_id = tokenizer.pad_token_id,
         )
-    suffixes = out[:, inputs["input_ids"].shape[1]:]
+    suffixes = out[:, inputs["input_ids"].shape[1] :]
     return [row.tolist() for row in suffixes]
 
 

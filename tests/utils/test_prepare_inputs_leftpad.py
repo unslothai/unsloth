@@ -91,14 +91,11 @@ class FakeModelWith4DMask(FakeModel):
                 "batch_size": batch_size,
             }
         )
-        return torch.zeros(
-            (batch_size, 1, sequence_length, target_length), dtype = dtype
-        )
+        return torch.zeros((batch_size, 1, sequence_length, target_length), dtype = dtype)
 
 
 def _prepare(model, input_ids, attention_mask, **kwargs):
     from unsloth.models import llama as llama_mod
-
     return llama_mod._fast_prepare_inputs_for_generation(
         model, input_ids, attention_mask = attention_mask, **kwargs
     )
@@ -109,9 +106,9 @@ def test_prefill_position_ids_derived_from_left_padded_mask():
     result = _prepare(FakeModel(), input_ids, MASK)
 
     position_ids = result.get("position_ids", None)
-    assert position_ids is not None, (
-        "prefill with a left-padded 2D attention mask must populate position_ids"
-    )
+    assert (
+        position_ids is not None
+    ), "prefill with a left-padded 2D attention mask must populate position_ids"
     assert torch.equal(position_ids.long().cpu(), EXPECTED_PREFILL_POSITIONS), (
         "prefill position_ids must be derived per row from the attention mask "
         "(cumsum - 1, pads masked), so each row starts counting at its first "
@@ -132,9 +129,10 @@ def test_cached_decode_position_ids_ignore_left_padding(pass_cache_position):
 
     result = _prepare(FakeModel(), input_ids, MASK, **kwargs)
 
-    assert result["input_ids"].shape == (BS, 1), (
-        "cached decode must slice input_ids to the last token only"
-    )
+    assert result["input_ids"].shape == (
+        BS,
+        1,
+    ), "cached decode must slice input_ids to the last token only"
     position_ids = result.get("position_ids", None)
     assert position_ids is not None
     expected = torch.tensor([[2], [4], [3]], dtype = torch.long)
@@ -150,9 +148,7 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
     # Without a 4D mask builder the original 2D mask must survive untouched.
     # The historical bug replaced it with attention_mask[:, [-1]].
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(
-        FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN)
-    )
+    result = _prepare(FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     mask_out = result["attention_mask"]
     assert mask_out is not None
     assert mask_out.dim() != 2 or mask_out.shape[-1] == SEQ, (
@@ -165,9 +161,7 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
 def test_cached_decode_4d_mask_builder_receives_full_target_length():
     model = FakeModelWith4DMask()
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(
-        model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN)
-    )
+    result = _prepare(model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     assert len(model.mask_calls) == 1
     call = model.mask_calls[0]
     assert call["mask_shape"] == (BS, SEQ), (
@@ -186,9 +180,9 @@ def test_caller_supplied_position_ids_are_passed_through():
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     custom = torch.full((BS, SEQ), 7, dtype = torch.long)
     result = _prepare(FakeModel(), input_ids, MASK, position_ids = custom)
-    assert torch.equal(result["position_ids"], custom), (
-        "caller-supplied position_ids must not be overwritten"
-    )
+    assert torch.equal(
+        result["position_ids"], custom
+    ), "caller-supplied position_ids must not be overwritten"
 
 
 def test_legacy_tuple_cache_still_takes_cached_decode_path():
@@ -199,6 +193,4 @@ def test_legacy_tuple_cache_still_takes_cached_decode_path():
     result = _prepare(FakeModel(), input_ids, MASK, past_key_values = legacy_cache)
     assert result["input_ids"].shape == (BS, 1)
     expected = torch.tensor([[2], [4], [3]], dtype = torch.long)
-    assert torch.equal(
-        result["position_ids"].long().cpu().reshape(BS, 1), expected
-    )
+    assert torch.equal(result["position_ids"].long().cpu().reshape(BS, 1), expected)

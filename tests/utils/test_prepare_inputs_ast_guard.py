@@ -108,14 +108,15 @@ def test_mask_derived_position_ids_branch_exists():
     body_names = set()
     for stmt in branch.body:
         body_names |= _names_in(stmt)
-    assert "cumsum" in body_names and _mentions_attention_mask(ast.Module(body = branch.body, type_ignores = [])), (
+    assert "cumsum" in body_names and _mentions_attention_mask(
+        ast.Module(body = branch.body, type_ignores = [])
+    ), (
         "the attention-mask branch must compute position_ids via "
         "attention_mask.cumsum(...); reintroducing cache_position-based "
         "positions breaks left-padded batched generation (issue #3699)"
     )
     assert "masked_fill_" in body_names or "masked_fill" in body_names, (
-        "the attention-mask branch must mask pad positions "
-        "(masked_fill on mask == 0)"
+        "the attention-mask branch must mask pad positions (masked_fill on mask == 0)"
     )
     assigns_kwargs = any(
         isinstance(stmt, ast.Assign)
@@ -123,8 +124,7 @@ def test_mask_derived_position_ids_branch_exists():
         for stmt in ast.walk(ast.Module(body = branch.body, type_ignores = []))
     )
     assert assigns_kwargs, (
-        "the attention-mask branch must store the derived positions into "
-        'kwargs["position_ids"]'
+        "the attention-mask branch must store the derived positions into " 'kwargs["position_ids"]'
     )
 
 
@@ -147,9 +147,8 @@ def test_cache_position_only_used_as_fallback_for_position_ids():
         value_names = _names_in(node.value)
         # Direct use of cache_position, or the local alias `cp` the current
         # implementation builds from it inside the fallback branch.
-        derives_from_cache_position = (
-            any("cache_position" in n for n in value_names)
-            or bool(value_names & {"cp"})
+        derives_from_cache_position = any("cache_position" in n for n in value_names) or bool(
+            value_names & {"cp"}
         )
         if derives_from_cache_position and id(node) not in orelse_nodes:
             offenders.append(ast.unparse(node))
