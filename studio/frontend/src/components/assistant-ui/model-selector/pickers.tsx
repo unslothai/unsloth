@@ -888,7 +888,7 @@ export function HubModelPicker({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search Hugging Face models"
-          className="h-9 pl-8 pr-8"
+          className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
         />
         {isLoading && (
           <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
@@ -1478,7 +1478,7 @@ export function LoraModelPicker({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search trained models"
-          className="h-9 pl-8"
+          className="h-9 border-[#f2f2f2] dark:border-input pl-8"
         />
       </div>
 
