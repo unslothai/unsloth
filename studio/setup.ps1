@@ -2556,7 +2556,9 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-$HelperReleaseRepo = "ggml-org/llama.cpp"
+# GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
+# on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
+$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
@@ -2655,20 +2657,25 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
         # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
-        # machine that should have windows-hip), remove it so the installer is
+        # machine that should have windows-rocm), remove it so the installer is
         # forced to download the correct variant rather than skipping on tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
         if (Test-Path $existingMetaPath) {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # A name-inferred gfx arch (Adrenalin-only, no confirmed runtime)
-                # still wants the GPU (windows-hip) build -- the lemonade prebuilt
-                # bundles its own runtime. Treat a known arch as ROCm-capable here,
-                # mirroring the --rocm-gfx forward below.
-                $expectedKind = if ($HasROCm -or $script:ROCmGfxArch) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
-                if ($existingKind -and $existingKind -ne $expectedKind) {
-                    substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
+                # A ROCm host may legitimately carry the fork's windows-rocm bundle
+                # or the upstream windows-hip fallback, so accept either and never
+                # treat a valid ROCm install as mismatched. A name-inferred gfx
+                # arch (Adrenalin-only, no confirmed runtime) still counts as
+                # ROCm-capable -- the lemonade prebuilt bundles its own runtime,
+                # mirroring the --rocm-gfx forward below. NOTE: this block is
+                # currently inert -- write_prebuilt_metadata does not persist an
+                # install_kind key, so $existingKind is always null. If that changes,
+                # add the remaining host kinds (e.g. windows-arm64) before relying on it.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu") }
+                if ($existingKind -and ($existingKind -notin $expectedKinds)) {
+                    substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
                 }
             } catch {
@@ -2687,8 +2694,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
             "--llama-tag", $RequestedLlamaTag,
-            "--published-repo", $HelperReleaseRepo,
-            "--simple-policy"
+            "--published-repo", $HelperReleaseRepo
         )
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
