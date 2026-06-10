@@ -57,6 +57,39 @@ def _compare_blocked_reason(model_config) -> Optional[str]:
     return None
 
 
+def _get_base_load_in_4bit(model_config) -> bool:
+    """Determine load_in_4bit for base model based on tuned adapter precision.
+    """
+    if not model_config.is_lora or not model_config.path:
+        # Fallback to default if not a LoRA or no path
+        return True
+    
+    try:
+        import json
+        from pathlib import Path
+        
+        adapter_cfg_path = Path(model_config.path) / "adapter_config.json"
+        if not adapter_cfg_path.exists():
+            return True
+        
+        with open(adapter_cfg_path) as f:
+            adapter_cfg = json.load(f)
+        
+        training_method = adapter_cfg.get("unsloth_training_method")
+        if training_method == "lora":
+            return False
+        elif training_method == "qlora":
+            return True
+        elif not training_method:
+            # Fallback: check base model name for -bnb-4bit suffix
+            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
+                return False 
+            return True
+        return True
+    except Exception:
+        return True
+
+
 def _compare_needs_second_model() -> bool:
     # MLX can't toggle the adapter off, so compare loads the base separately.
     # detect_hardware() would print into the chat (and import torch), so
@@ -200,7 +233,10 @@ def chat(
             markup = False,
         )
         try:
-            base_backend = load_chat_backend(base_id, fresh_backend = True, **load_opts)
+            # Use the same precision as the tuned model for fair comparison
+            base_load_opts = dict(load_opts)  # Copy original options
+            base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
+            base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
         except Exception as exc:
             err.print(f"(base model load failed: {exc})", style = "red", markup = False)
             return False

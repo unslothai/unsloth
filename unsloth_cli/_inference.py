@@ -293,15 +293,6 @@ class HttpChatBackend:
         return urllib.request.urlopen(request, timeout = timeout)
 
     def ensure_loaded(self, model: str, *, hf_token, max_seq_length, load_in_4bit) -> None:
-        import json
-
-        with self._request("GET", "/api/inference/status", timeout = 5) as resp:
-            status = json.loads(resp.read())
-        # Only skip reload if model AND settings match
-        if (status.get("model_identifier") == model and 
-            status.get("max_seq_length") == max_seq_length and
-            status.get("load_in_4bit") == load_in_4bit):
-            return
         typer.echo(f"Loading {model} on the Studio server", err = True)
         try:
             self._request(
@@ -365,8 +356,16 @@ class HttpChatBackend:
                     if data == "[DONE]":
                         break
                     try:
-                        delta = json.loads(data)["choices"][0]["delta"].get("content")
-                    except (KeyError, IndexError, ValueError):
+                        parsed = json.loads(data)
+                    except ValueError:
+                        continue
+                    if "error" in parsed:
+                        raise RuntimeError(
+                            f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
+                        )
+                    try:
+                        delta = parsed["choices"][0]["delta"].get("content")
+                    except (KeyError, IndexError):
                         continue
                     if not delta:
                         continue
