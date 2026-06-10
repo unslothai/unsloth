@@ -100,6 +100,51 @@ except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
     )
+except (NotImplementedError, RuntimeError) as _device_exc:
+    # unsloth_zoo's device detection (imported by zoo's __init__) found no
+    # usable accelerator. Zoo already prints AMD-specific repair advice when it
+    # detects a ROCm runtime, but has no NVIDIA equivalent: on DGX Spark GB10
+    # and other aarch64 boxes, torch.cuda.is_available() can return False on a
+    # mismatched torch/CUDA install while the GPU is physically present, which
+    # surfaces as a bare "you need a GPU". Probe nvidia-smi so the error
+    # explains the actual problem and its fix (#4456). Vendor-specific advice
+    # from zoo (e.g. the AMD ROCm hint) passes through untouched.
+    _zoo_already_hinted = ("ROCm" in str(_device_exc)) or ("AMD" in str(_device_exc))
+    _smi_gpu_name = ""
+    if not _zoo_already_hinted:
+        import subprocess as _sp
+
+        try:
+            _smi = _sp.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+            if _smi.returncode == 0 and _smi.stdout.strip():
+                _smi_gpu_name = _smi.stdout.strip().splitlines()[0].strip()
+        except Exception:
+            pass
+    if _smi_gpu_name:
+        try:
+            import torch as _torch_probe
+            _torch_cuda_build = (
+                getattr(getattr(_torch_probe, "version", None), "cuda", None)
+                or "unknown"
+            )
+        except Exception:
+            _torch_cuda_build = "unknown"
+        raise ImportError(
+            f"Unsloth: an NVIDIA GPU ({_smi_gpu_name}) is present (nvidia-smi works), "
+            f"but this PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
+            f"This usually means the installed PyTorch does not match the system's CUDA "
+            f"driver or platform (common on DGX Spark GB10 / aarch64).\n"
+            f"PyTorch was compiled with CUDA: {_torch_cuda_build}.\n"
+            f"Fix: reinstall a matching torch, e.g.\n"
+            f"    pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130\n"
+            f"(pick the cuXXX index matching the CUDA version nvidia-smi reports)."
+        ) from _device_exc
+    raise
 except:
     raise
 del PackageNotFoundError, importlib_version
@@ -115,50 +160,14 @@ except ModuleNotFoundError:
 except:
     raise
 
-try:
-    from unsloth_zoo.device_type import (
-        is_hip,
-        get_device_type,
-        DEVICE_TYPE,
-        DEVICE_TYPE_TORCH,
-        DEVICE_COUNT,
-        ALLOW_PREQUANTIZED_MODELS,
-    )
-except (NotImplementedError, RuntimeError) as _device_exc:
-    # Device detection found no usable accelerator. On some NVIDIA platforms
-    # (DGX Spark GB10 and other aarch64 boxes) torch.cuda.is_available() can
-    # return False on a mismatched torch/CUDA install while the GPU is
-    # physically present. Probe nvidia-smi so the error explains the actual
-    # problem and its fix, instead of a bare "you need a GPU" (#4456).
-    import subprocess as _sp
-
-    _smi_gpu_name = ""
-    try:
-        _smi = _sp.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-        if _smi.returncode == 0 and _smi.stdout.strip():
-            _smi_gpu_name = _smi.stdout.strip().splitlines()[0].strip()
-    except Exception:
-        pass
-    if _smi_gpu_name:
-        _torch_cuda_build = (
-            getattr(getattr(torch, "version", None), "cuda", None) or "unknown"
-        )
-        raise ImportError(
-            f"Unsloth: an NVIDIA GPU ({_smi_gpu_name}) is present (nvidia-smi works), "
-            f"but this PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
-            f"This usually means the installed PyTorch does not match the system's CUDA "
-            f"driver or platform (common on DGX Spark GB10 / aarch64).\n"
-            f"PyTorch was compiled with CUDA: {_torch_cuda_build}.\n"
-            f"Fix: reinstall a matching torch, e.g.\n"
-            f"    pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130\n"
-            f"(pick the cuXXX index matching the CUDA version nvidia-smi reports)."
-        ) from _device_exc
-    raise
+from unsloth_zoo.device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 # Fix other issues
 from .import_fixes import (
