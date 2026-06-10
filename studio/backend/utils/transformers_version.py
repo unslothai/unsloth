@@ -352,11 +352,7 @@ def _load_config_json(model_name: str) -> dict | None:
         return None
 
 
-def _config_matches_tier(
-    cfg: dict,
-    architectures: set[str],
-    model_types: set[str],
-) -> bool:
+def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
     archs = cfg.get("architectures", [])
     if any(a in architectures for a in archs):
         return True
@@ -399,8 +395,7 @@ def _check_config_needs_550(model_name: str) -> bool:
     result = _config_needs_550(cfg)
     if result:
         logger.info(
-            "config.json check: %s needs transformers %s "
-            "(architectures=%s, model_type=%s)",
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
             model_name,
             TRANSFORMERS_550_VERSION,
             cfg.get("architectures", []),
@@ -423,8 +418,7 @@ def _check_config_needs_510(model_name: str) -> bool:
     result = _config_needs_510(cfg)
     if result:
         logger.info(
-            "config.json check: %s needs transformers %s "
-            "(architectures=%s, model_type=%s)",
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
             model_name,
             TRANSFORMERS_510_VERSION,
             cfg.get("architectures", []),
