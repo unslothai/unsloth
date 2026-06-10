@@ -235,7 +235,8 @@
 	--secondary-foreground: #ececee;
 	--muted: #2e3035;
 	--muted-foreground: #999999;
-	--accent: #2e3035;
+	/* One step lighter than --popover so menu item hover reads clearly. */
+	--accent: #3a3d43;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* --border / --input one step lighter than --muted so outlines and form
@@ -254,9 +255,9 @@
 	--sidebar-foreground: #ececee;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2f2f31;
+	--sidebar-accent: #2e3035;
 	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #2d2d2f;
+	--sidebar-border: #2d2e32;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
@@ -283,7 +284,7 @@
 
 	--nav-fg: #c7c7c4;
 	--nav-fg-muted: #96979b;
-	--nav-surface-hover: #2e2e30;
+	--nav-surface-hover: #2e3035;
 	--nav-icon-idle: #5c5c5c;
 	--nav-beta-border: #3a3c3f;
 	--panel-surface-hover: #3a3c42;
@@ -295,7 +296,7 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	--panel-input-surface: #2a2b2e;
-	--panel-input-surface-hover: #2e3033;
+	--panel-input-surface-hover: #34373c;
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -972,12 +973,12 @@
 	}
 
 	.dark .chat-composer-surface {
-		background-color: #2a2a2c;
+		background-color: var(--card);
 		box-shadow: none;
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Icon-only (compact) pills drop their label, so make the button a square
@@ -1064,7 +1065,7 @@
 	}
 
 	.dark .unsloth-composer-surface {
-		background-color: #2a2a2c;
+		background-color: var(--card);
 		box-shadow: none;
 	}
 
@@ -1174,7 +1175,7 @@
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem);
@@ -1213,7 +1214,7 @@
 	}
 
 	.dark .unsloth-plus-menu[data-slot] {
-		background-color: #2a2a2c;
+		background-color: var(--card);
 		/* Shadow tinted to the page bg so it blends, not a dark halo. */
 		box-shadow: 0 4px 14px var(--background);
 	}
@@ -1666,7 +1667,7 @@
 
 /* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
 .dark [data-sonner-toast][data-styled='true'] {
-	background-color: #2a2a2c !important;
+	background-color: var(--card) !important;
 	box-shadow: none !important;
 }
 
@@ -1918,7 +1919,7 @@
 
 /* Keep the (borderless) close button blended with the dark toast surface. */
 .dark [data-sonner-toast][data-styled="true"] [data-close-button] {
-	background: #2a2a2c !important;
+	background: var(--card) !important;
 }
 
 [data-sonner-toast][data-styled="true"] [data-close-button] svg {
