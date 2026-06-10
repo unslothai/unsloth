@@ -1410,10 +1410,16 @@ def direct_linux_release_plan(
         )
         if lemonade_choice is not None:
             attempts.append(lemonade_choice)
-    else:
+    elif not host.has_usable_nvidia:
         cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
         if cpu_choice is not None:
             attempts.append(cpu_choice)
+    # NVIDIA hosts whose CUDA selection produced nothing fall through to the
+    # raise below (mirroring the ROCm policy above): the caller then walks
+    # back to an older release that still ships a usable CUDA line instead of
+    # silently installing a CPU binary on a GPU host. Today's walk-back only
+    # works because partial releases ship no CPU bundle; this keeps it working
+    # if a future partial release does.
     if not attempts:
         raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
     approved_checksums = synthetic_checksums_for_release(
@@ -1476,6 +1482,7 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
             # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
             # build over the CPU-only cuda-12.4 left by in-release gating.
             pinned = _pinned_windows_cuda_fallback(host, attempts)
@@ -3315,12 +3322,47 @@ def windows_cuda_attempts(
 
 
 def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt's toolkit covers Blackwell
-    sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    """True if an in-release windows-cuda attempt covers Blackwell sm_120.
+
+    Manifest-backed app bundles carry their compiled SM list, so trust that
+    first (the published cuda12 bundles are toolkit-12.8 builds that include
+    sm_120 even though their runtime line says cuda12). Upstream ggml-org
+    zips have no manifest metadata; infer from the CUDA minor in the asset
+    name (sm_120 needs toolkit >= 12.8)."""
     if attempt.install_kind != "windows-cuda":
         return False
+    if attempt.max_sm is not None:
+        return attempt.max_sm >= _BLACKWELL_MIN_SM
+    if attempt.supported_sms:
+        sms = normalize_compute_caps(attempt.supported_sms)
+        if sms:
+            return int(sms[-1]) >= _BLACKWELL_MIN_SM
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
     return m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+
+
+def _host_is_blackwell(host: HostInfo) -> bool:
+    caps = normalize_compute_caps(host.compute_caps)
+    return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
+
+
+def _drop_blackwell_incapable_windows_cuda(
+    host: HostInfo, attempts: list[AssetChoice]
+) -> list[AssetChoice]:
+    """On a Blackwell host, drop windows-cuda attempts that cannot offload
+    sm_120 (e.g. upstream cuda-12.4, toolkit 12.4). Such a build loads and
+    passes the functional validator but runs the model on a slow non-native
+    path (an RTX 5090 measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must
+    not sit in the fallback chain behind the pin or an in-release cuda13.
+    Non-cuda attempts (windows-cpu, windows-hip, ...) pass through so the
+    host still degrades to an honest CPU install when no CUDA 13 exists."""
+    if not _host_is_blackwell(host):
+        return attempts
+    return [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
+    ]
 
 
 def _pinned_windows_cuda_fallback(
@@ -3405,6 +3447,7 @@ def _with_pinned_windows_cuda_fallback(
     """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
     through apply_approved_hashes, or return inputs unchanged when dormant.
     Gives the published install path the same GPU fallback as the simple path."""
+    attempts = _drop_blackwell_incapable_windows_cuda(host, attempts)
     pin = _pinned_windows_cuda_fallback(host, attempts)
     if pin is None:
         return attempts, checksums

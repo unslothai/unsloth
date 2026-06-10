@@ -2401,7 +2401,10 @@ class TestDirectUpstreamBlackwellPin:
         )
         plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
-        assert order == [("b9360", "cuda13"), (self.TAG, "cuda12"), (self.TAG, "windows-cpu")]
+        # cuda-12.4 (toolkit 12.4, no sm_120) is dropped entirely on Blackwell:
+        # behind the pin it would still be attempted if the pin download failed,
+        # and the functional validator accepts its slow non-native path.
+        assert order == [("b9360", "cuda13"), (self.TAG, "windows-cpu")]
         assert plan.attempts[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
         # Direct/upstream path stays unverified-by-manifest (no approved hashes).
         assert plan.approved_checksums.artifacts == {}
@@ -2420,6 +2423,174 @@ class TestDirectUpstreamBlackwellPin:
         assert plan.attempts[0].tag == self.TAG
         assert plan.attempts[0].runtime_line == "cuda13"
         assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# N.1c2. Blackwell never falls to a non-sm_120 windows-cuda attempt
+
+
+class TestBlackwellCuda124Exclusion:
+    """A Blackwell host must never have a windows-cuda attempt that cannot
+    offload sm_120 anywhere in its chain: behind the pin it is one failed
+    download away from a validated-but-7-tok/s install."""
+
+    def _bw_host(self):
+        return make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+
+    def _upstream_cuda(
+        self,
+        minor,
+        tag = "b9365",
+    ):
+        return AssetChoice(
+            repo = "ggml-org/llama.cpp",
+            tag = tag,
+            name = f"llama-{tag}-bin-win-cuda-{minor}-x64.zip",
+            url = f"https://example.com/{minor}",
+            source_label = "upstream",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda" + minor.split(".")[0],
+        )
+
+    def test_drops_124_keeps_133_on_blackwell(self):
+        kept = INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(
+            self._bw_host(),
+            [self._upstream_cuda("13.3"), self._upstream_cuda("12.4")],
+        )
+        assert [a.name for a in kept] == ["llama-b9365-bin-win-cuda-13.3-x64.zip"]
+
+    def test_keeps_manifest_cuda12_bundle_with_sm120(self):
+        # Published cuda12 app bundles are toolkit-12.8 builds that include
+        # sm_120; the manifest SM metadata must keep them on Blackwell.
+        bundle = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = "b9585",
+            name = "app-b9585-windows-x64-cuda12-portable.zip",
+            url = "https://example.com/app",
+            source_label = "published",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            supported_sms = ["70", "120"],
+            max_sm = 120,
+        )
+        kept = INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(
+            self._bw_host(), [bundle]
+        )
+        assert kept == [bundle]
+        assert _windows_cuda_attempt_covers_blackwell(bundle)
+
+    def test_manifest_bundle_without_sm120_dropped(self):
+        bundle = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = "b9585",
+            name = "app-b9585-windows-x64-cuda12-older.zip",
+            url = "https://example.com/app",
+            source_label = "published",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            supported_sms = ["70", "75", "80"],
+            max_sm = 80,
+        )
+        assert (
+            INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(self._bw_host(), [bundle])
+            == []
+        )
+
+    def test_non_blackwell_host_unfiltered(self):
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (12, 9),
+            compute_caps = ["89"],
+        )
+        attempts = [self._upstream_cuda("12.4")]
+        assert (
+            INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(host, attempts)
+            == attempts
+        )
+
+    def test_non_cuda_attempts_pass_through(self):
+        cpu = AssetChoice(
+            repo = "ggml-org/llama.cpp",
+            tag = "b9365",
+            name = "llama-b9365-bin-win-cpu-x64.zip",
+            url = "https://example.com/cpu",
+            source_label = "upstream",
+            install_kind = "windows-cpu",
+        )
+        kept = INSTALL_LLAMA_PREBUILT._drop_blackwell_incapable_windows_cuda(
+            self._bw_host(), [self._upstream_cuda("12.4"), cpu]
+        )
+        assert kept == [cpu]
+
+
+# N.1c3. direct_linux_release_plan -- no silent CPU on NVIDIA hosts
+
+
+class TestDirectLinuxNvidiaCpuGate:
+    """When a release ships a linux-cpu bundle but no CUDA line this NVIDIA
+    host can use, the planner must raise (so the caller walks back to an older
+    release with a usable CUDA line) instead of silently planning a CPU
+    install on a GPU host. CPU-only hosts keep taking the CPU bundle."""
+
+    def _bundle_cpu_only(self):
+        return make_release(
+            [
+                make_artifact(
+                    "llama-b8508-bin-ubuntu-x64.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                ),
+            ]
+        )
+
+    def _patch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "parse_direct_linux_release_bundle",
+            lambda repo, release: self._bundle_cpu_only(),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+        )
+
+    def test_nvidia_host_without_cuda_line_raises_for_walkback(self, monkeypatch):
+        self._patch(monkeypatch)
+        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
+        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt"):
+            INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+                {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
+            )
+
+    def test_cpu_host_still_gets_cpu_bundle(self, monkeypatch):
+        self._patch(monkeypatch)
+        host = make_host(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+            {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
+        )
+        assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
@@ -2549,7 +2720,9 @@ class TestResolveReleaseAssetChoicePin:
         # augmented checksums (the pin survives the approved-hash gate).
         assert result[0].expected_sha256 and len(result[0].expected_sha256) == 64
         assert result[0].runtime_sha256 and len(result[0].runtime_sha256) == 64
-        assert any(a.runtime_line == "cuda12" for a in result)
+        # The sm_120-incapable upstream cuda-12.4 zip is excluded on Blackwell
+        # rather than left behind the pin as a slow-path fallback.
+        assert not any(a.runtime_line == "cuda12" for a in result)
 
     def test_pin_dormant_on_published_path_for_13_3(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
