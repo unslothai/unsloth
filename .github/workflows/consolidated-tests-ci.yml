@@ -343,7 +343,7 @@ jobs:
         # breakage), layer 2 calls the real function on CPU via the
         # tests/conftest.py CUDA spoof. Validated to fail on the pre-#2216
         # and pre-#4100 code states; staging proof on GPU-less runners:
-        # danielhanchen/unsloth-staging-2 PRs 170 (green) / 171 (red).
+        # danielhanchen/unsloth-staging-2 PR 170 (green, gate passed in all combos) / PR 172 (red, gate failed in all combos).
         run: |
           python -m pytest -v --tb=short tests/utils/test_prepare_inputs_leftpad.py
 
