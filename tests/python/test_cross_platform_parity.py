@@ -144,3 +144,35 @@ class TestPyTorchMirrorEnvVar:
         assert (
             "UNSLOTH_PYTORCH_MIRROR" in text
         ), "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"
+
+
+class TestUvBytecodeCompileTimeout:
+    """Installers should relax uv bytecode compilation timeout by default."""
+
+    @staticmethod
+    def _version_tuple(version: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in version.split("."))
+
+    def test_install_sh_uses_uv_version_with_timeout_env(self):
+        text = INSTALL_SH.read_text()
+        match = re.search(r'^UV_MIN_VERSION="([^"]+)"$', text, re.MULTILINE)
+        assert match, "install.sh should declare UV_MIN_VERSION"
+        assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
+
+    def test_install_sh_preserves_timeout_override(self):
+        text = INSTALL_SH.read_text()
+        assert (
+            ': "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"' in text
+        ), "install.sh should default UV_COMPILE_BYTECODE_TIMEOUT without overwriting callers"
+        assert (
+            "export UV_COMPILE_BYTECODE_TIMEOUT" in text
+        ), "install.sh should export UV_COMPILE_BYTECODE_TIMEOUT for uv subprocesses"
+
+    def test_install_ps1_preserves_timeout_override(self):
+        text = INSTALL_PS1.read_text()
+        assert (
+            "if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT)" in text
+        ), "install.ps1 should preserve caller UV_COMPILE_BYTECODE_TIMEOUT overrides"
+        assert (
+            '$env:UV_COMPILE_BYTECODE_TIMEOUT = "180"' in text
+        ), "install.ps1 should default UV_COMPILE_BYTECODE_TIMEOUT"

@@ -1202,6 +1202,12 @@ shell.Run cmd, 0, False
         return (Exit-InstallFailure "uv could not be installed")
     }
 
+    # Large Python installs can exceed uv's 60s bytecode compilation timeout on
+    # slower machines. Keep caller overrides intact, including "0" to disable it.
+    if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
+        $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
+    }
+
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.

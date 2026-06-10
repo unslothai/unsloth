@@ -1456,7 +1456,11 @@ fi
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.7.14"
+UV_MIN_VERSION="0.7.22"
+
+# Large Python installs can exceed uv's 60s bytecode compilation timeout on slower machines. Keep caller overrides intact, including "0" to disable it.
+: "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
+export UV_COMPILE_BYTECODE_TIMEOUT
 
 version_ge() {
     # returns 0 if $1 >= $2
