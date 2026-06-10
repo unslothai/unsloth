@@ -37,7 +37,15 @@ def load_dataset_cache_safe(*args, **kwargs):
             error,
             fallback,
         )
-        # Nested builders consult the env var, so move it alongside cache_dir.
-        os.environ["HF_DATASETS_CACHE"] = fallback
         kwargs["cache_dir"] = fallback
-        return load_dataset(*args, **kwargs)
+        # Nested builders consult the env var while the load runs; restore it
+        # after so other datasets keep trying the shared cache first.
+        old_env = os.environ.get("HF_DATASETS_CACHE")
+        os.environ["HF_DATASETS_CACHE"] = fallback
+        try:
+            return load_dataset(*args, **kwargs)
+        finally:
+            if old_env is None:
+                os.environ.pop("HF_DATASETS_CACHE", None)
+            else:
+                os.environ["HF_DATASETS_CACHE"] = old_env
