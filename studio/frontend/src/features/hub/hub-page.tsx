@@ -562,6 +562,9 @@ export function ModelsPage() {
       ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
       : "Unavailable";
 
+  const openNewChat = useCallback(() => {
+    void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate]);
   const runSelectedModel = useCallback(
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
@@ -580,8 +583,9 @@ export function ModelsPage() {
           }
         })
         .catch(() => undefined);
+      openNewChat();
     },
-    [selectModel, selectedModel],
+    [openNewChat, selectModel, selectedModel],
   );
   const handleLoad = useCallback(
     (opts: ModelLoadOptions) =>
@@ -592,9 +596,6 @@ export function ModelsPage() {
     (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
     [runSelectedModel],
   );
-  const handleUseInChat = useCallback(() => {
-    void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-  }, [navigate]);
   const handleTrain = useCallback(() => undefined, []);
 
   const inspectorRuntime = useMemo(
@@ -626,14 +627,14 @@ export function ModelsPage() {
     () => ({
       onLoad: handleLoad,
       onLoadLocal: handleLoadLocal,
-      onUseInChat: handleUseInChat,
+      onUseInChat: openNewChat,
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
     }),
     [
       handleLoad,
       handleLoadLocal,
-      handleUseInChat,
+      openNewChat,
       handleTrain,
       refreshInventory,
     ],
