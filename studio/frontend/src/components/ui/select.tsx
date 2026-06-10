@@ -63,7 +63,9 @@ function SelectTrigger({
   children,
   icon,
   iconClassName,
-  animateRadius = true,
+  /* Off by default: the radius morph matched the old item-aligned popup
+     that overlaid the trigger; popper menus drop below it instead. */
+  animateRadius = false,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default";
