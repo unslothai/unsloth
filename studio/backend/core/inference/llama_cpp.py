@@ -3581,11 +3581,7 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning.
                 _spec_requested_mtp = any("mtp" in str(t).lower() for t in spec_flags)
-                if (
-                    not healthy
-                    and _spec_requested_mtp
-                    and not self._cancel_event.is_set()
-                ):
+                if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -3603,8 +3599,7 @@ class LlamaCppBackend:
                         )
                     else:
                         _retry_reason = (
-                            "retrying without speculative decoding in case "
-                            "MTP is the cause"
+                            "retrying without speculative decoding in case MTP is the cause"
                         )
                     _drafter = (
                         Path(launch_mtp_draft_path).name
