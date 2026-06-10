@@ -69,12 +69,11 @@ jobs:
         run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Lockfile must agree with package.json (npm ci is strict)
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
+        # The vite 8 chain (rolldown, lightningcss, tailwind oxide) ships napi
+        # binaries with no install scripts. The only script-bearing deps are
+        # covered by `allowScripts` in package.json (npm >=11.16, default in
+        # npm 12). The pre-install lockfile audit above stays the first line
+        # of defence -- it fires before any tarball can run code.
         run: npm ci --no-fund --no-audit
 
       - name: npm ci must not have modified the working tree
