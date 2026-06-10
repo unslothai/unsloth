@@ -159,6 +159,14 @@ class TestUvBytecodeCompileTimeout:
         assert match, "install.sh should declare UV_MIN_VERSION"
         assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
 
+    def test_install_ps1_uses_uv_version_with_timeout_env(self):
+        text = INSTALL_PS1.read_text()
+        match = re.search(r'^\s*\$UvMinVersion = "([^"]+)"$', text, re.MULTILINE)
+        assert match, "install.ps1 should declare $UvMinVersion"
+        assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
+        assert "function Test-UvVersionOk" in text
+        assert "if (-not (Test-UvVersionOk))" in text
+
     def test_install_sh_preserves_timeout_override(self):
         text = INSTALL_SH.read_text()
         assert (
