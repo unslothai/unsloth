@@ -39,6 +39,18 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
+def _is_hidden_model(*values: str | None) -> bool:
+    """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
+    EMBED_GGUF_REPO basename), so pickers hide it (GGUF and non-GGUF)."""
+    from core.rag import config as rag_config
+
+    needles = (
+        rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
+        rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+    )
+    return any(v and any(n in v.lower() for n in needles) for v in values)
+
+
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
@@ -754,6 +766,7 @@ async def list_local_models(
             key = lambda item: (item.updated_at or 0),
             reverse = True,
         )
+        models = [m for m in models if not _is_hidden_model(m.id, m.path)]
 
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -2379,6 +2392,8 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     if repo_info.repo_type != "model":
                         continue
                     repo_id = repo_info.repo_id
+                    if _is_hidden_model(repo_id):
+                        continue
                     total_size = _repo_gguf_size_bytes(repo_info)
                     if total_size == 0:
                         continue
@@ -2416,6 +2431,8 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     if repo_info.repo_type != "model":
                         continue
                     repo_id = repo_info.repo_id
+                    if _is_hidden_model(repo_id):
+                        continue
                     if _repo_has_gguf_files(repo_info):
                         continue
                     total_size = sum(

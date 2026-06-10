@@ -96,6 +96,21 @@ def studio_db_path() -> Path:
     return studio_root() / "studio.db"
 
 
+def rag_root() -> Path:
+    """Root directory for retrieval-augmented-generation state (db + uploads)."""
+    return studio_root() / "rag"
+
+
+def rag_db_path() -> Path:
+    """SQLite file holding RAG documents, chunks, FTS5 + sqlite-vec indexes."""
+    return rag_root() / "rag.db"
+
+
+def rag_uploads_root() -> Path:
+    """Directory where uploaded source documents are stored for ingestion."""
+    return rag_root() / "uploads"
+
+
 def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
