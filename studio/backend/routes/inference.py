@@ -2113,11 +2113,7 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def _resample_mono_linear(
-    arr: np.ndarray,
-    source_rate: int,
-    target_rate: int,
-) -> np.ndarray:
+def _resample_mono_linear(arr: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
     """Small numpy-only resampler for upload size limiting."""
     if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
         return arr
@@ -2130,10 +2126,7 @@ def _resample_mono_linear(
     return np.interp(target_x, source_x, arr).astype(np.float32)
 
 
-def _fit_transcoded_audio_to_wav_cap(
-    arr: np.ndarray,
-    sample_rate: int,
-) -> tuple[np.ndarray, int]:
+def _fit_transcoded_audio_to_wav_cap(arr: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
     """Downsample only when needed so transcoded WAV stays within the upload cap."""
     if sample_rate <= 0:
         raise ValueError("decoded audio has an invalid sample rate")
