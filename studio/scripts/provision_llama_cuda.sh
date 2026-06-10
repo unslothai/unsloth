@@ -143,6 +143,20 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
         _restore_prev
         exit 0
     fi
+    # Honor a llama.cpp PR pin (UNSLOTH_LLAMA_PR, the same var setup.sh supports)
+    # so a provisioned tree matches the user's request instead of silently building
+    # the default branch. Best-effort: a failed fetch keeps the default branch.
+    case "${UNSLOTH_LLAMA_PR:-}" in
+        ''|*[!0-9]*) ;;
+        *)
+            if git -C "$LLAMA_DIR" fetch --depth 1 origin "pull/${UNSLOTH_LLAMA_PR}/head:_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1 \
+                    && git -C "$LLAMA_DIR" checkout "_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1; then
+                log "checked out llama.cpp PR #${UNSLOTH_LLAMA_PR} (UNSLOTH_LLAMA_PR)"
+            else
+                log "could not fetch llama.cpp PR #${UNSLOTH_LLAMA_PR}; building the default branch"
+            fi
+            ;;
+    esac
 fi
 cd "$LLAMA_DIR" || { _restore_prev; exit 0; }
 
@@ -190,8 +204,16 @@ _NICE=""
 command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
 command -v ionice >/dev/null 2>&1 && _NICE="$_NICE ionice -c 3"
 _cmake_build() {
-    $_NICE cmake --build build -j"$JOBS" --target \
-        llama-server llama-cli llama-quantize llama-mtmd-cli llama-gguf-split >/dev/null 2>&1
+    # Only llama-server is REQUIRED (mirrors setup.sh's source path): an older
+    # UNSLOTH_LLAMA_TAG pin may predate newer helper targets (llama-mtmd-cli,
+    # llama-gguf-split), and those missing must not fail the whole provision.
+    $_NICE cmake --build build -j"$JOBS" --target llama-server >/dev/null 2>&1
+}
+_cmake_build_extras() {
+    # Helper targets unsloth-zoo's GGUF exporter also uses -- best-effort each.
+    for _t in llama-cli llama-quantize llama-mtmd-cli llama-gguf-split; do
+        $_NICE cmake --build build -j"$JOBS" --target "$_t" >/dev/null 2>&1 || true
+    done
 }
 if ! _cmake_build; then
     # An interrupted build (e.g. a thermal/power shutdown mid-compile, which this
@@ -203,6 +225,7 @@ if ! _cmake_build; then
     _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
     _cmake_build || { log "cmake build failed"; cd /; _restore_prev; exit 0; }
 fi
+_cmake_build_extras
 
 if is_cuda_server "$SERVER"; then
     log "CUDA llama-server ready: $SERVER"

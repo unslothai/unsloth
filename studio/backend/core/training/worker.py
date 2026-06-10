@@ -2236,6 +2236,34 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # training loop surfaces the resulting OutOfMemoryError with remediation.
     else:
         try:
+            # The Spark allocator config must be decided BEFORE this guard's first
+            # CUDA touch: get_device_properties below initializes the CUDA allocator,
+            # after which PYTORCH_CUDA_ALLOC_CONF changes are ignored -- and the later
+            # `import unsloth` (patch_dgx_spark_memory_config) would be too late for
+            # THIS worker process even though it is in time for a plain
+            # `import unsloth`. CUDA-free sniff via nvidia-smi device names (mirrors
+            # _is_dgx_spark_no_cuda_init), with the same append-don't-override and
+            # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out semantics as the library patch.
+            try:
+                import platform as _plat
+                _spark_smi = False
+                if _plat.machine().lower() in ("aarch64", "arm64"):
+                    _smi = _sp.run(
+                        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                        capture_output = True, text = True, timeout = 5,
+                    )
+                    _names_u = (_smi.stdout or "").upper()
+                    _spark_smi = any(
+                        t in _names_u for t in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK")
+                    )
+                if _spark_smi and os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") != "1":
+                    _conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+                    if "expandable_segments" not in _conf:
+                        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+                            (_conf + "," if _conf else "") + "expandable_segments:True"
+                        )
+            except Exception:
+                pass
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
                 _props = _torch_mem.cuda.get_device_properties(0)

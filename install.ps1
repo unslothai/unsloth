@@ -1703,6 +1703,9 @@ shell.Run cmd, 0, False
                     "wsl.exe -d $_distroArg -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
                 )
                 Set-Content -LiteralPath (Join-Path $shimDir "unsloth.cmd") -Value $shimLines -Encoding ASCII
+                # Record the distro for the uninstaller: a custom UNSLOTH_WSL_DISTRO install
+                # must be cleanable without the env var being set again at uninstall time.
+                try { Set-Content -LiteralPath (Join-Path (Split-Path $shimDir -Parent) "wsl-distro.txt") -Value $distro -Encoding ASCII } catch {}
                 # A fresh Windows profile may have no HKCU 'Path' value at all -> $userPath is null
                 # and $userPath.TrimEnd() would throw, losing the shim. Treat null as empty.
                 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

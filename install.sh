@@ -2379,7 +2379,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # out of the box. bitsandbytes ships working aarch64 manylinux wheels
     # (verified on sm_121 Blackwell via PTX JIT), so add it best-effort -- a
     # platform without a wheel just keeps 16-bit LoRA / full finetuning.
-    if { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
+    # Gated on SKIP_TORCH: a --no-torch/UNSLOTH_NO_TORCH (GGUF-only) install must
+    # not have bitsandbytes drag torch back into the venv via its dependencies.
+    if [ "$SKIP_TORCH" = false ] \
+            && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
             && command -v nvidia-smi >/dev/null 2>&1 \
             && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
             && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then

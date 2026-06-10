@@ -344,6 +344,19 @@ function Uninstall-UnslothStudio {
     # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- all missed by the cleanup above.
     _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
     $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
+    # The installer records its WSL distro in wsl-distro.txt so a custom
+    # UNSLOTH_WSL_DISTRO install is cleanable without the env var being set again
+    # at uninstall time. Read it BEFORE the directory is removed below.
+    $_recordedDistro = $null
+    if ($unslothDir) {
+        try {
+            $_distroFile = Join-Path $unslothDir "wsl-distro.txt"
+            if (Test-Path -LiteralPath $_distroFile) {
+                $_recordedDistro = (Get-Content -LiteralPath $_distroFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+                if ($_recordedDistro) { $_recordedDistro = $_recordedDistro.Trim() }
+            }
+        } catch { }
+    }
     if ($unslothDir) {
         $shimDir = (Join-Path $unslothDir "bin").TrimEnd('\', '/')
         try {
@@ -379,8 +392,13 @@ function Uninstall-UnslothStudio {
             # touching /home/*/.unsloth would erase an unrelated WSL user's own Unsloth/cache that this
             # installer never created. pkill patterns use the [x]-regex self-exclusion trick: '[u]nsloth_studio'
             # keeps the shell's own argv from matching while real processes still match. Same for '[l]lama-server'.
-            $_clean = 'rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
+            # The port-8888 kill is gated on an Unsloth install actually existing in the
+            # distro (checked BEFORE the rm deletes the marker): a probed distro with an
+            # unrelated listener on 8888 (Jupyter etc.) must not lose it. The pkills are
+            # already Unsloth-specific, so they stay unconditional.
+            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
             $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
+            if ($_recordedDistro) { $_cands = @($_recordedDistro) + $_cands }
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
             $_done = @{}
             foreach ($d in $_cands) {
