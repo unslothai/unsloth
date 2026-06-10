@@ -58,16 +58,10 @@ logger = logging.getLogger(__name__)
 
 class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     """
-    Drop-in replacement for the zoo's UnslothVisionDataCollator that automatically
-    validates local video file paths on every batch.  Paths already seen are
-    deduplicated across batches so the per-batch cost stays proportional to the
-    number of newly referenced paths.  When the base collator has a
-    formatting_func, we apply it before validation so video paths produced by the
-    formatter are also checked.
-
-    If any referenced video files are missing from disk, a FileNotFoundError is
-    raised before any model weights are updated - preventing silent training on
-    empty video tensors (issue #5085).
+    Drop-in zoo collator that validates local video paths on every batch
+    (deduped across batches), applying formatting_func first so formatter-made
+    paths are checked too. Raises FileNotFoundError on missing files instead
+    of silently training on empty video tensors (issue #5085).
     """
 
     __slots__ = ("_checked_video_paths",)
@@ -90,7 +84,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # why: base __call__ reapplies self.formatting_func; we already did so above.
+        # why: base __call__ would reapply formatting_func; applied above.
         self.formatting_func = None
         try:
             return super().__call__(examples)

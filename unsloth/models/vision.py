@@ -1768,9 +1768,7 @@ def _iter_message_lists(example, column):
 
 
 def _local_path_from_video_value(video_path):
-    # Inline base64/data payloads are not files on disk; skip so they are not
-    # reported as missing. Checked before the "://" heuristic because data URIs
-    # have no "://" (e.g. "data:video/mp4;base64,...").
+    # data: URIs are inline payloads, not files, and contain no "://"
     if video_path.startswith("data:"):
         return None
     if "://" not in video_path:
@@ -1781,7 +1779,7 @@ def _local_path_from_video_value(video_path):
     from urllib.request import url2pathname
 
     parsed = urlparse(video_path)
-    # RFC 8089: only an empty authority or "localhost" refers to the local machine.
+    # RFC 8089: only an empty authority or "localhost" is the local machine
     if parsed.netloc and parsed.netloc != "localhost":
         return None
     path = url2pathname(parsed.path)
@@ -1795,36 +1793,25 @@ def check_dataset_for_missing_videos(
     checked = None,
 ):
     """
-    Validate that all local video file paths referenced in a dataset actually exist.
-
-    Call this before training to catch missing video files early.  Without this
-    check, torchvision.io.read_video silently returns an empty tensor for missing
-    files, so training appears to proceed normally (loss decreases) while the model
-    receives no actual video signal.
+    Validate that local video paths referenced in a dataset exist, catching
+    missing files before training (torchvision otherwise returns an empty
+    tensor and the model silently receives no video signal).
 
     Args:
-        dataset:     A HuggingFace Dataset, list of dicts, or any iterable of examples.
-                     Do not pass a streaming IterableDataset; iterating here consumes
-                     it and subsequent training sees zero samples.
-        column:      The column name whose value is a list of chat messages.
-                     Defaults to "messages".  "conversations", "prompt" and
-                     "completion" columns are also scanned automatically to match
-                     the formats accepted by UnslothVisionDataCollator.
-        raise_error: If True (default), raises FileNotFoundError listing all missing
-                     files.  If False, emits a warning and returns the missing paths.
-        checked:     Optional set of already-checked paths for cross-call deduplication.
+        dataset:     Map-style Dataset, list of dicts, or iterable of examples
+                     (not a streaming IterableDataset - iterating consumes it).
+        column:      Chat-messages column, default "messages"; "conversations",
+                     "prompt" and "completion" are also scanned.
+        raise_error: True (default) raises FileNotFoundError listing missing
+                     files; False warns and returns them.
+        checked:     Optional set of known-good paths for cross-call dedup.
 
     Returns:
-        List[str]: Missing file paths (empty list when all files exist).
-
-    Raises:
-        FileNotFoundError: When raise_error=True and one or more paths are absent.
+        List[str]: Missing file paths (empty when all exist).
     """
     try:
         from datasets import IterableDataset as _IterableDataset
         if isinstance(dataset, _IterableDataset):
-            # why safe: iterating a streaming dataset would consume it and leave
-            # training with zero samples; warn and skip rather than validate.
             warnings.warn(
                 "Unsloth: check_dataset_for_missing_videos received a streaming "
                 "IterableDataset; iterating would exhaust it and training would "
@@ -1837,9 +1824,8 @@ def check_dataset_for_missing_videos(
         pass
 
     missing = []
-    # Tracks missing paths within this call so the same bad path referenced by
-    # multiple rows is reported once. Kept separate from `checked` (which only
-    # caches confirmed-existing paths) so retries still re-check missing files.
+    # Report each missing path once; only confirmed-existing paths enter
+    # `checked`, so retries after an error re-check previously missing files.
     seen_missing = set()
     if checked is None:
         checked = set()
