@@ -401,9 +401,19 @@ function Uninstall-UnslothStudio {
             # pattern from matching this command's own argv (whose literal text contains the
             # escaped form, not the resolved path) -- same idea as the [x]-bracket trick.
             $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
-            $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
-            if ($_recordedDistro) { $_cands = @($_recordedDistro) + $_cands }
-            if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
+            # Scope the in-distro cleanup to evidence the WoA fallback actually
+            # installed there: the recorded wsl-distro.txt marker (written by
+            # install.ps1) or an explicit UNSLOTH_WSL_DISTRO. Only legacy
+            # marker-less fallback installs need the broad candidate probe, and
+            # those can only exist on ARM64 hosts -- on x86 machines the probe
+            # would reach into distros this installer never touched (e.g. an
+            # AMD ROCm-on-WSL Studio under /root) and delete them.
+            $_cands = @()
+            if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
+            if ($_recordedDistro) { $_cands += $_recordedDistro }
+            if ((-not $_cands) -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) {
+                $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
+            }
             $_done = @{}
             foreach ($d in $_cands) {
                 if ($d) { & wsl.exe -d $d -- true *> $null } else { & wsl.exe -- true *> $null }
