@@ -1069,7 +1069,6 @@ def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
 
 def _copy_mlx_vlm_image_processor(image_processor):
     import copy
-
     try:
         return copy.deepcopy(image_processor)
     except Exception:
@@ -1109,7 +1108,11 @@ def _probe_mlx_vlm_numpy_image_layout(image_processor) -> str | None:
     return None
 
 
-def _resize_mlx_vlm_image(image, resize, image_layout = None):
+def _resize_mlx_vlm_image(
+    image,
+    resize,
+    image_layout = None,
+):
     if resize is None:
         return image
     try:
@@ -1133,16 +1136,21 @@ def _resize_mlx_vlm_image(image, resize, image_layout = None):
     return array
 
 
-def _resize_mlx_vlm_images(value, resize, image_layout = None):
+def _resize_mlx_vlm_images(
+    value,
+    resize,
+    image_layout = None,
+):
     if isinstance(value, list):
-        return [
-            _resize_mlx_vlm_image(image, resize, image_layout = image_layout)
-            for image in value
-        ]
+        return [_resize_mlx_vlm_image(image, resize, image_layout = image_layout) for image in value]
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
-def _adapt_for_mlx_vlm(items, resize = None, image_layout = None):
+def _adapt_for_mlx_vlm(
+    items,
+    resize = None,
+    image_layout = None,
+):
     """Adapt GPU-path VLM dataset output for mlx-vlm.
 
     The GPU path embeds PIL images in message content as

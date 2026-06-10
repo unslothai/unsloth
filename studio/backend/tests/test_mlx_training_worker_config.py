@@ -138,9 +138,7 @@ def test_mlx_vlm_resized_image_layout_probes_processor_contract():
         == "chw"
     )
     assert (
-        _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = HwcImageProcessor())
-        )
+        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = HwcImageProcessor()))
         is None
     )
 
@@ -159,9 +157,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
 
     image_processor = StatefulImageProcessor()
 
-    layout = _mlx_vlm_resized_image_layout(
-        types.SimpleNamespace(image_processor = image_processor)
-    )
+    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = image_processor))
 
     assert layout == "chw"
     assert image_processor.calls == 0
