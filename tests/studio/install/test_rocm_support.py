@@ -827,16 +827,17 @@ class TestHasRocmGpuKfdVendorGuard:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert "_has_usable_nvidia_gpu" in func_body, (
-            "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
-        )
-        assert "return 1" in func_body, (
-            "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
-        )
+        assert (
+            "_has_usable_nvidia_gpu" in func_body
+        ), "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
+        assert (
+            "return 1" in func_body
+        ), "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
 
     def test_has_usable_nvidia_gpu_proc_fallback_present(self):
         """`_has_usable_nvidia_gpu` must have a /proc/driver/nvidia fallback."""
         import inspect
+
         src = inspect.getsource(stack_mod._has_usable_nvidia_gpu)
         assert "/proc/driver/nvidia" in src, (
             "_has_usable_nvidia_gpu must fall back to /proc/driver/nvidia/gpus when "
