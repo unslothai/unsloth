@@ -218,7 +218,12 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
       return false;
     }
 
-    const previousCheckpoint = store.params.checkpoint;
+    const currentCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+    if (currentCheckpoint) {
+      return true;
+    }
+
+    const previousCheckpoint = currentCheckpoint;
     store.setCheckpoint(checkpointId, status.gguf_variant);
     applyActiveModelStatusToStore(status, { previousCheckpoint });
     return true;

@@ -300,7 +300,11 @@ export function useChatModelRuntime() {
             previousCheckpoint: checkpointAfterPoll,
           });
         }
-      } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      } else if (
+        !statusRes.active_model &&
+        !isExternalSelectionActive &&
+        !userSelectedDuringPoll
+      ) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,

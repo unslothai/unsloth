@@ -24,7 +24,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Generator, Iterable, List, Optional
-from urllib.parse import urlparse
 
 import httpx
 
@@ -52,8 +51,12 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
-    RENDER_HTML_REPEAT_NUDGE,
+    TOOL_XML_SIGNALS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+)
+from core.inference.tool_loop_controller import (
+    ToolLoopController,
+    tool_event_provenance,
 )
 
 logger = get_logger(__name__)
@@ -77,7 +80,7 @@ _INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-_MAX_REPROMPTS = 3
+_MAX_REPROMPTS = 1
 
 # Without max_tokens, llama-server defaults n_predict = n_ctx (up to 262144 for
 # Qwen3.5), causing many-minute zombie decodes when cancel fails.
@@ -89,6 +92,30 @@ _MAX_REPROMPTS = 3
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
+_FORCED_REPEAT_PLAN_SIGNAL = re.compile(
+    r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
+    re.I,
+)
+_FINAL_ANSWER_SIGNAL = re.compile(
+    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
+    re.I,
+)
+
+
+def _is_short_intent_without_action(text: str) -> bool:
+    stripped = text.strip()
+    return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
+
+
+def _should_suppress_forced_no_tool_output(text: str) -> bool:
+    """Suppress only repeated forced-turn planning text, not final answers."""
+    stripped = text.strip()
+    if not stripped or len(stripped) >= _REPROMPT_MAX_CHARS:
+        return False
+    if _FINAL_ANSWER_SIGNAL.search(stripped):
+        return False
+    return _FORCED_REPEAT_PLAN_SIGNAL.search(stripped) is not None
+
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
@@ -3936,10 +3963,13 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _parse_tool_calls_from_text(content: str) -> list[dict]:
-        """Thin wrapper around the shared tool_call_parser so safetensors
-        and llama_cpp pick up the same fixes."""
-        return _shared_parse_tool_calls_from_text(content)
+    def _parse_tool_calls_from_text(content: str, *, allow_incomplete: bool = True) -> list[dict]:
+        """Thin wrapper around the shared parser in tool_call_parser
+        so safetensors and llama_cpp pick up the same fixes."""
+        return _shared_parse_tool_calls_from_text(
+            content,
+            allow_incomplete = allow_incomplete,
+        )
 
     @staticmethod
     def _build_openai_messages(messages: list[dict], image_b64: Optional[str] = None) -> list[dict]:
@@ -4089,6 +4119,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        seed: Optional[int] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -4129,6 +4160,8 @@ class LlamaCppBackend:
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
+        if seed is not None:
+            payload["seed"] = seed
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4137,6 +4170,7 @@ class LlamaCppBackend:
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
 
         try:
             # _stream_with_retry uses a 120 s read timeout so prefill can
@@ -4201,6 +4235,9 @@ class LlamaCppBackend:
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     # Reasoning/thinking tokens: llama-server
                                     # sends these as "reasoning_content"; wrap
@@ -4226,14 +4263,18 @@ class LlamaCppBackend:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _metadata_usage = _backfill_usage_from_timings(
                             _metadata_usage, _metadata_timings
                         )
                         yield {
                             "type": "metadata",
-                            "usage": _metadata_usage,
+                            # Never None: a finish-only metadata event (no usage,
+                            # no timings) would otherwise crash consumers that do
+                            # usage.get(...) on the non-streaming paths.
+                            "usage": _metadata_usage or {},
                             "timings": _metadata_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -4265,6 +4306,8 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        seed: Optional[int] = None,
+        disable_parallel_tool_use: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4285,24 +4328,37 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
-        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
-            if not auto_heal_tool_calls:
+        def _strip_tool_markup(
+            text: str,
+            *,
+            final: bool = False,
+            force: bool = False,
+        ) -> str:
+            if not (auto_heal_tool_calls or force):
                 return text
             return strip_tool_call_markup(text, final = final)
 
-        # XML prefixes that signal a tool call in content. Empty when
-        # auto_heal is disabled so the buffer never speculatively holds
-        # content for XML detection.
-        _TOOL_XML_SIGNALS = ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
-        _MAX_BUFFER_CHARS = 32
+        def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
+            if not (auto_heal_tool_calls or force):
+                return text
+            for pat in _TOOL_ALL_PATS:
+                text = pat.sub("", text)
+            return text
 
-        # ── Duplicate tool-call detection ────────────────────────
-        # Track recent (tool_name, arguments) hashes to detect loops where
-        # the model repeats the exact same call. Retries after a transient
-        # failure are allowed (only block when the prior identical call
-        # succeeded).
-        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
-        _render_html_succeeded = False
+        tool_controller = ToolLoopController(
+            tools = tools,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+        )
+
+        def _tool_succeeded(tool_name: str) -> bool:
+            key_prefix = f"{tool_name}:"
+            return any(
+                record.executed and not record.is_error and record.key.startswith(key_prefix)
+                for record in tool_controller.history
+            )
+
+        _MAX_BUFFER_CHARS = 32
+        _append_budget_exhausted_nudge = True
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -4311,6 +4367,7 @@ class LlamaCppBackend:
         # "Hello!" won't match. Pattern compiled at module level
         # (_INTENT_SIGNAL).
         _reprompt_count = 0
+        _forced_tool_call_pending = False
 
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
@@ -4319,8 +4376,14 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
 
-            # stream: True so we detect tool signals in the first 1-2 chunks
-            # without a non-streaming penalty.
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                _append_budget_exhausted_nudge = False
+                break
+            _tool_xml_signals = TOOL_XML_SIGNALS if active_tools else ()
+
+            # Build payload -- stream: True so we detect tool signals
+            # in the first 1-2 chunks without a non-streaming penalty.
             payload = {
                 "messages": conversation,
                 "stream": True,
@@ -4331,7 +4394,7 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                "tools": tools,
+                "tools": active_tools,
                 "tool_choice": "auto",
             }
             _reasoning_kw = self._request_reasoning_kwargs(
@@ -4347,6 +4410,8 @@ class LlamaCppBackend:
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
+            if seed is not None:
+                payload["seed"] = seed
 
             try:
                 _auth_headers = (
@@ -4372,9 +4437,11 @@ class LlamaCppBackend:
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
+                _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
                 provisional_render_html_tool_call_ids = set()
+                _suppress_visible_output = _forced_tool_call_pending
 
                 stream_timeout = httpx.Timeout(
                     connect = 10,
@@ -4416,19 +4483,21 @@ class LlamaCppBackend:
                                     if detect_state == _S_STREAMING and in_thinking:
                                         if has_content_tokens:
                                             cumulative_display += "</think>"
-                                            yield {
-                                                "type": "content",
-                                                "text": _strip_tool_markup(
-                                                    cumulative_display,
-                                                    final = True,
-                                                ),
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": _strip_tool_markup(
+                                                        cumulative_display,
+                                                        final = True,
+                                                    ),
+                                                }
                                         else:
                                             cumulative_display = reasoning_accum
-                                            yield {
-                                                "type": "content",
-                                                "text": cumulative_display,
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cumulative_display,
+                                                }
                                     _stream_done = True
                                     break  # exit inner while
                                 if not line.startswith("data: "):
@@ -4448,15 +4517,18 @@ class LlamaCppBackend:
                                         continue
 
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _iter_finish_reason = _fr
 
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
                                     if tc_deltas:
-                                        # Once visible content has been
-                                        # emitted, don't reclassify this turn
-                                        # as a tool call.
-                                        if _last_emitted:
-                                            continue
+                                        # llama-server can emit visible assistant
+                                        # preface content before native structured
+                                        # tool_calls. Preserve content_accum as
+                                        # the assistant pre-tool text and still
+                                        # drain/execute the structured call.
                                         has_structured_tc = True
                                         detect_state = _S_DRAINING
                                         for tc_d in tc_deltas:
@@ -4494,8 +4566,16 @@ class LlamaCppBackend:
                                             has_real_id = current_id != fallback_id
                                             if (
                                                 current_name == "render_html"
-                                                and not _render_html_succeeded
+                                                and not _tool_succeeded("render_html")
+                                                and any(
+                                                    (
+                                                        (tool.get("function") or {}).get("name")
+                                                        == "render_html"
+                                                    )
+                                                    for tool in active_tools
+                                                )
                                                 and not already_started
+                                                and not provisional_render_html_tool_call_ids
                                                 and has_real_id
                                             ):
                                                 provisional_render_html_tool_call_ids.add(
@@ -4506,6 +4586,9 @@ class LlamaCppBackend:
                                                     "tool_name": "render_html",
                                                     "tool_call_id": current_id,
                                                     "arguments": {},
+                                                    "provenance": tool_event_provenance(
+                                                        provisional = True,
+                                                    ),
                                                 }
                                         continue
 
@@ -4523,10 +4606,11 @@ class LlamaCppBackend:
                                                 cumulative_display += "<think>"
                                                 in_thinking = True
                                             cumulative_display += reasoning
-                                            yield {
-                                                "type": "content",
-                                                "text": cumulative_display,
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cumulative_display,
+                                                }
 
                                     # ── Content tokens ──
                                     token = delta.get("content", "")
@@ -4542,15 +4626,16 @@ class LlamaCppBackend:
                                                 cumulative_display += "</think>"
                                                 in_thinking = False
                                             cumulative_display += token
-                                            cleaned = _strip_tool_markup(
-                                                cumulative_display,
+                                            cleaned = _strip_tool_markup_streaming(
+                                                cumulative_display
                                             )
                                             if len(cleaned) > len(_last_emitted):
                                                 _last_emitted = cleaned
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cleaned,
-                                                }
+                                                if not _suppress_visible_output:
+                                                    yield {
+                                                        "type": "content",
+                                                        "text": cleaned,
+                                                    }
 
                                         elif detect_state == _S_BUFFERING:
                                             content_buffer += token
@@ -4561,7 +4646,7 @@ class LlamaCppBackend:
                                             # Check tool signal prefixes.
                                             is_prefix = False
                                             is_match = False
-                                            for sig in _TOOL_XML_SIGNALS:
+                                            for sig in _tool_xml_signals:
                                                 if stripped_buf.startswith(sig):
                                                     is_match = True
                                                     break
@@ -4570,6 +4655,25 @@ class LlamaCppBackend:
                                                     break
 
                                             if is_match:
+                                                # Tool signal -- flush any visible
+                                                # prefix before DRAINING so the
+                                                # route sends it before tool_start.
+                                                if reasoning_accum:
+                                                    cumulative_display += "<think>"
+                                                    cumulative_display += reasoning_accum
+                                                    cumulative_display += "</think>"
+                                                cumulative_display += content_buffer
+                                                cleaned = _strip_tool_markup_streaming(
+                                                    cumulative_display,
+                                                    force = True,
+                                                )
+                                                if len(cleaned) > len(_last_emitted):
+                                                    _last_emitted = cleaned
+                                                    if not _suppress_visible_output:
+                                                        yield {
+                                                            "type": "content",
+                                                            "text": cleaned,
+                                                        }
                                                 detect_state = _S_DRAINING
                                             elif (
                                                 is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
@@ -4590,10 +4694,11 @@ class LlamaCppBackend:
                                                 )
                                                 if len(cleaned) > len(_last_emitted):
                                                     _last_emitted = cleaned
-                                                    yield {
-                                                        "type": "content",
-                                                        "text": cleaned,
-                                                    }
+                                                    if not _suppress_visible_output:
+                                                        yield {
+                                                            "type": "content",
+                                                            "text": cleaned,
+                                                        }
 
                                 except json.JSONDecodeError:
                                     logger.debug(f"Skipping malformed SSE line: {line[:100]}")
@@ -4603,11 +4708,7 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
-                    if (
-                        stripped_buf
-                        and auto_heal_tool_calls
-                        and any(s in stripped_buf for s in _TOOL_XML_SIGNALS)
-                    ):
+                    if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
                         detect_state = _S_STREAMING
@@ -4618,22 +4719,24 @@ class LlamaCppBackend:
                                 cumulative_display += reasoning_accum
                                 cumulative_display += "</think>"
                             cumulative_display += content_buffer
-                            yield {
-                                "type": "content",
-                                "text": _strip_tool_markup(
-                                    cumulative_display,
-                                    final = True,
-                                ),
-                            }
+                            if not _suppress_visible_output:
+                                yield {
+                                    "type": "content",
+                                    "text": _strip_tool_markup(
+                                        cumulative_display,
+                                        final = True,
+                                    ),
+                                }
                         elif reasoning_accum and not has_content_tokens:
                             # Reasoning-only response: show reasoning as plain
                             # text, matching the final streaming pass for
                             # models that put everything in reasoning.
                             cumulative_display = reasoning_accum
-                            yield {
-                                "type": "content",
-                                "text": cumulative_display,
-                            }
+                            if not _suppress_visible_output:
+                                yield {
+                                    "type": "content",
+                                    "text": cumulative_display,
+                                }
                     else:
                         return
 
@@ -4644,9 +4747,10 @@ class LlamaCppBackend:
                     # synthesis streams correctly even if content was emitted
                     # before the tool XML.
                     _safety_tc = None
-                    if auto_heal_tool_calls and any(s in content_accum for s in _TOOL_XML_SIGNALS):
+                    if any(s in content_accum for s in _tool_xml_signals):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
+                            allow_incomplete = auto_heal_tool_calls,
                         )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
@@ -4659,11 +4763,18 @@ class LlamaCppBackend:
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
+                        _render_html_already_done_intent = _tool_succeeded(
+                            "render_html"
+                        ) and re.search(
+                            r"(?i)\brender[_\s-]?html\b",
+                            _stripped,
+                        )
                         if (
-                            tools
+                            auto_heal_tool_calls
+                            and active_tools
+                            and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
-                            and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
-                            and _INTENT_SIGNAL.search(_stripped)
+                            and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
                             logger.info(
@@ -4678,19 +4789,21 @@ class LlamaCppBackend:
                                 }
                             )
                             available_tool_names = [
-                                tool.get("function", {}).get("name")
-                                for tool in tools
+                                (tool.get("function") or {}).get("name")
+                                for tool in active_tools
                                 if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
                             ]
                             available_tool_names = [name for name in available_tool_names if name]
                             tool_hint = " or ".join(available_tool_names) or "an available tool"
+                            _forced_tool_call_pending = True
                             conversation.append(
                                 {
                                     "role": "user",
                                     "content": (
-                                        "STOP. Do NOT write code or explain. "
-                                        "You MUST call a tool NOW. "
-                                        f"Call {tool_hint} immediately."
+                                        "You have access to enabled tools. If a tool is needed to satisfy "
+                                        "the user's request or complete the action you described, call "
+                                        f"{tool_hint} now. If no tool is needed, provide the final answer "
+                                        "and follow the user's requested format."
                                     ),
                                 }
                             )
@@ -4703,7 +4816,28 @@ class LlamaCppBackend:
                             yield {"type": "status", "text": ""}
                             continue
 
-                        # Content already streamed; yield metadata.
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
+                            if not _should_suppress_forced_no_tool_output(_stripped):
+                                if cumulative_display:
+                                    forced_visible_text = _strip_tool_markup(
+                                        cumulative_display,
+                                        final = True,
+                                    )
+                                elif content_accum:
+                                    forced_visible_text = _strip_tool_markup(
+                                        content_accum,
+                                        final = True,
+                                    )
+                                else:
+                                    forced_visible_text = reasoning_accum
+                                if forced_visible_text:
+                                    yield {
+                                        "type": "content",
+                                        "text": forced_visible_text,
+                                    }
+
+                        # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
                         _fu = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
                         _fc = _fu.get("completion_tokens", 0)
@@ -4728,6 +4862,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -4736,6 +4871,7 @@ class LlamaCppBackend:
                     content_text = _strip_tool_markup(
                         content_accum,
                         final = True,
+                        force = True,
                     )
                     logger.info(
                         f"Safety net: parsed {len(tool_calls)} tool call(s) "
@@ -4753,18 +4889,16 @@ class LlamaCppBackend:
                             for i in sorted(tool_calls_acc)
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
-                    if (
-                        not tool_calls
-                        and auto_heal_tool_calls
-                        and any(s in content_accum for s in _TOOL_XML_SIGNALS)
-                    ):
+                    if not tool_calls and any(s in content_accum for s in _tool_xml_signals):
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
+                            allow_incomplete = auto_heal_tool_calls,
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
                             content_text,
                             final = True,
+                            force = True,
                         )
                     if tool_calls:
                         logger.info(
@@ -4804,6 +4938,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -4815,163 +4950,74 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
-                assistant_msg = {"role": "assistant", "content": content_text}
-                if tool_calls:
-                    assistant_msg["tool_calls"] = tool_calls
-                conversation.append(assistant_msg)
+                # disable_parallel_tool_use: execute only the first tool call
+                # this turn. Truncate before building assistant_msg so the
+                # conversation stays consistent and extra calls are never executed.
+                if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
+                    tool_calls = tool_calls[:1]
+
+                assistant_msg: dict = {"role": "assistant", "content": content_text}
+                assistant_appended = False
 
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
-                    raw_args = func.get("arguments", {})
-
-                    if isinstance(raw_args, str):
-                        try:
-                            arguments = json.loads(raw_args)
-                        except (json.JSONDecodeError, ValueError):
-                            if auto_heal_tool_calls:
-                                heal_key = {
-                                    "python": "code",
-                                    "terminal": "command",
-                                    "render_html": "code",
-                                }.get(tool_name, "query")
-                                arguments = {heal_key: raw_args}
-                            else:
-                                arguments = {"raw": raw_args}
-                    else:
-                        arguments = raw_args
-
-                    if tool_name == "web_search":
-                        _ws_url = (arguments.get("url") or "").strip()
-                        if _ws_url:
-                            _parsed = urlparse(_ws_url)
-                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
-                                _ws_host = _parsed.hostname
-                                if _ws_host.startswith("www."):
-                                    _ws_host = _ws_host[4:]
-                                status_text = f"Reading: {_ws_host}"
-                            else:
-                                status_text = "Reading page..."
-                        else:
-                            status_text = f"Searching: {arguments.get('query', '')}"
-                    elif tool_name == "python":
-                        preview = (arguments.get("code") or "").strip().split("\n")[0][:60]
-                        status_text = (
-                            f"Running Python: {preview}" if preview else "Running Python..."
-                        )
-                    elif tool_name == "terminal":
-                        cmd_preview = (arguments.get("command") or "")[:60]
-                        status_text = (
-                            f"Running: {cmd_preview}" if cmd_preview else "Running command..."
-                        )
-                    else:
-                        status_text = f"Calling: {tool_name}"
-                    _repeat_render_html = tool_name == "render_html" and _render_html_succeeded
-                    if not _repeat_render_html:
-                        yield {"type": "status", "text": status_text}
-
-                        yield {
-                            "type": "tool_start",
-                            "tool_name": tool_name,
-                            "tool_call_id": tc.get("id", ""),
-                            "arguments": arguments,
-                        }
-
-                    # ── Duplicate call detection ──────────────
-                    # str(dict) is stable here: arguments always come from
-                    # json.loads on the same model output within one request,
-                    # so insertion order is deterministic (Python 3.7+).
-                    _tc_key = tool_name + str(arguments)
-                    _prev = _tool_call_history[-1] if _tool_call_history else None
-                    if _repeat_render_html:
-                        result = RENDER_HTML_REPEAT_NUDGE
-                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
-                        result = (
-                            "You already made this exact call. "
-                            "Do not repeat the same tool call. "
-                            "Try a different approach: fetch a URL "
-                            "from previous results, use Python to "
-                            "process data you already have, or "
-                            "provide your final answer now."
-                        )
-                    else:
-                        _effective_timeout = (
-                            None if tool_call_timeout >= 9999 else tool_call_timeout
-                        )
-                        # Guard against a tool not in the per-request
-                        # advertised set: filtered MCP names, an opted-out
-                        # built-in, or a stale name from a prior turn. Mirrors
-                        # the safetensors loop's allowed_tool_names check.
-                        _allowed = {
-                            (t.get("function") or {}).get("name")
-                            for t in (tools or [])
-                            if (t.get("function") or {}).get("name")
-                        }
-                        if _allowed and tool_name not in _allowed:
-                            result = (
-                                f"Error: tool '{tool_name}' is not enabled "
-                                "for this request. Use one of the enabled "
-                                "tools or provide a final answer."
-                            )
-                        else:
-                            result = execute_tool(
-                                tool_name,
-                                arguments,
-                                cancel_event = cancel_event,
-                                timeout = _effective_timeout,
-                                session_id = session_id,
-                            )
-
-                    if not _repeat_render_html:
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": tool_name,
-                            "tool_call_id": tc.get("id", ""),
-                            "result": result,
-                        }
-
-                    # Nudge the model toward a different approach on errors.
-                    _error_prefixes = (
-                        "Error",
-                        "Search failed",
-                        "Execution error",
-                        "Blocked:",
-                        "Exit code",
-                        "Failed to fetch",
-                        "Failed to resolve",
-                        "No query provided",
+                    provisional_render_html_match = (
+                        tool_name == "render_html"
+                        and tc.get("id") in provisional_render_html_tool_call_ids
                     )
-                    _is_error = isinstance(result, str) and result.lstrip().startswith(
-                        _error_prefixes
+                    decision = tool_controller.prepare_call(
+                        tc,
+                        forced = _forced_tool_call_pending,
+                        provisional = provisional_render_html_match,
                     )
-                    if tool_name == "render_html" and not _is_error:
-                        _render_html_succeeded = True
-                    _tool_call_history.append((_tc_key, _is_error))
-                    # Strip image sentinel before feeding the result to the
-                    # LLM (the full result with sentinel is still yielded via
-                    # tool_end so the frontend can extract image paths).
-                    _result_content = result
-                    if "\n__IMAGES__:" in _result_content:
-                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
-                    if _is_error:
-                        _result_content = (
-                            _result_content + "\n\nThe tool call encountered an issue. "
-                            "Please try a different approach or rephrase your request."
+
+                    if not decision.should_execute:
+                        if content_text and not assistant_appended:
+                            conversation.append(assistant_msg)
+                            assistant_appended = True
+                        completion = tool_controller.record_noop(decision)
+                        conversation.append(completion.model_message())
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
+                        logger.info(
+                            "Suppressed local GGUF tool call as internal no-op: "
+                            f"action={decision.action} tool={decision.tool_name}"
+                        )
+                        break
+
+                    if not assistant_appended:
+                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                        conversation.append(assistant_msg)
+                        assistant_appended = True
+                    else:
+                        assistant_msg.setdefault("tool_calls", []).append(
+                            decision.as_assistant_tool_call()
                         )
 
-                    tool_msg = {
-                        "role": "tool",
-                        "name": tool_name,
-                        "content": _result_content,
-                    }
-                    tool_call_id = tc.get("id")
-                    if tool_call_id:
-                        tool_msg["tool_call_id"] = tool_call_id
-                    conversation.append(tool_msg)
+                    yield {"type": "status", "text": decision.status_text}
+                    yield decision.tool_start_event()
 
-                # Clear tool status badge before the next generation.
+                    _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+                    result = execute_tool(
+                        decision.tool_name,
+                        decision.arguments,
+                        cancel_event = cancel_event,
+                        timeout = _effective_timeout,
+                        session_id = session_id,
+                    )
+                    completion = tool_controller.record_result(decision, result)
+                    yield completion.tool_end_event()
+                    conversation.append(completion.tool_message())
+
+                    if _forced_tool_call_pending:
+                        _forced_tool_call_pending = False
+
+                # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                # Continue so the model responds with tool context.
+                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                    _append_budget_exhausted_nudge = False
+                    break
                 continue
 
             except httpx.ConnectError:
@@ -4985,7 +5031,7 @@ class LlamaCppBackend:
         # The model used all iterations without a final text response. Nudge
         # the final streaming pass to produce a useful answer instead of
         # continuing to request tools.
-        if max_tool_iterations > 0:
+        if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             conversation.append(
                 {
                     "role": "user",
@@ -5024,6 +5070,8 @@ class LlamaCppBackend:
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
+        if seed is not None:
+            stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""
@@ -5033,6 +5081,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
         _stream_done = False
 
         try:
@@ -5091,6 +5140,9 @@ class LlamaCppBackend:
                                 choices = chunk_data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
@@ -5121,7 +5173,7 @@ class LlamaCppBackend:
                     _final_completion = _final_usage.get("completion_tokens", 0)
                     _final_prompt = _final_usage.get("prompt_tokens", 0)
                     _total_completion = _final_completion + _accumulated_completion_tokens
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
                         if _accumulated_predicted_ms or _accumulated_predicted_n:
                             _merged_timings["predicted_ms"] = (
@@ -5144,6 +5196,7 @@ class LlamaCppBackend:
                                 "total_tokens": _final_prompt + _total_completion,
                             },
                             "timings": _merged_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -5152,6 +5205,144 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
+
+    # ── Prompt token counting ──────────────────────────────────
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system = None,
+        tools = None,
+        strict: bool = False,
+    ) -> int:
+        """Count prompt tokens for a chat request via llama-server.
+
+        Non-strict callers keep the historical best-effort behavior and receive
+        0 when a count cannot be determined. Strict callers (public count_tokens
+        endpoints) get an exception instead of a successful-looking zero when
+        tokenizer/template calls fail or a multimodal prompt would fall back to a
+        text-only approximation.
+        """
+        if not self.is_loaded:
+            if strict:
+                raise RuntimeError("llama-server is not loaded")
+            return 0
+
+        def _has_non_text_content(content) -> bool:
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        continue
+                    if not isinstance(block, dict):
+                        return True
+                    if block.get("type") == "text" and isinstance(block.get("text"), str):
+                        continue
+                    if isinstance(block.get("text"), str):
+                        continue
+                    return True
+            return False
+
+        def _has_non_text_prompt_parts() -> bool:
+            if _has_non_text_content(system):
+                return True
+            for msg in messages or []:
+                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
+                    return True
+            return False
+
+        def _block_text(content) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text" and isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                        elif isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "".join(parts)
+            return ""
+
+        # Normalize system into a leading message / plain text.
+        system_text = ""
+        if isinstance(system, str):
+            system_text = system
+        elif isinstance(system, list):
+            system_text = _block_text(system)
+
+        try:
+            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+                def _tokenize(text: str) -> int:
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": True},
+                    )
+                    if r.status_code != 200:
+                        if strict:
+                            raise RuntimeError("llama-server tokenizer failed")
+                        return 0
+                    tokens = r.json().get("tokens", [])
+                    if not isinstance(tokens, list):
+                        if strict:
+                            raise RuntimeError("llama-server tokenizer returned invalid tokens")
+                        return 0
+                    return len(tokens)
+
+                # 1. Try /apply-template to render the real chat prompt.
+                template_messages = list(messages) if messages else []
+                if system_text:
+                    template_messages = [
+                        {"role": "system", "content": system_text}
+                    ] + template_messages
+                apply_template_failed = False
+                try:
+                    # llama-server's /apply-template renders tool declarations
+                    # into the prompt when ``tools`` is supplied, so pass them
+                    # through — otherwise tool-schema tokens go uncounted.
+                    template_body = {"messages": template_messages}
+                    if tools:
+                        template_body["tools"] = tools
+                    resp = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = template_body,
+                    )
+                    if resp.status_code == 200:
+                        prompt = resp.json().get("prompt", "")
+                        if isinstance(prompt, str):
+                            return _tokenize(prompt)
+                    apply_template_failed = True
+                except Exception:
+                    apply_template_failed = True
+
+                if strict and apply_template_failed and _has_non_text_prompt_parts():
+                    raise RuntimeError(
+                        "cannot fall back to text-only token counting for multimodal messages"
+                    )
+
+                # 2. Fallback: concatenate plain text and tokenize. Append a
+                # serialized form of the tools so they still contribute to the
+                # count when /apply-template is unavailable.
+                parts = []
+                if system_text:
+                    parts.append(system_text)
+                for msg in messages or []:
+                    if isinstance(msg, dict):
+                        parts.append(_block_text(msg.get("content", "")))
+                if tools:
+                    try:
+                        parts.append(json.dumps(tools, ensure_ascii = False))
+                    except Exception:
+                        pass
+                return _tokenize("\n".join(p for p in parts if p))
+        except Exception:
+            if strict:
+                raise
+            return 0
 
     # ── TTS support ────────────────────────────────────────────
 
