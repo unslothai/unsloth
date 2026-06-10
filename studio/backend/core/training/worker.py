@@ -694,8 +694,11 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
       ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
-    1. ``gcnArchName`` / variant spellings (stable, naming-independent).
-    2. Device-name substring match (last resort when all arch attrs absent;
+    1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
+       driver's own unified-memory answer; covers APUs beyond the hardcoded
+       arch set, e.g. gfx1103 Phoenix iGPUs). Only ever upgrades to unified.
+    2. ``gcnArchName`` / variant spellings (stable, naming-independent).
+    3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
          - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
@@ -707,6 +710,16 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         if _v:
             gcn_arch = _v
             break
+
+    # Driver's own answer first: hipDeviceProp_t.integrated (exposed as
+    # props.is_integrated; same gate PR #5988's UMA safetensors fast-load
+    # uses). Strictly additive -- only a truthy value upgrades to unified;
+    # 0/absent falls through to the arch/name logic below, so a wheel that
+    # omits or zeroes the field can never downgrade the known APU set. This
+    # covers unified APUs outside the hardcoded arches (gfx1103 Phoenix
+    # iGPUs, future parts) with one universal signal.
+    if getattr(props, "is_integrated", 0):
+        return gcn_arch, True
 
     if gcn_arch:
         return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}

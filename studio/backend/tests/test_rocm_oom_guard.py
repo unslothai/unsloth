@@ -29,6 +29,46 @@ def _props(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**kwargs)
 
 
+# ── Path 0: props.is_integrated (driver's own unified-memory answer) ─────────
+
+
+class TestIsIntegratedSignal:
+    """hipDeviceProp_t.integrated wins when truthy; 0/absent never downgrades.
+
+    Same universal gate PR #5988's UMA safetensors fast-load uses -- keeps
+    Studio's two unified-memory consumers on one signal."""
+
+    def test_integrated_upgrades_unknown_apu(self) -> None:
+        # gfx1103 Phoenix iGPU: outside the hardcoded arch set, but the
+        # driver says integrated -> unified.
+        props = _props(gcnArchName = "gfx1103", name = "Radeon 780M", is_integrated = 1)
+        gcn, is_unified = _rocm_classify_unified_memory(props)
+        assert gcn == "gfx1103"
+        assert is_unified is True
+
+    def test_integrated_wins_without_any_arch(self) -> None:
+        props = _props(name = "Some Future APU", is_integrated = 1)
+        gcn, is_unified = _rocm_classify_unified_memory(props)
+        assert gcn == ""
+        assert is_unified is True
+
+    def test_zero_does_not_downgrade_known_apu(self) -> None:
+        # A wheel that zeroes the field must not flip Strix Halo to discrete.
+        props = _props(gcnArchName = "gfx1151", name = "x", is_integrated = 0)
+        gcn, is_unified = _rocm_classify_unified_memory(props)
+        assert is_unified is True
+
+    def test_absent_keeps_existing_behavior(self) -> None:
+        props = _props(gcnArchName = "gfx1201", name = "RX 9070 XT")
+        gcn, is_unified = _rocm_classify_unified_memory(props)
+        assert is_unified is False
+
+    def test_discrete_with_zero_stays_discrete(self) -> None:
+        props = _props(gcnArchName = "gfx1100", name = "RX 7900 XTX", is_integrated = 0)
+        gcn, is_unified = _rocm_classify_unified_memory(props)
+        assert is_unified is False
+
+
 # ── Path 1: canonical gcnArchName ────────────────────────────────────────────
 
 
