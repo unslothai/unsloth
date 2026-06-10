@@ -1218,6 +1218,174 @@ def synthetic_checksums_for_release(
     )
 
 
+def parse_direct_linux_release_bundle(
+    repo: str, release: dict[str, Any]
+) -> PublishedReleaseBundle | None:
+    release_tag = release.get("tag_name")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+
+    assets = release_asset_map(release)
+    artifacts: list[PublishedLlamaArtifact] = []
+    inferred_labels: list[str] = []
+
+    linux_asset_re = re.compile(
+        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-cuda\d+-(?:older|newer|portable))\.tar\.gz$"
+    )
+    for asset_name in sorted(assets):
+        match = linux_asset_re.fullmatch(asset_name)
+        if not match:
+            continue
+        inferred_labels.append(match.group("label"))
+        target = match.group("target")
+        if target in {"linux-x64", "linux-x64-cpu"}:
+            artifacts.append(
+                PublishedLlamaArtifact(
+                    asset_name = asset_name,
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                )
+            )
+            continue
+
+        bundle_profile = target.removeprefix("linux-x64-")
+        profile = _resolve_linux_bundle_profile(bundle_profile)
+        if profile is None:
+            continue
+        artifacts.append(
+            PublishedLlamaArtifact(
+                asset_name = asset_name,
+                install_kind = "linux-cuda",
+                runtime_line = str(profile["runtime_line"]),
+                coverage_class = str(profile["coverage_class"]),
+                supported_sms = [str(value) for value in profile["supported_sms"]],
+                min_sm = int(profile["min_sm"]),
+                max_sm = int(profile["max_sm"]),
+                bundle_profile = bundle_profile,
+                rank = int(profile["rank"]),
+            )
+        )
+
+    if not artifacts:
+        return None
+
+    upstream_tag = (
+        release_tag
+        if is_release_tag_like(release_tag)
+        else inferred_labels[0]
+        if len(set(inferred_labels)) == 1 and inferred_labels
+        else release_tag
+    )
+    selection_log = [
+        f"published_release: repo={repo}",
+        f"published_release: tag={release_tag}",
+        f"published_release: upstream_tag={upstream_tag}",
+        "published_release: direct_asset_scan=linux",
+    ]
+    return PublishedReleaseBundle(
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        assets = assets,
+        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts = artifacts,
+        selection_log = selection_log,
+    )
+
+
+def direct_linux_release_plan(
+    release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
+) -> InstallReleasePlan | None:
+    bundle = parse_direct_linux_release_bundle(repo, release)
+    if bundle is None:
+        return None
+    if not direct_release_matches_request(
+        release_tag = bundle.release_tag,
+        llama_tag = bundle.upstream_tag,
+        requested_tag = requested_tag,
+    ):
+        return None
+
+    attempts: list[AssetChoice] = []
+    if host.has_usable_nvidia:
+        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # libcudart), not the newest on disk. Otherwise a stray cuda13
+        # runtime outranks the torch cuda12 the binary links against.
+        torch_preference = detect_torch_cuda_runtime_preference(host)
+        selection = linux_cuda_choice_from_release(
+            host,
+            bundle,
+            preferred_runtime_line = torch_preference.runtime_line,
+            selection_preamble = torch_preference.selection_log,
+        )
+        if selection is not None:
+            attempts.extend(selection.attempts)
+    if host.has_rocm and not host.has_usable_nvidia:
+        # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
+        # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
+        # Strix Halo) the upstream combined-ROCm tarball doesn't cover.
+        # "ubuntu" is lemonade's asset naming convention only -- the binary
+        # is a manylinux-style glibc build that runs on Arch, Fedora,
+        # openSUSE, etc. with a recent-enough glibc. Do NOT append the CPU
+        # asset for ROCm-only hosts: if lemonade fails validation we want
+        # validate_prebuilt_attempts to raise PrebuiltFallback so the caller
+        # triggers the HIP source build, not silently install a CPU binary.
+        lemonade_choice = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+        )
+        if lemonade_choice is not None:
+            attempts.append(lemonade_choice)
+    elif not host.has_usable_nvidia:
+        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        if cpu_choice is not None:
+            attempts.append(cpu_choice)
+    # NVIDIA hosts whose CUDA selection produced nothing fall through to the
+    # raise below (mirroring the ROCm policy above): the caller then walks
+    # back to an older release that still ships a usable CUDA line instead of
+    # silently installing a CPU binary on a GPU host. Today's walk-back only
+    # works because partial releases ship no CPU bundle; this keeps it working
+    # if a future partial release does.
+    if not attempts:
+        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+    approved_checksums = synthetic_checksums_for_release(
+        repo,
+        bundle.release_tag,
+        bundle.upstream_tag,
+    )
+    resolved_upstream_tag = bundle.upstream_tag
+    if DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets and not is_release_tag_like(
+        bundle.upstream_tag
+    ):
+        approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
+        # Require exact source provenance for branch/pull/commit releases.
+        # Mirrors validated_checksums_for_bundle so incomplete metadata fails
+        # closed instead of degrading to the legacy branch-as-tag source
+        # hydration path this PR eliminates.
+        if (
+            not approved_checksums.source_commit
+            or exact_source_archive_hash(approved_checksums) is None
+            or source_clone_url_from_checksums(approved_checksums) is None
+        ):
+            raise PrebuiltFallback(
+                f"approved checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} for "
+                f"{repo}@{bundle.release_tag} did not contain exact source provenance"
+            )
+        attempts = apply_approved_hashes(attempts, approved_checksums)
+    return InstallReleasePlan(
+        requested_tag = requested_tag,
+        llama_tag = resolved_upstream_tag,
+        release_tag = bundle.release_tag,
+        attempts = attempts,
+        approved_checksums = approved_checksums,
+    )
+
+
 def direct_upstream_release_plan(
     release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
@@ -1245,6 +1413,7 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
             # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
             # build over the CPU-only cuda-12.4 the in-release gating leaves.
             pinned = _pinned_windows_cuda_fallback(host, attempts)
@@ -3164,6 +3333,30 @@ def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
     return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
 
 
+def _host_is_blackwell(host: HostInfo) -> bool:
+    caps = normalize_compute_caps(host.compute_caps)
+    return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
+
+
+def _drop_blackwell_incapable_windows_cuda(
+    host: HostInfo, attempts: list[AssetChoice]
+) -> list[AssetChoice]:
+    """On a Blackwell host, drop windows-cuda attempts that cannot offload
+    sm_120 (e.g. upstream cuda-12.4, toolkit 12.4). Such a build loads and
+    passes the functional validator but runs the model on a slow non-native
+    path (an RTX 5090 measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must
+    not sit in the fallback chain behind the pin or an in-release cuda13.
+    Non-cuda attempts (windows-cpu, windows-hip, ...) pass through so the
+    host still degrades to an honest CPU install when no CUDA 13 exists."""
+    if not _host_is_blackwell(host):
+        return attempts
+    return [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
+    ]
+
+
 def _pinned_windows_cuda_fallback(
     host: HostInfo, existing_cuda_attempts: list[AssetChoice]
 ) -> AssetChoice | None:
@@ -3246,6 +3439,7 @@ def _with_pinned_windows_cuda_fallback(
     """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
     through apply_approved_hashes, or return the inputs unchanged when dormant.
     Gives the published install path the same GPU fallback as the simple path."""
+    attempts = _drop_blackwell_incapable_windows_cuda(host, attempts)
     pin = _pinned_windows_cuda_fallback(host, attempts)
     if pin is None:
         return attempts, checksums
