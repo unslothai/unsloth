@@ -85,10 +85,12 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
 # Checked via config.json (local or HuggingFace).
 _TRANSFORMERS_510_ARCHITECTURES: set[str] = {
     "Gemma4UnifiedForConditionalGeneration",
+    "Gemma4AssistantForCausalLM",
     "Gemma4UnifiedAssistantForCausalLM",
 }
 _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
     "gemma4_unified",
+    "gemma4_assistant",
     "gemma4_unified_assistant",
 }
 
@@ -457,6 +459,11 @@ def get_transformers_tier(model_name: str) -> str:
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
+    if (
+        "assistant" in lowered
+        and ("gemma-4" in lowered or "gemma4" in lowered)
+    ):
+        return "510"
     if any(sub in lowered for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS):
         return "510"
     if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):

@@ -303,6 +303,23 @@ class TestCheckConfigNeeds510:
 
         assert _check_config_needs_510(str(tmp_path)) is True
 
+    def test_gemma4_assistant_architecture(self, tmp_path: Path):
+        """Assistant Gemma 4 configs should return True."""
+        cfg = {
+            "architectures": ["Gemma4AssistantForCausalLM"],
+            "model_type": "gemma4_assistant",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_assistant_model_type_only(self, tmp_path: Path):
+        """Assistant Gemma 4 model_type should return True."""
+        cfg = {"model_type": "gemma4_assistant"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
     def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
         """Older Gemma 4 config should stay on the 550 tier."""
         cfg = {
@@ -360,6 +377,9 @@ class TestGetTransformersTier:
     def test_gemma4_12b_substring_returns_510(self):
         assert get_transformers_tier("unsloth/gemma-4-12b-it") == "510"
 
+    def test_gemma4_assistant_substring_returns_510(self):
+        assert get_transformers_tier("google/gemma-4-E2B-it-assistant") == "510"
+
     def test_gemma4_alt_substring_returns_550(self):
         assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
 
@@ -378,6 +398,16 @@ class TestGetTransformersTier:
         cfg = {
             "architectures": ["Gemma4UnifiedForConditionalGeneration"],
             "model_type": "gemma4_unified",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_gemma4_assistant_config_json_returns_510(self, tmp_path: Path):
+        """Local checkpoint with Gemma4 Assistant architecture → 510."""
+        cfg = {
+            "architectures": ["Gemma4AssistantForCausalLM"],
+            "model_type": "gemma4_assistant",
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
