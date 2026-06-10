@@ -12,17 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for ``unsloth/models/_uma_safetensors.py`` -- the unified-memory
-(integrated GPU) safetensors clone-then-move fast load.
+"""Unit tests for the UMA safetensors clone-then-move fast load.
 
-The module is loaded in isolation (its only imports are ``os``, ``functools``,
-``torch``), and ``transformers.modeling_utils`` is faked via ``sys.modules`` so
-no heavy transformers import is needed. The CUDA clone-and-move correctness
-check runs only when a GPU is present; everything else (gating, CPU passthrough,
-idempotency, opt-out) is GPU-free. The integrated-GPU gate is evaluated lazily
-inside the wrapper (never at install time, which would initialize CUDA at
-import), so the wrapper installs everywhere and passes through when the gate
-is off.
+The module is loaded in isolation with ``transformers.modeling_utils`` faked
+via ``sys.modules``. The CUDA correctness check needs a GPU; gating, CPU
+passthrough, idempotency and opt-out are GPU-free. The integrated-GPU gate is
+lazy (wrapper-time, not install-time), so the wrapper installs everywhere and
+passes through when the gate is off.
 """
 
 from __future__ import annotations

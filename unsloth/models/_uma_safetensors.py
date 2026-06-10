@@ -14,20 +14,13 @@
 
 """Faster safetensors weight loading on unified-memory (integrated) GPUs.
 
-On unified-memory GPUs (AMD APUs / "Strix Halo", NVIDIA GB10 "Spark", Intel
-iGPUs) the GPU shares the system memory pool. PyTorch's fast pinned-DMA
-host -> device path does not recognize the Rust-allocated, mmap-backed buffers
-that ``safetensors`` hands back, so a *direct* safetensors GPU load
-(``safe_open(..., device=<cuda>)``) drops onto a slow per-tensor copy that, on
-unified memory, additionally triggers page-attribute changes and page faults.
-
-Cloning each tensor into a normal torch CPU allocation first and *then* moving
-it to the GPU puts the copy back on the fast path. The data, dtype and final
-device are unchanged, so model outputs are bit-identical -- only *how* the bytes
-reach the GPU changes.
-
-This module is intentionally dependency-light (``os``, ``functools``, ``torch``)
-so it can be imported and unit-tested in isolation.
+On UMA GPUs (AMD APUs, NVIDIA GB10 Spark, Intel iGPUs) a direct
+``safe_open(..., device=<cuda>)`` misses torch's fast pinned-DMA path because
+the mmap-backed safetensors buffers aren't recognized, falling to a slow
+per-tensor copy with page faults. Cloning each tensor into a normal torch CPU
+allocation and then moving it restores the fast path -- bit-identical outputs,
+only the transfer mechanism changes. Dependency-light (os/functools/torch) so
+it unit-tests in isolation.
 """
 
 import os
@@ -43,16 +36,11 @@ __all__ = [
 
 @functools.lru_cache(maxsize = None)
 def is_integrated_unified_memory_gpu():
-    """True only when every visible CUDA/HIP device is an integrated
-    (unified-memory) GPU -- an APU / iGPU / Spark-class part that shares the
-    system memory pool.
+    """True only when EVERY visible CUDA/HIP device is integrated (UMA).
 
-    Discrete GPUs report ``is_integrated == 0`` so this is a strict ``False``
-    there (their pinned-DMA path already works -- no change, no regression). We
-    require *all* visible devices to be integrated so a mixed discrete+iGPU box
-    is left alone too. Uses the standard device property
-    (``cudaDeviceProp.integrated`` / ``hipDeviceProp_t.integrated``). Overridable
-    for testing via ``UNSLOTH_FORCE_UMA=1`` (force on) / ``=0`` (force off).
+    Uses the standard ``is_integrated`` device property; discrete GPUs and
+    mixed discrete+iGPU boxes return False (their pinned-DMA path already
+    works). Test override: ``UNSLOTH_FORCE_UMA=1`` / ``=0``.
     """
     _force = os.environ.get("UNSLOTH_FORCE_UMA")
     if _force == "1":
@@ -89,32 +77,21 @@ def _is_cuda_target(device):
 
 
 def patch_unified_memory_safetensors_load():
-    """Clone-then-move safetensors weights on unified-memory GPUs.
+    """Wrap ``transformers.modeling_utils.safe_open``: CUDA-target shard loads
+    open on CPU, then each tensor is ``.clone()``-d and ``.to(device)``-moved,
+    restoring the fast DMA path UMA misses. Bit-identical outputs.
 
-    Wraps ``transformers.modeling_utils.safe_open`` so that, when transformers
-    asks it to load a shard directly onto a CUDA/HIP device, the shard is opened
-    on CPU and each tensor is ``.clone()``-d into a normal torch allocation
-    before ``.to(device)``. This restores the fast host -> device DMA path that
-    the mmap-backed safetensors buffers otherwise miss on unified memory.
+    Gated to integrated GPUs only (no-op on discrete/CPU/XPU/MLX); intercepts
+    ``framework="pt"`` CUDA targets only; idempotent (``_unsloth_uma_clone``);
+    opt out with ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
 
-    Accuracy-neutral: data, dtype and final device are unchanged, so outputs are
-    bit-identical (verified ``max|logit diff| == 0``). Strictly gated to
-    integrated/unified-memory GPUs (:func:`is_integrated_unified_memory_gpu`) --
-    a hard no-op on discrete NVIDIA/AMD GPUs, CPU, XPU and MLX. Only intercepts
-    ``framework="pt"`` CUDA-device targets; CPU / disk-offload loads
-    (``device="cpu"``) are left untouched. Idempotent (marked via
-    ``_unsloth_uma_clone``); opt out with ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
+    The gate runs LAZILY inside the wrapper, never at install: probing device
+    properties here would init CUDA during ``import unsloth`` -- breaking fork
+    multiprocessing, preempting ``patch_dgx_spark_memory_config``'s allocator
+    config, and taxing CPU-only imports. At first CUDA-target ``safe_open`` the
+    caller is initializing CUDA anyway, so the lru-cached query is free.
 
-    The integrated-GPU gate is evaluated LAZILY inside the wrapper on the first
-    CUDA-target shard load, never here: querying device properties at install
-    time would initialize the CUDA context during ``import unsloth``, which (a)
-    breaks ``fork``-based multiprocessing, (b) runs before
-    ``patch_dgx_spark_memory_config`` can set ``PYTORCH_CUDA_ALLOC_CONF`` on
-    Spark, defeating that patch, and (c) charges every import a CUDA context
-    even for CPU-only use. By the time a CUDA-target ``safe_open`` happens the
-    caller is initializing CUDA anyway, so the (lru-cached) gate query is free.
-
-    Returns ``True`` if the wrapper was installed, else ``False``.
+    Returns ``True`` if the wrapper was installed.
     """
     if os.environ.get("UNSLOTH_DISABLE_UMA_CLONE_LOAD") == "1":
         return False
