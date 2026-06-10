@@ -1234,8 +1234,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             (
                 f
                 for f in _iter_gguf_files(p)
-                if not _is_mmproj(f.name)
-                and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
+                if not _is_mmproj(f.name) and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
             ),
             key = lambda f: f.stat().st_size,
             reverse = True,
