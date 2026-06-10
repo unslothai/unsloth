@@ -3877,6 +3877,21 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
         )
 
 
+def replace_install_dir(src: Path, dst: Path) -> None:
+    """Activate a directory by renaming ``src`` onto ``dst``.
+
+    ``os.replace`` is attempted first as the fast path. On Windows ARM64 the
+    antivirus scanner can transiently hold a freshly extracted DLL open at the
+    moment ``MoveFileEx`` runs, surfacing as ``[WinError 5] Access is denied``;
+    a file-by-file copy bypasses the rename entirely.
+    """
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.copytree(src, dst, dirs_exist_ok = True)
+        shutil.rmtree(src, ignore_errors = True)
+
+
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
     rollback_dir: Path | None = None
     failed_dir: Path | None = None
@@ -3884,11 +3899,11 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         if install_dir.exists():
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            os.replace(install_dir, rollback_dir)
+            replace_install_dir(install_dir, rollback_dir)
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
-        os.replace(staging_dir, install_dir)
+        replace_install_dir(staging_dir, install_dir)
         log(f"activated staged install at {install_dir}")
         log(f"confirming activated install tree at {install_dir}")
         confirm_install_tree(install_dir, host)
