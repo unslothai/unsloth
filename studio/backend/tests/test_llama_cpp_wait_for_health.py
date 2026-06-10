@@ -207,8 +207,7 @@ class TestRetryLogFilenameUnique:
 
     def test_log_name_includes_attempt_index(self):
         src = (
-            Path(__file__).resolve().parent.parent
-            / "core" / "inference" / "llama_cpp.py"
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
         assert "-try{_spawn_attempt}.log" in src
 
