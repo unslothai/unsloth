@@ -722,6 +722,9 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
+        # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled
+        patch_compiling_bitsandbytes()
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
