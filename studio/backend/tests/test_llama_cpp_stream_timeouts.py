@@ -44,9 +44,7 @@ def test_iter_text_cancellable_raises_after_inter_token_stall(monkeypatch):
     times = iter([0.0, 1.0, 122.0])
     monkeypatch.setattr(llama_cpp.time, "monotonic", lambda: next(times))
 
-    iterator = LlamaCppBackend._iter_text_cancellable(
-        _FakeResponse(), stall_timeout_s = 120.0
-    )
+    iterator = LlamaCppBackend._iter_text_cancellable(_FakeResponse(), stall_timeout_s = 120.0)
 
     assert next(iterator) == "data: first-token\n"
     with pytest.raises(httpx.ReadTimeout, match = "stopped producing tokens"):

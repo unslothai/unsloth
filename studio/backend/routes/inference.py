@@ -152,10 +152,7 @@ def _friendly_error(exc: Exception, timeout_phase: str = "first_token") -> str:
                 f"Timed out waiting for an available model-server connection within {timeout_label}. "
                 "Another generation may still be running -- stop it or try again shortly."
             )
-        return (
-            f"The model server did not respond within {timeout_label}. "
-            "Try again shortly."
-        )
+        return f"The model server did not respond within {timeout_label}. Try again shortly."
     # httpx transport failures from the async pass-through helpers. Any
     # RequestError subclass (ConnectError, ReadError, RemoteProtocolError,
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
@@ -4655,9 +4652,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            )
+            resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
         if resp.status_code != 200:
             raise _openai_passthrough_error(resp.status_code, resp.text)
@@ -4695,9 +4690,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-        )
+        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     return Response(
         content = resp.content,
         status_code = resp.status_code,
@@ -6517,9 +6510,7 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-        )
+        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -7008,9 +6999,7 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            )
+            resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     except httpx.RequestError as e:
         # llama-server subprocess crashed / starting / unreachable. Surface the
         # same friendly message the sync chat path emits so operators don't see

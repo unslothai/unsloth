@@ -4507,15 +4507,11 @@ class LlamaCppBackend:
                     if now - started_at >= _DEFAULT_FIRST_TOKEN_TIMEOUT_S:
                         raise
                 elif now - last_chunk_at >= stall_timeout_s:
-                    raise httpx.ReadTimeout(
-                        "The model stopped producing tokens mid-response."
-                    )
+                    raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
                 continue
 
     @staticmethod
-    def _set_stream_read_timeout(
-        response: "httpx.Response", read_timeout_s: float
-    ) -> None:
+    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
         """Shorten httpx's post-header read timeout for stream polling.
 
         The request uses a long read timeout so llama-server can spend

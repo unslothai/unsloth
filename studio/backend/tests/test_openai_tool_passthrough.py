@@ -779,9 +779,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_after_stream_started_mapped_as_stall(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "stopped producing tokens" in _friendly_error(
-            exc, timeout_phase = "stream"
-        )
+        assert "stopped producing tokens" in _friendly_error(exc, timeout_phase = "stream")
 
     def test_timeout_siblings_are_not_reported_as_crashes(self):
         timeout_types = (
