@@ -7,6 +7,7 @@ import {
   fileToBase64,
 } from "@/lib/audio-utils";
 import type {
+  Attachment,
   AttachmentAdapter,
   CompleteAttachment,
   PendingAttachment,
@@ -29,6 +30,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
   // extension. No .webm extension: it would claim video/webm files; real
   // audio webm (MediaRecorder) always reports the audio/webm MIME.
   accept = `${AUDIO_ACCEPT},audio/x-m4a,.wav,.mp3,.m4a,.ogg,.oga,.flac`;
+  private readonly attachmentIds = new Set<string>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const state = useChatRuntimeStore.getState();
@@ -51,9 +53,16 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
       toast.error(sizeReason);
       throw new Error(sizeReason);
     }
+    if (this.attachmentIds.size > 0 || state.pendingAudioBase64) {
+      const duplicateReason = "Only one audio file can be attached per message.";
+      toast.error(duplicateReason);
+      throw new Error(duplicateReason);
+    }
 
+    const id = newAttachmentId();
+    this.attachmentIds.add(id);
     return {
-      id: newAttachmentId(),
+      id,
       type: "file",
       name: file.name,
       contentType: file.type,
@@ -63,20 +72,25 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const base64 = await fileToBase64(attachment.file);
-    // Backend takes raw base64; format only satisfies the part type.
-    const format = attachment.contentType === "audio/mpeg" ? "mp3" : "wav";
-    return {
-      id: attachment.id,
-      type: "file",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "audio", audio: { data: base64, format } }],
-      status: { type: "complete" },
-    };
+    try {
+      const base64 = await fileToBase64(attachment.file);
+      // Backend takes raw base64; format only satisfies the part type.
+      const format = attachment.contentType === "audio/mpeg" ? "mp3" : "wav";
+      return {
+        id: attachment.id,
+        type: "file",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [{ type: "audio", audio: { data: base64, format } }],
+        status: { type: "complete" },
+      };
+    } finally {
+      this.attachmentIds.delete(attachment.id);
+    }
   }
 
-  remove(): Promise<void> {
+  remove(attachment: Attachment): Promise<void> {
+    this.attachmentIds.delete(attachment.id);
     return Promise.resolve();
   }
 }

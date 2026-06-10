@@ -2071,6 +2071,8 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 _MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
 _MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
 _MAX_AUDIO_SECONDS = 30 * 60
+_WAV_HEADER_BYTES = 44
+_MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
 
 def _sniff_audio_container(raw: bytes) -> Optional[str]:
@@ -2109,6 +2111,46 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
         wf.setframerate(int(sample_rate))
         wf.writeframes(pcm.tobytes())
     return buf.getvalue()
+
+
+def _resample_mono_linear(
+    arr: np.ndarray,
+    source_rate: int,
+    target_rate: int,
+) -> np.ndarray:
+    """Small numpy-only resampler for upload size limiting."""
+    if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
+        return arr
+    duration = len(arr) / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    if target_len == len(arr):
+        return arr
+    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
+    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
+    return np.interp(target_x, source_x, arr).astype(np.float32)
+
+
+def _fit_transcoded_audio_to_wav_cap(
+    arr: np.ndarray,
+    sample_rate: int,
+) -> tuple[np.ndarray, int]:
+    """Downsample only when needed so transcoded WAV stays within the upload cap."""
+    if sample_rate <= 0:
+        raise ValueError("decoded audio has an invalid sample rate")
+    wav_bytes = _WAV_HEADER_BYTES + len(arr) * 2
+    if wav_bytes <= _MAX_AUDIO_RAW_BYTES:
+        return arr, sample_rate
+
+    duration = len(arr) / float(sample_rate)
+    max_samples = max(1, (_MAX_AUDIO_RAW_BYTES - _WAV_HEADER_BYTES) // 2)
+    target_rate = int(max_samples // duration)
+    if target_rate < _MIN_TRANSCODE_AUDIO_SAMPLE_RATE:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    target_rate = min(sample_rate, target_rate)
+    fitted = _resample_mono_linear(arr, sample_rate, target_rate)
+    if _WAV_HEADER_BYTES + len(fitted) * 2 > _MAX_AUDIO_RAW_BYTES:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    return fitted, target_rate
 
 
 def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
@@ -2171,6 +2213,7 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
         return b64, passthrough
 
     arr, sr = _decode_audio_mono(raw)
+    arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
