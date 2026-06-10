@@ -2246,11 +2246,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out semantics as the library patch.
             try:
                 import platform as _plat
+
                 _spark_smi = False
                 if _plat.machine().lower() in ("aarch64", "arm64"):
                     _smi = _sp.run(
                         ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                        capture_output = True, text = True, timeout = 5,
+                        capture_output = True,
+                        text = True,
+                        timeout = 5,
                     )
                     _names_u = (_smi.stdout or "").upper()
                     _spark_smi = any(
@@ -2260,8 +2263,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
                     if "expandable_segments" not in _conf:
                         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
-                            (_conf + "," if _conf else "") + "expandable_segments:True"
-                        )
+                            _conf + "," if _conf else ""
+                        ) + "expandable_segments:True"
             except Exception:
                 pass
             import torch as _torch_mem
