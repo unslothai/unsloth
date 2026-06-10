@@ -459,10 +459,7 @@ def get_transformers_tier(model_name: str) -> str:
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
-    if (
-        "assistant" in lowered
-        and ("gemma-4" in lowered or "gemma4" in lowered)
-    ):
+    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
         return "510"
     if any(sub in lowered for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS):
         return "510"
