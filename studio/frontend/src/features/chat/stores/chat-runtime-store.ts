@@ -331,7 +331,9 @@ export function readPersistedSpeculativeType(): string {
 }
 
 // MTP / null / unknown values are left unwritten so they stay session-only.
-function saveSpeculativeType(value: string | null): void {
+// Called from the load path so only an applied preference is persisted, not an
+// unapplied dropdown edit the user might Reset or abandon before Apply.
+export function saveSpeculativeType(value: string | null): void {
   if (value && PERSISTED_SPEC_MODES.has(value)) {
     saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
   }
@@ -1150,11 +1152,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) =>
-    set(() => {
-      saveSpeculativeType(speculativeType);
-      return { speculativeType };
-    }),
+  setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>

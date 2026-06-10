@@ -29,6 +29,7 @@ import {
   readPersistedSpeculativeType,
   type ReasoningEffort,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -643,14 +644,13 @@ export function useChatModelRuntime() {
             // On a model switch, fall back to the persisted standing
             // preference rather than null so a per-session forced MTP mode
             // can't follow the user onto a model without an MTP head.
-            // spec_draft_n_max is MTP-only and always resets. Seed the loaded
-            // shadows to the same pref so the settings sheet doesn't flash a
-            // spurious dirty/Apply state mid-switch until the load reports back.
+            // spec_draft_n_max is MTP-only and always resets. The loaded
+            // shadows stay null so a failed-switch rollback's refresh() still
+            // re-hydrates the backend's actual spec mode.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
-              const persistedSpec = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
-                speculativeType: persistedSpec,
-                loadedSpeculativeType: persistedSpec,
+                speculativeType: readPersistedSpeculativeType(),
+                loadedSpeculativeType: null,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
@@ -696,6 +696,11 @@ export function useChatModelRuntime() {
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
+            // The load applied this spec mode, so persist the user's standing
+            // preference now (the requested intent, not the resolved echo;
+            // saveSpeculativeType keeps only the universal auto/ngram/off).
+            saveSpeculativeType(speculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
