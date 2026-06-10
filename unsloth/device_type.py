@@ -52,11 +52,8 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
-    # Test-only CPU fallback. Short-circuits the detection chain so the
-    # rest of the function -- and every DEVICE_TYPE == "cuda" branch in
-    # the codebase -- behaves identically to a real CUDA host. The env
-    # var is read exactly once per process because get_device_type is
-    # @functools.cache'd, so production hosts pay no runtime cost.
+    # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda"
+    # branch behaves identically. Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
     if _IS_MLX:
@@ -70,9 +67,7 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError(
-                "Unsloth cannot find any torch accelerator? You need a GPU."
-            )
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -80,9 +75,7 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
-    )
+    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 
 
 DEVICE_TYPE: str = get_device_type()
@@ -141,7 +134,6 @@ if DEVICE_TYPE == "hip":
             try:
                 # Pre-quantized bitsandbytes models use blocksize 64, so we need to check the GPU
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64
-
                 ALLOW_PREQUANTIZED_MODELS = not ROCM_WARP_SIZE_64
             except Exception as e:
                 print(
@@ -153,8 +145,5 @@ if DEVICE_TYPE == "hip":
                 ALLOW_BITSANDBYTES = False
         elif ALLOW_BITSANDBYTES:
             from bitsandbytes.nn.modules import Params4bit
-
-            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(
-                Params4bit
-            ):
+            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False

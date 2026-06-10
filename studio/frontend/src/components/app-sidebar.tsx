@@ -47,8 +47,11 @@ import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
   CursorInfo02Icon,
+  DashboardCircleIcon,
   Delete02Icon,
+  Download01Icon,
   DownloadSquare01Icon,
+  Upload01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderExportIcon,
@@ -65,6 +68,17 @@ import {
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  exportConversationRawJsonl,
+  exportConversationCsv,
+  exportConversationShareGPT,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  importConversationsFromFile,
+  EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   Tooltip,
   TooltipContent,
@@ -138,11 +152,8 @@ function getTourId(pathname: string): string | null {
   return null;
 }
 
-// Hugeicons' TestTube01Icon ships with two interior bubbles (paths #4
-// and #5 of the 5-path definition). Slicing to the first three paths
-// keeps the test-tube outline + horizontal cap + liquid line, dropping
-// the bubbles. The original export stays untouched, and HugeiconsIcon
-// renders this trimmed array exactly the same way.
+// TestTube01Icon's last 2 paths are interior bubbles; slice to the first
+// 3 (outline + cap + liquid line) to drop them. Original export untouched.
 const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
@@ -247,6 +258,41 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
+
+  const recentsImportInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleImportToRecents(file: File) {
+    try {
+      const count = await importConversationsFromFile(file, null);
+      if (count === 0) {
+        toast.info("No conversations found in file.");
+      } else {
+        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to Recents.`);
+      }
+    } catch {
+      toast.error("Import failed.");
+    }
+  }
+
+  async function handleBulkExport(scope: "recents" | "all", fmt: ConvExportFormat, merged: boolean) {
+    try {
+      const threads = await listStoredChatThreads({
+        includeArchived: false,
+        ...(scope === "recents" ? { projectId: null } : {}),
+      });
+      const ids = [...new Set(threads.map((t) => t.id))];
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
   const [trainOpen, setTrainOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
@@ -261,11 +307,11 @@ export function AppSidebar() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Bottom fade hides at the very bottom (and for short, non-scrolling lists)
-  // so the last row isn't washed out - Gemini-style.
+  // Bottom fade hides at the very bottom / for short lists so the last row
+  // isn't washed out (Gemini-style).
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Driven only from onScroll + a content-change effect below. Deliberately NO
-  // ResizeObserver: its callback-driven setState created a render loop (React
+  // Driven only from onScroll + a content-change effect below. No
+  // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
   const syncScrollState = (el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
@@ -311,10 +357,9 @@ export function AppSidebar() {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
-  // Recompute the bottom-fade state on mount and whenever the list height can
-  // change (items load, sections collapse/expand, route switches the visible
-  // list) - onScroll never fires for short, non-scrolling lists. Guarded
-  // setState below means this can't loop even if a dep is a fresh reference.
+  // Recompute bottom-fade on mount and whenever list height can change
+  // (items load, sections toggle, route switch) - onScroll never fires for
+  // short, non-scrolling lists. Guarded setState below can't loop.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -647,6 +692,35 @@ export function AppSidebar() {
                 ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Export</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                {[
+                  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                  { label: "CSV", fn: exportConversationCsv },
+                  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+                ].map(({ label, fn }) => (
+                  <DropdownMenuItem
+                    key={label}
+                    onSelect={async () => {
+                      try {
+                        const ids = item.type === "single"
+                          ? [item.id]
+                          : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+                        await Promise.all(ids.map((id) => fn(id)));
+                      } catch {
+                        toast.error("Export failed.");
+                      }
+                    }}
+                  >
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               variant="destructive"
               onSelect={() => setConfirmingDelete({ kind: "chat", item })}
@@ -662,6 +736,18 @@ export function AppSidebar() {
 
   return (
     <>
+    {/* Hidden file inputs for chat import */}
+    <input
+      ref={recentsImportInputRef}
+      type="file"
+      accept=".jsonl,.ndjson,.csv"
+      className="hidden"
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        if (file) void handleImportToRecents(file);
+        e.target.value = "";
+      }}
+    />
     <Sidebar
       collapsible="icon"
       variant="sidebar"
@@ -761,9 +847,8 @@ export function AppSidebar() {
               label={t("shell.navigation.search")}
               active={false}
               onClick={() => {
-                // Search is read-only over chat history and never runs
-                // inference, so it stays available while training (unlike
-                // New chat, which is gated on `chatDisabled`).
+                // Search is read-only and never runs inference, so it stays
+                // available while training (unlike New chat, gated on chatDisabled).
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
               }}
@@ -796,8 +881,16 @@ export function AppSidebar() {
                   closeMobileIfOpen();
                 }}
               />
-              {/* Train has its own labelled section when expanded; surface it as
-                  a plain icon here only while the sidebar is collapsed. */}
+              <NavItem
+                icon={DashboardCircleIcon}
+                label={t("shell.navigation.hub")}
+                active={pathname === "/hub" || pathname.startsWith("/hub/")}
+                onClick={() => {
+                  navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+              />
+              {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
                 icon={TestTubeOutlineIcon}
                 label={t("shell.navigation.train")}
@@ -868,10 +961,68 @@ export function AppSidebar() {
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                </CollapsibleTrigger>
+                <div className="flex w-full items-center group/sb-collap">
+                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
+                    {t("shell.navigation.recents")}
+                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  </CollapsibleTrigger>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="ml-auto flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-0"
+                        title="Export recents"
+                      >
+                        <MoreHorizontalIcon className="size-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="bottom" align="start" className="w-56">
+                      <DropdownMenuItem onSelect={() => recentsImportInputRef.current?.click()}>
+                        <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                        Import chats
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                          Export Recents
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
+                              {label} — combined
+                            </DropdownMenuItem>
+                          ))}
+                          <DropdownMenuSeparator />
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
+                              {label} — per chat
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                          Export Recents + Projects
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
+                              {label} — combined
+                            </DropdownMenuItem>
+                          ))}
+                          <DropdownMenuSeparator />
+                          {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                            <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
+                              {label} — per chat
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="px-2">
@@ -899,12 +1050,10 @@ export function AppSidebar() {
               <SidebarGroupContent className="px-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
-                    // An explicit sidebar selection wins. Otherwise highlight
-                    // the active job only while the "Current Run" tab is the
-                    // view - that covers a live run (it auto-switches there) and
-                    // a just-finished/errored run you're still viewing, while
-                    // keeping the Configure tab unhighlighted even though
-                    // `activeJobId` stays pinned to the last job.
+                    // Explicit selection wins. Otherwise highlight the active
+                    // job only while the "Current Run" tab is the view, keeping
+                    // the Configure tab unhighlighted even though activeJobId
+                    // stays pinned to the last job.
                     const isActiveRun =
                       selectedHistoryRunId != null
                         ? run.id === selectedHistoryRunId
@@ -988,10 +1137,9 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
-        {/* Fade above the profile box, shown only while there's more list below
-            the fold; at the very bottom (or for short lists) it fades out so the
-            last row shows fully (Gemini-style). `right-2` keeps it clear of the
-            8px scrollbar gutter so the scrollbar isn't faded out. */}
+        {/* Fade above the profile box, shown only when there's more list below
+            the fold; at the bottom (or short lists) it fades so the last row
+            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
         <div
           aria-hidden="true"
           className={cn(
@@ -1082,8 +1230,8 @@ export function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={async () => {
-                    // Best-effort server-side revocation; ignore network errors
-                    // so the local clear path still runs and the user lands on /login.
+                    // Best-effort server revocation; ignore network errors so
+                    // the local clear still runs and the user lands on /login.
                     try {
                       await logout();
                     } catch {
