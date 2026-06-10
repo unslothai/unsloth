@@ -488,6 +488,7 @@ class TestDetectRocmVersion:
     def test_dpkg_fallback_without_hipconfig(self, tmp_path):
         """dpkg rocm-core fallback works when amd-smi and hipconfig are absent
         (regression: a shadowing local re import raised UnboundLocalError)."""
+
         def which(cmd):
             return "/usr/bin/dpkg-query" if cmd == "dpkg-query" else None
 
