@@ -98,6 +98,15 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
+        # File-based runs (powershell -File / .\install.ps1) exit 0 on a plain return no
+        # matter what $LASTEXITCODE says, so automation would treat a fatal failure as a
+        # completed install -- `exit` carries the code there. Under `irm | iex` there is
+        # no $PSCommandPath and `exit` would kill the user's shell, so fall through and
+        # let the caller return (the message is the signal).
+        if ($PSCommandPath) {
+            exit $Code
+        }
+        $global:LASTEXITCODE = $Code
     }
 
     # ── Parse flags ──
@@ -1549,9 +1558,12 @@ shell.Run cmd, 0, False
             }
             # WSL2 must be enabled + the machine rebooted before anything can install. Restore any
             # rolled-aside previous venv and signal not-complete so -File callers don't treat this
-            # deferred state as a successful install.
+            # deferred state as a successful install. A plain return exits 0 for `-File` runs no
+            # matter what $LASTEXITCODE says, so exit explicitly there; under `irm | iex`
+            # ($PSCommandPath empty) exit would kill the user's shell, so return instead.
             Restore-StudioVenvRollback
             $global:LASTEXITCODE = 1
+            if ($PSCommandPath) { exit 1 }
             return
         }
 
@@ -1801,8 +1813,11 @@ shell.Run cmd, 0, False
                         # Step 2: anchor the build to a detached Windows process. A WSL-side `nohup &`
                         # doesn't survive -- WSL stops the VM when the launching session exits, killing
                         # the build. A persistent Windows-side wsl.exe (Start-Process, no -Wait) keeps the
-                        # VM up for the whole build while install.ps1 returns. All tokens are space-free.
-                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
+                        # VM up for the whole build while install.ps1 returns. PS 5.1's Start-Process
+                        # joins -ArgumentList with spaces WITHOUT quoting, so a spaced distro name would
+                        # split after -d -- pass $_distroArg (pre-quoted only when spaced; wsl.exe
+                        # rejects a quoted space-free name). All other tokens are space-free.
+                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $_distroArg, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
                         substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $_distroArg -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
@@ -1823,9 +1838,10 @@ shell.Run cmd, 0, False
         }
         # WSL GPU install failed (torch.cuda unavailable). Restore any rolled-aside previous venv so
         # a reinstall-over-existing isn't left worse off, and report non-zero so -File callers don't
-        # treat a broken install as success.
+        # treat a broken install as success (plain return exits 0 for -File; iex must not exit).
         Restore-StudioVenvRollback
         $global:LASTEXITCODE = 1
+        if ($PSCommandPath) { exit 1 }
         return
     }
 
