@@ -147,13 +147,13 @@ def test_download_sets_user_agent(monkeypatch, tmp_path):
         def __exit__(self, *a):
             return False
 
-        def read(self, n=-1):
+        def read(self, n = -1):
             if self._sent:
                 return b""
             self._sent = True
             return b"payload"
 
-    def fake_urlopen(req, timeout=None):
+    def fake_urlopen(req, timeout = None):
         captured["ua"] = req.get_header("User-agent")
         return _Resp()
 
