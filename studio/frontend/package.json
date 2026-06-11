@@ -40,6 +40,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-router": "1.169.2",
     "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "3.13.25",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
@@ -67,6 +68,7 @@
     "react": "^19.2.4",
     "react-day-picker": "^9.13.2",
     "react-dom": "^19.2.4",
+    "react-pdf": "10.4.1",
     "react-resizable-panels": "^4.6.4",
     "recharts": "3.7.0",
     "shadcn": "^4.2.0",
@@ -106,5 +108,10 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
     "vite": "^8.0.1"
+  },
+  "allowScripts": {
+    "@biomejs/biome@1.9.4": true,
+    "msw@2.14.3": true,
+    "fsevents": true
   }
 }

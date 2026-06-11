@@ -48,16 +48,14 @@ function Tooltip({
   }, []);
 
   return (
-    <TooltipProvider>
-      <TooltipToggleCtx.Provider value={toggle}>
-        <TooltipPrimitive.Root
-          data-slot="tooltip"
-          open={isControlled ? controlledOpen : clickOpen || undefined}
-          onOpenChange={onOpenChange}
-          {...props}
-        />
-      </TooltipToggleCtx.Provider>
-    </TooltipProvider>
+    <TooltipToggleCtx.Provider value={toggle}>
+      <TooltipPrimitive.Root
+        data-slot="tooltip"
+        open={isControlled ? controlledOpen : clickOpen || undefined}
+        onOpenChange={onOpenChange}
+        {...props}
+      />
+    </TooltipToggleCtx.Provider>
   );
 }
 
