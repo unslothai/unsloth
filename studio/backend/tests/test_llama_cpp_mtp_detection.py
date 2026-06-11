@@ -1399,3 +1399,54 @@ def test_auto_mode_drops_mtp_exempts_separate_drafter():
     assert _auto_mode_drops_mtp("auto", 2.0, has_separate_drafter = True) is False
     assert _auto_mode_drops_mtp("auto", 4.0) is False
     assert _auto_mode_drops_mtp("mtp", 2.0) is False  # forced engages regardless
+
+
+# ── spec_fallback_reason (drives the "update llama.cpp" UI hint) ───────
+
+
+def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
+    # Outdated llama-server with no mtp token: a forced MTP request can't emit
+    # draft-mtp, so record the reason for the UI update affordance.
+    backend = _resolver_backend(monkeypatch, mtp_token = None)
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_spec_fallback_reason_reset_on_off(monkeypatch):
+    # A subsequent off load must clear a stale reason.
+    backend = _resolver_backend(monkeypatch, mtp_token = None)
+    backend._build_speculative_flags(
+        speculative_type = "mtp", spec_draft_n_max = None, extra_args = None,
+        model_identifier = _MTP_MODEL, model_path = None, gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+    backend._build_speculative_flags(
+        speculative_type = "off", spec_draft_n_max = None, extra_args = None,
+        model_identifier = _MTP_MODEL, model_path = None, gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None

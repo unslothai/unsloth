@@ -50,6 +50,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -62,7 +63,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
@@ -487,6 +488,27 @@ export function ChatSettingsPanel({
   const loadedSpeculativeType = useChatRuntimeStore(
     (s) => s.loadedSpeculativeType,
   );
+  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
+  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  const mtpUpdatable =
+    specFallbackReason === "binary_no_mtp" ||
+    specFallbackReason === "binary_outdated";
+  const {
+    status: llamaUpdateStatus,
+    applying: llamaUpdating,
+    apply: applyLlamaUpdate,
+  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  const handleMtpUpdate = useCallback(async () => {
+    const result = await applyLlamaUpdate();
+    if (result.ok) {
+      toast.success(
+        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+      );
+    } else {
+      toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
+    }
+  }, [applyLlamaUpdate]);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
   const loadedSpecDraftNMax = useChatRuntimeStore(
@@ -923,6 +945,29 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {specFallbackReason &&
+                  (speculativeType === "auto" ||
+                    speculativeType === "mtp" ||
+                    speculativeType === "mtp+ngram") && (
+                    <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                      <p>
+                        {specFallbackReason === "runtime_error"
+                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                          : "MTP is not available in the installed llama.cpp build, so this model is running without it. Update llama.cpp to enable it."}
+                      </p>
+                      {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                        <Button
+                          size="sm"
+                          className="corner-squircle mt-2 h-7 text-[12px]"
+                          onClick={handleMtpUpdate}
+                          disabled={llamaUpdating}
+                          data-test-id="mtp-update-button"
+                        >
+                          {llamaUpdating ? "Updating..." : "Update llama.cpp"}
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 {(speculativeType === "mtp" ||
                   speculativeType === "mtp+ngram") && (
                   <div className="flex items-center justify-between gap-3">
