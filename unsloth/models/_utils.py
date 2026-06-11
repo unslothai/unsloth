@@ -1318,7 +1318,28 @@ if DEVICE_TYPE == "cuda":
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = True
+    # RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900) lacks the bf16
+    # dot-product intrinsic (%llvm.amdgcn.fdot2.bf16.bf16) used by some Triton
+    # kernels. Mark bf16 as unsupported on those GPUs so unsloth's kernel
+    # selector falls back to fp16 paths for both loading and generation.
+    # All other ROCm GPUs (RDNA3+, CDNA) keep bf16 enabled.
+    # Detection uses gcnArchName from torch device properties -- no subprocess,
+    # no extra HIP context initialization, safe to call at import time.
+    _RDNA2_GFX = frozenset(
+        {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
+    )
+    try:
+        _hip_arch = ""
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            _props = torch.cuda.get_device_properties(0)
+            # Try known attribute spellings across ROCm torch versions
+            for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                _hip_arch = getattr(_props, _attr, "").lower()
+                if _hip_arch:
+                    break
+        SUPPORTS_BFLOAT16 = _hip_arch not in _RDNA2_GFX if _hip_arch else True
+    except Exception:
+        SUPPORTS_BFLOAT16 = True  # assume supported if arch detection fails
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:

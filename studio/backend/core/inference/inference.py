@@ -417,20 +417,55 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
-            # Same load path for base models and LoRA adapters
+            # AMD RDNA2 (gfx1030-gfx1036, e.g. RX 6600) crashes with an LLVM error
+            # ("Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16") at the first
+            # bf16 kernel dispatch when dtype=None lets unsloth auto-pick bf16.
+            # models/_utils.py now sets SUPPORTS_BFLOAT16=False for RDNA2 so
+            # unsloth's loader and Triton kernels use fp16 paths. This block is
+            # belt-and-suspenders: forces dtype=float16 at load time in case arch
+            # detection failed at import time and the flag stayed True.
+            # Uses gcnArchName from already-initialized torch device properties
+            # (no subprocess, no extra HIP context initialization).
+            _is_rocm = (
+                bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
+            )
+            _is_rdna2 = False
+            if _is_rocm:
+                _RDNA2_GFX = frozenset(
+                    {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
+                )
+                try:
+                    _hip_arch = ""
+                    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                        _props = torch.cuda.get_device_properties(0)
+                        for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                            _hip_arch = getattr(_props, _attr, "").lower()
+                            if _hip_arch:
+                                break
+                    _is_rdna2 = _hip_arch in _RDNA2_GFX
+                except Exception:
+                    pass
+            _auto_dtype = torch.float16 if _is_rdna2 else None
+            _effective_dtype = dtype if dtype is not None else _auto_dtype
+
+            # Load model - same approach for base models and LoRA adapters
             if config.is_vision:
                 # Vision model (or vision LoRA adapter)
                 model, processor = FastVisionModel.from_pretrained(
                     model_name = config.path,  # Can be base model OR LoRA adapter path
                     max_seq_length = max_seq_length,
-                    dtype = dtype,
+                    dtype = _effective_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
 
-                FastVisionModel.for_inference(model)
+                # Skip unsloth's Triton kernel patching on RDNA2: the compiled
+                # HIP modules fail to load on gfx103x, crashing with
+                # "Module not initialized". Stock transformers inference works.
+                if not _is_rdna2:
+                    FastVisionModel.for_inference(model)
 
                 # FastVisionModel may return a raw tokenizer instead of a
                 # Processor for some models (e.g. Gemma-3); load the real one.
@@ -472,14 +507,18 @@ class InferenceBackend:
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name = config.path,  # Can be base model OR LoRA adapter path
                     max_seq_length = max_seq_length,
-                    dtype = dtype,
+                    dtype = _effective_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
 
-                FastLanguageModel.for_inference(model)
+                # Skip unsloth's Triton kernel patching on RDNA2: the compiled
+                # HIP modules fail to load on gfx103x, crashing with
+                # "Module not initialized". Stock transformers inference works.
+                if not _is_rdna2:
+                    FastLanguageModel.for_inference(model)
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
