@@ -64,7 +64,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         }}
       />
       {empty ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-[26px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
+        <div className="flex flex-col items-center justify-center gap-3 rounded-[26px] bg-muted/30 px-6 py-16 text-center">
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
               icon={FolderAddIcon}
@@ -95,7 +95,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-4 rounded-[26px] border border-border/50 bg-muted/30 px-6 py-5">
+        <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
               {documents.length === 1
