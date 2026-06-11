@@ -2268,6 +2268,18 @@ class FastLlamaModel:
         user_config = kwargs.pop("config", None)
         if user_config is not None:
             model_config = user_config
+            # model_name may have been remapped to a prequantized repo whose
+            # checkpoint needs its quantization_config; graft it onto the user
+            # config or the 4bit weights load without their quant state.
+            if getattr(model_config, "quantization_config", None) is None:
+                _checkpoint_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    attn_implementation = "sdpa",
+                )
+                _checkpoint_quant = getattr(_checkpoint_config, "quantization_config", None)
+                if _checkpoint_quant is not None:
+                    model_config.quantization_config = _checkpoint_quant
         else:
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -2433,17 +2445,33 @@ class FastLlamaModel:
                 fast_inference = fast_inference,
             )
         elif not fast_inference:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map = device_map,
-                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                # quantization_config     = bnb_config,
-                token = token,
-                max_position_embeddings = max_position_embeddings,
-                trust_remote_code = trust_remote_code,
-                attn_implementation = preferred_attn_impl,
-                **kwargs,
-            )
+            if user_config is not None:
+                # Transformers 5.x @strict model init rejects extra kwargs next
+                # to config=; set the override on the config and pass the single
+                # config object through so user overrides reach the actual load.
+                if max_position_embeddings is not None:
+                    model_config.max_position_embeddings = max_position_embeddings
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    config = model_config,
+                    device_map = device_map,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    attn_implementation = preferred_attn_impl,
+                    **kwargs,
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map = device_map,
+                    # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
+                    # quantization_config     = bnb_config,
+                    token = token,
+                    max_position_embeddings = max_position_embeddings,
+                    trust_remote_code = trust_remote_code,
+                    attn_implementation = preferred_attn_impl,
+                    **kwargs,
+                )
             # Attach dispatch hooks for bnb multi-device loads.
             from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
