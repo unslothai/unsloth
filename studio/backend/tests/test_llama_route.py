@@ -28,19 +28,32 @@ pytest.importorskip("fastapi")
 
 
 def _load_route():
-    auth_pkg = types.ModuleType("auth")
-    auth_pkg.__path__ = []
-    auth_mod = types.ModuleType("auth.authentication")
-    auth_mod.get_current_subject = lambda: "test"
-    sys.modules.setdefault("auth", auth_pkg)
-    sys.modules["auth.authentication"] = auth_mod
-    spec = importlib.util.spec_from_file_location(
-        "llama_route_under_test", str(_BACKEND / "routes" / "llama.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["llama_route_under_test"] = mod  # so pydantic resolves forward refs
-    spec.loader.exec_module(mod)
-    return mod
+    # Prefer the real auth module; stub it only in minimal envs where its
+    # deps are absent. Stubs are popped after the load so they never leak
+    # into sys.modules for the rest of the suite.
+    stubbed = []
+    try:
+        import auth.authentication  # noqa: F401
+    except Exception:
+        auth_pkg = types.ModuleType("auth")
+        auth_pkg.__path__ = []
+        auth_mod = types.ModuleType("auth.authentication")
+        auth_mod.get_current_subject = lambda: "test"
+        for name, stub in (("auth", auth_pkg), ("auth.authentication", auth_mod)):
+            if name not in sys.modules:
+                sys.modules[name] = stub
+                stubbed.append(name)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "llama_route_under_test", str(_BACKEND / "routes" / "llama.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["llama_route_under_test"] = mod  # so pydantic resolves forward refs
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        for name in stubbed:
+            sys.modules.pop(name, None)
 
 
 rl = _load_route()
