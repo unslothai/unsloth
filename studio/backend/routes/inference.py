@@ -7849,7 +7849,11 @@ async def extract_document_endpoint(
                     {extraction_task, disconnect_task},
                     return_when = asyncio.FIRST_COMPLETED,
                 )
-                if extraction_task not in done and disconnect_task in done and disconnect_task.result():
+                if (
+                    extraction_task not in done
+                    and disconnect_task in done
+                    and disconnect_task.result()
+                ):
                     await _drain_cancelled_extraction(cancel_event, extraction_task)
                 result = await extraction_task
             except _DOC_EXTRACTION_HTTP_ERRORS as exc:
