@@ -384,12 +384,22 @@ def _patch_encoder_layernorms(model):
 
     count = 0
     for name, module in model.named_modules():
-        if isinstance(module, nn.LayerNorm) and module.elementwise_affine:
+        # The Triton kernel reads the bias unconditionally, so biasless LayerNorms
+        # (e.g. ModernBERT with norm_bias = False) must keep their native forward.
+        if (
+            isinstance(module, nn.LayerNorm)
+            and module.elementwise_affine
+            and module.bias is not None
+        ):
             if not hasattr(module, "_original_forward"):
                 module._original_forward = module.forward
 
             def make_fast_forward(ln_module):
                 def _fast_forward(X):
+                    # Fast_Layernorm.backward returns no dW/db, so trainable
+                    # LayerNorms (e.g. full finetuning) take the native forward.
+                    if ln_module.weight.requires_grad or ln_module.bias.requires_grad:
+                        return ln_module._original_forward(X)
                     return fast_layernorm(ln_module, X)
 
                 return _fast_forward
@@ -746,6 +756,11 @@ def _patch_fused_pooling(st_model):
     if last_ln is None:
         return False
 
+    # fused_layernorm_mean_pool requires a bias (e.g. ModernBERT defaults to
+    # norm_bias = False, leaving every LayerNorm biasless).
+    if last_ln.bias is None:
+        return False
+
     stored_ln = last_ln
 
     # replace last LayerNorm with Identity
@@ -1040,7 +1055,8 @@ def _xformers_blockdiag_causal_attention(
     if n_rep > 1:
         key = _repeat_kv_heads(key, n_rep)
         value = _repeat_kv_heads(value, n_rep)
-    # xformers wants (B,T,H,D); dropout matches sdpa tiers (unsafe pre-Ampere -> 0).
+    # xformers wants (B,T,H,D). Pre-Ampere can't apply attention dropout (p forced
+    # to 0); _patch_unpadded_decoder routes dropout > 0 models to the sdpa tier there.
     # Reuse the bias built once per forward (identical across layers).
     bias = getattr(module.config, "_unsloth_blockdiag_bias", None)
     if bias is None:
@@ -1459,11 +1475,21 @@ def _patch_unpadded_decoder(st_model):
         attn_impl = getattr(actual_model.config, "_attn_implementation", None)
         _native_varlen = attn_impl == "flash_attention_2"
         _gc_active = _is_gradient_checkpointing(actual_model)
+        # Pre-Ampere xformers can't apply attention dropout (the dispatcher forces
+        # p = 0); route models with live attention dropout to the sdpa block-mask
+        # tier, which applies it on the attention probs. (This forward only runs
+        # in training, so a nonzero config dropout is live.)
+        _attn_dropout = float(
+            getattr(actual_model.config, "attention_dropout", 0.0)
+            or getattr(actual_model.config, "attn_pdrop", 0.0)
+            or 0.0
+        )
         _use_xformers = (
             _XFORMERS_CAUSAL_REGISTERED
             and not _native_varlen
             and not _gc_active
             and attention_mask.is_cuda
+            and (_XFORMERS_DROPOUT_SAFE or _attn_dropout == 0.0)
         )
         _use_blockmask = not _native_varlen and not _use_xformers
         if _use_blockmask and total_tokens > _UNPAD_DECODER_MAX_PACKED_TOKENS:
@@ -1864,7 +1890,9 @@ def _save_pretrained_torchao(
                 transformer_dir,
                 tokenizer = tokenizer,
                 torchao_config = torchao_config,
-                push_to_hub = push_to_hub,
+                # The inner saver treats its save dir as a hub repo id when pushing;
+                # convert locally and upload the assembled ST folder below instead.
+                push_to_hub = False,
                 token = token,
             )
 
@@ -1896,6 +1924,25 @@ def _save_pretrained_torchao(
         FastSentenceTransformer._add_unsloth_branding(save_directory)
     except:
         pass
+
+    if push_to_hub:
+        if token is None:
+            token = get_token()
+
+        api = HfApi(token = token)
+        repo_id = save_directory  # save_directory doubles as the repo id when pushing
+
+        print(f"Unsloth: Uploading to {repo_id}...")
+        try:
+            api.create_repo(repo_id = repo_id, exist_ok = True)
+            api.upload_folder(
+                folder_path = save_directory,
+                repo_id = repo_id,
+                commit_message = "Upload torchao quantized SentenceTransformer model",
+            )
+            print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
+        except Exception as e:
+            print(f"Unsloth: Upload failed: {e}")
 
 
 # Thanks Etherl:
