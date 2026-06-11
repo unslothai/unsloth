@@ -1858,7 +1858,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
-    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint = resume_from_checkpoint)
 
     # ── 12. Save and finalize ──
     if trainer.stop_requested and not _stop_save[0]:
