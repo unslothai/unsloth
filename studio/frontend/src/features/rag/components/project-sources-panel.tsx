@@ -23,19 +23,23 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     lister,
   );
 
+  // Invalidate the sources probe before and after each mutation: a chat sent
+  // mid-upload must not cache "no sources" for the probe's TTL.
   const handleFiles = useCallback(
-    (files: File[]) => {
+    async (files: File[]) => {
       if (files.length === 0) return;
       invalidateProjectSources(projectId);
-      void upload(files);
+      await upload(files);
+      invalidateProjectSources(projectId);
     },
     [projectId, upload],
   );
 
   const handleRemove = useCallback(
-    (documentId: string) => {
+    async (documentId: string) => {
       invalidateProjectSources(projectId);
-      void remove(documentId);
+      await remove(documentId);
+      invalidateProjectSources(projectId);
     },
     [projectId, remove],
   );
@@ -48,7 +52,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        handleFiles(Array.from(e.dataTransfer.files ?? []));
+        void handleFiles(Array.from(e.dataTransfer.files ?? []));
       }}
     >
       <input
@@ -60,7 +64,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          handleFiles(files);
+          void handleFiles(files);
         }}
       />
       {empty ? (
@@ -122,7 +126,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 onRemove={
                   doc.id.startsWith("pending_")
                     ? undefined
-                    : () => handleRemove(doc.id)
+                    : () => void handleRemove(doc.id)
                 }
               />
             ))}

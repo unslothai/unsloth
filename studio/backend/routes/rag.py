@@ -253,6 +253,10 @@ async def upload_project_document(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
+    from storage.studio_db import get_chat_project
+
+    if get_chat_project(project_id) is None:
+        raise HTTPException(status_code = 404, detail = "Project not found")
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
         store.project_scope(project_id),

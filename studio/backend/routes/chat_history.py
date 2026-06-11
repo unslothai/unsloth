@@ -334,14 +334,28 @@ async def delete_project(
         )
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
+        import os
+
         from storage import rag_db
         if rag_db.RAG_AVAILABLE:
             from core.rag import store as rag_store
+            from utils.paths import rag_uploads_root
+
+            uploads = os.path.realpath(str(rag_uploads_root()))
             conn = rag_db.get_connection()
             try:
                 scope = rag_store.project_scope(project_id)
                 for doc in rag_store.list_documents(conn, scope):
+                    full = rag_store.get_document(conn, doc["id"]) or {}
                     rag_store.delete_document(conn, doc["id"])
+                    stored = full.get("stored_path")
+                    # Also remove the uploaded file; confined to the uploads root.
+                    if (
+                        stored
+                        and os.path.isfile(stored)
+                        and os.path.realpath(stored).startswith(uploads)
+                    ):
+                        os.remove(stored)
             finally:
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion

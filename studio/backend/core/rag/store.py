@@ -239,6 +239,8 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     if not mq:
         return []
     scopes = _scopes(scope)
+    if not scopes:
+        return []
     placeholders = ",".join("?" * len(scopes))
     rows = conn.execute(
         f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
