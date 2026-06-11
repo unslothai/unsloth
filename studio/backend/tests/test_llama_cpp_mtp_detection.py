@@ -1219,3 +1219,183 @@ def test_forced_mtp_ngram_on_non_mtp_model_keeps_ngram(monkeypatch):
     assert parsed.get("--spec-type") == "ngram-mod"
     assert backend.speculative_type == "ngram-mod"
     assert backend.requested_spec_mode == "mtp+ngram"
+
+
+# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+#
+# Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
+# gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay
+# resolver-only (122B-A10B / 397B-A17B). Expectations are derived from the
+# same signals load_model uses -- _extract_model_size_b (active>effective>
+# total, so E2B->2, A3B->3, A10B->10, A17B->17), _is_mtp_model_name, and the
+# separate-drafter flag -- so each row mirrors what the loader emits on a
+# B200 (GPU default, n=2). gemma carries no -MTP marker; its MTP comes from
+# the root mtp-*.gguf drafter, modelled here by passing mtp_draft_path.
+#
+# auto_spec: "draft-mtp" = head/drafter engaged (>=3B MTP, or any size with a
+# separate drafter); "ngram-mod" = embedded sub-3B drop (zero-VRAM); None =
+# non-MTP -> llama-server --spec-default.
+
+_GEMMA_DRAFTER = "/snap/mtp-gemma-4-it.gguf"  # stand-in separate drafter
+
+_REAL_REPO_MATRIX = [
+    # repo, drafter, auto_spec, auto_ngram_knobs
+    ("unsloth/Qwen3.5-0.8B-MTP-GGUF", None, "ngram-mod", True),
+    ("unsloth/Qwen3.5-2B-MTP-GGUF", None, "ngram-mod", True),
+    ("unsloth/Qwen3.5-4B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-9B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-27B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-35B-A3B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-122B-A10B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-397B-A17B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-0.8B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-2B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-4B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-9B-GGUF", None, None, False),
+    # E2B is 2B but ships a separate drafter -> exempt from the sub-3B drop.
+    ("unsloth/gemma-4-E2B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E4B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-12b-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-26B-A4B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-31B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E2B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E4B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-12b-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-26B-A4B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-31B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+]
+
+
+def _resolve_real(monkeypatch, repo, drafter, mode):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = repo,
+        model_path = None,
+        gpus = True,  # B200 default
+        binary = "/fake/llama-server",
+        mtp_draft_path = drafter,
+    )
+    return backend, flags, _flags_dict(flags)
+
+
+@pytest.mark.parametrize(
+    "repo, drafter, auto_spec, auto_ngram_knobs",
+    _REAL_REPO_MATRIX,
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngram_knobs):
+    # Auto is the default mode the dropdown ships with.
+    backend, flags, parsed = _resolve_real(monkeypatch, repo, drafter, "auto")
+    if auto_spec is None:
+        # Non-MTP: no draft-mtp, hand off to llama-server's own default.
+        assert "--spec-type" not in parsed
+        assert "--spec-default" in flags
+        assert backend.speculative_type == "default"
+    elif auto_spec == "draft-mtp":
+        assert parsed.get("--spec-type") == "draft-mtp"
+        assert parsed.get("--spec-draft-n-max") == "2"
+        assert backend.speculative_type == "draft-mtp"
+        # gemma ships a separate drafter; Qwen bakes the head into the GGUF.
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
+    else:  # ngram-mod (sub-3B MTP drop)
+        assert parsed.get("--spec-type") == "ngram-mod"
+        assert "--model-draft" not in parsed  # draft head dropped
+        assert backend.speculative_type == "ngram-mod"
+    if auto_ngram_knobs:
+        assert "--spec-ngram-mod-n-match" in parsed
+    assert backend.requested_spec_mode == "auto"
+
+
+@pytest.mark.parametrize(
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_off_emits_nothing(monkeypatch, repo, drafter):
+    # Off must suppress speculative decoding for every family.
+    backend, flags, _ = _resolve_real(monkeypatch, repo, drafter, "off")
+    assert flags == []
+    assert backend.speculative_type is None
+    assert backend.requested_spec_mode == "off"
+
+
+@pytest.mark.parametrize(
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_forced_mtp_never_aborts(monkeypatch, repo, drafter):
+    # Forcing MTP on the dropdown: real MTP models (name marker or separate
+    # drafter) engage draft-mtp even below 3B; non-MTP models default back to
+    # --spec-default instead of emitting a draft-mtp llama-server will abort on.
+    backend, flags, parsed = _resolve_real(monkeypatch, repo, drafter, "mtp")
+    is_real_mtp = _is_mtp_model_name(repo) or bool(drafter)
+    if is_real_mtp:
+        assert parsed.get("--spec-type") == "draft-mtp"
+        assert backend.speculative_type == "draft-mtp"
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
+    else:
+        assert "--spec-type" not in parsed
+        assert "--spec-default" in flags
+        assert backend.speculative_type == "default"
+    assert backend.requested_spec_mode == "mtp"
+
+
+# ── Sub-3B separate-drafter exemption (Gemma) ─────────────────────────
+#
+# The sub-3B MTP drop is an embedded-head cost (Qwen). A separate drafter
+# (Gemma's root mtp-*.gguf) is a cheap standalone model that wins below 3B
+# (B200 Q4_K_XL: gemma-4-E2B draft-mtp n=2 = 1.21x vs OFF), so it is exempt.
+
+
+def test_sub3b_gemma_separate_drafter_engages_mtp(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF",  # 2B
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = "/snap/mtp-gemma-4-E2B-it.gguf",  # separate drafter
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert parsed.get("--model-draft") == "/snap/mtp-gemma-4-E2B-it.gguf"
+    assert "--spec-ngram-mod-n-match" not in parsed
+    assert backend.speculative_type == "draft-mtp"
+
+
+def test_sub3b_qwen_embedded_head_still_drops_to_ngram(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",  # 2B, embedded head
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,  # no separate drafter
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.speculative_type == "ngram-mod"
+
+
+def test_auto_mode_drops_mtp_exempts_separate_drafter():
+    from core.inference.llama_cpp import _auto_mode_drops_mtp
+
+    assert _auto_mode_drops_mtp("auto", 2.0) is True
+    assert _auto_mode_drops_mtp("auto", 2.0, has_separate_drafter = True) is False
+    assert _auto_mode_drops_mtp("auto", 4.0) is False
+    assert _auto_mode_drops_mtp("mtp", 2.0) is False  # forced engages regardless
