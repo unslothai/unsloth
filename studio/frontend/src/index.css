@@ -1523,6 +1523,20 @@
 		}
 	}
 
+	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
+	.loading-bar-slide {
+		animation: loading-bar-slide 1.3s ease-in-out infinite;
+	}
+
+	@keyframes loading-bar-slide {
+		from {
+			transform: translateX(-110%);
+		}
+		to {
+			transform: translateX(420%);
+		}
+	}
+
 	@keyframes artifact-loading-line {
 		0% {
 			transform: translate3d(-125%, 0, 0) scaleX(0.78);
@@ -2107,6 +2121,11 @@
 
 	.generated-image-loading-dot {
 		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.loading-bar-slide {
+		animation-duration: 1.3s !important;
 		animation-iteration-count: infinite !important;
 	}
 

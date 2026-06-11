@@ -95,17 +95,25 @@ export function LlamaUpdateBanner({
               </p>
             </div>
 
-            <div className="mt-3 flex items-center gap-2">
-              <Button
-                size="sm"
-                className="h-auto rounded-full px-3.5 py-2 text-[13px]"
-                onClick={handleUpdate}
-                disabled={applying}
-                data-testid="llama-update-button"
+            {applying ? (
+              <div
+                className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
+                role="progressbar"
+                aria-label="Updating llama.cpp"
+                data-testid="llama-update-progress"
               >
-                {applying ? "Updating..." : "Update"}
-              </Button>
-              {applying ? null : (
+                <div className="loading-bar-slide h-full w-1/3 rounded-full bg-primary" />
+              </div>
+            ) : (
+              <div className="mt-3 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  className="h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  onClick={handleUpdate}
+                  data-testid="llama-update-button"
+                >
+                  Update
+                </Button>
                 <Button
                   size="sm"
                   variant="ghost"
@@ -115,8 +123,8 @@ export function LlamaUpdateBanner({
                 >
                   Remind me later
                 </Button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </motion.div>
       ) : null}

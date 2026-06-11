@@ -83,7 +83,7 @@ export const en = {
     title: "Settings",
     dialog: {
       title: "Settings",
-      description: "Manage your Unsloth Studio preferences.",
+      description: "Manage your Unsloth preferences.",
       closeAriaLabel: "Close settings",
     },
     tabs: {
@@ -97,7 +97,7 @@ export const en = {
     },
     general: {
       title: "General",
-      description: "Global preferences for Unsloth Studio.",
+      description: "Global preferences for Unsloth.",
       account: "Account",
       huggingFaceToken: "Hugging Face token",
       huggingFaceTokenDescription:
@@ -112,7 +112,7 @@ export const en = {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
         preloadOnStartupDescription:
-          "Download and cache the AI Assist helper model in the background when Unsloth starts. Off by default; AI Assist can still download it on demand when clicked.",
+          "Download the AI Assist helper model in the background on startup. Off by default; AI Assist can still fetch it on demand.",
         disabledByEnv:
           "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
         loadError: "Failed to load Helper LLM settings.",
@@ -122,34 +122,34 @@ export const en = {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
-          "Show a notification when a newer llama.cpp build is available. Turn off if you only use Unsloth for training.",
+          "Notify when a newer llama.cpp build is available. Turn off if you only train.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:
-        "Open the setup wizard again without changing your account.",
+        "Reopen the setup wizard without changing your account.",
       startOnboardingAction: "Start onboarding",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
         maxUploadSizeDescription:
-          "Applies to training dataset uploads. Default is {defaultSize} MB.",
+          "Default is {defaultSize} MB.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
         description:
-          "Clears local-only preferences. Chats, API access, and DB-backed settings are not affected.",
+          "Clears local-only preferences. Chats, API access, and DB-backed settings are kept.",
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
         confirmDescription:
-          "This clears local-only preferences, then reloads Unsloth. Chats, API access, and DB-backed settings are not affected.",
+          "Clears local-only preferences and reloads Unsloth. Chats, API access, and DB-backed settings are kept.",
         confirmAction: "Reset and reload",
       },
     },
     profile: {
       title: "Profile",
-      description: "Update how your profile appears in Unsloth.",
+      description: "How your profile appears in Unsloth.",
       changePicture: "Change profile picture",
       displayName: "Display name",
       nameSaved: "Profile name saved",
@@ -169,7 +169,7 @@ export const en = {
       theme: {
         title: "Theme",
         label: "Color scheme",
-        description: "Choose light, dark, or follow your system.",
+        description: "Light, dark, or follow your system.",
         system: "System",
         light: "Light",
         dark: "Dark",
@@ -177,7 +177,7 @@ export const en = {
       language: {
         title: "Language",
         label: "Display language",
-        description: "Choose the language used by Unsloth.",
+        description: "The language used by Unsloth.",
       },
       layout: {
         title: "Layout",
@@ -188,25 +188,25 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage your chat history stored on this device.",
+      description: "Manage chat history stored on this device.",
       artifacts: {
         title: "Artifacts",
         collapseHtmlBlocks: "Collapse HTML blocks",
         collapseHtmlBlocksDescription:
-          "Artifacts mode collapses full HTML fallback automatically. Turn this on to also collapse full fenced HTML documents when Artifacts is off.",
+          "Artifacts mode collapses full HTML automatically. Turn on to also collapse fenced HTML documents when Artifacts is off.",
         allowNetworkAccess: "Allow artifact network access",
         allowNetworkAccessDescription:
-          "Let artifact previews load scripts, styles, fonts, media, fetch, and WebSocket resources from HTTP(S) CDNs. Keep off for fully offline previews.",
+          "Let artifact previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
       },
       data: "Data",
       exportHistory: "Export chat history",
       exportHistoryDescription:
-        "Download all chats and messages as a JSON file.",
+        "Download all chats and messages as JSON.",
       exportAction: "Export",
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents only, or Recents plus project chats, as Raw JSONL, CSV, or ShareGPT JSONL, combined or one file per chat.",
+        "Download Recents or Recents plus project chats as Raw JSONL, CSV, or ShareGPT JSONL, combined or per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -214,14 +214,14 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Add conversations from a JSONL, NDJSON, or CSV export to Recents.",
+        "Import a JSONL, NDJSON, or CSV export into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
       importedChatCount: "Imported {count} conversations to Recents.",
       importFailed: "Import failed.",
       clearHistory: "Clear chat history",
-      clearHistoryDescription: "Delete local chat history from this device.",
+      clearHistoryDescription: "Delete chat history from this device.",
       clearAction: "Clear",
       clearAllChats: "Clear all chats",
       clearAllChatsDescription: "Permanently delete every chat on this device.",
@@ -234,7 +234,7 @@ export const en = {
       clearOneChatTitle: "Clear 1 chat?",
       clearChatsTitle: "Clear {count} chats?",
       clearChatsConfirmDescription:
-        "This permanently deletes every chat and message stored on this device. This cannot be undone.",
+        "Permanently deletes every chat on this device. This cannot be undone.",
       clearingAction: "Clearing...",
       clearOneChatAction: "Clear 1 chat",
       clearChatCountAction: "Clear {count} chats",
@@ -257,12 +257,12 @@ export const en = {
     },
     connections: {
       title: "Connections",
-      description: "Manage providers and external service connections.",
+      description: "Manage providers and external connections.",
     },
     apiKeys: {
       title: "API",
       description:
-        "Access Unsloth programmatically via the OpenAI-compatible API.",
+        "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       newBadge: "New",
@@ -302,14 +302,14 @@ export const en = {
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
-        "Applications using this token will immediately lose access. This cannot be undone.",
+        "Apps using this token immediately lose access. This cannot be undone.",
       revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
     },
     about: {
       title: "About",
       description:
-        "Documentation, release notes, feedback, and Unsloth build info.",
+        "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
       updates: "Update",
@@ -324,15 +324,15 @@ export const en = {
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
         studioDescription:
-          "Open source under the GNU Affero General Public License v3.0.",
+          "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Licensed under the Apache License 2.0.",
+        libraryDescription: "Licensed under Apache 2.0.",
       },
       dangerZone: "Danger zone",
       shutDownStudio: "Shut down Unsloth Studio",
       shutDownStudioDescription:
-        "Stops the Unsloth server process and ends your session.",
+        "Stops the Unsloth server and ends your session.",
       shutDown: "Shut down",
       update: {
         title: "Update Unsloth Studio",
@@ -352,14 +352,14 @@ export const en = {
         gitPullCommand: "git pull command",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
-          "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",
+          "Source or VCS package install detected. Reinstall from the original local path or Git URL.",
         repoCheckoutFallback:
-          "If you still have the Unsloth repo checkout, run the local installer from that checkout:",
+          "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
         unknownInstall:
-          "Unsloth could not detect how it was installed. For installer or PyPI installs, use the commands above.",
+          "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:
-          "For local checkout installs, run the local installer from that checkout instead:",
+          "For local checkout installs, run the local installer from that checkout:",
         docs: "Install docs:",
         docsInstall: "Installation",
         docsUpdating: "Updating",
