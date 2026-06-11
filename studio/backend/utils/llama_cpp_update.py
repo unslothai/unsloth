@@ -180,11 +180,12 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
 
 
 def _tag_build_number(tag: Optional[str]) -> Optional[int]:
-    """Integer build from a ``bNNNN`` release tag ('b9585' -> 9585). None when the
-    tag is missing or has no number, so callers fail open (offer nothing)."""
+    """Integer build from a ``bNNNN`` llama.cpp release tag ('b9585' -> 9585).
+    Anchored on the ``b`` prefix so wrapper/date tags do not match a stray number;
+    None when absent, so callers fail open (offer nothing)."""
     if not tag:
         return None
-    m = re.search(r"(\d+)", tag)
+    m = re.search(r"b(\d+)", tag)
     return int(m.group(1)) if m else None
 
 
