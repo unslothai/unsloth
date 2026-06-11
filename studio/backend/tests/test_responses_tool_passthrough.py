@@ -536,9 +536,7 @@ class TestResponsesStreamAdapter:
                 # No reasoning support: the real backend returns None when the
                 # template consumes neither enable_thinking nor preserve_thinking.
                 _request_reasoning_kwargs = (
-                    lambda enable_thinking = None,
-                    reasoning_effort = None,
-                    preserve_thinking = None: None
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
                 ),
             ),
         )
