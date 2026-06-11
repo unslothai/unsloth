@@ -242,6 +242,169 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
     )
 
 
+_OVERFLOW_TRUNCATE_MAX_RETRIES = 3
+# Truncated-prompt share of the real window; the rest is generation headroom
+# so a near-full prompt cannot cut a tool call mid-JSON at the wall.
+_OVERFLOW_PROMPT_TARGET_FRACTION = 0.75
+
+
+def _overflow_truncation_requested(payload) -> bool:
+    """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
+    for clients that cannot send custom fields) opted into truncation."""
+    requested = getattr(payload, "context_overflow", None)
+    if requested is not None:
+        return requested == "truncate_middle"
+    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
+
+
+def _parse_overflow_counts(err_text: str):
+    """(n_prompt_tokens, n_ctx) from an exceed_context_size_error body, or
+    None. Tolerates \\" around keys (body may be a re-wrapped JSON string)."""
+    m_prompt = _re.search(r'n_prompt_tokens\\?"?\s*:\s*(\d+)', err_text)
+    m_ctx = _re.search(r'n_ctx\\?"?\s*:\s*(\d+)', err_text)
+    if m_prompt and m_ctx:
+        return int(m_prompt.group(1)), int(m_ctx.group(1))
+    return None
+
+
+def _estimate_message_tokens(msg: dict) -> int:
+    try:
+        return max(1, len(json.dumps(msg, ensure_ascii = False)) // 4)
+    except Exception:
+        return 1
+
+
+def _truncate_middle_messages(messages: list, keep_ratio: float):
+    """Drop whole turn-groups from the middle of an OpenAI message list.
+
+    Always kept: leading system message(s), the first group (task anchor),
+    and the trailing groups. A group is a user message, or an assistant
+    message plus its following tool results, so surviving tool_calls stay
+    paired with their results as chat templates require.
+    Returns (new_messages, dropped_message_count).
+    """
+    if not messages or keep_ratio >= 1.0:
+        return messages, 0
+
+    head: list = []
+    idx = 0
+    while idx < len(messages) and messages[idx].get("role") in ("system", "developer"):
+        head.append(messages[idx])
+        idx += 1
+
+    groups: list[list] = []
+    for msg in messages[idx:]:
+        role = msg.get("role")
+        if role == "tool" and groups:
+            groups[-1].append(msg)
+        elif role == "tool":
+            groups.append([msg])  # orphan tool result; treat as its own group
+        else:
+            groups.append([msg])
+
+    # Anchor group plus the last 3 groups stay.
+    protected_tail = min(3, max(1, len(groups) - 1))
+    if len(groups) <= 1 + protected_tail:
+        return messages, 0
+
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    target_est = int(total_est * keep_ratio)
+
+    anchor = groups[0]
+    middle = groups[1:-protected_tail]
+    tail = groups[-protected_tail:]
+
+    current_est = total_est
+    kept_middle: list[list] = list(middle)
+    dropped = 0
+    # Drop oldest-first until the estimate fits the target.
+    while kept_middle and current_est > target_est:
+        victim = kept_middle.pop(0)
+        dropped += len(victim)
+        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+
+    if dropped == 0:
+        return messages, 0
+
+    new_messages = head + anchor
+    for grp in kept_middle:
+        new_messages.extend(grp)
+    for grp in tail:
+        new_messages.extend(grp)
+    return new_messages, dropped
+
+
+_CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
+# Generous head+tail first; cut harder if the estimate still misses the target.
+_CLIP_KEEP_CHARS = (1500, 400)
+
+
+def _clip_long_contents(messages: list, target_est: int) -> int:
+    """Clip oversized string contents middle-out until ``target_est`` is met.
+
+    Tool results first, then earlier user turns, the final message last.
+    Message count and roles never change, so tool pairing holds even when
+    group-dropping could not free enough. Returns messages clipped.
+    """
+
+    def _candidates():
+        tools = [m for m in messages if m.get("role") == "tool"]
+        users = [m for m in messages[:-1] if m.get("role") == "user"]
+        last = [messages[-1]] if messages else []
+        return tools + users + last
+
+    clipped = 0
+    for keep in _CLIP_KEEP_CHARS:
+        for msg in _candidates():
+            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+                return clipped
+            content = msg.get("content")
+            if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
+                continue
+            msg["content"] = content[:keep] + _CLIP_MARKER + content[-keep:]
+            clipped += 1
+    return clipped
+
+
+def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
+    """Shrink a passthrough body after an upstream context overflow: drop
+    middle turn-groups, clip still-oversized contents, clamp ``max_tokens``
+    to the generation headroom. Returns False when nothing could shrink."""
+    counts = _parse_overflow_counts(err_text)
+    messages = body.get("messages") or []
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    if counts:
+        n_prompt, n_ctx = counts
+        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        # Scale the server-token target into char-estimate units.
+        target_est = int(total_est * keep_ratio)
+    else:
+        n_ctx = None
+        keep_ratio = 0.6  # no counts in the error; cut conservatively
+        target_est = int(total_est * keep_ratio)
+
+    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
+    if dropped:
+        body["messages"] = new_messages
+    clipped = 0
+    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
+        clipped = _clip_long_contents(body.get("messages") or [], target_est)
+    if not dropped and not clipped:
+        return False
+    if n_ctx:
+        headroom = max(1024, int(n_ctx * (1.0 - _OVERFLOW_PROMPT_TARGET_FRACTION)))
+        cur_max = body.get("max_tokens")
+        body["max_tokens"] = min(cur_max, headroom) if cur_max else headroom
+    logger.warning(
+        "context_overflow=truncate_middle: dropped %d middle messages, clipped "
+        "%d contents (keep_ratio %.2f); retrying within the real window",
+        dropped,
+        clipped,
+        keep_ratio,
+    )
+    return True
+
+
 def _anthropic_stream_error_event(exc):
     """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
     to fall through to a normal message_delta finish. Returns an event only for a
@@ -417,7 +580,6 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
-        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -431,7 +593,6 @@ try:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         detect_mtp_file,
-        extract_model_size_b,
         load_model_defaults,
     )
     from utils.native_path_leases import (
@@ -450,7 +611,6 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
-        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -464,7 +624,6 @@ except ImportError:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         detect_mtp_file,
-        extract_model_size_b,
         load_model_defaults,
     )
     from utils.native_path_leases import (
@@ -1025,14 +1184,15 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
-    # A drafter that appeared next to the loaded weights since the last load
-    # changes the launch command (--model-draft) when the mode can use it;
-    # without this, a duplicate /load is deduped and MTP can't engage short
-    # of an unload. Runs last: it stats the filesystem (two dir scans against
-    # the resolved weight path -- covers local dirs and HF cache snapshots
-    # alike), so every pure-memory comparison above short-circuits first.
-    # Skipped when auto drops MTP anyway (sub-3B) or the user owns
-    # --spec-type, where a drafter changes nothing. Resolve both sides: the
+    # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
+    # next to the loaded weights changes the launch command (--model-draft),
+    # so a duplicate /load must reload rather than dedupe. Always compare the
+    # detected vs stored drafter when the mode can use one and the user does
+    # not own --spec-type: the resolved-path compare is cheap and handles all
+    # four cases (both None -> match; one None -> reload; equal -> match;
+    # different -> reload), including a drafter deleted out from under a
+    # running server. Runs last: it stats the filesystem, so every pure-memory
+    # comparison above short-circuits first. Resolve both sides since the
     # stored launch path may be a snapshot symlink while detect_mtp_file
     # returns the resolved blob.
     if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
@@ -1041,10 +1201,7 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
             if request.llama_extra_args is not None
             else llama_backend.extra_args
         )
-        size_b = extract_model_size_b(llama_backend.model_identifier or "")
-        if not _auto_mode_drops_mtp(req_mode, size_b) and not _extra_args_set_spec_type(
-            effective_extras
-        ):
+        if not _extra_args_set_spec_type(effective_extras):
             detected = detect_mtp_file(llama_backend.gguf_path)
             stored = llama_backend.mtp_draft_path
             try:
@@ -1912,6 +2069,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
+                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
@@ -4461,26 +4619,35 @@ def _openai_model_objects() -> list[dict]:
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
-        models.append(
-            {
-                "id": llama_backend.model_identifier,
-                "object": "model",
-                "created": _created,
-                "owned_by": "local",
-            }
-        )
+        entry = {
+            "id": llama_backend.model_identifier,
+            "object": "model",
+            "created": _created,
+            "owned_by": "local",
+        }
+        # Extension fields: the real per-request window (post /props readback)
+        # so clients can budget/compact against the enforced limit.
+        if llama_backend.context_length:
+            entry["context_length"] = llama_backend.context_length
+        if llama_backend.max_context_length:
+            entry["max_context_length"] = llama_backend.max_context_length
+        models.append(entry)
 
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
-        models.append(
-            {
-                "id": backend.active_model_name,
-                "object": "model",
-                "created": _created,
-                "owned_by": "local",
-            }
+        entry = {
+            "id": backend.active_model_name,
+            "object": "model",
+            "created": _created,
+            "owned_by": "local",
+        }
+        _sf_ctx = getattr(backend, "context_length", None) or getattr(
+            backend, "max_seq_length", None
         )
+        if _sf_ctx:
+            entry["context_length"] = _sf_ctx
+        models.append(entry)
 
     return models
 
@@ -4730,6 +4897,17 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
+def _responses_tool_output_text(output: Union[str, list]) -> str:
+    """Return Chat Completions-safe content for a Responses tool result."""
+    if isinstance(output, str):
+        return output if output.strip() else "(no output)"
+
+    if output:
+        return json.dumps(output)
+
+    return "(no output)"
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
@@ -4789,10 +4967,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
             # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output.
-            output = item.output
-            if not isinstance(output, str):
-                output = json.dumps(output)
+            # a Responses content-array output and keep empty outputs from
+            # tripping the stricter ChatMessage role validator.
+            output = _responses_tool_output_text(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",
@@ -6827,27 +7004,32 @@ async def _openai_passthrough_stream(
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
-        try:
-            req = client.build_request("POST", target_url, json = body)
-            resp = await client.send(req, stream = True)
-        except httpx.RequestError as e:
-            # llama-server subprocess crashed / starting / unreachable.
-            logger.error("openai passthrough stream: upstream unreachable: %s", e)
-            if resp is not None:
+        _truncate_budget = (
+            _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
+        )
+        while True:
+            try:
+                req = client.build_request("POST", target_url, json = body)
+                resp = await client.send(req, stream = True)
+            except httpx.RequestError as e:
+                # llama-server subprocess crashed / starting / unreachable.
+                logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                if resp is not None:
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
                 try:
-                    await resp.aclose()
+                    await client.aclose()
                 except Exception:
                     pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code = 502,
-                detail = _friendly_error(e),
-            )
+                raise HTTPException(
+                    status_code = 502,
+                    detail = _friendly_error(e),
+                )
 
-        if resp.status_code != 200:
+            if resp.status_code == 200:
+                break
             err_bytes = await resp.aread()
             err_text = err_bytes.decode("utf-8", errors = "replace")
             logger.error(
@@ -6860,6 +7042,14 @@ async def _openai_passthrough_stream(
                 await resp.aclose()
             except Exception:
                 pass
+            # Opt-in overflow policy: shrink and retry instead of a fatal 400.
+            if (
+                _truncate_budget > 0
+                and _classify_llama_generation_error(Exception(err_text))
+                and _apply_overflow_truncation(body, err_text)
+            ):
+                _truncate_budget -= 1
+                continue
             try:
                 await client.aclose()
             except Exception:
@@ -6958,20 +7148,33 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
         payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
-    except httpx.RequestError as e:
-        # llama-server subprocess crashed / starting / unreachable. Surface the
-        # same friendly message the sync chat path emits so operators don't see
-        # a bare 500 with no diagnostic.
-        logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
-        raise HTTPException(
-            status_code = 502,
-            detail = _friendly_error(e),
-        )
+    _truncate_budget = (
+        _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
+    )
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(target_url, json = body, timeout = 600)
+        except httpx.RequestError as e:
+            # llama-server subprocess crashed / starting / unreachable. Surface the
+            # same friendly message the sync chat path emits so operators don't see
+            # a bare 500 with no diagnostic.
+            logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            break
+        # Opt-in overflow policy: shrink and retry instead of a fatal 400.
+        if (
+            _truncate_budget > 0
+            and _classify_llama_generation_error(Exception(resp.text))
+            and _apply_overflow_truncation(body, resp.text)
+        ):
+            _truncate_budget -= 1
+            continue
         raise _openai_passthrough_error(resp.status_code, resp.text)
 
     # The guided-decoding fence wraps each choice's JSON content in a

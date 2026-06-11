@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -28,6 +29,7 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
+activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
@@ -204,6 +206,110 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert (install_dir / "convert_hf_to_gguf.py").exists()
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
+
+
+def test_release_asset_download_url():
+    fn = INSTALL_LLAMA_PREBUILT.release_asset_download_url
+    assert fn(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz"
+    ) == (
+        "https://github.com/unslothai/llama.cpp/releases/download/"
+        "b9000-mix-abc1234/llama.cpp-source-commit-deadbeef.tar.gz"
+    )
+    # Any missing component -> None (no asset url, caller falls back to codeload).
+    assert fn(None, "b9000", "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", None, "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", "b9000", None) is None
+
+
+def _mk_source_tarball(path: Path, tag: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        add_bytes_to_tar(
+            archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n"
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+
+
+def test_hydrate_source_tree_prefers_release_asset_for_mix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A mix build's merge commit is in no repo, so the codeload/archive URLs 404.
+    # hydrate must fetch the release asset and never touch codeload.
+    commit = "a" * 40
+    archive_path = tmp_path / "merged-source.tar.gz"
+    _mk_source_tarball(archive_path, f"b9000-mix-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = set(
+        INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+    )
+    seen = []
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        seen.append(url)
+        if url in codeload_urls:
+            raise AssertionError("codeload was hit even though the release asset was available")
+        assert url == asset_url
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert seen == [asset_url]
+    assert (install_dir / "CMakeLists.txt").exists()
+    assert (install_dir / "convert_hf_to_gguf.py").exists()
+
+
+def test_hydrate_source_tree_falls_back_to_codeload_when_asset_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # If the release asset 404s, fall back to codeload/archive (vanilla path).
+    commit = "b" * 40
+    archive_path = tmp_path / "vanilla-source.tar.gz"
+    _mk_source_tarball(archive_path, f"commit-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        if url == asset_url:
+            raise RuntimeError("404 Not Found")
+        assert url in codeload_urls
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert (install_dir / "CMakeLists.txt").exists()
 
 
 def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
@@ -560,6 +666,48 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert "cleaning staging, install, and rollback paths before source build fallback" in output
     assert "removing failed install path" in output
     assert "removing rollback path" in output
+
+
+def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    (staging_dir / "bin").mkdir(parents = True)
+    (staging_dir / "bin" / "ggml-base.dll").write_bytes(b"fake dll")
+    dst = tmp_path / "llama.cpp"
+
+    def denied_replace(src, dst_arg):
+        raise PermissionError(errno.EACCES, "Access is denied", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "bin" / "ggml-base.dll").read_bytes() == b"fake dll"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+def test_activate_staged_dir_reraises_non_busy_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    (staging_dir / "new.txt").write_text("new install\n")
+    dst = tmp_path / "llama.cpp"
+
+    def out_of_space_replace(src, dst_arg):
+        raise OSError(errno.ENOSPC, "No space left on device", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", out_of_space_replace)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        activate_staged_dir(staging_dir, dst)
+
+    assert not dst.exists()
+    assert (staging_dir / "new.txt").read_text() == "new install\n"
 
 
 def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
