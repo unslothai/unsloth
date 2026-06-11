@@ -77,6 +77,7 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         ["node", "O'Reilly"],
         ["node", "C:\\Users\\O'Reilly\\server.js"],
         ["node", "'draft'"],
+        ["node", "'open", "close'"],
         ["node", ""],
     ],
 )
@@ -86,13 +87,11 @@ def test_join_parse_roundtrip_win32(monkeypatch, parts):
     assert mcp_client.parse_stdio_command(joined) == parts
 
 
-def test_parse_manual_single_quoted_windows_command(monkeypatch):
+def test_parse_rejects_manual_single_quoted_windows_executable(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     command = "'C:\\Program Files\\node\\node.exe' server.js"
-    assert mcp_client.parse_stdio_command(command) == [
-        "C:\\Program Files\\node\\node.exe",
-        "server.js",
-    ]
+    with pytest.raises(ValueError):
+        mcp_client.parse_stdio_command(command)
 
 
 def test_parse_windows_apostrophes_as_literals(monkeypatch):
@@ -103,6 +102,13 @@ def test_parse_windows_apostrophes_as_literals(monkeypatch):
         "C:\\Users\\O'Reilly\\server.js",
     ]
     assert mcp_client.parse_stdio_command("node 'draft'") == ["node", "'draft'"]
+    assert mcp_client.parse_stdio_command("node 'open close'") == ["node", "'open", "close'"]
+
+
+def test_parse_rejects_unterminated_windows_double_quote(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    with pytest.raises(ValueError):
+        mcp_client.parse_stdio_command('node "C:\\path with spaces')
 
 
 # ── 2. parse_mcp_config ─────────────────────────────────────────────

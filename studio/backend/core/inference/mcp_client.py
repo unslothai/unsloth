@@ -25,22 +25,13 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
-def _is_single_quote_wrapper(address: str, start: int) -> bool:
-    end = address.find("'", start + 1)
-    if end == -1:
-        return False
-    if end + 1 < len(address) and not address[end + 1].isspace():
-        return False
-    return any(ch.isspace() for ch in address[start + 1 : end])
-
-
 def _split_windows_command_line(address: str) -> list[str]:
     """Parse a Windows command line using the same backslash/quote rules that
     subprocess.list2cmdline() writes. This keeps trailing backslashes before a
     closing quote from being doubled in the resulting argv."""
     parts: list[str] = []
     current: list[str] = []
-    quote_char: str | None = None
+    in_quotes = False
     backslashes = 0
     arg_started = False
     i = 0
@@ -52,34 +43,16 @@ def _split_windows_command_line(address: str) -> list[str]:
             i += 1
             continue
         if ch == '"':
-            if quote_char == "'":
-                current.extend("\\" * backslashes)
-                current.append(ch)
+            current.extend("\\" * (backslashes // 2))
+            if backslashes % 2:
+                current.append('"')
             else:
-                current.extend("\\" * (backslashes // 2))
-                if backslashes % 2:
-                    current.append('"')
-                else:
-                    quote_char = None if quote_char == '"' else '"'
+                in_quotes = not in_quotes
             arg_started = True
             backslashes = 0
             i += 1
             continue
-        if ch == "'":
-            if backslashes:
-                current.extend("\\" * backslashes)
-                arg_started = True
-            if quote_char is None and not arg_started and _is_single_quote_wrapper(address, i):
-                quote_char = "'"
-            elif quote_char == "'":
-                quote_char = None
-            else:
-                current.append(ch)
-            arg_started = True
-            backslashes = 0
-            i += 1
-            continue
-        if ch.isspace() and quote_char is None:
+        if ch.isspace() and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True
@@ -103,6 +76,8 @@ def _split_windows_command_line(address: str) -> list[str]:
     if backslashes:
         current.extend("\\" * backslashes)
         arg_started = True
+    if in_quotes:
+        raise ValueError("No closing quotation")
     if arg_started or current:
         parts.append("".join(current))
     return parts
@@ -112,7 +87,11 @@ def parse_stdio_command(address: str) -> list[str]:
     """Split a stdio command line into argv. Shared by route validation and the
     transport so both agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
-    return shlex.split(address, posix = posix) if posix else _split_windows_command_line(address)
+    if posix:
+        return shlex.split(address, posix = posix)
+    if address.lstrip().startswith("'"):
+        raise ValueError("Single-quoted executables are not supported on Windows")
+    return _split_windows_command_line(address)
 
 
 def join_stdio_command(parts: list[str]) -> str:
