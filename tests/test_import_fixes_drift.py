@@ -651,9 +651,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
                 "accelerate.utils.operations.gather_object",
                 side_effect = mock_gather_object,
             ),
-            mock.patch(
-                "accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather
-            ),
+            mock.patch("accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather),
             mock.patch(
                 "accelerate.utils.operations._gpu_broadcast",
                 side_effect = mock_gpu_broadcast,
@@ -678,9 +676,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
             assert isinstance(res_mixed, dict)
             assert res_mixed["logits"] is e
             # Since num_processes = 2, it should be gathered to [42, 42]
-            assert torch.equal(
-                res_mixed["labels"], torch.tensor([42, 42], device = state.device)
-            )
+            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
 
             # 4. Broadcast with EmptyLogits
             res_broadcast = acc_ops.broadcast(e)
@@ -707,12 +703,10 @@ def test_accelerate_patch_is_idempotent():
     recursively_apply = acc_ops.recursively_apply
     find_device = acc_ops.find_device
     patch_accelerate_recursively_apply()
-    assert acc_ops.recursively_apply is recursively_apply, (
-        "DRIFT DETECTED: recursively_apply was wrapped twice."
-    )
-    assert acc_ops.find_device is find_device, (
-        "DRIFT DETECTED: find_device was wrapped twice."
-    )
+    assert (
+        acc_ops.recursively_apply is recursively_apply
+    ), "DRIFT DETECTED: recursively_apply was wrapped twice."
+    assert acc_ops.find_device is find_device, "DRIFT DETECTED: find_device was wrapped twice."
 
 
 def test_accelerate_find_device_skips_empty_logits():

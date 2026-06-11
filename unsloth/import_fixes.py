@@ -2277,9 +2277,7 @@ def patch_accelerate_recursively_apply():
                 cls = type(data)
                 if cls.__eq__ is object.__eq__:
                     # Debug mode compares gathered metadata across ranks with ==
-                    cls.__eq__ = (
-                        lambda self, other: type(other).__name__ == "EmptyLogits"
-                    )
+                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
                 return data
             return original_recursively_apply(func, data, *args, **kwargs)
 
@@ -2287,10 +2285,7 @@ def patch_accelerate_recursively_apply():
 
         for mod_name, mod in tuple(sys.modules.items()):
             if mod_name.startswith("accelerate") and mod is not None:
-                if (
-                    getattr(mod, "recursively_apply", None)
-                    is original_recursively_apply
-                ):
+                if getattr(mod, "recursively_apply", None) is original_recursively_apply:
                     try:
                         setattr(mod, "recursively_apply", _patched_recursively_apply)
                     except Exception:
@@ -2331,7 +2326,6 @@ def patch_accelerate_recursively_apply():
                 # Debug mode calls find_device(...).type on gather/broadcast inputs
                 try:
                     from accelerate.state import PartialState
-
                     return PartialState().device
                 except Exception:
                     pass
