@@ -39,9 +39,7 @@ def _path_is_in_site_packages(path: Path) -> bool:
 
 
 def _is_source_checkout(repo_root: Path) -> bool:
-    return (repo_root / ".git").exists() and not _path_is_in_site_packages(
-        Path(__file__).resolve()
-    )
+    return (repo_root / ".git").exists() and not _path_is_in_site_packages(Path(__file__).resolve())
 
 
 def _exact_git_studio_tag(repo_root: Path) -> str | None:
@@ -76,8 +74,8 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
 def get_studio_version(repo_root: Path | None = None) -> str:
     """Return the installed Studio release tag for display, or ``dev``.
 
-    This value is intentionally separate from the PyPI ``unsloth`` package
-    version used by update checks. It never performs network requests.
+    Intentionally separate from the PyPI ``unsloth`` package version used by
+    update checks. Never performs network requests.
     """
     resolved_repo_root = repo_root or _repo_root()
 

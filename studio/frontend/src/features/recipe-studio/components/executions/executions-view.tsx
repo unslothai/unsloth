@@ -108,11 +108,9 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
-  // Columns where at least one row has text long enough that it would wrap at
-  // the default narrow width. We give those columns a wider min-width so the
-  // text is readable without clicking anything. The table's wrapper already
-  // scrolls horizontally, so a few wide columns just add a horizontal
-  // scrollbar instead of squeezing everything into the viewport.
+  // Columns with at least one long-text row get a wider min-width so the text
+  // is readable without clicking. The wrapper scrolls horizontally, so wide
+  // columns just add a scrollbar instead of squeezing the viewport.
   const wideColumns = useMemo(() => {
     const result = new Set<string>();
     if (!selectedExecution) {

@@ -48,9 +48,7 @@ def _safe_version(raw):
         return _PkgVersion(match.group(0))
 
 
-# ===========================================================================
 # protobuf
-# ===========================================================================
 
 
 def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
@@ -73,9 +71,7 @@ def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     assert has_get_prototype or has_get_message_class
 
 
-# ===========================================================================
 # datasets
-# ===========================================================================
 
 
 def test_datasets_version_not_in_broken_recursion_range():
@@ -92,9 +88,7 @@ def test_datasets_version_not_in_broken_recursion_range():
     )
 
 
-# ===========================================================================
 # trl
-# ===========================================================================
 
 
 def test_trl_is_x_available_returns_bool_not_tuple():
@@ -110,9 +104,7 @@ def test_trl_is_x_available_returns_bool_not_tuple():
     accessor_names = [
         n
         for n in dir(tiu)
-        if n.startswith("is_")
-        and n.endswith("_available")
-        and callable(getattr(tiu, n, None))
+        if n.startswith("is_") and n.endswith("_available") and callable(getattr(tiu, n, None))
     ]
     assert accessor_names, "trl.import_utils has no is_*_available accessors"
 
@@ -158,9 +150,7 @@ def test_trl_cached_available_flags_are_not_tuples():
     tuple_flags = {
         name: value
         for name, value in vars(tiu).items()
-        if name.startswith("_")
-        and name.endswith("_available")
-        and isinstance(value, tuple)
+        if name.startswith("_") and name.endswith("_available") and isinstance(value, tuple)
     }
     if tuple_flags:
         pytest.fail(
@@ -169,9 +159,7 @@ def test_trl_cached_available_flags_are_not_tuples():
         )
 
 
-# ===========================================================================
 # transformers
-# ===========================================================================
 
 
 def test_pretrained_model_enable_input_require_grads_uses_old_pattern():
@@ -238,9 +226,7 @@ def test_transformers_is_causal_conv1d_available_symbol_present():
         )
 
 
-# ===========================================================================
 # transformers + accelerate (wandb checkers)
-# ===========================================================================
 
 
 def test_transformers_and_accelerate_is_wandb_available_callable():
@@ -270,9 +256,7 @@ def test_transformers_and_accelerate_is_wandb_available_callable():
     )
 
 
-# ===========================================================================
 # peft
-# ===========================================================================
 
 
 def test_peft_transformers_weight_conversion_importable_and_signature():
@@ -290,10 +274,9 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
             "patch_peft_weight_converter_compatibility will silently no-op."
         )
 
-    assert hasattr(twc, "build_peft_weight_mapping"), (
-        "build_peft_weight_mapping vanished from "
-        "peft.utils.transformers_weight_conversion."
-    )
+    assert hasattr(
+        twc, "build_peft_weight_mapping"
+    ), "build_peft_weight_mapping vanished from peft.utils.transformers_weight_conversion."
     sig = inspect.signature(twc.build_peft_weight_mapping)
     expected_params = {"weight_conversions", "adapter_name"}
     actual_params = set(sig.parameters)
@@ -303,9 +286,7 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
     )
 
 
-# ===========================================================================
 # triton
-# ===========================================================================
 
 
 def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
@@ -340,9 +321,7 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
     )
 
 
-# ===========================================================================
 # torch + torchvision pairing table
-# ===========================================================================
 
 
 # Mirrors TORCH_TORCHVISION_COMPAT in torchvision_compatibility_check
@@ -390,9 +369,7 @@ def test_installed_torch_torchvision_pair_is_compatible():
         )
 
     pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
-    is_prerelease = any(t in torch_raw for t in pre_tags) or any(
-        t in tv_raw for t in pre_tags
-    )
+    is_prerelease = any(t in torch_raw for t in pre_tags) or any(t in tv_raw for t in pre_tags)
     is_custom = _is_custom_torch_build(torch_raw) or _is_custom_torch_build(tv_raw)
     if is_prerelease or is_custom:
         pytest.skip(
@@ -408,9 +385,7 @@ def test_installed_torch_torchvision_pair_is_compatible():
     )
 
 
-# ===========================================================================
 # vllm
-# ===========================================================================
 
 
 def test_vllm_guided_decoding_params_or_structured_outputs_present():
@@ -454,9 +429,7 @@ def test_vllm_aimv2_ovis_config_is_past_fix_version():
         )
 
 
-# ===========================================================================
 # huggingface_hub
-# ===========================================================================
 
 
 def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
@@ -484,9 +457,7 @@ def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     )
 
 
-# ===========================================================================
 # torch
-# ===========================================================================
 
 
 def test_torch_nn_init_trunc_normal_exists():
@@ -501,9 +472,7 @@ def test_torch_nn_init_trunc_normal_exists():
     )
 
 
-# ===========================================================================
 # xformers
-# ===========================================================================
 
 
 def test_xformers_is_post_num_splits_key_fix_or_not_installed():
@@ -522,9 +491,7 @@ def test_xformers_is_post_num_splits_key_fix_or_not_installed():
         )
 
 
-# ===========================================================================
 # transformers (PreTrainedModel base import sanity)
-# ===========================================================================
 
 
 def test_transformers_pretrained_model_has_get_input_embeddings():
@@ -540,18 +507,14 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
     )
 
 
-# ===========================================================================
 # accelerate -- ``is_X_available`` API stability used across the fixes
-# ===========================================================================
 
 
-# ===========================================================================
 # transformers LOSS_MAPPING -- patch_loss_functions() coverage
 # Regression for https://github.com/unslothai/unsloth/issues/4188:
 # Qwen3_5ForConditionalGeneration has loss_type='ForConditionalGeneration',
 # a separate LOSS_MAPPING key that was never patched, leaving the model with
 # the stock ForCausalLMLoss which does logits.float() and OOMs on <=24 GB GPUs.
-# ===========================================================================
 
 
 def _reset_loss_mapping(mapping, saved):
@@ -593,9 +556,7 @@ def test_patch_loss_functions_does_not_touch_other_loss_types():
     cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
 
     non_causal_keys = {
-        k
-        for k, v in lu.LOSS_MAPPING.items()
-        if getattr(v, "__name__", "") != "ForCausalLMLoss"
+        k for k, v in lu.LOSS_MAPPING.items() if getattr(v, "__name__", "") != "ForCausalLMLoss"
     }
 
     saved = dict(lu.LOSS_MAPPING)
@@ -623,3 +584,54 @@ def test_accelerate_utils_imports_module_present():
         "accelerate.utils.imports.is_wandb_available is gone; "
         "disable_broken_wandb cannot patch the source module."
     )
+
+
+# ===========================================================================
+# bitsandbytes -- ROCm arch / warp-size detection shape
+# ===========================================================================
+
+
+def test_bitsandbytes_rocm_detection_helpers_recognizable():
+    """``fix_bitsandbytes_rocm_arch_detection`` swaps bnb's ROCm helpers
+    only when they shell out via subprocess and never consult torch device
+    props; a third shape is declined by design, silently restoring Windows
+    ROCm noise. Fail so the sniff gets updated. Reads source, no import."""
+    spec = importlib.util.find_spec("bitsandbytes")
+    if spec is None:
+        pytest.skip("bitsandbytes not installed -- nothing to drift-check.")
+    cuda_specs_path = None
+    for location in spec.submodule_search_locations or []:
+        candidate = os.path.join(location, "cuda_specs.py")
+        if os.path.isfile(candidate):
+            cuda_specs_path = candidate
+            break
+    if cuda_specs_path is None:
+        pytest.skip("bitsandbytes has no cuda_specs.py (pre-ROCm version).")
+
+    import ast
+
+    with open(cuda_specs_path, "r", encoding = "utf-8") as f:
+        source = f.read()
+    helpers = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("get_rocm_gpu_arch", "get_rocm_warpsize")
+    ]
+    if not helpers:
+        pytest.skip("bitsandbytes cuda_specs has no ROCm detection helpers.")
+    for node in helpers:
+        segment = ast.get_source_segment(source, node) or ""
+        recognized = (
+            "subprocess" in segment
+            or "get_device_properties" in segment
+            or "gcnArchName" in segment
+        )
+        if not recognized:
+            pytest.fail(
+                f"DRIFT DETECTED: bitsandbytes.cuda_specs.{node.name} uses "
+                "neither subprocess nor torch device properties; "
+                "fix_bitsandbytes_rocm_arch_detection's shape sniff will "
+                "decline to patch it and Windows ROCm import-time noise / "
+                "wrong ROCM_GPU_ARCH may return."
+            )
