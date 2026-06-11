@@ -1095,6 +1095,20 @@ def commit_source_archive_urls(repo: str, source_commit: str) -> list[str]:
     ]
 
 
+def release_asset_download_url(
+    repo: str | None, release_tag: str | None, asset_name: str | None
+) -> str | None:
+    """Direct download URL for a release asset, or None if any part is missing.
+    A mix build's merged commit is never pushed, so its source tree is only
+    reachable as this asset (codeload would 404 on the merge commit)."""
+    if not repo or not release_tag or not asset_name:
+        return None
+    return (
+        f"https://github.com/{repo}/releases/download/"
+        f"{urllib.parse.quote(release_tag, safe = '')}/{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
 def github_release_assets(repo: str, tag: str) -> dict[str, str]:
     payload = fetch_json(
         f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
@@ -4475,13 +4489,17 @@ def hydrate_source_tree(
     expected_sha256: str | None,
     source_label: str | None = None,
     exact_source: bool = False,
+    asset_url: str | None = None,
 ) -> None:
     archive_path = work_dir / f"llama.cpp-source-{source_ref}.tar.gz"
-    source_urls = (
+    repo_urls = (
         commit_source_archive_urls(source_repo, source_ref)
         if exact_source
         else upstream_source_archive_urls(source_ref)
     )
+    # Prefer the published release asset (the only copy of a mix build's merged
+    # tree); fall back to codeload/archive for vanilla builds whose commit is real.
+    source_urls = ([asset_url] if asset_url else []) + repo_urls
     label = source_label or f"llama.cpp source tree for {source_ref}"
     extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
 
@@ -6384,6 +6402,15 @@ def validate_prebuilt_choice(
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
     )
+    # For an exact (mix) source the merge commit lives only in the release asset,
+    # not in any repo, so fetch the asset directly; codeload stays the fallback.
+    asset_url = (
+        release_asset_download_url(
+            approved_checksums.repo, approved_checksums.release_tag, source_archive.asset_name
+        )
+        if exact_source and source_archive is not None
+        else None
+    )
     if exact_source:
         log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
     else:
@@ -6400,6 +6427,7 @@ def validate_prebuilt_choice(
             else f"llama.cpp source tree for {llama_tag}"
         ),
         exact_source = exact_source,
+        asset_url = asset_url,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)

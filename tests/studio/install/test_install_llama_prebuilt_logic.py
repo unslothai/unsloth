@@ -206,6 +206,100 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
 
 
+def test_release_asset_download_url():
+    fn = INSTALL_LLAMA_PREBUILT.release_asset_download_url
+    assert fn("unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz") == (
+        "https://github.com/unslothai/llama.cpp/releases/download/"
+        "b9000-mix-abc1234/llama.cpp-source-commit-deadbeef.tar.gz"
+    )
+    # Any missing component -> None (no asset url, caller falls back to codeload).
+    assert fn(None, "b9000", "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", None, "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", "b9000", None) is None
+
+
+def _mk_source_tarball(path: Path, tag: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n")
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/convert_hf_to_gguf.py", b"#!/usr/bin/env python3\nimport gguf\n")
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+
+
+def test_hydrate_source_tree_prefers_release_asset_for_mix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A mix build's merge commit is in no repo, so the codeload/archive URLs 404.
+    # hydrate must fetch the release asset and never touch codeload.
+    commit = "a" * 40
+    archive_path = tmp_path / "merged-source.tar.gz"
+    _mk_source_tarball(archive_path, f"b9000-mix-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = set(INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit))
+    seen = []
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        seen.append(url)
+        if url in codeload_urls:
+            raise AssertionError("codeload was hit even though the release asset was available")
+        assert url == asset_url
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert seen == [asset_url]
+    assert (install_dir / "CMakeLists.txt").exists()
+    assert (install_dir / "convert_hf_to_gguf.py").exists()
+
+
+def test_hydrate_source_tree_falls_back_to_codeload_when_asset_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # If the release asset 404s, fall back to codeload/archive (vanilla path).
+    commit = "b" * 40
+    archive_path = tmp_path / "vanilla-source.tar.gz"
+    _mk_source_tarball(archive_path, f"commit-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        if url == asset_url:
+            raise RuntimeError("404 Not Found")
+        assert url in codeload_urls
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert (install_dir / "CMakeLists.txt").exists()
+
+
 def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
