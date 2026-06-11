@@ -108,6 +108,15 @@ def test_fast_model_uses_user_config_num_labels_for_task_model_selection():
     assert _contains_user_config_num_labels_fallback(method)
 
 
+def test_fast_model_captures_user_config_num_labels_before_text_only_switch():
+    source = _source(LOADER_PATH)
+
+    fallback = source.index("if _num_labels is None and user_config is not None:")
+    text_only_switch = source.index("model_config = text_config")
+
+    assert fallback < text_only_switch
+
+
 def test_task_config_attr_updates_parent_and_text_config_objects():
     set_task_config_attr = _load_task_attr_helper()
 

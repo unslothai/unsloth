@@ -1476,6 +1476,17 @@ class FastModel(FastBaseModel):
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
 
+        # Capture task intent before text_only can replace a parent VLM config
+        # with its nested text config.
+        _num_labels = kwargs.get("num_labels", None)
+        if _num_labels is None and user_config is not None:
+            if isinstance(model_config, dict):
+                _num_labels = model_config.get("num_labels", None)
+            else:
+                _num_labels = getattr(model_config, "num_labels", None)
+        if _num_labels is not None:
+            set_task_config_attr(model_config, "num_labels", _num_labels)
+
         # Check if VLM
         architectures = getattr(model_config, "architectures", None)
         if architectures is None:
@@ -1506,12 +1517,6 @@ class FastModel(FastBaseModel):
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
-        _num_labels = kwargs.get("num_labels", None)
-        if _num_labels is None and user_config is not None:
-            if isinstance(model_config, dict):
-                _num_labels = model_config.get("num_labels", None)
-            else:
-                _num_labels = getattr(model_config, "num_labels", None)
         if _num_labels is not None:
             set_task_config_attr(model_config, "num_labels", _num_labels)
         if auto_model is None:
