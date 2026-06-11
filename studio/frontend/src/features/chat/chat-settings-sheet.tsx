@@ -953,7 +953,10 @@ export function ChatSettingsPanel({
                       <p>
                         {specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : "MTP is not available in the installed llama.cpp build, so this model is running without it. Update llama.cpp to enable it."}
+                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                            (llamaUpdateStatus?.update_available
+                              ? " Update llama.cpp to enable it."
+                              : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button

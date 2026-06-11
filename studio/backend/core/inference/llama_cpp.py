@@ -3604,8 +3604,13 @@ class LlamaCppBackend:
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
                     _lo = "\n".join(self._stdout_lines).lower()
+                    # Only an unknown architecture proves the prebuilt predates
+                    # this MTP model (an update fixes it). The memory/context
+                    # build failures are generic (VRAM / ctx pressure), where an
+                    # update may not help, so classify those as runtime_error.
+                    _arch_unsupported = "unknown model architecture" in _lo
                     if (
-                        "unknown model architecture" in _lo
+                        _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
                         or "failed to create llama_context" in _lo
@@ -3615,7 +3620,9 @@ class LlamaCppBackend:
                             "speculative decoding -- run `unsloth studio "
                             "update` for MTP"
                         )
-                        self._spec_fallback_reason = "binary_outdated"
+                        self._spec_fallback_reason = (
+                            "binary_outdated" if _arch_unsupported else "runtime_error"
+                        )
                     else:
                         _retry_reason = (
                             "retrying without speculative decoding in case MTP is the cause"

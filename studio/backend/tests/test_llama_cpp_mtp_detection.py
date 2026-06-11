@@ -1439,14 +1439,22 @@ def test_spec_fallback_reason_reset_on_off(monkeypatch):
     # A subsequent off load must clear a stale reason.
     backend = _resolver_backend(monkeypatch, mtp_token = None)
     backend._build_speculative_flags(
-        speculative_type = "mtp", spec_draft_n_max = None, extra_args = None,
-        model_identifier = _MTP_MODEL, model_path = None, gpus = True,
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason == "binary_no_mtp"
     backend._build_speculative_flags(
-        speculative_type = "off", spec_draft_n_max = None, extra_args = None,
-        model_identifier = _MTP_MODEL, model_path = None, gpus = True,
+        speculative_type = "off",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason is None
