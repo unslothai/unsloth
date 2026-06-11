@@ -116,34 +116,31 @@ def test_config_path_inspects_rope_scaling():
 
 def _make_config(rope_scaling):
     from transformers import LlamaConfig
-
     return LlamaConfig(
-        hidden_size=256,
-        num_attention_heads=2,
-        num_key_value_heads=2,
-        head_dim=HEAD_DIM,
-        rope_theta=ROPE_THETA,
-        max_position_embeddings=MAX_POS,
-        rope_scaling=rope_scaling,
+        hidden_size = 256,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        head_dim = HEAD_DIM,
+        rope_theta = ROPE_THETA,
+        max_position_embeddings = MAX_POS,
+        rope_scaling = rope_scaling,
     )
 
 
 def _unsloth_rotary(config):
     from unsloth.models import llama as llama_mod
-
-    return llama_mod.LlamaRotaryEmbedding(config=config)
+    return llama_mod.LlamaRotaryEmbedding(config = config)
 
 
 def _reference_inv_freq(config, rope_type):
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
-
     inv_freq, _attention_factor = ROPE_INIT_FUNCTIONS[rope_type](config, "cpu")
     return inv_freq.float().cpu()
 
 
 def _vanilla_inv_freq():
     return 1.0 / (
-        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype=torch.int64).float() / HEAD_DIM)
+        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
     )
 
 
@@ -157,10 +154,10 @@ def test_llama3_scaling_applied_to_inv_freq():
 
     # Sanity: the scaled reference really does differ from vanilla, else the
     # test would be vacuous.
-    assert not torch.allclose(expected, vanilla, rtol=1e-4), (
-        "test setup error: llama3-scaled inv_freq should differ from vanilla"
-    )
-    assert torch.allclose(got, expected, rtol=1e-4, atol=1e-6), (
+    assert not torch.allclose(
+        expected, vanilla, rtol = 1e-4
+    ), "test setup error: llama3-scaled inv_freq should differ from vanilla"
+    assert torch.allclose(got, expected, rtol = 1e-4, atol = 1e-6), (
         "LlamaRotaryEmbedding built from a llama3 config produced inv_freq that "
         "does not match transformers' llama3 RoPE scaling. The config path is "
         "ignoring config.rope_scaling, so long-context inference degrades into "
@@ -175,7 +172,7 @@ def test_unscaled_config_uses_vanilla_inv_freq():
 
     got = rot.inv_freq.float().cpu()
     vanilla = _vanilla_inv_freq()
-    assert torch.allclose(got, vanilla, rtol=1e-4, atol=1e-6), (
+    assert torch.allclose(got, vanilla, rtol = 1e-4, atol = 1e-6), (
         "LlamaRotaryEmbedding with no rope_scaling must use the vanilla "
         f"inv_freq; got[:6]={got[:6].tolist()} vanilla[:6]={vanilla[:6].tolist()}"
     )
@@ -188,10 +185,10 @@ def _cos_at_position(rot, position):
     actually applies, but stays on CPU and independent of device caches.
     """
     inv_freq = rot.inv_freq.float().cpu()
-    t = torch.tensor([position], dtype=torch.float32)
+    t = torch.tensor([position], dtype = torch.float32)
     t = rot._apply_time_scaling(t.clone()) if hasattr(rot, "_apply_time_scaling") else t
     freqs = torch.outer(t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1)
+    emb = torch.cat((freqs, freqs), dim = -1)
     return emb.cos().squeeze(0)
 
 
@@ -202,7 +199,7 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     pos = 10000
     cos_scaled = _cos_at_position(scaled, pos)
     cos_unscaled = _cos_at_position(unscaled, pos)
-    assert not torch.allclose(cos_scaled, cos_unscaled, rtol=1e-4, atol=1e-5), (
+    assert not torch.allclose(cos_scaled, cos_unscaled, rtol = 1e-4, atol = 1e-5), (
         f"cos values at position {pos} are identical for a llama3-scaled and an "
         "unscaled rotary embedding, which means scaling was dropped (issue "
         "#2405). With correct llama3 scaling the low-frequency bands shrink by "
@@ -213,13 +210,13 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
 def test_extended_cache_keeps_scaling_after_growth():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
     # Grow the rope cache past its initial size (mirrors long-context decode).
-    dummy = torch.zeros(1, dtype=torch.float32)
-    scaled.extend_rope_embedding(dummy, seq_len=40960)
+    dummy = torch.zeros(1, dtype = torch.float32)
+    scaled.extend_rope_embedding(dummy, seq_len = 40960)
 
     config = _make_config(LLAMA3_ROPE_SCALING)
     expected = _reference_inv_freq(config, "llama3")
     got = scaled.inv_freq.float().cpu()
-    assert torch.allclose(got, expected, rtol=1e-4, atol=1e-6), (
+    assert torch.allclose(got, expected, rtol = 1e-4, atol = 1e-6), (
         "growing the RoPE cache (extend_rope_embedding) must preserve llama3 "
         "scaling of inv_freq; long-context decode loses scaling otherwise "
         "(issue #2405)."

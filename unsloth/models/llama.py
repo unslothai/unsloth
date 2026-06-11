@@ -1622,7 +1622,11 @@ def _get_rope_theta(config, default = 10000.0):
     return default
 
 
-def _llama3_inv_freq_from_config(config, rope_scaling, device = "cpu"):
+def _llama3_inv_freq_from_config(
+    config,
+    rope_scaling,
+    device = "cpu",
+):
     """Inline llama3 RoPE inv_freq using factors read from config.rope_scaling.
 
     Fallback for transformers versions without modeling_rope_utils. Mirrors
@@ -1734,7 +1738,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             rope_scaling = getattr(config, "rope_scaling", None)
             if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
                 config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
-                    config, rope_scaling,
+                    config,
+                    rope_scaling,
                 )
 
         self.dim = dim
@@ -1752,7 +1757,9 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             # Normal Llama-3 RoPE
             inv_freq = 1.0 / (
                 self.base
-                ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
+                ** (
+                    torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim
+                )
             )
             inv_freq = self._apply_inv_freq_scaling(inv_freq)
         self.register_buffer("inv_freq", inv_freq, persistent = False)
