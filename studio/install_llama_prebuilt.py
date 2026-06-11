@@ -460,8 +460,14 @@ def is_busy_lock_error(exc: BaseException) -> bool:
     return False
 
 
+# Status logs default to stderr so resolver modes keep stdout machine-readable
+# (setup.sh json.load()s the whole stdout). main() flips this for the install
+# path, where PowerShell otherwise renders stderr as NativeCommandError noise.
+_LOG_TO_STDOUT = False
+
+
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stdout)
+    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -3916,11 +3922,9 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     return False
 
 
-# Tracks (gfx_target, asset_name) pairs whose selection log lines have already
-# been emitted. resolve_lemonade_rocm_choice() is called twice per install (once
-# from the direct planner, once from resolve_upstream_asset_choice), so without
-# this guard the "trying lemonade-sdk ROCm prebuilt" banner and the hash-manifest
-# NOTE are printed twice even though the user only needs to see them once.
+# (gfx_target, asset_name) pairs already logged. resolve_lemonade_rocm_choice()
+# runs twice per install (direct planner + resolve_upstream_asset_choice), so
+# this stops its selection banner and hash-manifest NOTE printing twice.
 _lemonade_selection_logged: "set[tuple[str, str]]" = set()
 
 
@@ -4030,8 +4034,7 @@ def resolve_lemonade_rocm_choice(
     # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
     # generic glibc build that runs on any distro (Arch, Fedora, ...), so
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
-    # Guard against duplicate output: this function is called twice per install
-    # (direct planner + resolve_upstream_asset_choice), so only log the first time.
+    # Log once per (gfx_target, asset); see _lemonade_selection_logged.
     log_key = (host.rocm_gfx_target, asset_name)
     if log_key not in _lemonade_selection_logged:
         _lemonade_selection_logged.add(log_key)
@@ -6964,6 +6967,9 @@ def main() -> int:
         raise SystemExit(
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag, --resolve-install-tag, or --resolve-source-build is used"
         )
+    # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
+    global _LOG_TO_STDOUT
+    _LOG_TO_STDOUT = True
     install_prebuilt(
         install_dir = Path(args.install_dir).expanduser().resolve(),
         llama_tag = args.llama_tag,
