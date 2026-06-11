@@ -1280,10 +1280,9 @@ class FastBaseModel:
         tokenizer.padding_side = "left"  # Force inference
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = "left"  # Force inference
-        # padding_side = "left" above is a text setting, but from_pretrained also
-        # forwarded it into audio feature extractors, which must stay right padded:
-        # left padding shifts mel content (Whisper) and desyncs mel frame masks
-        # from audio placeholder counts (crashes Gemma 4 on transformers < 5.10).
+        # Audio feature extractors must stay right padded: left (a text setting,
+        # forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4
+        # audio token counts (crash on transformers < 5.10).
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if feature_extractor is not None and getattr(feature_extractor, "padding_side", None) == "left":
             feature_extractor.padding_side = "right"
