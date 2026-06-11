@@ -19,13 +19,7 @@ if TYPE_CHECKING:
 REST_BASE = "https://rest.runpod.io/v1"
 
 
-def create_network_volume(
-    client: "RunPod",
-    *,
-    name: str,
-    size_gb: int,
-    datacenter_id: str,
-) -> str:
+def create_network_volume(client: "RunPod", *, name: str, size_gb: int, datacenter_id: str) -> str:
     body = _rest(
         client,
         "POST",
@@ -58,9 +52,7 @@ def _rest(client: "RunPod", method: str, path: str, body: Optional[dict]) -> dic
             text = resp.read().decode(errors = "replace")
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors = "replace")
-        raise DeployError(
-            f"RunPod REST {method} {path} -> {e.code}: {detail[:400]}"
-        ) from e
+        raise DeployError(f"RunPod REST {method} {path} -> {e.code}: {detail[:400]}") from e
     except (urllib.error.URLError, OSError) as e:
         raise DeployError(f"RunPod REST {method} {path} failed: {e}") from e
     if not text:

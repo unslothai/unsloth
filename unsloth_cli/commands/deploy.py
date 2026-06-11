@@ -147,11 +147,7 @@ def run(
         f"  GPU:      {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr"
     )
     if model is not None:
-        note = (
-            "  (local -- uploaded to provider storage after you confirm)"
-            if need_local
-            else ""
-        )
+        note = "  (local -- uploaded to provider storage after you confirm)" if need_local else ""
         typer.echo(f"  Model:    {model}{note}")
     typer.echo("")
 
@@ -176,9 +172,7 @@ def run(
 
 @deploy_app.command("stop")
 def stop(
-    instance_id: str = typer.Argument(
-        ..., help = "Instance id (printed when deploy succeeds)."
-    ),
+    instance_id: str = typer.Argument(..., help = "Instance id (printed when deploy succeeds)."),
     provider_name: str = typer.Option(
         DEFAULT_PROVIDER,
         "--provider",
@@ -201,9 +195,7 @@ def stop(
                     code = 2,
                 )
             provider.pause(instance_id)
-            typer.echo(
-                f"Instance {instance_id} paused (may still incur storage billing)."
-            )
+            typer.echo(f"Instance {instance_id} paused (may still incur storage billing).")
         else:
             provider.terminate(instance_id)
             typer.echo(f"Instance {instance_id} terminated.")
@@ -266,9 +258,7 @@ def _authenticate(
             value = os.environ.get(opt.env) or saved.get(opt.key) or ""
         if not value and opt.required and not deferred:
             if interactive:
-                value = typer.prompt(
-                    opt.help, hide_input = opt.secret, default = ""
-                ).strip()
+                value = typer.prompt(opt.help, hide_input = opt.secret, default = "").strip()
             if not value:
                 _fail(
                     f"Missing {opt.env} -- {opt.help}.\n"
@@ -291,10 +281,7 @@ def _authenticate(
 
 
 def _persist_options(
-    provider_cls: type[Provider],
-    resolved: dict[str, str],
-    *,
-    previously: dict[str, str],
+    provider_cls: type[Provider], resolved: dict[str, str], *, previously: dict[str, str]
 ) -> None:
     keys = {opt.key for opt in provider_cls.option_schema()}
     to_save = {k: v for k, v in resolved.items() if k in keys}
@@ -413,13 +400,7 @@ def _pick_model() -> Optional[str]:
     _fail(f"Invalid selection: {raw!r}", code = 2)
 
 
-def _pick_gpu(
-    provider: Provider,
-    *,
-    override: Optional[str],
-    min_vram_gb: int,
-    yes: bool,
-) -> Gpu:
+def _pick_gpu(provider: Provider, *, override: Optional[str], min_vram_gb: int, yes: bool) -> Gpu:
     try:
         options = provider.list_gpus(min_vram_gb = min_vram_gb)
     except DeployError as e:
@@ -433,8 +414,7 @@ def _pick_gpu(
             if gpu.id == override:
                 return gpu
         listing = "\n".join(
-            f"  {gpu.id} ({gpu.vram_gb} GB, ${gpu.cost_per_hour_usd:.3f}/hr)"
-            for gpu in options
+            f"  {gpu.id} ({gpu.vram_gb} GB, ${gpu.cost_per_hour_usd:.3f}/hr)" for gpu in options
         )
         _fail(f"--gpu '{override}' not found. Available:\n{listing}", code = 2)
 
@@ -457,8 +437,7 @@ def _pick_gpu(
         price = f"${gpu.cost_per_hour_usd:.3f}/hr"
         stock = f"stock: {gpu.stock or 'none':<6}   " if provider.reports_stock else ""
         typer.echo(
-            f"  {i:2d}. {gpu.name:<24} {gpu.vram_gb:>3} GB   {price:<11} "
-            f"{stock}({gpu.id})"
+            f"  {i:2d}. {gpu.name:<24} {gpu.vram_gb:>3} GB   {price:<11} " f"{stock}({gpu.id})"
         )
     typer.echo("")
     raw = typer.prompt("Pick a GPU (number)", default = "1")
@@ -666,9 +645,7 @@ def _print_studio_ready(
     typer.echo("Unsloth Studio instance is starting (Studio may take ~1 minute).")
     typer.echo(f"  Studio:  {instance.studio_url}")
     if instance.ssh is not None:
-        typer.echo(
-            f"  SSH:     ssh {instance.ssh.user}@{instance.ssh.host} -p {instance.ssh.port}"
-        )
+        typer.echo(f"  SSH:     ssh {instance.ssh.user}@{instance.ssh.host} -p {instance.ssh.port}")
     typer.echo("")
     _print_stop_hint(instance, gpu, storage_id)
 
@@ -693,9 +670,7 @@ def _print_inference_ready(
     if credential_note:
         typer.echo(credential_note)
     typer.echo(f"    model:     {model}")
-    typer.echo(
-        f"    admin_pw:  {admin_password}   (Studio UI at {instance.studio_url})"
-    )
+    typer.echo(f"    admin_pw:  {admin_password}   (Studio UI at {instance.studio_url})")
     typer.echo("")
     typer.echo("  Test it:")
     typer.echo(f"    curl {base_url}/chat/completions \\")
@@ -711,15 +686,11 @@ def _print_stop_hint(
     gpu: Gpu,
     storage_id: Optional[str] = None,
 ) -> None:
-    typer.echo(
-        f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr."
-    )
+    typer.echo(f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr.")
     typer.echo(f"      {_deploy_cmd('stop', instance.id, instance.provider_name)}")
     if storage_id:
         typer.echo(f"  Storage {storage_id} persists (billed). Delete when done:")
-        typer.echo(
-            f"      {_deploy_cmd('delete-storage', storage_id, instance.provider_name)}"
-        )
+        typer.echo(f"      {_deploy_cmd('delete-storage', storage_id, instance.provider_name)}")
     typer.echo("")
 
 

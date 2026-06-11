@@ -40,9 +40,7 @@ class Modal(Provider):
     supports_pause = False
     supports_local_model = True
     reports_stock = False
-    deploy_note = (
-        "Modal stops this instance automatically after 24h (max sandbox lifetime)."
-    )
+    deploy_note = "Modal stops this instance automatically after 24h (max sandbox lifetime)."
 
     def __init__(self):
         self._modal = None
@@ -152,18 +150,14 @@ class Modal(Provider):
             except Exception:
                 pass
             time.sleep(POLL_INTERVAL_S)
-        raise DeployError(
-            f"Modal sandbox {instance_id} did not start within {timeout_s}s"
-        )
+        raise DeployError(f"Modal sandbox {instance_id} did not start within {timeout_s}s")
 
     def endpoint_url(self, instance_id: str, http_port: int) -> str:
         sb = self._sdk().Sandbox.from_id(instance_id)
         try:
             return sb.tunnels()[http_port].url
         except Exception as e:
-            raise DeployError(
-                f"Modal tunnel for port {http_port} is unavailable: {e}"
-            ) from e
+            raise DeployError(f"Modal tunnel for port {http_port} is unavailable: {e}") from e
 
     def terminate(self, instance_id: str) -> None:
         try:

@@ -37,7 +37,11 @@ class Option:
     needed_for: str = NEEDED_FOR_AUTH  # NEEDED_FOR_AUTH or NEEDED_FOR_LOCAL_MODEL
 
 
-def _unsupported(provider: "Provider", what: str, hint: str = "") -> DeployError:
+def _unsupported(
+    provider: "Provider",
+    what: str,
+    hint: str = "",
+) -> DeployError:
     msg = f"{provider.name} does not support {what}."
     return DeployError(f"{msg} {hint}".rstrip())
 

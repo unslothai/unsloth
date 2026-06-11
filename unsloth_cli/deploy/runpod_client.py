@@ -145,7 +145,6 @@ class RunPod(Provider):
     def _global_stock(self) -> dict[str, str]:
         try:
             from runpod.api.graphql import run_graphql_query
-
             rows = run_graphql_query(
                 "{ gpuTypes { id lowestPrice(input: {gpuCount: 1, secureCloud: true})"
                 " { stockStatus } } }"
@@ -167,9 +166,7 @@ class RunPod(Provider):
             raise DeployError(f"RunPod availability lookup is unavailable: {e}") from e
 
         try:
-            data = run_graphql_query("{ dataCenters { id storageSupport } }")["data"][
-                "dataCenters"
-            ]
+            data = run_graphql_query("{ dataCenters { id storageSupport } }")["data"]["dataCenters"]
         except Exception as e:
             raise DeployError(f"RunPod datacenter listing failed: {e}") from e
         dc_ids = [d["id"] for d in data if d.get("id") and d.get("storageSupport")]
@@ -262,9 +259,7 @@ class RunPod(Provider):
                 continue
             status = pod.get("desiredStatus")
             if status in TERMINAL_STATUSES:
-                raise DeployError(
-                    f"Pod {instance_id} reached terminal status: {status}"
-                )
+                raise DeployError(f"Pod {instance_id} reached terminal status: {status}")
             if status == "RUNNING" and pod.get("runtime"):
                 return
             time.sleep(POLL_INTERVAL_S)

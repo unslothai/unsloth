@@ -141,7 +141,13 @@ class StudioClient:
             f"Model '{payload['model_path']}' did not finish loading within {timeout_s}s."
         )
 
-    def _get(self, path: str, *, auth: bool, timeout: int = _DEFAULT_TIMEOUT_S) -> dict:
+    def _get(
+        self,
+        path: str,
+        *,
+        auth: bool,
+        timeout: int = _DEFAULT_TIMEOUT_S,
+    ) -> dict:
         headers = {"User-Agent": _USER_AGENT}
         if auth:
             headers["Authorization"] = f"Bearer {self.token}"
