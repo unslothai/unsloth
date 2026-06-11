@@ -57,7 +57,7 @@ export function LlamaUpdateBanner({
           className="fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[340px]"
           data-testid="llama-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-4 py-5 pl-6 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative overflow-hidden rounded-[24px] bg-white px-4 pb-6 pl-6 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             {applying ? null : (
               <button
                 type="button"

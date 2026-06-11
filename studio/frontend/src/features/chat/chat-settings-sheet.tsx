@@ -536,9 +536,6 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
-  // When the prompt overflows the inline box, clicking opens the popup editor.
-  const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
-  const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
     return getOrderedPresets(customPresets);
@@ -742,13 +739,6 @@ export function ChatSettingsPanel({
       setSystemPromptEditorOpen(false);
     }
   }, [open]);
-
-  useEffect(() => {
-    const el = systemPromptBoxRef.current;
-    setSystemPromptOverflows(
-      el != null && el.scrollHeight > el.clientHeight + 1,
-    );
-  }, [params.systemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1288,28 +1278,20 @@ export function ChatSettingsPanel({
             </Tooltip>
           }
         >
-          <textarea
-            ref={systemPromptBoxRef}
-            value={params.systemPrompt}
-            onChange={(e) => set("systemPrompt")(e.target.value)}
-            onMouseDown={(e) => {
-              // Overflowing prompt: click opens the popup editor instead.
-              // While focused, clicks still move the caret normally.
-              if (
-                systemPromptOverflows &&
-                document.activeElement !== e.currentTarget
-              ) {
-                e.preventDefault();
-                openSystemPromptEditor();
-              }
-            }}
-            placeholder="Example: You are a helpful assistant..."
-            aria-label="System prompt"
+          <button
+            type="button"
+            onClick={openSystemPromptEditor}
+            aria-label="Edit system prompt"
             className={cn(
-              "panel-text-surface -mt-1 block w-full h-20 resize-none px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle text-nav-fg placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
-              systemPromptOverflows && "cursor-pointer",
+              "panel-text-surface -mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              params.systemPrompt ? "text-nav-fg" : "text-muted-foreground",
             )}
-          />
+          >
+            <span className="block line-clamp-3 whitespace-pre-wrap break-words">
+              {params.systemPrompt ||
+                "Example: You are a helpful assistant..."}
+            </span>
+          </button>
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
