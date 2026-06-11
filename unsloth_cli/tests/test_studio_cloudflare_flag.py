@@ -233,7 +233,7 @@ def test_studio_default_rejects_no_cloudflare_with_subcommand(monkeypatch):
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
     result = CliRunner().invoke(app, ["studio", "--no-cloudflare", "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
@@ -284,9 +284,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions=True)
+    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions = True)
 
     assert result.exit_code == 1, result.output
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"

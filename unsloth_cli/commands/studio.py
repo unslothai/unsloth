@@ -1046,6 +1046,7 @@ def run(
     # slow load); tear the server and its children (llama-server, cloudflared) down
     # on any abort so they never orphan.
     from studio.backend.run import _graceful_shutdown, _server
+
     try:
         # 3. Wait for server health.
         if not silent:
