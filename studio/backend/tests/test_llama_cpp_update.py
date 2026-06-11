@@ -720,6 +720,31 @@ def test_llama_install_root_unsloth_env_dir(monkeypatch, tmp_path):
     assert upd._llama_install_root(str(binary)) == root
 
 
+def test_llama_install_root_ignores_inactive_env_root(monkeypatch, tmp_path):
+    # UNSLOTH_LLAMA_CPP_PATH set but the active binary is not under it: do not
+    # target the stale env root, resolve from the binary's own llama.cpp tree.
+    inactive = tmp_path / "custom-empty"
+    inactive.mkdir()
+    active = tmp_path / "llama.cpp"
+    binary = active / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(inactive))
+    assert upd._llama_install_root(str(binary)) == active
+
+
+def test_llama_install_root_refuses_pinned_checkout_under_llama_cpp(monkeypatch, tmp_path):
+    # The LLAMA_SERVER_PATH pin guard must run before the ancestor scan, or a
+    # user's own llama.cpp checkout could be handed to the installer.
+    root = tmp_path / "my-project" / "llama.cpp"
+    binary = root / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(binary))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    assert upd._llama_install_root(str(binary)) is None
+
+
 def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
     # A direct POST on a source build already newer than the prebuilt must not
     # downgrade it; start_update mirrors the detection suppression.
