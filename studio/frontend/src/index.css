@@ -1084,13 +1084,16 @@
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
 		content: attr(data-pill-label);
-		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-[9px] bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		/* Always one nowrap line, so always a full pill. */
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
 	}
 
 	/* Compact caret pills (RAG, MCP) open their menu on click instead of
-	   toggling off, so keep the icon and skip the X swap. */
+	   toggling off, so keep the icon and skip the X swap. No data-active
+	   requirement: the off-switch glyph rules below hide the icon on hover
+	   even for inactive pills, which left a blank slot in compact mode. */
 	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)[data-active="true"]:hover
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret):hover
 		.composer-pill-glyph
 		> :not(.composer-pill-x) {
 		opacity: 1;
