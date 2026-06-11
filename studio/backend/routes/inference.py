@@ -7431,9 +7431,7 @@ async def _iter_request_body_limited(request: Request, *, max_bytes: int):
         if total > max_bytes:
             raise HTTPException(
                 status_code = 413,
-                detail = (
-                    f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"
-                ),
+                detail = (f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"),
             )
         yield chunk
 

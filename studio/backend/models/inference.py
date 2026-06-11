@@ -1649,9 +1649,7 @@ class DocumentSupportResponse(BaseModel):
     schema_version: int = Field(1, description = "Document support payload schema version")
     extraction_available: bool = Field(
         ...,
-        description = (
-            "Whether the document extraction backend successfully imported on the server"
-        ),
+        description = ("Whether the document extraction backend successfully imported on the server"),
     )
     max_visual_payloads: int = Field(
         ...,
