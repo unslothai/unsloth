@@ -28,6 +28,55 @@ import utils.llama_cpp_update as upd  # noqa: E402
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
 
+class _FakeInstallerPopen:
+    """Stands in for the streamed installer process in _run_update."""
+
+    def __init__(
+        self,
+        cmd,
+        *,
+        returncode = 0,
+        lines = None,
+        on_start = None,
+        captured_kwargs = None,
+        **kwargs,
+    ):
+        if captured_kwargs is not None:
+            captured_kwargs.update(kwargs)
+        if on_start is not None:
+            on_start(list(cmd))
+        self.returncode = returncode
+        self.stdout = iter(lines or [])
+
+    def wait(self):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def _patch_installer_popen(
+    monkeypatch,
+    *,
+    returncode = 0,
+    lines = None,
+    on_start = None,
+    captured_kwargs = None,
+):
+    monkeypatch.setattr(
+        upd.subprocess,
+        "Popen",
+        lambda cmd, **kw: _FakeInstallerPopen(
+            cmd,
+            returncode = returncode,
+            lines = lines,
+            on_start = on_start,
+            captured_kwargs = captured_kwargs,
+            **kw,
+        ),
+    )
+
+
 def _write_install(
     dir_: Path,
     tag: str,
@@ -260,14 +309,15 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
 
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)
-        # Status polls probe `llama-server --version`; keep the installer argv.
-        if "--version" in cmd:
-            return _Proc()
-        captured["cmd"] = cmd
-        _write_install(install_dir, "b9585")  # installer writes the marker
+        assert "--version" in cmd  # only status polls still use run()
         return _Proc()
 
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9585")  # installer writes the marker
+
     monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
 
     res = upd.start_update()
     assert res["started"] is True, res
@@ -298,21 +348,27 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
         stdout = "installed"
         stderr = ""
 
-    def _fake_run(cmd, **kwargs):
-        cmd = list(cmd)
-        # Status polls probe `llama-server --version`; keep the installer argv.
-        if "--version" in cmd:
-            return _Proc()
+    def _on_start(cmd):
         captured["cmd"] = cmd
         # Simulate the installer writing a new marker with the latest tag.
         _write_install(install_dir, "b9518")
-        return _Proc()
 
-    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    popen_kwargs: dict = {}
+    _patch_installer_popen(
+        monkeypatch,
+        lines = [
+            "[llama-prebuilt] resolving release\n",
+            "Downloading llama.zip:  35.0% (12.0 MiB/35.0 MiB) at 9.0 MiB/s\n",
+            "Downloading llama.zip:  80.0% (28.0 MiB/35.0 MiB) at 9.0 MiB/s\n",
+        ],
+        on_start = _on_start,
+        captured_kwargs = popen_kwargs,
+    )
 
     res = upd.start_update()
     assert res["started"] is True
     assert res["job"]["from_tag"] == "b9493"
+    assert res["job"]["progress"] == 0.0
 
     # Wait for the background worker.
     deadline = time.time() + 10
@@ -328,6 +384,10 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert str(install_dir) in captured["cmd"]
     assert "--llama-tag" in captured["cmd"] and "latest" in captured["cmd"]
     assert "unslothai/llama.cpp" in captured["cmd"]
+    # Progress lines were parsed and success pins progress at 1.0.
+    assert job["progress"] == 1.0
+    # The worker asks the installer for fine-grained progress milestones.
+    assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
@@ -336,12 +396,7 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
 
-    class _Proc:
-        returncode = 2
-        stdout = ""
-        stderr = "boom: network error"
-
-    monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = ["boom: network error\n"])
 
     res = upd.start_update()
     assert res["started"] is True
@@ -410,14 +465,15 @@ def _capture_install_cmd(
 
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)
-        # Status polls probe `llama-server --version`; keep the installer argv.
-        if "--version" in cmd:
-            return _Proc()
-        captured["cmd"] = cmd
-        _write_install(install_dir, latest, repo = repo, asset = asset)
+        assert "--version" in cmd  # only status polls still use run()
         return _Proc()
 
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, latest, repo = repo, asset = asset)
+
     monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
 
     res = upd.start_update()
     assert res["started"] is True, res
@@ -535,18 +591,12 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
 
     seen = {}
 
-    class _Proc:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
-
-    def _fake_run(cmd, **kwargs):
+    def _on_start(cmd):
         # The maintenance flag must be set while the installer runs.
         seen["flag_during_install"] = backend._llama_update_in_progress
         _write_install(install_dir, "b9518")
-        return _Proc()
 
-    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
 
     res = upd.start_update()
     assert res["started"] is True
@@ -571,12 +621,7 @@ def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_pa
     backend = _FakeBackend()
     _inject_backend(monkeypatch, backend)
 
-    class _Proc:
-        returncode = 1
-        stdout = ""
-        stderr = "boom"
-
-    monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
+    _patch_installer_popen(monkeypatch, returncode = 1, lines = ["boom\n"])
 
     res = upd.start_update()
     assert res["started"] is True
@@ -606,16 +651,7 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "routes", routes_pkg)
     monkeypatch.setitem(sys.modules, "routes.inference", inference_mod)
 
-    class _Proc:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
-
-    def _fake_run(cmd, **kwargs):
-        _write_install(install_dir, "b9518")
-        return _Proc()
-
-    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: _write_install(install_dir, "b9518"))
 
     res = upd.start_update()
     assert res["started"] is True
