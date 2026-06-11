@@ -5,7 +5,7 @@
 Pydantic schemas for Export API.
 """
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal, Dict, Any
@@ -25,7 +25,11 @@ def _validate_save_directory(value: str) -> str:
     if len(raw) > 255:
         raise ValueError("save_directory must be <= 255 characters")
     path = Path(raw).expanduser()
-    if ".." in path.parts:
+    if (
+        ".." in path.parts
+        or ".." in PureWindowsPath(raw).parts
+        or ".." in raw.replace("\\", "/").split("/")
+    ):
         raise ValueError("save_directory may not contain '..' segments")
     return raw
 

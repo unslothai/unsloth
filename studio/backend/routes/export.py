@@ -184,6 +184,18 @@ async def get_export_status(
         )
 
 
+def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+    """Best-effort registration so absolute exports show up in local scans."""
+    try:
+        from storage.studio_db import add_scan_folder
+
+        folder = add_scan_folder(str(path))
+        return True, str(folder.get("path") or path)
+    except Exception as exc:
+        logger.warning("Could not register export scan folder %s: %s", path, exc)
+        return False, None
+
+
 def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """Return the export path. For absolute paths outside exports_root,
     return the full path so users know where files ended up."""
@@ -199,7 +211,12 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
             try:
                 path.resolve().relative_to(exports_root().resolve())
             except ValueError:
-                return {"output_path": str(path)}
+                registered, registered_path = _try_register_external_export(path)
+                return {
+                    "output_path": str(path),
+                    "scan_folder_registered": registered,
+                    "scan_folder_path": registered_path,
+                }
         rel = os.path.relpath(output_path, exports_root())
         return {"output_path": rel}
     except Exception:

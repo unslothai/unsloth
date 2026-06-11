@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import tempfile
 
 
@@ -308,6 +308,23 @@ def _clean_relative_path(
     return Path(*parts) if parts else Path()
 
 
+def _has_parent_segment(raw: str, path: Path) -> bool:
+    """Return true when a user path contains a parent-directory segment.
+
+    On POSIX, ``Path("E:\\foo\\..\\bar")`` treats backslashes as normal
+    characters, so check both the host parser and Windows-style parsing.
+    """
+    if ".." in path.parts:
+        return True
+    if ".." in PureWindowsPath(raw).parts:
+        return True
+    return ".." in raw.replace("\\", "/").split("/")
+
+
+def _is_absolute_user_path(raw: str, path: Path) -> bool:
+    return path.is_absolute() or PureWindowsPath(raw).is_absolute()
+
+
 def _assert_contained(resolved: Path, root: Path) -> None:
     """Raise ValueError if ``resolved`` realpaths outside ``root``."""
     try:
@@ -343,10 +360,10 @@ def resolve_under_root(
         raise ValueError("path may not contain null bytes")
 
     path = Path(raw).expanduser()
-    if ".." in path.parts:
+    if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
 
-    if path.is_absolute():
+    if _is_absolute_user_path(raw, path):
         _assert_contained(path, root)
         return path
 
@@ -391,9 +408,9 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if "\x00" in raw:
         raise ValueError("path may not contain null bytes")
     path = Path(raw).expanduser()
-    if ".." in path.parts:
+    if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
-    if path.is_absolute():
+    if _is_absolute_user_path(raw, path):
         return path
     return resolve_under_root(
         path_value,
