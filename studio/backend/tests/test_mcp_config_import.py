@@ -76,6 +76,7 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         ["'C:\\Program Files\\node\\node.exe'", "server.js"],
         ["node", "O'Reilly"],
         ["node", "C:\\Users\\O'Reilly\\server.js"],
+        ["node", "'draft'"],
         ["node", ""],
     ],
 )
@@ -101,6 +102,7 @@ def test_parse_windows_apostrophes_as_literals(monkeypatch):
         "node",
         "C:\\Users\\O'Reilly\\server.js",
     ]
+    assert mcp_client.parse_stdio_command("node 'draft'") == ["node", "'draft'"]
 
 
 # ── 2. parse_mcp_config ─────────────────────────────────────────────

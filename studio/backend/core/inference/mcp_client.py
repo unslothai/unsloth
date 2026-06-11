@@ -25,8 +25,13 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
-def _has_closing_single_quote(address: str, start: int) -> bool:
-    return "'" in address[start + 1 :]
+def _is_single_quote_wrapper(address: str, start: int) -> bool:
+    end = address.find("'", start + 1)
+    if end == -1:
+        return False
+    if end + 1 < len(address) and not address[end + 1].isspace():
+        return False
+    return any(ch.isspace() for ch in address[start + 1 : end])
 
 
 def _split_windows_command_line(address: str) -> list[str]:
@@ -64,7 +69,7 @@ def _split_windows_command_line(address: str) -> list[str]:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True
-            if quote_char is None and not arg_started and _has_closing_single_quote(address, i):
+            if quote_char is None and not arg_started and _is_single_quote_wrapper(address, i):
                 quote_char = "'"
             elif quote_char == "'":
                 quote_char = None
