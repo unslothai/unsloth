@@ -5047,7 +5047,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
-    body = _build_openai_passthrough_body(chat_req, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
@@ -6753,7 +6755,11 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
-def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
+def _build_openai_passthrough_body(
+    payload,
+    backend_ctx = None,
+    llama_backend = None,
+) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only known OpenAI / llama-server fields are forwarded, so Studio-specific
@@ -6764,12 +6770,19 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    # When the caller asked for a specific reasoning mode, forward it via
-    # chat_template_kwargs so the Jinja template renders with (or without) the
-    # reasoning preamble.
-    tpl_kwargs = None
-    if payload.enable_thinking is not None:
-        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
+    # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
+    # preserve_thinking) via chat_template_kwargs so the Jinja template renders
+    # in the caller's mode, gated on the active template's capabilities exactly
+    # like the non-passthrough paths.
+    tpl_kwargs = (
+        llama_backend._request_reasoning_kwargs(
+            payload.enable_thinking,
+            payload.reasoning_effort,
+            payload.preserve_thinking,
+        )
+        if llama_backend is not None
+        else None
+    )
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -6804,7 +6817,9 @@ async def _openai_passthrough_stream(
     the client sees a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -6949,7 +6964,9 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     ``tool_calls``, and accurate ``usage`` token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
     try:
         async with httpx.AsyncClient() as client:
