@@ -174,6 +174,12 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  /**
+   * Why MTP was disabled on the loaded model despite being requested.
+   * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
+   * it; "runtime_error" -> the current build could not run it. Null otherwise.
+   */
+  spec_fallback_reason?: string | null;
 }
 
 export interface AudioGenerationResponse {

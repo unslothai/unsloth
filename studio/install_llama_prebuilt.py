@@ -1095,6 +1095,20 @@ def commit_source_archive_urls(repo: str, source_commit: str) -> list[str]:
     ]
 
 
+def release_asset_download_url(
+    repo: str | None, release_tag: str | None, asset_name: str | None
+) -> str | None:
+    """Direct download URL for a release asset, or None if any part is missing.
+    A mix build's merged commit is never pushed, so its source tree is only
+    reachable as this asset (codeload would 404 on the merge commit)."""
+    if not repo or not release_tag or not asset_name:
+        return None
+    return (
+        f"https://github.com/{repo}/releases/download/"
+        f"{urllib.parse.quote(release_tag, safe = '')}/{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
 def github_release_assets(repo: str, tag: str) -> dict[str, str]:
     payload = fetch_json(
         f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
@@ -2890,7 +2904,27 @@ def detect_host() -> HostInfo:
         except Exception:
             pass
 
+    # Linux /proc/driver/nvidia/gpus fallback: the NVIDIA driver exposes one
+    # subdir per GPU here regardless of nvidia-smi state, so a host whose
+    # nvidia-smi is absent from PATH, wedged, or failing is still recognised as
+    # NVIDIA. Mirrors the fallback added to install.sh / install_python_stack.py
+    # in PR 6174 so the prebuilt installer does not misroute such hosts to ROCm
+    # or CPU. driver_cuda_version / compute_caps stay unset here; downstream
+    # CUDA asset selection treats unknown SMs as "prefer portable" and an
+    # unknown driver runtime line as "no published CUDA match" (returns None,
+    # no crash), so planning falls back to a source build with GGML_CUDA=ON.
+    if is_linux and not has_physical_nvidia:
+        try:
+            proc_gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(proc_gpu_dir) and os.listdir(proc_gpu_dir):
+                has_physical_nvidia = True
+                has_usable_nvidia = visible_device_tokens != []
+        except OSError:
+            pass
+
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
+    # NVIDIA takes precedence: when an NVIDIA GPU is usable, skip ROCm probing
+    # entirely so co-installed ROCm tools cannot misroute the host (PR 6174).
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
@@ -2898,7 +2932,7 @@ def detect_host() -> HostInfo:
 
     has_rocm = False
     rocm_gfx_target: str | None = None
-    if is_linux:
+    if is_linux and not has_usable_nvidia:
         # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
         # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
         # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
@@ -2937,7 +2971,7 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
-    elif is_windows:
+    elif is_windows and not has_usable_nvidia:
         # Windows: prefer active probes that validate GPU presence.
         # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
         # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
@@ -3043,6 +3077,21 @@ def _apply_host_overrides(
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)
     return host
+
+
+def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool = False) -> str:
+    """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
+    fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
+    -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
+    or ROCm) -> the fork. linux_amd_tooling_present mirrors setup.sh routing Linux
+    hosts that expose AMD tooling (rocminfo/amd-smi/hipconfig/hipinfo) to the fork
+    even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
+    if host.is_macos:
+        return DEFAULT_PUBLISHED_REPO
+    has_gpu = (
+        host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
+    )
+    return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
 
 
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
@@ -4460,13 +4509,17 @@ def hydrate_source_tree(
     expected_sha256: str | None,
     source_label: str | None = None,
     exact_source: bool = False,
+    asset_url: str | None = None,
 ) -> None:
     archive_path = work_dir / f"llama.cpp-source-{source_ref}.tar.gz"
-    source_urls = (
+    repo_urls = (
         commit_source_archive_urls(source_repo, source_ref)
         if exact_source
         else upstream_source_archive_urls(source_ref)
     )
+    # Prefer the published release asset (the only copy of a mix build's merged
+    # tree); fall back to codeload/archive for vanilla builds whose commit is real.
+    source_urls = ([asset_url] if asset_url else []) + repo_urls
     label = source_label or f"llama.cpp source tree for {source_ref}"
     extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
 
@@ -4817,6 +4870,35 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
         raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
 
 
+def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
+    """Move a freshly extracted ``staging_dir`` onto ``dst``.
+
+    ``os.replace`` is attempted first as the fast path. On Windows ARM64 the
+    antivirus scanner can transiently hold a freshly extracted DLL open at the
+    moment ``MoveFileEx`` runs, surfacing as ``[WinError 5] Access is denied``;
+    a file-by-file copy bypasses the rename entirely.
+
+    This fallback is intentionally limited to staging trees we just extracted.
+    It must not be used to move an existing/active install aside: there an
+    ``os.replace`` failure means the directory is genuinely in use, and a
+    silent copy + ``rmtree`` could partially delete a live install.
+
+    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
+    else (disk full, cross-device, missing path) re-raises so it cannot leave
+    a partially copied install behind. A copy is preferred over retrying the
+    rename because antivirus scans of large DLLs can outlast any reasonable
+    retry window.
+    """
+    try:
+        os.replace(staging_dir, dst)
+    except OSError as exc:
+        if not is_busy_lock_error(exc):
+            raise
+        log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        remove_tree(staging_dir)
+
+
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
     rollback_dir: Path | None = None
     failed_dir: Path | None = None
@@ -4828,7 +4910,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
-        os.replace(staging_dir, install_dir)
+        activate_staged_dir(staging_dir, install_dir)
         log(f"activated staged install at {install_dir}")
         log(f"confirming activated install tree at {install_dir}")
         confirm_install_tree(install_dir, host)
@@ -6369,6 +6451,15 @@ def validate_prebuilt_choice(
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
     )
+    # For an exact (mix) source the merge commit lives only in the release asset,
+    # not in any repo, so fetch the asset directly; codeload stays the fallback.
+    asset_url = (
+        release_asset_download_url(
+            approved_checksums.repo, approved_checksums.release_tag, source_archive.asset_name
+        )
+        if exact_source and source_archive is not None
+        else None
+    )
     if exact_source:
         log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
     else:
@@ -6385,6 +6476,7 @@ def validate_prebuilt_choice(
             else f"llama.cpp source tree for {llama_tag}"
         ),
         exact_source = exact_source,
+        asset_url = asset_url,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
@@ -6690,6 +6782,16 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = ("Resolve the source-build fallback plan."),
     )
+    resolve_group.add_argument(
+        "--resolve-prebuilt",
+        nargs = "?",
+        const = "latest",
+        help = (
+            "Report whether an official prebuilt exists for this host without "
+            "downloading. Picks the host's published repo when --published-repo "
+            "is left at the default. Use --output-format json."
+        ),
+    )
     parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
@@ -6772,6 +6874,46 @@ def main() -> int:
             },
             output_format = args.output_format,
         )
+        return EXIT_SUCCESS
+
+    if args.resolve_prebuilt is not None:
+        # Host-aware "is a prebuilt available" probe, no download. A default repo
+        # means "pick the repo for this host"; PrebuiltFallback == source build.
+        host = _apply_host_overrides(
+            detect_host(),
+            override_has_rocm = args.has_rocm,
+            override_rocm_gfx = args.rocm_gfx,
+            force_cpu = args.cpu_fallback,
+        )
+        # setup.sh routes Linux hosts with AMD tooling to the fork even when no GPU
+        # is probed; mirror that so a HIP source build is not offered a CPU prebuilt.
+        amd_tooling = host.is_linux and any(
+            shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo")
+        )
+        repo = (
+            published_repo_for_host(host, linux_amd_tooling_present = amd_tooling)
+            if args.published_repo == DEFAULT_PUBLISHED_REPO
+            else args.published_repo
+        )
+        try:
+            _requested, plans = resolve_simple_install_release_plans(
+                args.resolve_prebuilt, host, repo, args.published_release_tag or ""
+            )
+            choice = plans[0].attempts[0] if plans and plans[0].attempts else None
+            if choice is None:
+                payload = {"prebuilt_available": False, "repo": repo}
+            else:
+                payload = {
+                    "prebuilt_available": True,
+                    "repo": repo,
+                    "release_tag": plans[0].release_tag,
+                    "llama_tag": plans[0].llama_tag,
+                    "asset": choice.name,
+                    "install_kind": choice.install_kind,
+                }
+        except PrebuiltFallback:
+            payload = {"prebuilt_available": False, "repo": repo}
+        emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 
     if not args.install_dir:

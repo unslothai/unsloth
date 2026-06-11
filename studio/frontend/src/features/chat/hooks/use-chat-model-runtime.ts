@@ -413,6 +413,7 @@ export function useChatModelRuntime() {
             statusRes.requires_trust_remote_code ?? false,
           defaultChatTemplate: nextDefaultChatTemplate,
           loadedIsMultimodal: isMultimodalResponse(statusRes),
+          specFallbackReason: statusRes.spec_fallback_reason ?? null,
           ...(prevState.loadedSpeculativeType === null && {
             speculativeType: currentSpecType,
             loadedSpeculativeType: currentSpecType,
