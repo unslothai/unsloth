@@ -356,6 +356,19 @@ _BYPASS_ENV_SECRET_NAMES = frozenset(
         "NGC_API_KEY",
         "KAGGLE_KEY",
         "LD_PRELOAD",
+        # Auth brokers / capability handles: not secrets by value, but they
+        # hand the child the operator's live agent (ssh/gpg), kube config, or
+        # docker daemon. Names are listed because there is no value signal to
+        # key off. URL config vars (HTTP_PROXY, PIP_INDEX_URL, DATABASE_URL,
+        # ...) are intentionally NOT name-listed: a benign proxy/index without
+        # credentials must keep working in bypass mode, while a credentialed
+        # value is dropped by _is_secret_env_value() regardless of its name.
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GPG_AGENT_INFO",
+        "GNUPGHOME",
+        "KUBECONFIG",
+        "DOCKER_HOST",
     }
 )
 _BYPASS_ENV_SECRET_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "DYLD_")
@@ -369,6 +382,12 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "CREDENTIAL",
     "PRIVATE_KEY",
 )
+# Matches a URL that embeds userinfo before the host, covering both
+# "scheme://user:pass@host" and token-only "scheme://token@host" (and
+# percent-encoded variants). The userinfo must precede the first '/', so an '@'
+# in a path or query does not false-positive. Used to scrub credential-bearing
+# URL values regardless of the variable's name.
+_URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
 
 
 def _is_secret_env_name(name: str) -> bool:
@@ -381,13 +400,34 @@ def _is_secret_env_name(name: str) -> bool:
     return any(marker in upper for marker in _BYPASS_ENV_SECRET_MARKERS)
 
 
+def _is_secret_env_value(value: str) -> bool:
+    """True if a value embeds credentials (URL userinfo) regardless of its name.
+
+    Catches things like DATABASE_URL / PIP_INDEX_URL / HTTP_PROXY that carry
+    ``scheme://user:token@host`` but whose names dodge the name classifier.
+    """
+    return bool(value) and _URL_USERINFO_RE.search(value) is not None
+
+
 def _build_bypass_env(workdir: str) -> dict[str, str]:
     """Env for bypass exec: full host env (unrestricted) minus credential vars,
     with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+
+    Note: stripping the child env is necessary but not sufficient on its own -
+    a same-UID child can still read the parent's environment via procfs, so
+    callers also harden the parent (see _harden_parent_against_proc_env_leak).
     """
-    env = {k: v for k, v in os.environ.items() if not _is_secret_env_name(k)}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not _is_secret_env_name(k) and not _is_secret_env_value(v)
+    }
     env["HOME"] = workdir
     env["TMPDIR"] = workdir
+    # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
+    # the bypassed tool writes under the per-session sandbox dir on every OS.
+    env["TEMP"] = workdir
+    env["TMP"] = workdir
     return env
 
 
@@ -475,6 +515,53 @@ def _bypass_preexec():
         os.setsid()
     except OSError:
         pass
+
+
+# Hardening the Studio parent is done once (PR_SET_DUMPABLE is process-global
+# and sticky); guarded so repeated bypass calls do not re-issue the prctl.
+_parent_proc_hardened = False
+
+
+def _harden_parent_against_proc_env_leak() -> bool:
+    """Make the Studio process's /proc/<pid>/environ unreadable to its children.
+
+    Stripping the child env is not enough on Linux: a bypassed same-UID child
+    runs unsandboxed and can read /proc/<getppid()>/environ to recover the
+    tool-executing process's *unfiltered* secrets (HF_TOKEN, cloud keys, ...).
+    Clearing the dumpable flag (PR_SET_DUMPABLE=0) reparents this process's
+    /proc entries to root, so a same-UID child can no longer read its environ.
+
+    Returns True when the process is hardened or hardening is unnecessary (no
+    /proc leak off Linux), and False when it is needed but could not be applied
+    (e.g. prctl denied by a seccomp policy). Callers must fail closed - refuse
+    the unsandboxed exec - when this returns False, rather than running with the
+    parent environ still readable.
+
+    Scope: this closes the direct parent read (the demonstrated leak). It is a
+    mitigation, not a full boundary - a bypassed tool is unsandboxed by design,
+    so it can still walk /proc to a same-UID *ancestor* (e.g. the launching
+    shell) or read on-disk credentials by absolute path. Complete isolation
+    needs a separate uid / PID+mount namespace, which is out of scope here; the
+    UI already warns the mode is dangerous. Applied lazily on first bypass exec
+    so non-bypass operation is unchanged.
+    """
+    global _parent_proc_hardened
+    if _parent_proc_hardened:
+        return True
+    if sys.platform != "linux":
+        return True  # no /proc/<pid>/environ same-UID leak to close
+    if _libc is None:
+        return False  # on Linux but cannot issue prctl -> cannot harden
+    try:
+        # prctl(PR_SET_DUMPABLE=4, SUID_DUMP_DISABLE=0). ctypes returns the
+        # syscall result (-1 on failure) and does NOT raise, so check it.
+        ret = _libc.prctl(4, 0, 0, 0, 0)
+    except (OSError, AttributeError):
+        return False
+    if ret != 0:
+        return False
+    _parent_proc_hardened = True
+    return True
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -2092,6 +2179,13 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+    elif not _harden_parent_against_proc_env_leak():
+        # Close the /proc/<parent>/environ secret-recovery path first; if it
+        # cannot be applied, fail closed rather than leak the parent environ.
+        return (
+            "Execution error: could not harden the Studio process against "
+            "/proc environment reads; refusing bypass execution."
+        )
 
     tmp_path = None
     workdir = _get_workdir(session_id)
@@ -2209,6 +2303,13 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+    elif not _harden_parent_against_proc_env_leak():
+        # Close the /proc/<parent>/environ secret-recovery path first; if it
+        # cannot be applied, fail closed rather than leak the parent environ.
+        return (
+            "Execution error: could not harden the Studio process against "
+            "/proc environment reads; refusing bypass execution."
+        )
 
     try:
         workdir = _get_workdir(session_id)

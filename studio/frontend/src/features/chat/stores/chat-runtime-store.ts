@@ -658,7 +658,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
-  bypassPermissions: loadBool(CHAT_BYPASS_PERMISSIONS_KEY, false),
+  // Never restore Bypass Permissions from storage: it disables the sandbox and
+  // the confirmation gate, so it must be re-enabled (through the warning
+  // dialog) each session rather than silently reactivating on reload.
+  bypassPermissions: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
@@ -948,10 +951,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { confirmToolCalls };
     }),
   setBypassPermissions: (bypassPermissions) =>
-    set(() => {
-      saveBool(CHAT_BYPASS_PERMISSIONS_KEY, bypassPermissions);
-      return { bypassPermissions };
-    }),
+    // Deliberately not persisted (see init): a reload must not silently keep
+    // the sandbox/confirmation bypass active without re-accepting the warning.
+    set(() => ({ bypassPermissions })),
   allowToolAlways: (sessionId, toolName) =>
     set((state) => {
       const current = state.alwaysAllowToolsBySession.get(sessionId);
