@@ -19,7 +19,9 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
 _MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-_SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_hf_auth", _MODULE_PATH)
+_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_llama_prebuilt_hf_auth", _MODULE_PATH
+)
 assert _SPEC is not None and _SPEC.loader is not None
 mod = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = mod
