@@ -1511,7 +1511,7 @@ export function ChatProvidersSettings({
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat through the Studio proxy.
+            Manage model connections for chat through the Unsloth proxy.
           </p>
         </div>
       </header>

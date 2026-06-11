@@ -89,8 +89,8 @@ export function WebUpdateBanner({
                   Package update available: {status.latestVersion}
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Installed package: {status.currentVersion}. To update Studio,
-                  run this in your terminal, then restart Studio.
+                  Installed package: {status.currentVersion}. To update Unsloth,
+                  run this in your terminal, then restart Unsloth.
                 </p>
               </div>
             </div>

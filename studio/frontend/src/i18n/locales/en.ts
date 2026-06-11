@@ -93,7 +93,7 @@ export const en = {
       chat: "Chat",
       connections: "Connections",
       apiKeys: "API",
-      about: "Help",
+      about: "About",
     },
     general: {
       title: "General",
@@ -112,11 +112,17 @@ export const en = {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
         preloadOnStartupDescription:
-          "Download and cache the AI Assist helper model in the background when Studio starts. Off by default; AI Assist can still download it on demand when clicked.",
+          "Download and cache the AI Assist helper model in the background when Unsloth starts. Off by default; AI Assist can still download it on demand when clicked.",
         disabledByEnv:
           "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
+      },
+      notifications: {
+        sectionTitle: "Notifications",
+        showLlamaUpdates: "llama.cpp update notifications",
+        showLlamaUpdatesDescription:
+          "Show a notification when a newer llama.cpp build is available. Turn off if you only use Unsloth for training.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
@@ -137,13 +143,13 @@ export const en = {
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
         confirmDescription:
-          "This clears local-only preferences, then reloads Studio. Chats, API access, and DB-backed settings are not affected.",
+          "This clears local-only preferences, then reloads Unsloth. Chats, API access, and DB-backed settings are not affected.",
         confirmAction: "Reset and reload",
       },
     },
     profile: {
       title: "Profile",
-      description: "Update how your profile appears in Studio.",
+      description: "Update how your profile appears in Unsloth.",
       changePicture: "Change profile picture",
       displayName: "Display name",
       nameSaved: "Profile name saved",
@@ -171,7 +177,7 @@ export const en = {
       language: {
         title: "Language",
         label: "Display language",
-        description: "Choose the language used by Studio.",
+        description: "Choose the language used by Unsloth.",
       },
       layout: {
         title: "Layout",
@@ -303,8 +309,8 @@ export const en = {
     about: {
       title: "About",
       description:
-        "Documentation, release notes, feedback, and Studio build info.",
-      studioVersion: "Studio Version",
+        "Documentation, release notes, feedback, and Unsloth build info.",
+      studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
       updates: "Updates",
       help: "Help",
@@ -313,10 +319,20 @@ export const en = {
       whatsNew: "What's new",
       feedback: "Feedback",
       reportIssue: "Report an issue",
+      license: {
+        sectionTitle: "License",
+        studioLabel: "Unsloth Studio",
+        studioLicense: "AGPL-3.0",
+        studioDescription:
+          "Open source under the GNU Affero General Public License v3.0.",
+        libraryLabel: "Unsloth Core",
+        libraryLicense: "Apache-2.0",
+        libraryDescription: "Licensed under the Apache License 2.0.",
+      },
       dangerZone: "Danger zone",
       shutDownStudio: "Shut down Unsloth Studio",
       shutDownStudioDescription:
-        "Stops the Studio server process and ends your session.",
+        "Stops the Unsloth server process and ends your session.",
       shutDown: "Shut down",
       update: {
         title: "Update Unsloth Studio",
@@ -327,24 +343,24 @@ export const en = {
         copyCommand: "Copy command",
         commandCopied: "{label} copied",
         copyNamedCommand: "Copy {label}",
-        checkingInstall: "Checking how Studio was installed...",
+        checkingInstall: "Checking how Unsloth was installed...",
         localInstallDetected:
           "Source or local install detected. To avoid replacing it with PyPI, update from the checkout or source you originally installed from.",
         pullThenUpdate:
-          "Pull latest changes from your Unsloth repo checkout, then update Studio locally:",
+          "Pull latest changes from your Unsloth repo checkout, then update Unsloth locally:",
         gitPullCommand: "git pull command",
         localUpdateCommand: "local update command",
         localInstallerFallback:
-          "If the Studio update command is unavailable, run the local installer from that checkout:",
+          "If the Unsloth update command is unavailable, run the local installer from that checkout:",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
           "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",
         repoCheckoutFallback:
           "If you still have the Unsloth repo checkout, run the local installer from that checkout:",
         restartAfterUpdate:
-          "Restart Studio after updating for changes to take effect.",
+          "Restart Unsloth after updating for changes to take effect.",
         unknownInstall:
-          "Studio could not detect how it was installed. Check how you installed Studio first, then choose the matching update path.",
+          "Unsloth could not detect how it was installed. Check how you installed Unsloth first, then choose the matching update path.",
         curlOrPypi: "For curl or PyPI installs, run:",
         updateCommand: "update command",
         localCheckout:

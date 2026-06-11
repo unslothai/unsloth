@@ -93,7 +93,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
-      about: "帮助",
+      about: "关于",
     },
     general: {
       title: "通用",
@@ -124,13 +124,13 @@ export const zhCN = {
         action: "重置偏好设置",
         confirmTitle: "重置所有本地偏好设置？",
         confirmDescription:
-          "这会清除仅保存在本地的偏好设置，然后重新加载 Studio。聊天、API 访问权限和数据库中的设置不会受到影响。",
+          "这会清除仅保存在本地的偏好设置，然后重新加载 Unsloth。聊天、API 访问权限和数据库中的设置不会受到影响。",
         confirmAction: "重置并重新加载",
       },
     },
     profile: {
       title: "个人资料",
-      description: "更新你在 Studio 中显示的个人资料。",
+      description: "更新你在 Unsloth 中显示的个人资料。",
       changePicture: "更换头像",
       displayName: "显示名称",
       nameSaved: "个人资料名称已保存",
@@ -150,7 +150,7 @@ export const zhCN = {
       language: {
         title: "语言",
         label: "显示语言",
-        description: "选择 Studio 使用的语言。",
+        description: "选择 Unsloth 使用的语言。",
       },
       theme: {
         title: "主题",
@@ -275,8 +275,8 @@ export const zhCN = {
     },
     about: {
       title: "帮助",
-      description: "文档、发布说明、反馈和 Studio 构建信息。",
-      studioVersion: "Studio 版本",
+      description: "文档、发布说明、反馈和 Unsloth 构建信息。",
+      studioVersion: "Unsloth 版本",
       packageVersion: "包版本",
       updates: "更新",
       help: "帮助",
@@ -287,7 +287,7 @@ export const zhCN = {
       reportIssue: "报告问题",
       dangerZone: "危险区域",
       shutDownStudio: "关闭 Unsloth Studio",
-      shutDownStudioDescription: "停止 Studio 服务进程并结束你的会话。",
+      shutDownStudioDescription: "停止 Unsloth 服务进程并结束你的会话。",
       shutDown: "关闭",
       update: {
         title: "更新 Unsloth Studio",
@@ -298,23 +298,23 @@ export const zhCN = {
         copyCommand: "复制命令",
         commandCopied: "{label} 已复制",
         copyNamedCommand: "复制 {label}",
-        checkingInstall: "正在检查 Studio 的安装方式...",
+        checkingInstall: "正在检查 Unsloth 的安装方式...",
         localInstallDetected:
           "检测到源码或本地安装。为避免替换为 PyPI 版本，请从最初安装时使用的 checkout 或源码位置更新。",
         pullThenUpdate:
-          "从你的 Unsloth 仓库 checkout 拉取最新变更，然后本地更新 Studio：",
+          "从你的 Unsloth 仓库 checkout 拉取最新变更，然后本地更新 Unsloth：",
         gitPullCommand: "git pull 命令",
         localUpdateCommand: "本地更新命令",
         localInstallerFallback:
-          "如果 Studio 更新命令不可用，请从该 checkout 运行本地安装器：",
+          "如果 Unsloth 更新命令不可用，请从该 checkout 运行本地安装器：",
         localInstallerCommand: "本地安装器命令",
         sourceInstallDetected:
           "这看起来是源码或 VCS 包安装。请从最初使用的本地路径或 Git URL 重新安装。",
         repoCheckoutFallback:
           "如果你仍保留 Unsloth 仓库 checkout，请从该 checkout 运行本地安装器：",
-        restartAfterUpdate: "更新后重启 Studio，使变更生效。",
+        restartAfterUpdate: "更新后重启 Unsloth，使变更生效。",
         unknownInstall:
-          "Studio 无法检测安装方式。请先确认你如何安装 Studio，然后选择匹配的更新方式。",
+          "Unsloth 无法检测安装方式。请先确认你如何安装 Unsloth，然后选择匹配的更新方式。",
         curlOrPypi: "对于 curl 或 PyPI 安装，请运行：",
         updateCommand: "更新命令",
         localCheckout:
