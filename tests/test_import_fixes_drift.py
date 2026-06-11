@@ -668,15 +668,19 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
             assert isinstance(res_nested, list) and res_nested[0] is e
 
             # 3. Mixed payload with real tensor and EmptyLogits
-            # Real tensor should be gathered (concatenated across processes)
-            real_tensor = torch.tensor([42])
+            # Real tensor should be gathered (concatenated across processes).
+            # Tensors must live on state.device or the debug-mode device
+            # check fails on GPU machines.
+            real_tensor = torch.tensor([42], device = state.device)
             payload = {"labels": real_tensor, "logits": e}
             res_mixed = acc_ops.gather(payload)
 
             assert isinstance(res_mixed, dict)
             assert res_mixed["logits"] is e
             # Since num_processes = 2, it should be gathered to [42, 42]
-            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42]))
+            assert torch.equal(
+                res_mixed["labels"], torch.tensor([42, 42], device = state.device)
+            )
 
             # 4. Broadcast with EmptyLogits
             res_broadcast = acc_ops.broadcast(e)
@@ -691,3 +695,56 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         state.debug = orig_debug
         state.distributed_type = orig_dist_type
         state.num_processes = orig_num_processes
+
+
+def test_accelerate_patch_is_idempotent():
+    """Calling patch_accelerate_recursively_apply twice must not stack wrappers."""
+    pytest.importorskip("accelerate")
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    patch_accelerate_recursively_apply()
+    recursively_apply = acc_ops.recursively_apply
+    find_device = acc_ops.find_device
+    patch_accelerate_recursively_apply()
+    assert acc_ops.recursively_apply is recursively_apply, (
+        "DRIFT DETECTED: recursively_apply was wrapped twice."
+    )
+    assert acc_ops.find_device is find_device, (
+        "DRIFT DETECTED: find_device was wrapped twice."
+    )
+
+
+def test_accelerate_find_device_skips_empty_logits():
+    """find_device must search past EmptyLogits and keep None for tensor-free data."""
+    pytest.importorskip("accelerate")
+    import torch
+    import accelerate.utils.operations as acc_ops
+    from accelerate.state import PartialState
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    class EmptyLogits:
+        pass
+
+    patch_accelerate_recursively_apply()
+    tensor = torch.tensor([1.0])
+    # Sentinel first must not stop the search before the real tensor
+    assert acc_ops.find_device({"logits": EmptyLogits(), "labels": tensor}) == tensor.device
+    # Tensor-free payloads without the sentinel keep returning None
+    # (AlignDevicesHook relies on None to skip output device moves)
+    assert acc_ops.find_device({"a": 1}) is None
+    # Sentinel-only payloads fall back to the current device so that
+    # debug mode find_device(...).type does not raise AttributeError
+    assert acc_ops.find_device(EmptyLogits()) == PartialState().device
+
+
+def test_accelerate_patch_wired_into_gpu_init():
+    """The patch must be installed at startup, not only importable."""
+    import pathlib
+    import unsloth.import_fixes as import_fixes
+
+    source = pathlib.Path(import_fixes.__file__).with_name("_gpu_init.py").read_text()
+    assert "patch_accelerate_recursively_apply()" in source, (
+        "DRIFT DETECTED: patch_accelerate_recursively_apply is defined but "
+        "never called in _gpu_init.py, so real imports never install it."
+    )

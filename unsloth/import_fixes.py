@@ -2254,99 +2254,94 @@ def maybe_set_windows_rocm_bnb_version():
 
 def patch_accelerate_recursively_apply():
     """
-    Patch accelerate.utils.operations.recursively_apply to avoid raising
-    TypeError when encountering Unsloth's EmptyLogits class.
-    Also patches recursively_apply in accelerate.utils and accelerate.accelerator.
-    And patches find_device in accelerate.utils.operations and accelerate.utils
-    to return PartialState().device when finding no device, avoiding AttributeError.
+    Make Accelerate's recursive utilities tolerate Unsloth's EmptyLogits
+    sentinel. recursively_apply returns the sentinel unchanged instead of
+    raising TypeError, and find_device skips it while still finding real
+    tensors, falling back to PartialState().device only for sentinel-only
+    payloads. Both wrappers are idempotent and are propagated to every
+    already imported accelerate namespace.
     """
     try:
         import accelerate.utils.operations as acc_ops
     except Exception:
-        acc_ops = None
+        return
 
-    try:
-        import accelerate.utils as acc_utils
-    except Exception:
-        acc_utils = None
-
-    try:
-        import accelerate.accelerator as acc_accel
-    except Exception:
-        acc_accel = None
-
-    # Resolve original recursively_apply
-    original_recursively_apply = None
-    if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
-        original_recursively_apply = acc_ops.recursively_apply
-    elif acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
-        original_recursively_apply = acc_utils.recursively_apply
-    elif acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
-        original_recursively_apply = acc_accel.recursively_apply
-
-    if original_recursively_apply is not None:
+    original_recursively_apply = getattr(acc_ops, "recursively_apply", None)
+    if original_recursively_apply is not None and not getattr(
+        original_recursively_apply, "__unsloth_patched__", False
+    ):
 
         @functools.wraps(original_recursively_apply)
         def _patched_recursively_apply(func, data, *args, **kwargs):
             if type(data).__name__ == "EmptyLogits":
                 cls = type(data)
-                if not hasattr(cls, "__eq__") or cls.__eq__ == object.__eq__:
+                if cls.__eq__ is object.__eq__:
+                    # Debug mode compares gathered metadata across ranks with ==
                     cls.__eq__ = (
                         lambda self, other: type(other).__name__ == "EmptyLogits"
                     )
                 return data
             return original_recursively_apply(func, data, *args, **kwargs)
 
-        if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
-            acc_ops.recursively_apply = _patched_recursively_apply
-        if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
-            acc_utils.recursively_apply = _patched_recursively_apply
-        if acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
-            acc_accel.recursively_apply = _patched_recursively_apply
+        _patched_recursively_apply.__unsloth_patched__ = True
 
         for mod_name, mod in tuple(sys.modules.items()):
             if mod_name.startswith("accelerate") and mod is not None:
                 if (
-                    hasattr(mod, "recursively_apply")
-                    and getattr(mod, "recursively_apply") is original_recursively_apply
+                    getattr(mod, "recursively_apply", None)
+                    is original_recursively_apply
                 ):
                     try:
                         setattr(mod, "recursively_apply", _patched_recursively_apply)
                     except Exception:
                         pass
 
-    # Resolve and patch find_device
-    original_find_device = None
-    if acc_ops is not None and hasattr(acc_ops, "find_device"):
-        original_find_device = acc_ops.find_device
-    elif acc_utils is not None and hasattr(acc_utils, "find_device"):
-        original_find_device = acc_utils.find_device
-
-    if original_find_device is not None:
+    original_find_device = getattr(acc_ops, "find_device", None)
+    if original_find_device is not None and not getattr(
+        original_find_device, "__unsloth_patched__", False
+    ):
+        from collections.abc import Mapping
 
         @functools.wraps(original_find_device)
-        def _patched_find_device(data, *args, **kwargs):
-            dev = original_find_device(data, *args, **kwargs)
-            if dev is None:
+        def _patched_find_device(data):
+            import torch
+
+            found_sentinel = False
+
+            def _search(obj):
+                nonlocal found_sentinel
+                if type(obj).__name__ == "EmptyLogits":
+                    found_sentinel = True
+                elif isinstance(obj, Mapping):
+                    for value in obj.values():
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, (tuple, list)):
+                    for value in obj:
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, torch.Tensor):
+                    return obj.device
+                return None
+
+            device = _search(data)
+            if device is None and found_sentinel:
+                # Debug mode calls find_device(...).type on gather/broadcast inputs
                 try:
                     from accelerate.state import PartialState
 
                     return PartialState().device
                 except Exception:
                     pass
-            return dev
+            return device
 
-        if acc_ops is not None and hasattr(acc_ops, "find_device"):
-            acc_ops.find_device = _patched_find_device
-        if acc_utils is not None and hasattr(acc_utils, "find_device"):
-            acc_utils.find_device = _patched_find_device
+        _patched_find_device.__unsloth_patched__ = True
 
         for mod_name, mod in tuple(sys.modules.items()):
             if mod_name.startswith("accelerate") and mod is not None:
-                if (
-                    hasattr(mod, "find_device")
-                    and getattr(mod, "find_device") is original_find_device
-                ):
+                if getattr(mod, "find_device", None) is original_find_device:
                     try:
                         setattr(mod, "find_device", _patched_find_device)
                     except Exception:
