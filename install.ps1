@@ -1406,14 +1406,58 @@ shell.Run cmd, 0, False
         }
     }
 
+    # ── Helper: run nvidia-smi under a timeout ──
+    # A wedged NVIDIA driver can make nvidia-smi block during init or after a
+    # reset; WaitForExit bounds it (mirrors Invoke-AmdSmiNoElevate) so detection
+    # cannot hang the installer. No RunAsInvoker compat layer: nvidia-smi does
+    # not auto-elevate. Returns combined stdout+stderr; "" on timeout/failure.
+    function Invoke-NvidiaSmiBounded {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+            [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+            [int]$TimeoutSec = 10
+        )
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            $psi.Arguments = ($SmiArgs -join ' ')
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                $global:LASTEXITCODE = 124
+                return ""
+            }
+            $global:LASTEXITCODE = $proc.ExitCode
+            return ($outTask.Result + "`n" + $errTask.Result)
+        } catch {
+            $global:LASTEXITCODE = 1
+            return ""
+        }
+    }
+
+    # ── Helper: nvidia-smi -L lists at least one real GPU ──
+    # Exit code 0 alone is not enough: a stale/driverless nvidia-smi can exit 0
+    # while listing no GPU, which would mark an AMD host NVIDIA and suppress
+    # ROCm detection. Require a "GPU <n>:" data row.
+    function Test-NvidiaSmiHasGpu {
+        param([Parameter(Mandatory = $true)][string]$Exe)
+        $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+        return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
+    }
+
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($nvSmiCmd) {
-            & $nvSmiCmd.Source *> $null
-            if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
+        if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
+            $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source
         }
     } catch {}
     if (-not $HasNvidiaSmi) {
@@ -1423,8 +1467,7 @@ shell.Run cmd, 0, False
         )) {
             if (Test-Path $p) {
                 try {
-                    & $p *> $null
-                    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
+                    if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
                 } catch {}
             }
         }
@@ -1694,7 +1737,7 @@ shell.Run cmd, 0, False
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
-            $output = & $NvidiaSmiExe 2>&1 | Out-String
+            $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
             # Newer NVIDIA drivers (e.g. 610.x on Windows) print
             # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
             # Accept both spellings so we don't fall through to the cu126 default.
