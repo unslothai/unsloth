@@ -79,9 +79,7 @@ def _collect_text_mode_subprocess_calls() -> list[ast.Call]:
     return [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and _is_subprocess_call(node)
-        and _is_text_mode(node)
+        if isinstance(node, ast.Call) and _is_subprocess_call(node) and _is_text_mode(node)
     ]
 
 
@@ -130,9 +128,7 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
         "sys.stdout.buffer.write(('tensor ' + chr(0x201D) + ' x\\n').encode('utf-8'))"
     )
 
-    raw = subprocess.run(
-        [sys.executable, "-c", child], capture_output = True
-    ).stdout
+    raw = subprocess.run([sys.executable, "-c", child], capture_output = True).stdout
     assert b"\x9d" in raw  # precondition: output carries the cp1252-undefined byte
 
     # Failing behaviour before the fix: cp1252 (the Windows default) cannot
