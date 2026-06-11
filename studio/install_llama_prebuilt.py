@@ -4604,12 +4604,21 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     It must not be used to move an existing/active install aside: there an
     ``os.replace`` failure means the directory is genuinely in use, and a
     silent copy + ``rmtree`` could partially delete a live install.
+
+    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
+    else (disk full, cross-device, missing path) re-raises so it cannot leave
+    a partially copied install behind. A copy is preferred over retrying the
+    rename because antivirus scans of large DLLs can outlast any reasonable
+    retry window.
     """
     try:
         os.replace(staging_dir, dst)
-    except OSError:
+    except OSError as exc:
+        if not is_busy_lock_error(exc):
+            raise
+        log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
         shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
-        shutil.rmtree(staging_dir, ignore_errors = True)
+        remove_tree(staging_dir)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
