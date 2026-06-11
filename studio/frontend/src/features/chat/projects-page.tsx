@@ -232,7 +232,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-6 py-10 font-heading sm:px-10">
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -253,6 +253,18 @@ export function ProjectsPage() {
           Projects
         </h1>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+            </span>
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search projects"
+              className="h-9 w-44 rounded-full border-none bg-muted pl-10 pr-4 shadow-none transition-[width] focus-visible:w-60 dark:bg-card sm:w-56"
+              aria-label="Search projects"
+            />
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Sort by</span>
             <Select
@@ -330,21 +342,8 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      <div className="relative mx-auto mt-10 w-full max-w-[720px]">
-        <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-muted-foreground">
-          <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
-        </span>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search projects..."
-          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.07)] dark:bg-card dark:shadow-none"
-          aria-label="Search projects"
-        />
-      </div>
-
       {!hasLoaded ? (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
@@ -379,7 +378,7 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {visibleProjects.map((project) => (
             <div key={`wrap-${project.id}`} className="contents">
             <input
@@ -408,7 +407,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-shadow duration-200 hover:shadow-[0_12px_32px_-12px_rgba(0,0,0,0.18)] dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-colors duration-150 hover:bg-muted/60 dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-muted text-foreground/70 transition-colors group-hover/project-card:bg-primary/10 group-hover/project-card:text-primary">
@@ -424,7 +423,7 @@ export function ProjectsPage() {
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/project-card:opacity-100"
+                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 focus-visible:opacity-100 group-hover/project-card:opacity-100"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
