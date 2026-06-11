@@ -4884,6 +4884,20 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
+    # ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``) arrives via
+    # the Responses extra-body: ResponsesRequest has ``extra="allow"``, so the
+    # OpenAI SDK's ``extra_body`` spread lands the dict in ``model_extra``. The
+    # downstream Chat Completions paths consume the typed ``enable_thinking``
+    # field -- the non-streaming path lifts it in ``openai_chat_completions``
+    # only when it is still ``None``, and the streaming pass-through reads
+    # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
+    # handler, to cover both Responses paths.
+    _extra = getattr(payload, "model_extra", None)
+    if isinstance(_extra, dict):
+        _tpl_kw = _extra.get("chat_template_kwargs")
+        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
+            chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
+
     return ChatCompletionRequest(**chat_kwargs)
 
 
