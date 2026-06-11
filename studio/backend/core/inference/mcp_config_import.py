@@ -112,6 +112,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
     url = spec["url"]
     if not isinstance(url, str):
         return None, f"{label}: 'url' must be a string."
+    url = url.strip()
     entry_type = spec.get("type")
     if entry_type is not None and entry_type not in (*_HTTP_REMOTE_TYPES, "sse"):
         return None, f"{label}: remote entry has unsupported type {entry_type!r}."
@@ -136,7 +137,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
     headers = _coerce_str_dict(headers_raw) if headers_raw else None
     return ParsedMcpEntry(
         label,
-        url.strip(),
+        url,
         headers,
         False,
         is_enabled = is_enabled,

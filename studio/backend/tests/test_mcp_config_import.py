@@ -194,6 +194,7 @@ def test_parse_accepts_cline_streamable_http_alias():
         {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${input:token}"}},
         {"url": "https://example.com/mcp", "headers": {"Authorization": None}},
         {"type": "http", "url": "https://example.com/sse"},
+        {"type": "http", "url": "https://example.com/sse "},
         {"type": "streamableHttp", "url": "https://example.com/sse"},
         {"url": "https://example.com/mcp", "timeout": 120},
         {"url": "https://example.com/mcp", "timeoutMs": 120000},
