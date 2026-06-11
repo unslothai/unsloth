@@ -1324,8 +1324,7 @@ async def load_model(
                         # Shouldn't happen on already-validated args; degrade to
                         # no-extras rather than 400 if managed flags changed.
                         logger.warning(
-                            "Stored llama_extra_args failed revalidation; "
-                            "loading without them: %s",
+                            "Stored llama_extra_args failed revalidation; loading without them: %s",
                             stripped,
                         )
                         extra_llama_args = []
