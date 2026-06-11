@@ -14,7 +14,7 @@ export function LoginPage() {
         blur={34}
         speed={15}
         length="70vh"
-        style={{ opacity: 0.15 }}
+        className="opacity-35 dark:opacity-15"
       />
       <Card className="relative z-10 w-full max-w-sm px-5 py-6 shadow-border ring-0 sm:px-6 sm:py-8">
         <AuthForm mode="login" />
