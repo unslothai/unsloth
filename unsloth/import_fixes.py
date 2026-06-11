@@ -2496,3 +2496,91 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+_BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
+
+
+def _is_hip_torch_build():
+    """True only when torch itself is a HIP/ROCm build. Env hints (HIP_PATH
+    etc.) do not count: CUDA bitsandbytes raises at import when the ROCm
+    override is set. Wheel tag first (no torch import); torch.version.hip
+    fallback for source builds."""
+    try:
+        if "rocm" in str(importlib_version("torch")).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        import torch
+        return bool(getattr(torch.version, "hip", None))
+    except Exception:
+        return False
+
+
+def _detect_installed_bnb_rocm_version():
+    """Highest installed ``libbitsandbytes_rocm<NN>.dll`` suffix ("72", "713")
+    or ``None``. Listing order is unordered, so take the numeric max."""
+    try:
+        spec = importlib.util.find_spec("bitsandbytes")
+    except Exception:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+
+    suffixes = []
+    for pkg_dir in spec.submodule_search_locations:
+        try:
+            entries = os.listdir(pkg_dir)
+        except Exception:
+            continue
+        for entry in entries:
+            match = _BNB_ROCM_DLL_RE.fullmatch(entry)
+            if match is not None:
+                suffixes.append(match.group(1))
+    if not suffixes:
+        return None
+    return max(suffixes, key = lambda value: int(value))
+
+
+def maybe_set_windows_rocm_bnb_version():
+    """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
+
+    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose
+    suffix can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll),
+    breaking the native 4-bit/8-bit paths. Pin the installed suffix before
+    bitsandbytes is first imported.
+
+    No-op unless ALL of: Windows, a real HIP torch build (env hints like
+    HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
+    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
+    (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
+    redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
+    opts out and drops a seeded default. Returns the value set, else None.
+    """
+    if sys.platform != "win32":
+        return None
+    if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
+        # Real opt-out: drop our seeded default (marker present); explicit
+        # user values carry no marker and are kept.
+        if os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize":
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop("UNSLOTH_BNB_ROCM_VERSION_SOURCE", None)
+        return None
+    if "BNB_ROCM_VERSION" in os.environ and (
+        os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") != "sitecustomize"
+    ):
+        return None
+    if not _is_hip_torch_build():
+        return None
+    version = _detect_installed_bnb_rocm_version()
+    if version is None:
+        return None
+    os.environ["BNB_ROCM_VERSION"] = version
+    os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            f"Unsloth: set BNB_ROCM_VERSION={version} "
+            "(detected from the installed bitsandbytes ROCm wheel on Windows)."
+        )
+    return version

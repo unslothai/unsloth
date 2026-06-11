@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -40,6 +41,14 @@ IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
+
+# DiskPart-prompt suppression: amd-smi auto-elevates on Windows, popping a
+# UAC/DiskPart prompt mid-install. This installer only spawns probes and pip/uv
+# (none need elevation), so set __COMPAT_LAYER=RunAsInvoker process-wide -- every
+# amd-smi subprocess then runs un-elevated, no per-call guard needed. setup.ps1
+# keeps per-call guards since it ALSO spawns winget installers that need elevation.
+if IS_WINDOWS:
+    os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 # torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64,
 # and win_amd64. On other hosts the audio extras must be filtered out (the
 # extras-no-deps step would otherwise fail), regardless of NO_TORCH.
@@ -137,6 +146,39 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
+def _amd_smi_env() -> dict[str, str] | None:
+    """On Windows, env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
+    NB: RunAsInvoker doesn't stop amd-smi's runtime elevation (its manifest is
+    asInvoker -- it elevates a child via ShellExecute). The real guard is
+    _amd_smi_allowed() below; this is harmless belt-and-suspenders."""
+    if platform.system() != "Windows":
+        return None
+    return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi here.
+
+    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
+    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows with
+    a HIP SDK (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1; Linux/macOS always.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if shutil.which("hipinfo"):
+        return True
+    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        _root = os.environ.get(_var)
+        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+            return True
+    return False
+
+
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
@@ -155,8 +197,10 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Try amd-smi version (outputs "... | ROCm version: X.Y.Z")
-    amd_smi = shutil.which("amd-smi")
+    # Try amd-smi version (outputs "... | ROCm version: X.Y.Z").
+    # Gated off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+    # hipconfig below covers that case.
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
             result = subprocess.run(
@@ -165,9 +209,9 @@ def _detect_rocm_version() -> tuple[int, int] | None:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 5,
+                env = _amd_smi_env(),
             )
             if result.returncode == 0:
-                import re
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
                     return int(m.group(1)), int(m.group(2))
@@ -282,6 +326,14 @@ def _detect_windows_gfx_arch() -> str | None:
                 if os.path.isfile(_candidate):
                     hipinfo = _candidate
                     break
+    if not hipinfo:
+        # 2b. AMD torch wheels ship hipInfo.exe into the venv Scripts dir
+        # (next to python.exe); resolvable even on driver-only hosts with no
+        # SDK install at all. Lets `studio update` re-detect the arch on a
+        # venv that already has the AMD wheel.
+        _venv_hipinfo = os.path.join(os.path.dirname(sys.executable), "hipInfo.exe")
+        if os.path.isfile(_venv_hipinfo):
+            hipinfo = _venv_hipinfo
     if hipinfo:
         try:
             result = subprocess.run(
@@ -304,7 +356,9 @@ def _detect_windows_gfx_arch() -> str | None:
             pass
 
     # 3. amd-smi fallback -- runtime-only Radeon installs ship amd-smi but no hipinfo.
-    amd_smi = shutil.which("amd-smi")
+    # Gated off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt); the arch
+    # arrives via --rocm-gfx / name inference there, so this is only needed when safe.
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         for _args in (("static", "--asic"), ("list",)):
             try:
@@ -313,6 +367,7 @@ def _detect_windows_gfx_arch() -> str | None:
                     stdout = subprocess.PIPE,
                     stderr = subprocess.DEVNULL,
                     timeout = 10,
+                    env = _amd_smi_env(),
                 )
                 if result.returncode != 0:
                     continue
@@ -330,6 +385,74 @@ def _detect_windows_gfx_arch() -> str | None:
                     return _pick
             except Exception:
                 continue
+
+    # 4. Last resort: GPU marketing name via WMI → arch table. Driver-only
+    #    hosts (Adrenalin, no HIP SDK) have neither hipinfo nor amd-smi
+    #    (amd-smi does not exist on Windows at all), but the display driver
+    #    always knows the GPU name. Mirrors setup.ps1's $nameArchTable so a
+    #    standalone `studio update` can repair a CPU-only venv on such hosts.
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_VideoController).Name",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0:
+            _tokens = []
+            for _name in result.stdout.decode(errors = "replace").splitlines():
+                _arch = _gfx_arch_from_gpu_name(_name.strip())
+                if _arch:
+                    _tokens.append(_arch)
+            _pick = _dedup_pick(_tokens)
+            if _pick:
+                print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
+                return _pick
+    except Exception:
+        pass
+    return None
+
+
+# GPU marketing-name → gfx arch table, mirroring setup.ps1's $nameArchTable.
+# Most-specific first; first match wins. Covers only arches the lemonade-sdk
+# prebuilts / AMD Windows torch indexes support; unknown names return None
+# (callers then fall back cleanly to CPU).
+_WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
+    (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
+    (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
+    # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+    (r"8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+    (
+        r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
+        r"|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33",
+        "gfx1150",
+    ),
+    # RDNA 3 desktop / workstation (Navi 31)
+    (r"RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700", "gfx1100"),
+    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710", "gfx1102"),  # Navi 33
+    # RDNA 3 iGPU (Phoenix / Hawk Point)
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
+    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
+    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
+    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),  # Navi 24
+]
+
+
+def _gfx_arch_from_gpu_name(name: str) -> "str | None":
+    """Map a GPU marketing name to its gfx arch via _WIN_GPU_NAME_ARCH_TABLE."""
+    if not name:
+        return None
+    for _pat, _arch in _WIN_GPU_NAME_ARCH_TABLE:
+        if re.search(_pat, name, re.IGNORECASE):
+            return _arch
     return None
 
 
@@ -366,8 +489,83 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     return max(all_vers, key = lambda v: int(v)) if all_vers else None
 
 
+_BNB_ROCM_SITECUSTOMIZE_BEGIN = "# BEGIN Unsloth BNB_ROCM_VERSION"
+_BNB_ROCM_SITECUSTOMIZE_END = "# END Unsloth BNB_ROCM_VERSION"
+_BNB_ROCM_VERSION_SOURCE_ENV = "UNSLOTH_BNB_ROCM_VERSION_SOURCE"
+_BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE = "sitecustomize"
+_BNB_ROCM_VERSION_SOURCE_DETECTED = "detected"
+
+
+def _persist_bnb_rocm_version(version: str) -> bool:
+    """Persist BNB_ROCM_VERSION for future Python processes in this venv."""
+    version = str(version).strip()
+    if not version:
+        return False
+
+    site_packages = sysconfig.get_path("purelib")
+    if not site_packages:
+        return False
+
+    sitecustomize_path = Path(site_packages) / "sitecustomize.py"
+    block = (
+        f"{_BNB_ROCM_SITECUSTOMIZE_BEGIN}\n"
+        "import os as _unsloth_os\n"
+        "_unsloth_existing_bnb_rocm = _unsloth_os.environ.get('BNB_ROCM_VERSION')\n"
+        f"_unsloth_os.environ.setdefault('BNB_ROCM_VERSION', {version!r})\n"
+        "if _unsloth_existing_bnb_rocm is None and "
+        f"_unsloth_os.environ.get('BNB_ROCM_VERSION') == {version!r}:\n"
+        "    _unsloth_os.environ.setdefault("
+        f"{_BNB_ROCM_VERSION_SOURCE_ENV!r}, "
+        f"{_BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE!r})\n"
+        "del _unsloth_existing_bnb_rocm\n"
+        f"{_BNB_ROCM_SITECUSTOMIZE_END}\n"
+    )
+
+    try:
+        sitecustomize_path.parent.mkdir(parents = True, exist_ok = True)
+        existing = (
+            sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
+        )
+        # Strip all managed regions, including one whose END marker was lost to
+        # an interrupted write, then append exactly one fresh block.
+        pattern = re.compile(
+            rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_BEGIN)}.*?"
+            rf"(?:{re.escape(_BNB_ROCM_SITECUSTOMIZE_END)}\n?|\Z)",
+            re.DOTALL,
+        )
+        remainder = pattern.sub("", existing)
+        separator = "" if not remainder or remainder.endswith("\n") else "\n"
+        updated = f"{remainder}{separator}{block}"
+        tmp_path = sitecustomize_path.with_name(
+            f"{sitecustomize_path.name}.unsloth-tmp{os.getpid()}"
+        )
+        try:
+            tmp_path.write_text(updated, encoding = "utf-8")
+            if sitecustomize_path.exists():
+                shutil.copymode(sitecustomize_path, tmp_path)
+            os.replace(tmp_path, sitecustomize_path)
+        finally:
+            tmp_path.unlink(missing_ok = True)
+    except (OSError, UnicodeDecodeError) as exc:
+        print(
+            f"   Warning: could not persist BNB_ROCM_VERSION={version} "
+            f"to {sitecustomize_path}: {exc}"
+        )
+        return False
+
+    return True
+
+
 def _has_rocm_gpu() -> bool:
-    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
+    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed).
+
+    Always returns False when an NVIDIA GPU is present -- NVIDIA takes
+    priority on mixed hosts and prevents every detection path below
+    (rocminfo, amd-smi, KFD sysfs) from producing a false positive even
+    if ROCm tools are installed alongside the NVIDIA driver.
+    """
+    if _has_usable_nvidia_gpu():
+        return False
     for cmd, check_fn in (
         # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
         # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -386,6 +584,10 @@ def _has_rocm_gpu() -> bool:
         exe = shutil.which(cmd[0])
         if not exe:
             continue
+        # Skip amd-smi on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+        # rely on rocminfo / the sysfs fallback there.
+        if cmd[0] == "amd-smi" and not _amd_smi_allowed():
+            continue
         try:
             result = subprocess.run(
                 [exe, *cmd[1:]],
@@ -393,6 +595,7 @@ def _has_rocm_gpu() -> bool:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 10,
+                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
@@ -403,6 +606,13 @@ def _has_rocm_gpu() -> bool:
     # runtime-only detection. On minimal package-managed installs (no
     # rocminfo / no amd-smi tools), the kernel exposes AMD GPUs via
     # /sys/class/kfd so `studio update` can still detect and repair.
+    #
+    # Guard: reject any KFD node whose properties file reports a non-AMD
+    # vendor. With the NVIDIA open kernel module (driver 560+), NVIDIA GPUs
+    # can register KFD topology nodes with a non-zero gpu_id; those nodes
+    # have vendor_id 4318 (0x10DE) rather than the AMD value 4098 (0x1002).
+    # Without this check the fallback returns True on NVIDIA-only systems,
+    # causing _ensure_rocm_torch to install ROCm wheels on NVIDIA hardware.
     if sys.platform != "win32":
         try:
             kfd_nodes = "/sys/class/kfd/kfd/topology/nodes"
@@ -414,29 +624,61 @@ def _has_rocm_gpu() -> bool:
                             gpu_id = fh.read().strip()
                     except OSError:
                         continue
-                    if gpu_id and gpu_id != "0":  # gpu_id 0 = CPU node
-                        return True
+                    if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
+                        continue
+                    # Require AMD vendor_id 4098 (0x1002) in the properties file.
+                    # KFD properties files exist on every kernel that exposes
+                    # /sys/class/kfd, so absence of the file means we cannot
+                    # confirm AMD ownership -- skip the node rather than risk a
+                    # false positive (e.g. NVIDIA open driver KFD nodes that
+                    # lack a properties file on some kernel versions).
+                    props_path = os.path.join(kfd_nodes, entry, "properties")
+                    try:
+                        with open(props_path) as fh:
+                            props = fh.read()
+                    except OSError:
+                        continue  # can't confirm vendor -- skip
+                    if not re.search(r"\bvendor_id\s+4098\b", props):
+                        continue
+                    return True
         except OSError:
             pass
     return False
 
 
 def _has_usable_nvidia_gpu() -> bool:
-    """Return True only when nvidia-smi exists AND reports at least one GPU."""
+    """Return True when an NVIDIA GPU is present and usable.
+
+    Primary probe: nvidia-smi -L (subprocess).
+    Fallback: /proc/driver/nvidia/gpus/ sysfs (Linux only) -- handles the
+    case where nvidia-smi is present but the subprocess fails (PATH gap,
+    timeout, driver initialisation race). If either probe confirms an
+    NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
+    """
     exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "-L"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0 and "GPU " in result.stdout
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "-L"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0 and "GPU " in result.stdout:
+                return True
+        except Exception:
+            pass
+    # Fallback: the NVIDIA driver exposes one subdirectory per GPU under
+    # /proc/driver/nvidia/gpus/ on Linux regardless of nvidia-smi state.
+    if sys.platform != "win32":
+        try:
+            gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(gpu_dir) and os.listdir(gpu_dir):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _detect_amd_gfx_codes() -> list[str]:
@@ -454,7 +696,8 @@ def _detect_amd_gfx_codes() -> list[str]:
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
         probes.append(["rocminfo"])
-    if shutil.which("amd-smi"):
+    # Gate amd-smi off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt).
+    if shutil.which("amd-smi") and _amd_smi_allowed():
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
@@ -465,6 +708,7 @@ def _detect_amd_gfx_codes() -> list[str]:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 15,
+                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
@@ -506,15 +750,39 @@ def _install_bnb_windows_rocm() -> bool:
     )
     if not _ok:
         return False
-    # After install: detect the actual ROCm DLL suffix in the wheel and set
-    # BNB_ROCM_VERSION so bitsandbytes loads the correct DLL regardless of what
-    # torch.version.hip reports. The wheel may ship an older suffix (e.g. "72")
-    # while torch reports a newer HIP version (e.g. 7.13); the override stops
-    # bitsandbytes from failing on a non-existent DLL. The worker subprocess
-    # inherits this env var. Fall back to "72" if detection fails (no-op/dry-run).
-    if "BNB_ROCM_VERSION" not in os.environ:
+    # After install: detect the actual ROCm DLL suffix shipped in the wheel and
+    # set BNB_ROCM_VERSION so bitsandbytes loads the correct DLL regardless of
+    # what torch.version.hip reports.  The wheel may ship an older suffix (e.g.
+    # "72") while torch reports a newer HIP version (e.g. 7.13); the env var
+    # override ensures bitsandbytes does not fail looking for a non-existent DLL.
+    # The worker subprocess inherits this env var automatically.
+    # Fall back to "72" if detection fails (e.g. install was a no-op / dry-run).
+    _env_ver = os.environ.get("BNB_ROCM_VERSION")
+    _env_is_persisted_default = (
+        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
+    )
+    _persist_detected_version = False
+    if _env_ver and not _env_is_persisted_default:
+        _ver = _env_ver
+    else:
         _ver = _detect_bnb_rocm_dll_ver() or "72"
         os.environ["BNB_ROCM_VERSION"] = _ver
+        os.environ[_BNB_ROCM_VERSION_SOURCE_ENV] = _BNB_ROCM_VERSION_SOURCE_DETECTED
+        _persist_detected_version = True
+    if _persist_detected_version:
+        _persist_bnb_rocm_version(_ver)
+    # Make hipInfo.exe (shipped into the venv Scripts dir by the AMD torch
+    # wheel) resolvable via PATH for this process and every child python the
+    # installer spawns (import checks, precompile): bitsandbytes runs
+    # `hipinfo.exe` at import time to detect the GPU arch and logs a scary
+    # (harmless) ERROR + WARNING on every import when it is missing. The venv
+    # Scripts dir is on PATH only when the venv is activated, which neither
+    # Studio nor the installer's child processes ever do.
+    _scripts_dir = os.path.dirname(sys.executable)
+    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")) and not shutil.which(
+        "hipinfo.exe"
+    ):
+        os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
     return True
 
 
@@ -528,6 +796,13 @@ def _ensure_rocm_torch() -> None:
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     global _rocm_windows_torch_installed
+    # install.sh sets UNSLOTH_TORCH_BACKEND to the resolved wheel family
+    # ("cuda", "rocm", "cpu"). Skip ROCm operations entirely when install.sh
+    # already selected a non-ROCm backend -- this is the authoritative signal
+    # and avoids re-running GPU detection in a subprocess that may see a
+    # different environment (different PATH, CUDA_VISIBLE_DEVICES, etc.).
+    if _TORCH_BACKEND in ("cuda", "cpu"):
+        return
     # setup.ps1 sets this after installing AMD wheels; skip the probe only when
     # torch is actually importable as ROCm. If the venv was wiped between runs,
     # the stale env-var would suppress a needed reinstall.
@@ -866,6 +1141,29 @@ def _infer_no_torch() -> bool:
 
 
 NO_TORCH = _infer_no_torch()
+
+# UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() so
+# that this script knows which torch variant was selected without re-running
+# GPU detection. Values: "cuda", "rocm", or "cpu". Empty means unknown
+# (standalone `unsloth studio update` runs, where we re-detect normally).
+_TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
+
+
+def _torch_step_label(suffix: str) -> str:
+    """Return a progress label like 'torch check (cuda)' using the known backend.
+
+    Falls back to GPU detection when UNSLOTH_TORCH_BACKEND is not set (e.g.
+    standalone `unsloth studio update` runs that bypass install.sh).
+    """
+    backend = _TORCH_BACKEND
+    if not backend:
+        if _has_usable_nvidia_gpu():
+            backend = "cuda"
+        elif _has_rocm_gpu():
+            backend = "rocm"
+        else:
+            backend = "cpu"
+    return f"torch {suffix} ({backend})"
 
 
 # -- Verbosity control ----------------------------------------------------------
@@ -1549,7 +1847,7 @@ def install_python_stack() -> int:
     #     venv got CPU-only torch (common when pip resolves torch from PyPI).
     #     Must follow base packages so torch is present for inspection.
     if not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch check")
+        _progress(_torch_step_label("check"))
         _ensure_rocm_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
@@ -1569,6 +1867,12 @@ def install_python_stack() -> int:
             _wexe = shutil.which(_wcmd[0])
             if not _wexe:
                 continue
+            # Skip amd-smi on Windows w/o a HIP SDK (avoids the UAC/DiskPart
+            # prompt), as _has_rocm_gpu()/_detect_amd_gfx_codes do. The only loss
+            # is the best-effort "AMD GPU detected" note; ROCm-torch state below
+            # comes from the install itself.
+            if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
+                continue
             try:
                 _wr = subprocess.run(
                     [_wexe, *_wcmd[1:]],
@@ -1576,6 +1880,7 @@ def install_python_stack() -> int:
                     stderr = subprocess.DEVNULL,
                     text = True,
                     timeout = 10,
+                    env = _amd_smi_env() if _wcmd[0] == "amd-smi" else None,
                 )
             except Exception:
                 continue
@@ -1727,7 +2032,7 @@ def install_python_stack() -> int:
     #     Running the repair last ensures ROCm torch is in place at runtime,
     #     whichever intermediate step clobbered it.
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch (final)")
+        _progress(_torch_step_label("final"))
         _ensure_rocm_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)

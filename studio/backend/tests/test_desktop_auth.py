@@ -419,6 +419,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     routes_module.__path__ = []
     settings_module = ModuleType("routes.settings")
     settings_module.router = APIRouter()
+    llama_module = ModuleType("routes.llama")
+    llama_module.router = APIRouter()
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
 
@@ -440,9 +442,11 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     }.items():
         setattr(routes_module, name, router)
     routes_module.settings = settings_module
+    routes_module.llama = llama_module
 
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
+    monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
 
     import studio.backend.main as backend_main
