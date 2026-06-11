@@ -170,16 +170,15 @@ def test_walkback_does_not_cross_user_turn():
         ]
     )
     last = req.messages[-1].tool_call_id
-    # The walkback must NOT pick old_call because a user turn intervenes;
-    # falls back to synth.
+    # Walkback must NOT pick old_call across a user turn; falls back to synth.
     assert last is not None
     assert last != "old_call"
     assert last.startswith("call_")
 
 
 def test_walkback_skips_explicitly_consumed_tool_call_id():
-    """Sibling tool result with an explicit id must reserve its assistant
-    slot so a follow-up missing-id result picks the OTHER tool call."""
+    """An explicit-id tool result reserves its assistant slot so a
+    follow-up missing-id result picks the OTHER tool call."""
     req = _req(
         [
             {
@@ -202,15 +201,12 @@ def test_walkback_skips_explicitly_consumed_tool_call_id():
             {"role": "tool", "content": "second result"},
         ]
     )
-    assert [m.tool_call_id for m in req.messages if m.role == "tool"] == [
-        "call_a",
-        "call_b",
-    ]
+    assert [m.tool_call_id for m in req.messages if m.role == "tool"] == ["call_a", "call_b"]
 
 
 def test_walkback_handles_malformed_function_string():
     """A tool_call with ``function`` as a string (provider quirk) must not
-    raise; resolution falls back to fallback id selection."""
+    raise; resolution falls back to id selection."""
     req = _req(
         [
             {
