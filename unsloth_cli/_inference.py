@@ -11,7 +11,8 @@ from typing import Optional
 
 import typer
 
-_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_OPEN = "<think>"
+_THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 
 
 def ensure_studio_backend_path() -> None:
@@ -38,9 +39,13 @@ def visible_text(text: str, show_thinking: bool) -> str:
         return text
     text = _THINK_BLOCK.sub("", text)
     # Hold back an unclosed trailing <think> so reasoning never leaks mid-stream.
-    open_idx = text.find("<think>")
+    open_idx = text.find(_THINK_OPEN)
     if open_idx != -1:
         text = text[:open_idx]
+    max_prefix = min(len(text), len(_THINK_OPEN) - 1)
+    for size in range(max_prefix, 0, -1):
+        if _THINK_OPEN.startswith(text[-size:]):
+            return text[:-size]
     return text
 
 

@@ -59,6 +59,15 @@ def test_visible_text_holds_unclosed_think():
     assert visible_text("done.<think>more thinking", show_thinking = False) == "done."
 
 
+def test_visible_text_holds_partial_think_prefix():
+    # Streams are cumulative, so the opening tag can arrive as "<", "<thi",
+    # then "<think>". Hold possible tag prefixes until they are disambiguated.
+    assert visible_text("<", show_thinking = False) == ""
+    assert visible_text("<thi", show_thinking = False) == ""
+    assert visible_text("done.<thi", show_thinking = False) == "done."
+    assert visible_text("2 < 3", show_thinking = False) == "2 < 3"
+
+
 def _option(command_fn, name):
     return inspect.signature(command_fn).parameters[name].default
 
