@@ -71,7 +71,7 @@ export function ProjectSwitcher({
       <DropdownMenuContent
         side="bottom"
         align="start"
-        sideOffset={6}
+        sideOffset={0}
         className="app-user-menu menu-soft-surface ring-0 min-w-56 max-w-72 max-h-72 py-2 font-heading rounded-[14px] border-0"
       >
         {showLoadingRow ? (

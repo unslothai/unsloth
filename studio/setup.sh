@@ -155,9 +155,60 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+# Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
+# NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
+_setup_run_smi() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every NVIDIA
+# device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to the
+# AMD card). Unset means all devices visible. nvidia-smi ignores this env var,
+# so the probes below cannot see the distinction on their own.
+_setup_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _setup_cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_setup_cvd_trim" ] || [ "$_setup_cvd_trim" = "-1" ]
+}
+
+# Returns 0 when an NVIDIA GPU is present and usable. Primary probe is
+# `nvidia-smi -L` (timeout-bounded). Fallback is /proc/driver/nvidia/gpus,
+# which the driver populates per GPU regardless of nvidia-smi state -- handles
+# PATH gaps and driver init races. Mirrors install.sh _has_usable_nvidia_gpu
+# (PR 6174) so setup routes the same way as the torch installer. A GPU hidden
+# via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
+# and a mixed host steered to its AMD card keeps the ROCm route.
+_setup_has_usable_nvidia_gpu() {
+    if _setup_cvd_hides_nvidia; then
+        return 1
+    fi
+    _setup_nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _setup_nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _setup_nvsmi="/usr/bin/nvidia-smi"
+    fi
+    if [ -n "$_setup_nvsmi" ]; then
+        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+           | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 _cuda_driver_max_version() {
     command -v nvidia-smi >/dev/null 2>&1 || return 0
-    nvidia-smi 2>/dev/null \
+    _setup_run_smi nvidia-smi 2>/dev/null \
         | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
         | head -1 || true
 }
@@ -587,6 +638,7 @@ fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
+VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -700,9 +752,9 @@ else
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
-# Gemma 4 models need transformers>=5.5.0.
+# Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
 # Pre-install into separate directories to avoid runtime pip overhead.
 # The training subprocess prepends the appropriate dir to sys.path.
 #
@@ -737,6 +789,21 @@ _assert_studio_owned_or_absent() {
         exit 1
     fi
 }
+_target_has_pkg_version() {
+    _thpv_dir="$1"
+    _thpv_pkg="$2"
+    _thpv_version="$3"
+    [ -d "$_thpv_dir" ] || return 1
+    _thpv_pkg_norm=$(printf '%s' "$_thpv_pkg" | tr '-' '_')
+    for _thpv_metadata in \
+        "$_thpv_dir"/"$_thpv_pkg_norm"-*.dist-info/METADATA \
+        "$_thpv_dir"/"$_thpv_pkg"-*.dist-info/METADATA
+    do
+        [ -f "$_thpv_metadata" ] || continue
+        grep -qx "Version: $_thpv_version" "$_thpv_metadata" && return 0
+    done
+    return 1
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
@@ -746,6 +813,10 @@ if [ -d "$STUDIO_HOME/.venv_t5" ]; then
 fi
 [ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
 [ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
+[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
 # Also reinstall when python deps were updated (packages may need rebuild)
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
@@ -769,31 +840,68 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
     step "transformers" "5.5.0 pre-installed"
+
+    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
+    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
+    mkdir -p "$VENV_T5_510_DIR"
+    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers 5.10.2" fast_install --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
+    run_quiet "install huggingface_hub for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_510" fast_install --target "$VENV_T5_510_DIR" "tiktoken"
+    step "transformers" "5.10.2 pre-installed"
 fi
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before the
+# probes or a ROCDXG WSL host is misdetected as CPU-only.
+export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+    PATH="$PATH:/opt/rocm/bin"
+fi
 _setup_amd_detected=false
+_setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
-if command -v rocminfo >/dev/null 2>&1 && \
-   rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
-elif command -v amd-smi >/dev/null 2>&1 && \
-     amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    [ -z "$_setup_gfx_all" ] && \
-        _setup_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-        '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+# NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
+# a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
+# This also keeps a wedged rocminfo/amd-smi from hanging setup before the
+# host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_usable_nvidia_gpu; then
+    _setup_nvidia_usable=true
+fi
+if [ "$_setup_nvidia_usable" != true ]; then
+    if command -v rocminfo >/dev/null 2>&1 && \
+       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
+            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_setup_gfx_all" ] && \
+            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif [ -e /dev/kfd ] && \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
+        # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
+        # missing but the kernel exposes the GPU, so the source-build gate
+        # below does not drop them to a CPU llama.cpp build. No gfx arch is
+        # available from this path; name-based inference handles it.
+        _setup_amd_detected=true
+    fi
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1 && \
-   nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+if [ "$_setup_nvidia_usable" = true ]; then
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -810,14 +918,20 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        # Kept in sync with the table in install.sh (and the PS nameArchTable).
+        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                 _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                      _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)       _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                        _setup_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                             _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _setup_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
@@ -866,34 +980,46 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
 # Pick the release repo install_llama_prebuilt.py plans against.
-# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
-# x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
-# GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
+# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
+# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
+# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
+# use unslothai.
 _LINUX_HAS_GPU=false
-for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
-    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-        _LINUX_HAS_GPU=true
-        break
-    fi
-done
+# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
+# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
+# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
+# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
+# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
+# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
+# deliberately left on tooling presence, not usability: an unusable NVIDIA host
+# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
+# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ]; then
+    _LINUX_HAS_GPU=true
+else
+    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
+        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+            _LINUX_HAS_GPU=true
+            break
+        fi
+    done
+fi
 
-if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
+if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && [ "$_LINUX_HAS_GPU" = false ]; then
-    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
-    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
-    # the Linux CUDA bundles, so without this branch the prebuilt
-    # resolver returns 0 attempts on every release and the installer
-    # falls all the way back to a source build. Upstream ggml-org ships
+    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
+    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
+    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
+    # attempts and the installer falls back to a source build. ggml-org ships
     # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
+    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 unset _GPU_TOOL
@@ -956,7 +1082,6 @@ else
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
-        --simple-policy
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
@@ -1214,23 +1339,35 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-                GPU_BACKEND="cuda"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-                GPU_BACKEND="cuda"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                # Pick the newest cuda-XX.X directory
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-                GPU_BACKEND="cuda"
+            # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
+            # (_setup_nvidia_usable, computed in the GPU summary block above;
+            # already false when hidden via CUDA_VISIBLE_DEVICES=""/-1).
+            # A CUDA toolkit alone (CPU-only build container, leftover packages)
+            # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
+            # binary that fails at runtime, so fall through to the CPU build.
+            if [ "$_setup_nvidia_usable" = true ]; then
+                if command -v nvcc &>/dev/null; then
+                    NVCC_PATH="$(command -v nvcc)"
+                    GPU_BACKEND="cuda"
+                elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                    NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                    export PATH="/usr/local/cuda/bin:$PATH"
+                    GPU_BACKEND="cuda"
+                elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                    # Pick the newest cuda-XX.X directory
+                    NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                    GPU_BACKEND="cuda"
+                fi
             fi
 
-            # Check for ROCm (AMD) only if CUDA was not already selected
+            # Check for ROCm (AMD) only if CUDA was not already selected, and
+            # only when an AMD GPU was actually detected (_setup_amd_detected).
+            # hipcc presence alone (HIP SDK, no GPU) must not select a HIP build.
+            # NVIDIA-usable hosts never build HIP (defense in depth: the AMD
+            # probes above are already skipped when NVIDIA is usable).
             ROCM_HIPCC=""
-            if [ -z "$GPU_BACKEND" ]; then
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_usable" != true ] && [ "$_setup_amd_detected" = true ]; then
                 if command -v hipcc &>/dev/null; then
                     ROCM_HIPCC="$(command -v hipcc)"
                     GPU_BACKEND="rocm"
@@ -1292,7 +1429,7 @@ else
 
                         CUDA_ARCHS=""
                         if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                             while IFS= read -r _cap; do
                                 _cap=$(echo "$_cap" | tr -d '[:space:]')
                                 if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -1398,7 +1535,7 @@ else
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
                 fi
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+            elif [ -d /usr/local/cuda ] || _setup_run_smi nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
             elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, ROCm driver found but hipcc missing)"
@@ -1511,7 +1648,6 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "ggml-org/llama.cpp"
-        --simple-policy
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,

@@ -26,6 +26,22 @@ import subprocess as _sp
 from pathlib import Path
 from typing import Any, Callable
 
+# ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
+# Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge
+# (librocdxg.so over /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_
+# DETECTION=1 is set before torch touches the GPU. A worker spawned outside a
+# login shell misses the installer's persisted env and falls back to CPU.
+# Gated to no-op unless BOTH /dev/dxg and librocdxg.so exist, so native Linux
+# ROCm, NVIDIA, macOS and Windows are unaffected.
+if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
+    try:
+        if os.path.exists("/dev/dxg") and any(
+            os.path.exists(_p + "/librocdxg.so") for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
+        ):
+            os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
+    except Exception:
+        pass
+
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 from utils.wheel_utils import (
@@ -678,8 +694,11 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
       ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
-    1. ``gcnArchName`` / variant spellings (stable, naming-independent).
-    2. Device-name substring match (last resort when all arch attrs absent;
+    1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
+       driver's own unified-memory answer; covers APUs beyond the hardcoded
+       arch set, e.g. gfx1103 Phoenix iGPUs). Only ever upgrades to unified.
+    2. ``gcnArchName`` / variant spellings (stable, naming-independent).
+    3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
          - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
@@ -691,6 +710,16 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         if _v:
             gcn_arch = _v
             break
+
+    # Driver's own answer first: hipDeviceProp_t.integrated (exposed as
+    # props.is_integrated; same gate PR #5988's UMA safetensors fast-load
+    # uses). Strictly additive -- only a truthy value upgrades to unified;
+    # 0/absent falls through to the arch/name logic below, so a wheel that
+    # omits or zeroes the field can never downgrade the known APU set. This
+    # covers unified APUs outside the hardcoded arches (gfx1103 Phoenix
+    # iGPUs, future parts) with one universal signal.
+    if getattr(props, "is_integrated", 0):
+        return gcn_arch, True
 
     if gcn_arch:
         return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
@@ -1045,7 +1074,74 @@ def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int
     return new_w, new_h
 
 
-def _resize_mlx_vlm_image(image, resize):
+_MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
+
+
+def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
+    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        return None
+    cls = image_processor.__class__
+    key = (getattr(cls, "__module__", ""), getattr(cls, "__qualname__", cls.__name__))
+    if key in _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE:
+        return _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE[key]
+    copied_image_processor = _copy_mlx_vlm_image_processor(image_processor)
+    layout = (
+        _probe_mlx_vlm_numpy_image_layout(copied_image_processor)
+        if copied_image_processor is not None
+        else None
+    )
+    _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE[key] = layout
+    return layout
+
+
+def _copy_mlx_vlm_image_processor(image_processor):
+    import copy
+    try:
+        return copy.deepcopy(image_processor)
+    except Exception:
+        try:
+            return copy.copy(image_processor)
+        except Exception:
+            return None
+
+
+def _probe_mlx_vlm_numpy_image_layout(image_processor) -> str | None:
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    def _accepts(candidate) -> bool:
+        try:
+            image_processor(images = [candidate])
+            return True
+        except TypeError:
+            try:
+                image_processor([candidate])
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    # Use an asymmetric image so CHW-vs-HWC mistakes are visible to processors
+    # that skip conversion for 3D numpy arrays.
+    hwc = np.zeros((64, 96, 3), dtype = np.uint8)
+    chw = np.ascontiguousarray(hwc.transpose(2, 0, 1))
+    if _accepts(hwc):
+        return None
+    if _accepts(chw):
+        return "chw"
+    return None
+
+
+def _resize_mlx_vlm_image(
+    image,
+    resize,
+    image_layout = None,
+):
     if resize is None:
         return image
     try:
@@ -1063,16 +1159,27 @@ def _resize_mlx_vlm_image(image, resize):
     # On resize, hand mlx-vlm a writable RGB ndarray so its PIL-path
     # square-resize is skipped and HF processors don't warn on non-writable
     # views. resize=None above keeps the original PIL.
-    return np.array(image, copy = True)
+    array = np.array(image, copy = True)
+    if image_layout == "chw":
+        return np.ascontiguousarray(array.transpose(2, 0, 1))
+    return array
 
 
-def _resize_mlx_vlm_images(value, resize):
+def _resize_mlx_vlm_images(
+    value,
+    resize,
+    image_layout = None,
+):
     if isinstance(value, list):
-        return [_resize_mlx_vlm_image(image, resize) for image in value]
-    return _resize_mlx_vlm_image(value, resize)
+        return [_resize_mlx_vlm_image(image, resize, image_layout = image_layout) for image in value]
+    return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
-def _adapt_for_mlx_vlm(items, resize = None):
+def _adapt_for_mlx_vlm(
+    items,
+    resize = None,
+    image_layout = None,
+):
     """Adapt GPU-path VLM dataset output for mlx-vlm.
 
     The GPU path embeds PIL images in message content as
@@ -1092,7 +1199,13 @@ def _adapt_for_mlx_vlm(items, resize = None):
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
-                            images.append(_resize_mlx_vlm_image(img, resize))
+                            images.append(
+                                _resize_mlx_vlm_image(
+                                    img,
+                                    resize,
+                                    image_layout = image_layout,
+                                )
+                            )
                         new_content.append({"type": "image"})
                     else:
                         new_content.append(part)
@@ -1103,9 +1216,17 @@ def _adapt_for_mlx_vlm(items, resize = None):
         if images:
             out["image"] = images[0] if len(images) == 1 else images
         elif "image" in item:
-            out["image"] = _resize_mlx_vlm_images(item["image"], resize)
+            out["image"] = _resize_mlx_vlm_images(
+                item["image"],
+                resize,
+                image_layout = image_layout,
+            )
         elif "images" in item:
-            out["images"] = _resize_mlx_vlm_images(item["images"], resize)
+            out["images"] = _resize_mlx_vlm_images(
+                item["images"],
+                resize,
+                image_layout = image_layout,
+            )
         adapted.append(out)
     return adapted
 
@@ -1232,7 +1353,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "(unsloth_zoo.mlx.loader / unsloth_zoo.mlx.trainer). Reinstall via "
             "install.sh on Apple Silicon."
         ) from e
-    from datasets import load_dataset
+    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if mx.metal.is_available():
         info = mx.device_info()
@@ -1250,6 +1371,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
+    if config.get("is_embedding"):
+        message = "Embedding model training is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
+    if config.get("training_type") == "Continued Pretraining":
+        message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
 
@@ -1293,7 +1422,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "status",
             status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
         )
-
     # ── 2. Apply LoRA / full FT ──
     # gradient_checkpointing stays a string ("mlx"/"unsloth"/"none"/etc.);
     # get_peft_model and MLXTrainer both accept and handle strings.
@@ -1402,6 +1530,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Reuse the GPU format pipeline for VLM (auto-detects OCR/caption/llava/
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
+    custom_format_mapping = config.get("custom_format_mapping")
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1415,12 +1544,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 tokenizer = tokenizer,
                 is_vlm = True,
                 dataset_name = hf_dataset or "local",
+                custom_format_mapping = custom_format_mapping,
                 progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
+                vision_image_layout = (
+                    _mlx_vlm_resized_image_layout(tokenizer)
+                    if vision_image_size is not None
+                    else None
+                )
                 dataset = _adapt_for_mlx_vlm(
                     vlm_info["dataset"],
                     resize = vision_image_size,
+                    image_layout = vision_image_layout,
                 )
             else:
                 errors = vlm_info.get("errors", [])
@@ -1432,11 +1568,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     tokenizer = tokenizer,
                     is_vlm = True,
                     dataset_name = hf_dataset or "local",
+                    custom_format_mapping = custom_format_mapping,
                 )
                 if ev_info.get("success"):
+                    vision_image_layout = (
+                        _mlx_vlm_resized_image_layout(tokenizer)
+                        if vision_image_size is not None
+                        else None
+                    )
                     eval_dataset = _adapt_for_mlx_vlm(
                         ev_info["dataset"],
                         resize = vision_image_size,
+                        image_layout = vision_image_layout,
                     )
 
         elif format_type:
@@ -1448,6 +1591,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 is_vlm = False,
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
+                custom_format_mapping = custom_format_mapping,
+                progress_callback = _fmt_progress,
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
@@ -1459,6 +1604,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     is_vlm = False,
                     format_type = format_type,
                     dataset_name = hf_dataset or "local",
+                    custom_format_mapping = custom_format_mapping,
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
@@ -1805,7 +1951,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 }
             )
             return
-        # Activate correct transformers version (Gemma-4 needs 5.5.0, etc.)
+        # Activate correct transformers version (Gemma-4 needs a 5.x sidecar, etc.)
         # before any transformers/mlx-lm imports in _run_mlx_training.
         try:
             _activate_transformers_version(model_name)
@@ -1982,11 +2128,28 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
+            # bitsandbytes' import-time get_rocm_gpu_arch() probe runs
+            # `hipinfo.exe` from PATH; the AMD torch wheel ships it in the venv
+            # Scripts dir, which is on PATH only for activated venvs. Prepend
+            # it so the probe succeeds instead of logging a scary (harmless)
+            # "Could not detect ROCm GPU architecture" ERROR on every import.
+            # Normally inherited from main.py's env, but workers can also be
+            # spawned standalone (tests, CLI) -- keep the guard here too.
+            _scripts_dir = os.path.dirname(sys.executable)
+            if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
+                import shutil as _shutil
+                if not _shutil.which("hipinfo.exe"):
+                    os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+
             # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
             # wheel may ship a DLL whose suffix doesn't match. Detect the actual
-            # DLL name and override; "72" is a safe fallback. Callers may
-            # pre-set the var to override.
-            if "BNB_ROCM_VERSION" not in os.environ:
+            # DLL name and override; "72" is a safe fallback. Values seeded by
+            # the installer are redetectable defaults, while caller overrides
+            # remain authoritative.
+            if (
+                "BNB_ROCM_VERSION" not in os.environ
+                or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
+            ):
                 _bnb_rocm_ver = None
                 try:
                     import glob as _glob
@@ -2011,8 +2174,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
                     pass
-                _bnb_rocm_ver = _bnb_rocm_ver or "72"
+                _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
                 os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
+                os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
                 logger.info(
                     "Windows ROCm: set BNB_ROCM_VERSION=%s "
                     "(detected from installed BNB wheel; "
@@ -2178,10 +2342,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 if _is_unified and not _gcn_arch:
                     logger.debug(
                         "ROCm OOM guard: gcnArchName absent -- inferred "
-                        "unified memory from device name %r; applying 0.80 cap",
+                        "unified memory from device name %r; applying unified cap",
                         _dev_name,
                     )
-                _mem_fraction = 0.80 if _is_unified else 0.90
+                # Unified hosts on native Windows: mem_get_info's total is the
+                # WDDM budget the driver grants HIP (BIOS carve + ~half of the
+                # remaining RAM) -- the OS share is already outside it, so the
+                # Linux 0.80 starve-protection double-taxes (48.49 GiB budget →
+                # 38.79 allowed) and blocks loads that fit in free memory.
+                # 1.0 removes the double-tax. Current AMD Windows wheels only
+                # enforce sub-1.0 fractions (measured on gfx1151: 0.5 caps,
+                # 1.0 still allocates past the budget via WDDM overcommit), so
+                # 1.0 behaves like torch's uncapped default, with WDDM
+                # arbitrating residency; on wheels that do enforce it, it caps
+                # at exactly the driver-granted budget. On Linux the total
+                # spans nearly all RAM, so keep the 0.80 OS headroom there.
+                if _is_unified:
+                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
+                else:
+                    _mem_fraction = 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
                     "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
@@ -2191,6 +2370,28 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _dev_name,
                     _gcn_arch or "unknown arch",
                 )
+                # Unified Windows APUs: the WDDM budget is user-raisable, but
+                # nothing on the box says so -- users see "48 GB VRAM" on a
+                # 96 GB machine and assume a Studio bug. Say where the limit
+                # comes from and how to raise it.
+                if _is_unified and sys.platform == "win32":
+                    try:
+                        import psutil as _psutil
+
+                        _phys = _psutil.virtual_memory().total
+                        _granted = _torch_mem.cuda.mem_get_info(0)[1]
+                        if _granted < 0.75 * _phys:
+                            logger.info(
+                                "Windows grants the GPU %.1f GiB of %.1f GiB "
+                                "system RAM (driver/WDDM budget). To raise it: "
+                                "increase the BIOS UMA frame buffer size, or "
+                                "AMD Software > Performance > Tuning > "
+                                "Variable Graphics Memory.",
+                                _granted / 1024**3,
+                                _phys / 1024**3,
+                            )
+                    except Exception:
+                        pass
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 
@@ -2678,7 +2879,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         from sentence_transformers.losses import MultipleNegativesRankingLoss
         from sentence_transformers.training_args import BatchSamplers
-        from datasets import load_dataset, Dataset
+        from datasets import Dataset
+        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
         from transformers import TrainerCallback
         from utils.paths import datasets_root, resolve_output_dir
     except ImportError as e:

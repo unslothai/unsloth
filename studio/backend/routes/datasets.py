@@ -412,7 +412,8 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 
 
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
-    from datasets import load_dataset
+    # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
+    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if dataset_path.is_dir():
         parquet_dir = (

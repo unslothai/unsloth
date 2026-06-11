@@ -591,7 +591,7 @@ export function LocalRecipeModelSelector({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        sideOffset={6}
+        sideOffset={0}
         className="menu-soft-surface nodrag nowheel gap-0 overflow-hidden p-0"
         style={{
           width:
