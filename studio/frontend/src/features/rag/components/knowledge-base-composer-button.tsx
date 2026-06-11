@@ -100,17 +100,24 @@ export function KnowledgeBaseComposerButton({
           <button
             type="button"
             className="composer-pill-btn"
+            data-pill-label="RAG"
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
             {/* Icon doubles as an off switch: hover swaps to an X; clicking it
-                turns RAG off without opening the menu. */}
+                turns RAG off without opening the menu. In compact icon-only
+                mode the glyph is the whole button, so clicks fall through to
+                the trigger and open the menu instead. */}
             <span
               role="button"
               aria-label="Turn off retrieval"
               tabIndex={-1}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                e.stopPropagation();
+              }}
               onClick={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
                 e.stopPropagation();
                 setRagEnabled(false);
               }}

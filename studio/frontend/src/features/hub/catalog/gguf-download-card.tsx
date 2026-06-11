@@ -20,7 +20,7 @@ import {
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
-import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
+import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
 import {
   ggufVariantsMatch,
   normalizeGgufVariantIdentity,
@@ -794,8 +794,7 @@ export function GgufDownloadCard({
             downloadingThisVariant &&
               !cancelling &&
               "hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400",
-            // Hide post-download CTAs (Run / New Chat) for this PR.
-            !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE &&
+            !HUB_GGUF_RUN_ACTIONS_VISIBLE &&
               !downloadingThisVariant &&
               !cancelling &&
               !isLoadingThisModel &&

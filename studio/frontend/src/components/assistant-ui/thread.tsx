@@ -785,7 +785,7 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28.5vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
@@ -1767,6 +1767,7 @@ const WebSearchToggle: FC = () => {
         }
       }}
       className="composer-pill-btn"
+      data-pill-label="Search"
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
@@ -1802,6 +1803,7 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Code"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
@@ -1843,6 +1845,7 @@ const ImagesToggle: FC = () => {
       disabled={disabled}
       onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Images"
       data-active={imageToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         imageToolsEnabled
@@ -1869,6 +1872,7 @@ const ArtifactsToggle: FC = () => {
       type="button"
       onClick={() => setArtifactsEnabled(false)}
       className="composer-pill-btn"
+      data-pill-label="Canvas"
       data-active="true"
       aria-label="Disable canvas"
     >
@@ -2256,11 +2260,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-[200px]">
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
@@ -2284,6 +2284,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger
                 disabled={!activeThreadId || messageCount === 0}
@@ -2634,7 +2638,7 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
@@ -2714,7 +2718,7 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>

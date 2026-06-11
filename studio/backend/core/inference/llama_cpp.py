@@ -719,6 +719,9 @@ class LlamaCppBackend:
         # Wraps load_model() end-to-end so concurrent loads serialise and never
         # coexist as two llama-server processes (#5401).
         self._serial_load_lock = threading.Lock()
+        # Set by the in-app updater while it swaps prebuilt binaries; load_model()
+        # rejects fast so no server starts from a half-swapped binary.
+        self._llama_update_in_progress = False
         # Last extra_args / requested n_ctx, preserved across unload so the chat
         # UI's /unload+/load Apply path can inherit them (#5401).
         # ``_extra_args_source`` records the (model_identifier, hf_variant) the
@@ -2806,6 +2809,10 @@ class LlamaCppBackend:
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
+            # In-app update swapping binaries: refuse fast (set under this lock,
+            # so any in-flight load has drained) instead of using a half-swapped one.
+            if getattr(self, "_llama_update_in_progress", False):
+                raise RuntimeError("llama.cpp is updating; try again in a moment.")
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
             if self._already_in_target_state(
@@ -3565,53 +3572,43 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
-                # A separate MTP drafter (e.g. Gemma's gemma4-assistant head)
-                # can fail to load on a llama-server that advertises the
-                # --spec-type draft-mtp flag but predates the drafter's
-                # architecture -- and that aborts the whole server. Retry once
-                # with the whole spec block replaced by --spec-default so the
-                # main model still loads (without speculation). Replacing the
-                # slice -- rather than re-resolving with mtp_draft_path=None --
-                # is what guarantees MTP is off even for a forced mtp / mtp+ngram
-                # request (which would otherwise re-emit --spec-type draft-mtp).
-                # _requested_spec_mode (the user's choice) is left intact so a
-                # duplicate /load doesn't thrash a reload.
-                # Gate on the flag actually being in the command, not on the
-                # drafter merely existing on disk: local loads pass the path
-                # even in off/ngram modes (and auto drops MTP sub-3B), where a
-                # retry would blame the drafter for an unrelated failure and
-                # override the user's spec choice. The cancel check keeps an
-                # /unload that killed the first attempt from respawning.
-                if (
-                    not healthy
-                    and "--model-draft" in spec_flags
-                    and not self._cancel_event.is_set()
-                ):
-                    # Only blame the binary's age when the output shows the
-                    # drafter actually failing (unknown arch / draft load);
-                    # an unrelated crash (e.g. OOM) gets a neutral message.
-                    # Substrings are upstream llama.cpp messages
-                    # (llama_model_load / srv load_model [spec]); if they
-                    # drift, only the wording degrades -- the retry fires
-                    # either way.
-                    _attempt_output = "\n".join(self._stdout_lines)
+                # Any MTP request can abort the server: a separate drafter
+                # (Gemma) on a binary that predates its arch, or an embedded
+                # head (Qwen) the binary cannot build. Retry once with the
+                # spec slice replaced by --spec-default so the main model still
+                # loads. Gate on the spec block (not the drafter path, which
+                # off/ngram local loads also carry) and keep
+                # _requested_spec_mode so a duplicate /load doesn't thrash. The
+                # cancel check stops an /unload-killed attempt respawning.
+                _spec_requested_mtp = any("mtp" in str(t).lower() for t in spec_flags)
+                if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
+                    # Blame the binary only when the output shows MTP itself
+                    # failing (unknown arch / draft or context build); an
+                    # unrelated crash (e.g. OOM) gets a neutral message.
+                    _lo = "\n".join(self._stdout_lines).lower()
                     if (
-                        "unknown model architecture" in _attempt_output
-                        or "failed to measure draft model memory" in _attempt_output
+                        "unknown model architecture" in _lo
+                        or "failed to measure draft model memory" in _lo
+                        or "failed to measure mtp context memory" in _lo
+                        or "failed to create llama_context" in _lo
                     ):
                         _retry_reason = (
-                            "the prebuilt may predate its architecture; retrying "
-                            "without speculative decoding -- run "
-                            "`unsloth studio update` for MTP"
+                            "the prebuilt may predate it; retrying without "
+                            "speculative decoding -- run `unsloth studio "
+                            "update` for MTP"
                         )
                     else:
                         _retry_reason = (
-                            "retrying without speculative decoding in case the "
-                            "drafter is the cause"
+                            "retrying without speculative decoding in case MTP is the cause"
                         )
+                    _drafter = (
+                        Path(launch_mtp_draft_path).name
+                        if launch_mtp_draft_path
+                        else "embedded head"
+                    )
                     logger.warning(
-                        "llama-server failed to start with MTP drafter %s; %s.",
-                        Path(launch_mtp_draft_path).name,
+                        "llama-server failed to start with MTP (%s); %s.",
+                        _drafter,
                         _retry_reason,
                     )
                     self._kill_process()
@@ -3783,8 +3780,9 @@ class LlamaCppBackend:
           2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
           4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
         Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
-        diverse content); forced MTP variants engage anyway and just log a
-        warning per the user's choice.
+        diverse content); forced MTP on a model with no head/drafter defaults
+        back (mtp -> spec-default, mtp+ngram -> ngram-mod) since llama-server
+        aborts otherwise; sub-3B real-MTP engages with a warning.
         """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
@@ -3902,32 +3900,39 @@ class LlamaCppBackend:
             _emit_ngram_mod()
             return flags
         if effective_mode == "mtp":
+            if not is_mtp_model:
+                # No head and no drafter: llama-server aborts on draft-mtp
+                # instead of no-op'ing, so default back.
+                logger.warning(
+                    "MTP requested but this GGUF has no MTP head or drafter; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP on a {_mtp_size_b:.1f}B model; "
                     "the bench shows draft-mtp regresses below 3B. "
                     "Engaging anyway (user override)."
                 )
-            elif not is_mtp_model:
-                logger.warning(
-                    "Forcing MTP on a non-MTP GGUF; llama-server may "
-                    "fall back to spec-off if no nextn head is present. "
-                    "Engaging anyway (user override)."
-                )
             _emit_mtp(chain_ngram = False)
             return flags
         if effective_mode == "mtp+ngram":
+            if not is_mtp_model:
+                # No head/drafter: keep the ngram half (needs no head),
+                # drop the draft-mtp chain that would abort the server.
+                logger.warning(
+                    "MTP+Ngram requested but this GGUF has no MTP head or "
+                    "drafter; loading ngram-mod only."
+                )
+                _emit_ngram_mod()
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP+Ngram on a {_mtp_size_b:.1f}B model; "
                     "the bench shows the chain regresses below 3B. "
                     "Engaging anyway (user override)."
-                )
-            elif not is_mtp_model:
-                logger.warning(
-                    "Forcing MTP+Ngram on a non-MTP GGUF; llama-server "
-                    "may fall back to ngram-only if no nextn head is "
-                    "present. Engaging anyway (user override)."
                 )
             _emit_mtp(chain_ngram = True)
             return flags
