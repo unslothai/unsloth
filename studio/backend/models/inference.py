@@ -699,7 +699,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
-            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "tool: {kb_id?, thread_id?, project_id?, default_top_k?, mode?, autoinject?, "
             "autoinject_min_score?}. Candidate pools and the RRF constant come from "
             "server config. The model never sees this; the server resolves which "
             "documents to search."

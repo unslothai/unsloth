@@ -45,6 +45,7 @@ export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
 
 export type RagSource =
   | { type: "thread" }
+  | { type: "project"; projectId: string }
   | { type: "kb"; kbId: string };
 
 export type RagMode = "hybrid" | "lexical" | "dense";
@@ -65,6 +66,9 @@ function loadRagSource(): RagSource {
     const parsed = JSON.parse(raw) as RagSource;
     if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
       return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "project" && typeof parsed.projectId === "string") {
+      return { type: "project", projectId: parsed.projectId };
     }
     if (parsed?.type === "thread") return { type: "thread" };
     return DEFAULT_RAG_SOURCE;

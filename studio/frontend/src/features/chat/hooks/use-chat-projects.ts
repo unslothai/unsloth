@@ -86,7 +86,7 @@ export async function updateChatProjectInstructions(
 
 export async function deleteChatProject(
   projectId: string,
-  args: { deleteFiles?: boolean } = {},
+  args: { deleteFiles?: boolean; deleteSources?: boolean } = {},
 ): Promise<void> {
   await deleteStoredChatProject(projectId, args);
 }

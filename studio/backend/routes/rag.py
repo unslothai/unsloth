@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.rag import config, ingestion, retrieval, store
 from storage import rag_db
+from storage.studio_db import get_chat_project
 from utils.paths import ensure_dir, rag_uploads_root
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ def _doc_view(row: dict) -> dict:
         "numChunks": row.get("num_chunks") or 0,
         "kbId": row.get("kb_id"),
         "threadId": row.get("thread_id"),
+        "projectId": row.get("project_id"),
         "createdAt": row.get("created_at"),
     }
 
@@ -102,9 +104,15 @@ class SearchRequest(BaseModel):
     query: str
     kb_id: str | None = None
     thread_id: str | None = None
+    project_id: str | None = None
     top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
     min_score: float = 0.0
     mode: str = "hybrid"  # hybrid | lexical | dense
+
+
+def _require_project(project_id: str) -> None:
+    if get_chat_project(project_id) is None:
+        raise HTTPException(status_code = 404, detail = "Project not found")
 
 
 @router.get("/knowledge-bases")
@@ -244,6 +252,38 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
         conn.close()
 
 
+@router.post("/projects/{project_id}/documents")
+async def upload_project_document(
+    project_id: str,
+    file: UploadFile = File(...),
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    _require_project(project_id)
+    stored_path, filename = _save_upload(file)
+    document_id, job_id = ingestion.start_ingestion(
+        store.project_scope(project_id),
+        None,
+        None,
+        filename,
+        stored_path,
+        project_id = project_id,
+    )
+    return {"documentId": document_id, "jobId": job_id, "filename": filename}
+
+
+@router.get("/projects/{project_id}/documents")
+def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    _require_project(project_id)
+    conn = rag_db.get_connection()
+    try:
+        docs = store.list_documents(conn, store.project_scope(project_id))
+        return {"documents": [_doc_view(d) for d in docs]}
+    finally:
+        conn.close()
+
+
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -297,10 +337,13 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
     _require_rag()
     if payload.kb_id:
         scope = store.kb_scope(payload.kb_id)
+    elif payload.project_id:
+        _require_project(payload.project_id)
+        scope = store.project_scope(payload.project_id)
     elif payload.thread_id:
         scope = store.thread_scope(payload.thread_id)
     else:
-        raise HTTPException(status_code = 400, detail = "Provide kb_id or thread_id")
+        raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
 
     conn = rag_db.get_connection()
     try:

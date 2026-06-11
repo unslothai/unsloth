@@ -134,6 +134,68 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert (tmp_path / "Projects" / "Research-project").exists()
 
 
+def test_chat_project_delete_removes_rag_sources_by_default(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    from storage import rag_db
+    from core.rag import store as rag_store
+
+    if not rag_db.RAG_AVAILABLE:
+        pytest.skip("sqlite-vec unavailable")
+    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    project = studio_db.upsert_chat_project(_project())
+    conn = rag_db.get_connection()
+    try:
+        rag_store.create_document(
+            conn,
+            scope = rag_store.project_scope(project["id"]),
+            project_id = project["id"],
+            filename = "source.txt",
+            sha256 = "sha",
+        )
+        assert rag_store.list_documents(conn, rag_store.project_scope(project["id"]))
+    finally:
+        conn.close()
+
+    studio_db.delete_chat_project(project["id"])
+
+    conn = rag_db.get_connection()
+    try:
+        assert rag_store.list_documents(conn, rag_store.project_scope(project["id"])) == []
+    finally:
+        conn.close()
+
+
+def test_chat_project_delete_can_keep_rag_sources(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    from storage import rag_db
+    from core.rag import store as rag_store
+
+    if not rag_db.RAG_AVAILABLE:
+        pytest.skip("sqlite-vec unavailable")
+    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    project = studio_db.upsert_chat_project(_project())
+    conn = rag_db.get_connection()
+    try:
+        rag_store.create_document(
+            conn,
+            scope = rag_store.project_scope(project["id"]),
+            project_id = project["id"],
+            filename = "source.txt",
+            sha256 = "sha",
+        )
+    finally:
+        conn.close()
+
+    studio_db.delete_chat_project(project["id"], delete_sources = False)
+
+    conn = rag_db.get_connection()
+    try:
+        docs = rag_store.list_documents(conn, rag_store.project_scope(project["id"]))
+        assert [doc["filename"] for doc in docs] == ["source.txt"]
+    finally:
+        conn.close()
+
+
 def test_chat_project_delete_files_removes_workspace(
     tmp_path, monkeypatch, workspace_projects_home
 ):

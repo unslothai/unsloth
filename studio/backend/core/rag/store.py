@@ -5,7 +5,7 @@
 
 Module-level functions each take a ``conn`` the caller opens and closes. Inserts
 are incremental: ``add_chunks`` appends one document's rows without rebuilding the
-scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
+scope. Scope ("kb_<id>" / "thread_<id>" / "project_<id>") is a column on every table and the vec0
 partition key.
 """
 
@@ -27,6 +27,10 @@ def kb_scope(kb_id: str) -> str:
 
 def thread_scope(thread_id: str) -> str:
     return f"thread_{thread_id}"
+
+
+def project_scope(project_id: str) -> str:
+    return f"project_{project_id}"
 
 
 def _f32(vector) -> bytes:
@@ -96,19 +100,21 @@ def create_document(
     sha256: str,
     kb_id: str | None = None,
     thread_id: str | None = None,
+    project_id: str | None = None,
     status: str = "pending",
     stored_path: str | None = None,
     document_id: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents(id, scope, kb_id, thread_id, filename, sha256, status, "
-        "stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, status, "
+        "stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
             kb_id,
             thread_id,
+            project_id,
             filename,
             sha256,
             status,
@@ -137,7 +143,8 @@ def set_document_status(
 
 def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, scope, kb_id, thread_id, filename, sha256, status, error, num_chunks, created_at "
+        "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, "
+        "status, error, num_chunks, created_at "
         "FROM documents WHERE scope=? ORDER BY created_at DESC",
         (scope,),
     ).fetchall()
@@ -218,6 +225,15 @@ def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
     conn.commit()
+
+
+def delete_scope(conn: sqlite3.Connection, scope: str) -> None:
+    """Delete every document (+ chunks) under a scope."""
+    doc_ids = [
+        r["id"] for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+    ]
+    for doc_id in doc_ids:
+        delete_document(conn, doc_id)
 
 
 def search_lexical(conn: sqlite3.Connection, scope: str, query: str, k: int):

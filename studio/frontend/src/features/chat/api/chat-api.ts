@@ -416,10 +416,11 @@ export async function updateChatProject(
 
 export async function deleteChatProject(
   projectId: string,
-  args: { deleteFiles?: boolean } = {},
+  args: { deleteFiles?: boolean; deleteSources?: boolean } = {},
 ): Promise<void> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
+  if (args.deleteSources === false) params.set("delete_sources", "false");
   const qs = params.toString();
   const response = await authFetch(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,

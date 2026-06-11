@@ -8,6 +8,7 @@ import {
   getJob,
   streamJobEvents,
   uploadKnowledgeBaseDocument,
+  uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
 import type { DocumentStatus, RagDocument } from "../types/rag";
@@ -23,6 +24,7 @@ function fileSignature(file: File): string {
 
 export type RagDocumentScope =
   | { type: "kb"; kbId: string }
+  | { type: "project"; projectId: string }
   | { type: "thread"; threadId: string };
 
 type Lister = () => Promise<RagDocument[]>;
@@ -57,6 +59,8 @@ export function useRagDocuments(
   const scopeKey = scope
     ? scope.type === "kb"
       ? `kb:${scope.kbId}`
+      : scope.type === "project"
+        ? `project:${scope.projectId}`
       : `thread:${scope.threadId}`
     : null;
   const prevScopeKeyRef = useRef<string | null>(null);
@@ -229,7 +233,9 @@ export function useRagDocuments(
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(activeScope.kbId, file)
-            : await uploadThreadDocument(activeScope.threadId, file);
+            : activeScope.type === "project"
+              ? await uploadProjectDocument(activeScope.projectId, file)
+              : await uploadThreadDocument(activeScope.threadId, file);
         sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));

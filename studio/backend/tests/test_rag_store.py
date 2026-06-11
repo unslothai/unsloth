@@ -90,6 +90,18 @@ def test_delete_document_purges_all_tables(rag_conn):
     assert store.get_document(rag_conn, "d1") is None
 
 
+def test_project_scope_and_delete_scope(rag_conn):
+    project_scope = store.project_scope("project-1")
+    _add_doc(rag_conn, project_scope, "d1", "project.txt", "h1", ["alpha bravo"])
+    _add_doc(rag_conn, "thread_t1", "d2", "thread.txt", "h2", ["alpha bravo"])
+
+    store.delete_scope(rag_conn, project_scope)
+
+    assert store.list_documents(rag_conn, project_scope) == []
+    assert store.search_lexical(rag_conn, project_scope, "alpha", 10) == []
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "thread_t1", "alpha", 10)] == ["d2:0"]
+
+
 def test_incremental_add_is_flat(rag_conn):
     # Adding doc2 must not touch doc1's fts rowids (append, not rebuild).
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo charlie"])

@@ -152,6 +152,7 @@ def start_ingestion(
     filename: str,
     stored_path: str,
     *,
+    project_id: str | None = None,
     model_name: str | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
@@ -180,6 +181,7 @@ def start_ingestion(
             sha256 = sha,
             kb_id = kb_id,
             thread_id = thread_id,
+            project_id = project_id,
             status = "pending",
             stored_path = stored_path,
         )

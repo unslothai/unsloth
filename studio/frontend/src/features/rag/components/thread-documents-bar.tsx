@@ -3,48 +3,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { AttachmentIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
-import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
+import { listThreadDocuments } from "../api/rag-api";
+import { loadProjectRagSource } from "../project-rag-preferences";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
-
-// Read-only chip shown when retrieval comes from a KB, so the source isn't invisible.
-function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
-  const [name, setName] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listKnowledgeBases()
-      .then((rows) => {
-        if (!cancelled) setName(rows.find((kb) => kb.id === kbId)?.name ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setName(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [kbId]);
-  return (
-    <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <span
-        className="composer-pill-btn shrink-0 cursor-default"
-        title="This chat retrieves from a knowledge base. Change the source in RAG retrieval settings."
-      >
-        <HugeiconsIcon
-          icon={FileDatabaseIcon}
-          strokeWidth={2}
-          className="size-3.5"
-        />
-        <span>{name ? `Knowledge base: ${name}` : "Knowledge base"}</span>
-      </span>
-    </div>
-  );
-}
 
 export function ThreadDocumentsBar({
   threadId,
@@ -55,6 +23,15 @@ export function ThreadDocumentsBar({
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
+  const effectiveRagSource = activeProjectId
+    ? (loadProjectRagSource(activeProjectId) ??
+      (ragSource.type === "project" && ragSource.projectId !== activeProjectId
+        ? { type: "thread" as const }
+        : ragSource))
+    : ragSource.type === "project"
+      ? { type: "thread" as const }
+      : ragSource;
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -76,7 +53,7 @@ export function ThreadDocumentsBar({
     [effectiveThreadId],
   );
   const { documents, uploading, upload, remove } = useRagDocuments(
-    effectiveThreadId && ragEnabled && ragSource.type === "thread"
+    effectiveThreadId && ragEnabled && effectiveRagSource.type === "thread"
       ? { type: "thread", threadId: effectiveThreadId }
       : null,
     lister,
@@ -138,9 +115,9 @@ export function ThreadDocumentsBar({
   // Shown whenever the RAG pill is on: ingestion only needs the embedder, so
   // files can index before a chat model loads.
   if (!ragEnabled) return null;
-  // A KB source uploads via the KB dialog, not here; show which KB is active.
-  if (ragSource.type === "kb") {
-    return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
+  // KB and project sources are managed outside this inline thread attachment bar.
+  if (effectiveRagSource.type === "kb" || effectiveRagSource.type === "project") {
+    return null;
   }
 
   return (

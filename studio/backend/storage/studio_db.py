@@ -125,6 +125,25 @@ def _delete_project_workspace(project: dict) -> None:
     shutil.rmtree(root_resolved)
 
 
+def _delete_project_rag_sources(project_id: str) -> None:
+    try:
+        from storage import rag_db
+        from core.rag import store as rag_store
+        if not rag_db.RAG_AVAILABLE:
+            logger.warning(
+                "Skipping RAG source deletion for project %s because RAG is unavailable",
+                project_id,
+            )
+            return
+        conn = rag_db.get_connection()
+        try:
+            rag_store.delete_scope(conn, rag_store.project_scope(project_id))
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("Failed to delete RAG sources for project %s", project_id, exc_info = True)
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -1247,7 +1266,11 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
         conn.close()
 
 
-def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+def delete_chat_project(
+    id: str,
+    delete_files: bool = False,
+    delete_sources: bool = True,
+) -> Optional[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1259,6 +1282,8 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
         conn.commit()
+        if delete_sources:
+            _delete_project_rag_sources(id)
         if delete_files:
             _delete_project_workspace(project)
         return project

@@ -634,7 +634,7 @@ export async function updateStoredChatProject(
 
 export async function deleteStoredChatProject(
   projectId: string,
-  args: { deleteFiles?: boolean } = {},
+  args: { deleteFiles?: boolean; deleteSources?: boolean } = {},
 ): Promise<void> {
   await deleteChatProject(projectId, args);
 }

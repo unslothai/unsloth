@@ -126,6 +126,22 @@ export function uploadThreadDocument(
   return ragUpload(`/threads/${encodeURIComponent(threadId)}/documents`, file);
 }
 
+export async function listProjectDocuments(
+  projectId: string,
+): Promise<RagDocument[]> {
+  const data = await ragRequest<{ documents: RagDocument[] }>(
+    `/projects/${encodeURIComponent(projectId)}/documents`,
+  );
+  return data.documents ?? [];
+}
+
+export function uploadProjectDocument(
+  projectId: string,
+  file: File,
+): Promise<DocumentUploadResult> {
+  return ragUpload(`/projects/${encodeURIComponent(projectId)}/documents`, file);
+}
+
 export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {
   return ragRequest(`/documents/${encodeURIComponent(documentId)}`, {
     method: "DELETE",

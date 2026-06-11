@@ -447,10 +447,12 @@ export function AppSidebar() {
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
+  const [deleteProjectSources, setDeleteProjectSources] = useState(true);
 
   useEffect(() => {
     if (confirmingDelete?.kind !== "project") {
       setDeleteProjectFiles(false);
+      setDeleteProjectSources(true);
     }
   }, [confirmingDelete]);
 
@@ -459,6 +461,8 @@ export function AppSidebar() {
     if (!target) return;
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteProjectFiles;
+    const shouldDeleteProjectSources =
+      target.kind !== "project" || deleteProjectSources;
     setConfirmingDelete(null);
     if (target.kind === "chat") {
       try {
@@ -474,6 +478,7 @@ export function AppSidebar() {
       try {
         await deleteChatProject(target.project.id, {
           deleteFiles: shouldDeleteProjectFiles,
+          deleteSources: shouldDeleteProjectSources,
         });
         if (activeProjectId === target.project.id) {
           useChatRuntimeStore.getState().setActiveProjectId(null);
@@ -1204,23 +1209,41 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {confirmingDelete?.kind === "project" ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
-            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
-              <span className="block text-sm font-medium text-foreground">
-                Delete files and sandbox folder
-              </span>
-              <span className="block break-words text-xs leading-5 text-muted-foreground">
-                {confirmingDelete.project.rootPath
-                  ? confirmingDelete.project.rootPath
-                  : "The project workspace folder will be removed from disk."}
-              </span>
-            </label>
-            <Switch
-              id="delete-project-files"
-              checked={deleteProjectFiles}
-              onCheckedChange={setDeleteProjectFiles}
-              aria-label="Delete project files and sandbox folder"
-            />
+          <div className="flex flex-col gap-2">
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+              <label htmlFor="delete-project-sources" className="min-w-0 space-y-1">
+                <span className="block text-sm font-medium text-foreground">
+                  Delete project sources
+                </span>
+                <span className="block text-xs leading-5 text-muted-foreground">
+                  Removes indexed RAG uploads for this project.
+                </span>
+              </label>
+              <Switch
+                id="delete-project-sources"
+                checked={deleteProjectSources}
+                onCheckedChange={setDeleteProjectSources}
+                aria-label="Delete project sources"
+              />
+            </div>
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+              <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+                <span className="block text-sm font-medium text-foreground">
+                  Delete files and sandbox folder
+                </span>
+                <span className="block break-words text-xs leading-5 text-muted-foreground">
+                  {confirmingDelete.project.rootPath
+                    ? confirmingDelete.project.rootPath
+                    : "The project workspace folder will be removed from disk."}
+                </span>
+              </label>
+              <Switch
+                id="delete-project-files"
+                checked={deleteProjectFiles}
+                onCheckedChange={setDeleteProjectFiles}
+                aria-label="Delete project files and sandbox folder"
+              />
+            </div>
           </div>
         ) : null}
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">

@@ -16,7 +16,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import {
   NativeModelChip,
@@ -32,7 +31,6 @@ import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   Folder02Icon,
-  FolderAddIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -99,6 +97,7 @@ import {
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
   clearAutoOpenedArtifacts,
   useChatArtifactsStore,
@@ -970,28 +969,7 @@ function ProjectLanding({
             </div>
 
             {projectTab === "sources" ? (
-              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
-                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-6"
-                  />
-                </span>
-                <div className="space-y-1">
-                  <p className="text-[15px] font-semibold text-foreground">
-                    Give this project context
-                  </p>
-                  <p className="max-w-sm text-sm text-muted-foreground">
-                    Upload PDFs, documents, or other text. The model can
-                    reference them in every chat in this project.
-                  </p>
-                </div>
-                <Button type="button" className="mt-1" disabled>
-                  Add sources
-                </Button>
-                <p className="text-[11px] text-muted-foreground">Coming soon</p>
-              </div>
+              <ProjectSourcesPanel projectId={projectId} />
             ) : (
             <div className="mt-8 flex flex-col gap-1">
               {items.map((item) => {

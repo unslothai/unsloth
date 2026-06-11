@@ -4,7 +4,7 @@
 import { XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon, Tick02Icon } from "@hugeicons/core-free-icons";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { type FC, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   DropdownMenu,
@@ -15,9 +15,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  type RagSource,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
 
 import { listKnowledgeBases } from "../api/rag-api";
+import {
+  loadProjectRagSource,
+  saveProjectRagSource,
+} from "../project-rag-preferences";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
@@ -50,11 +57,36 @@ export function KnowledgeBaseComposerButton({
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [kbsLoaded, setKbsLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [preferenceVersion, setPreferenceVersion] = useState(0);
+  const selectedSource = useMemo(
+    () =>
+      activeProjectId
+        ? (loadProjectRagSource(activeProjectId) ??
+          (ragSource.type === "project" && ragSource.projectId !== activeProjectId
+            ? { type: "thread" as const }
+            : ragSource))
+        : ragSource.type === "project"
+          ? { type: "thread" as const }
+          : ragSource,
+    [activeProjectId, preferenceVersion, ragSource],
+  );
+
+  const selectSource = useCallback(
+    (source: RagSource) => {
+      if (activeProjectId) {
+        saveProjectRagSource(activeProjectId, source);
+        setPreferenceVersion((value) => value + 1);
+      }
+      setRagSource(source);
+    },
+    [activeProjectId, setRagSource],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -78,12 +110,12 @@ export function KnowledgeBaseComposerButton({
   useEffect(() => {
     if (
       kbsLoaded &&
-      ragSource.type === "kb" &&
-      !kbs.some((kb) => kb.id === ragSource.kbId)
+      selectedSource.type === "kb" &&
+      !kbs.some((kb) => kb.id === selectedSource.kbId)
     ) {
-      setRagSource({ type: "thread" });
+      selectSource({ type: "thread" });
     }
-  }, [kbs, kbsLoaded, ragSource, setRagSource]);
+  }, [kbs, kbsLoaded, selectedSource, selectSource]);
 
   if (!ragEnabled) return null;
 
@@ -142,16 +174,37 @@ export function KnowledgeBaseComposerButton({
           className="unsloth-plus-menu mcp-menu w-[232px]"
         >
           <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
+          {activeProjectId ? (
+            <DropdownMenuItem
+              onSelect={() =>
+                selectSource({ type: "project", projectId: activeProjectId })
+              }
+              className={
+                selectedSource.type === "project"
+                  ? "relative text-primary font-medium"
+                  : "relative"
+              }
+            >
+              <span className="truncate">This project's sources</span>
+              {selectedSource.type === "project" ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
-            onSelect={() => setRagSource({ type: "thread" })}
+            onSelect={() => selectSource({ type: "thread" })}
             className={
-              ragSource.type === "thread"
+              selectedSource.type === "thread"
                 ? "relative text-primary font-medium"
                 : "relative"
             }
           >
             <span className="truncate">This thread's documents</span>
-            {ragSource.type === "thread" ? (
+            {selectedSource.type === "thread" ? (
               <HugeiconsIcon
                 icon={Tick02Icon}
                 strokeWidth={2}
@@ -162,11 +215,11 @@ export function KnowledgeBaseComposerButton({
           {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
           {kbs.map((kb) => {
             const selected =
-              ragSource.type === "kb" && ragSource.kbId === kb.id;
+              selectedSource.type === "kb" && selectedSource.kbId === kb.id;
             return (
               <DropdownMenuItem
                 key={kb.id}
-                onSelect={() => setRagSource({ type: "kb", kbId: kb.id })}
+                onSelect={() => selectSource({ type: "kb", kbId: kb.id })}
                 className={
                   selected ? "relative text-primary font-medium" : "relative"
                 }

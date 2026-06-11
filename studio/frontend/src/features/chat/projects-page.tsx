@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -92,6 +93,7 @@ export function ProjectsPage() {
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+  const [deleteProjectSources, setDeleteProjectSources] = useState(true);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -220,9 +222,11 @@ export function ProjectsPage() {
   async function commitDelete() {
     const target = deleting;
     if (!target) return;
+    const shouldDeleteSources = deleteProjectSources;
     setDeleting(null);
+    setDeleteProjectSources(true);
     try {
-      await deleteChatProject(target.id);
+      await deleteChatProject(target.id, { deleteSources: shouldDeleteSources });
     } catch (err) {
       toast.error("Failed to delete project", {
         description: err instanceof Error ? err.message : undefined,
@@ -606,7 +610,10 @@ export function ProjectsPage() {
       <Dialog
         open={deleting !== null}
         onOpenChange={(open) => {
-          if (!open) setDeleting(null);
+          if (!open) {
+            setDeleting(null);
+            setDeleteProjectSources(true);
+          }
         }}
       >
         <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
@@ -615,8 +622,24 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Are you sure you want to delete <em>{deleting?.name}</em>? Chats in this
-            project will be moved back to Recents.
+            project will be permanently deleted.
           </p>
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+            <label htmlFor="delete-project-sources-page" className="min-w-0 space-y-1">
+              <span className="block text-sm font-medium text-foreground">
+                Delete project sources
+              </span>
+              <span className="block text-xs leading-5 text-muted-foreground">
+                Removes indexed RAG uploads for this project.
+              </span>
+            </label>
+            <Switch
+              id="delete-project-sources-page"
+              checked={deleteProjectSources}
+              onCheckedChange={setDeleteProjectSources}
+              aria-label="Delete project sources"
+            />
+          </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
               Cancel

@@ -35,6 +35,7 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  type RagSource,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -75,6 +76,7 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import { loadProjectRagSource } from "@/features/rag/project-rag-preferences";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -1099,6 +1101,23 @@ async function resolveSandboxSessionId(
   return projectId ? `project-${projectId}` : threadId;
 }
 
+function resolveEffectiveRagSource(
+  source: RagSource,
+  projectId: string | null,
+): RagSource {
+  if (!projectId) {
+    return source.type === "project" ? { type: "thread" } : source;
+  }
+  const projectSource = loadProjectRagSource(projectId);
+  if (projectSource) {
+    return projectSource;
+  }
+  if (source.type === "project") {
+    return source.projectId === projectId ? source : { type: "thread" };
+  }
+  return source;
+}
+
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
 function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -1515,6 +1534,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      const activeProjectIdForRun = await resolveProjectId(resolvedThreadId);
+      const effectiveRagSource = resolveEffectiveRagSource(
+        ragSource,
+        activeProjectIdForRun,
+      );
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -2429,12 +2453,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Scope: thread_id = this thread's docs, kb_id = a KB.
+                  // Scope: thread_id = this thread's docs, project_id = project sources, kb_id = a KB.
                   ...(ragEnabled
                     ? {
                         rag_scope: {
-                          ...(ragSource.type === "kb"
-                            ? { kb_id: ragSource.kbId }
+                          ...(effectiveRagSource.type === "kb"
+                            ? { kb_id: effectiveRagSource.kbId }
+                            : effectiveRagSource.type === "project"
+                              ? { project_id: effectiveRagSource.projectId }
                             : resolvedThreadId
                               ? { thread_id: resolvedThreadId }
                               : {}),

@@ -324,9 +324,14 @@ async def patch_project(
 async def delete_project(
     project_id: str,
     delete_files: bool = Query(False),
+    delete_sources: bool = Query(True),
     current_subject: str = Depends(get_current_subject),
 ):
-    project = delete_chat_project(project_id, delete_files = delete_files)
+    project = delete_chat_project(
+        project_id,
+        delete_files = delete_files,
+        delete_sources = delete_sources,
+    )
     if project is None:
         raise HTTPException(
             status_code = 404,
