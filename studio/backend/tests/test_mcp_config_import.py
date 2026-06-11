@@ -167,6 +167,21 @@ def test_parse_preserves_disabled_and_oauth():
     assert entries[0].use_oauth is True
 
 
+def test_parse_accepts_cline_streamable_http_alias():
+    cfg = {
+        "mcpServers": {
+            "remote": {
+                "type": "streamableHttp",
+                "url": "https://example.com/mcp",
+            }
+        }
+    }
+    entries, errors = parse_mcp_config(cfg)
+    assert errors == []
+    assert entries[0].url == "https://example.com/mcp"
+    assert entries[0].is_stdio is False
+
+
 @pytest.mark.parametrize(
     "server",
     [
@@ -178,6 +193,11 @@ def test_parse_preserves_disabled_and_oauth():
         {"command": "node", "args": ["server.js"], "sandboxEnabled": True},
         {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${input:token}"}},
         {"url": "https://example.com/mcp", "headers": {"Authorization": None}},
+        {"type": "http", "url": "https://example.com/sse"},
+        {"type": "streamableHttp", "url": "https://example.com/sse"},
+        {"url": "https://example.com/mcp", "timeout": 120},
+        {"url": "https://example.com/mcp", "timeoutMs": 120000},
+        {"url": "https://example.com/mcp", "timeoutSeconds": 120},
         {"type": "sse", "url": "https://example.com/custom"},
     ],
 )

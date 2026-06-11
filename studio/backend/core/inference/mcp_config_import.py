@@ -19,6 +19,8 @@ from core.inference.mcp_client import join_stdio_command
 
 _SCALAR = (str, int, float, bool)
 _UNSUPPORTED_STDIO_FIELDS = ("cwd", "envFile")
+_UNSUPPORTED_TIMEOUT_FIELDS = ("timeout", "timeoutMs", "timeoutSeconds")
+_HTTP_REMOTE_TYPES = ("http", "streamableHttp")
 
 
 @dataclass
@@ -111,10 +113,18 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
     if not isinstance(url, str):
         return None, f"{label}: 'url' must be a string."
     entry_type = spec.get("type")
-    if entry_type is not None and entry_type not in ("http", "sse"):
+    if entry_type is not None and entry_type not in (*_HTTP_REMOTE_TYPES, "sse"):
         return None, f"{label}: remote entry has unsupported type {entry_type!r}."
-    if entry_type == "sse" and not url.rstrip("/").endswith("/sse"):
+    unsupported_timeout = [
+        field for field in _UNSUPPORTED_TIMEOUT_FIELDS if spec.get(field) is not None
+    ]
+    if unsupported_timeout:
+        return None, f"{label}: import cannot preserve {', '.join(unsupported_timeout)}."
+    url_infers_sse = url.rstrip("/").endswith("/sse")
+    if entry_type == "sse" and not url_infers_sse:
         return None, f"{label}: explicit SSE transport cannot be preserved for this URL."
+    if entry_type in _HTTP_REMOTE_TYPES and url_infers_sse:
+        return None, f"{label}: explicit HTTP transport cannot be preserved for this URL."
     oauth_raw = spec.get("oauth")
     if oauth_raw is not None and not isinstance(oauth_raw, dict):
         return None, f"{label}: 'oauth' must be an object."
