@@ -1295,28 +1295,36 @@ export function ChatSettingsPanel({
             </Tooltip>
           }
         >
-          <textarea
-            ref={systemPromptBoxRef}
-            value={params.systemPrompt}
-            onChange={(e) => set("systemPrompt")(e.target.value)}
-            onMouseDown={(e) => {
-              // Overflowing prompt: click opens the popup editor instead.
-              // While focused, clicks still move the caret normally.
-              if (
-                systemPromptOverflows &&
-                document.activeElement !== e.currentTarget
-              ) {
-                e.preventDefault();
-                openSystemPromptEditor();
-              }
-            }}
-            placeholder="Example: You are a helpful assistant..."
-            aria-label="System prompt"
+          {/* Rounded wrapper clips overflowing text and the scrollbar. */}
+          <div
             className={cn(
-              "panel-text-surface -mt-1 block w-full h-20 resize-none px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle text-nav-fg placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle focus-within:ring-[1px] focus-within:ring-ring/40",
               systemPromptOverflows && "cursor-pointer",
             )}
-          />
+          >
+            <textarea
+              ref={systemPromptBoxRef}
+              value={params.systemPrompt}
+              onChange={(e) => set("systemPrompt")(e.target.value)}
+              onMouseDown={(e) => {
+                // Overflowing prompt: click opens the popup editor instead.
+                // While focused, clicks still move the caret normally.
+                if (
+                  systemPromptOverflows &&
+                  document.activeElement !== e.currentTarget
+                ) {
+                  e.preventDefault();
+                  openSystemPromptEditor();
+                }
+              }}
+              placeholder="Example: You are a helpful assistant..."
+              aria-label="System prompt"
+              className={cn(
+                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                systemPromptOverflows && "cursor-pointer",
+              )}
+            />
+          </div>
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
