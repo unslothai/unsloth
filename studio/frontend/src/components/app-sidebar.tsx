@@ -60,6 +60,7 @@ import {
   Logout05Icon,
   MoreVerticalIcon,
   Search01Icon,
+  PlusSignIcon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
@@ -558,7 +559,8 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      variant === "project" ? "pl-[39px]" : "pl-3",
+      // pl-3.5 starts the title at the same x as the Recents label text.
+      variant === "project" ? "pl-[39px]" : "pl-3.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
@@ -837,7 +839,28 @@ export function AppSidebar() {
                   navigate({ to: "/projects" });
                   closeMobileIfOpen();
                 }}
-              />
+                className="group/projects-item relative"
+              >
+                <button
+                  type="button"
+                  aria-label="New project"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProjectCreateMoveTarget(null);
+                    setProjectNameDraft("");
+                    setCreatingProject(true);
+                  }}
+                  className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                >
+                  <span className="sidebar-row-action-glyph">
+                    <HugeiconsIcon
+                      icon={PlusSignIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </span>
+                </button>
+              </NavItem>
               <NavItem
                 icon={DashboardCircleIcon}
                 label={t("shell.navigation.hub")}
@@ -1065,7 +1088,7 @@ export function AppSidebar() {
                       className="!size-[32px]"
                     />
                   </div>
-                  <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
+                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>

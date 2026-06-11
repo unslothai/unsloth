@@ -456,7 +456,7 @@ class TestRouteCompleteness:
 
     def test_openai_models_listing_reports_context_length(self):
         """/v1/models includes context_length when the backend knows it."""
-        assert 'model_obj["context_length"]' in self._source
+        assert 'entry["context_length"]' in self._source
         assert 'model_info.get("context_length")' in self._source
 
 
