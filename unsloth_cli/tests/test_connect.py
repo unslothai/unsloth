@@ -87,6 +87,9 @@ def test_merge_codex_config_replaces_stale_block():
         'base_url = "http://old-host:9999/v1"\n'
         'wire_api = "chat"\n'
         "\n"
+        "[model_providers.unsloth_api.http_headers]\n"
+        'x-old = "1"\n'
+        "\n"
         "[model_providers.ollama]\n"
         'base_url = "http://localhost:11434/v1"\n'
     )
@@ -95,6 +98,7 @@ def test_merge_codex_config_replaces_stale_block():
     assert parsed["model"] == "gpt-5"
     assert parsed["model_providers"]["unsloth_api"]["base_url"] == f"{BASE}/v1"
     assert parsed["model_providers"]["unsloth_api"]["wire_api"] == "responses"
+    assert "http_headers" not in parsed["model_providers"]["unsloth_api"]
     assert parsed["model_providers"]["ollama"]["base_url"] == "http://localhost:11434/v1"
     assert connect._merge_codex_config(merged, BASE) == merged
 
@@ -108,6 +112,7 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     connect.write_codex_config(BASE, MODEL)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
@@ -152,9 +157,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
 def test_connect_claude_no_launch(fake_studio, claude_settings):
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert f'export ANTHROPIC_BASE_URL="{BASE}"' in result.output
-    assert 'export ANTHROPIC_AUTH_TOKEN="sk-unsloth-feedfacefeedface"' in result.output
-    assert f'export ANTHROPIC_MODEL="{MODEL["id"]}"' in result.output
+    assert f"export ANTHROPIC_BASE_URL={BASE}" in result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    assert f"export ANTHROPIC_MODEL={MODEL['id']}" in result.output
     assert f"claude --model {MODEL['id']}" in result.output
     settings = json.loads(claude_settings.read_text())
     assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
@@ -163,7 +168,7 @@ def test_connect_claude_no_launch(fake_studio, claude_settings):
 def test_connect_codex_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(connect.connect_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert 'export UNSLOTH_STUDIO_AUTH_TOKEN="sk-unsloth-feedfacefeedface"' in result.output
+    assert "export UNSLOTH_STUDIO_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
     assert "codex --oss --profile unsloth_api" in result.output
     assert (tmp_path / "codex" / "config.toml").exists()
     assert (tmp_path / "codex" / "unsloth_api.config.toml").exists()
@@ -187,7 +192,7 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
-    assert 'export ANTHROPIC_MODEL="unsloth/Qwen3.5-35B-A3B"' in result.output
+    assert "export ANTHROPIC_MODEL=unsloth/Qwen3.5-35B-A3B" in result.output
 
 
 def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
@@ -241,5 +246,5 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
-    assert 'export ANTHROPIC_AUTH_TOKEN="sk-unsloth-deadbeefdeadbeef"' in result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)

@@ -6,6 +6,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -24,6 +25,7 @@ from unsloth_cli._inference import (
 
 connect_app = typer.Typer(
     help = "Connect a coding agent to a running Studio server.",
+    no_args_is_help = True,
     context_settings = {"help_option_names": ["-h", "--help"]},
 )
 
@@ -65,6 +67,10 @@ def _http_json(
         except Exception:
             detail = str(exc)
         _fail(f"{error}: {detail}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        if error is None:
+            raise
+        _fail(f"{error}: {getattr(exc, 'reason', None) or exc}")
 
 
 def _require_studio() -> str:
@@ -111,9 +117,11 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         error = "Couldn't create an API key",
     )["key"]
     try:
-        cache.parent.mkdir(parents = True, exist_ok = True)
-        cache.write_text(json.dumps({"key": key}) + "\n")
-        os.chmod(cache, 0o600)
+        cache.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        # O_CREAT with 0o600 so the key is never world-readable, even briefly.
+        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"key": key}) + "\n")
     except OSError:
         pass  # worst case the next launch mints another key
     return key
@@ -151,10 +159,13 @@ def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
     # Codex always streams, and Studio only streams /v1/responses from llama-server.
     try:
-        if _http_json("GET", f"{base}/api/inference/status", key).get("is_gguf"):
-            return
-    except Exception:
-        return  # fail open on unknown server versions
+        status = _http_json("GET", f"{base}/api/inference/status", key)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return  # older server without the endpoint; don't block the launch
+        raise
+    if status.get("is_gguf"):
+        return
     hint = model_id if "gguf" in model_id.lower() else f"{model_id}-GGUF"
     _fail(
         f"Codex needs a GGUF model served by llama-server, but {model_id} is on "
@@ -189,8 +200,16 @@ def ensure_claude_attribution_header() -> None:
     if str(env.get("CLAUDE_CODE_ATTRIBUTION_HEADER")) == "0":
         return
     env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
-    path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_text(json.dumps(settings, indent = 2) + "\n", encoding = "utf-8")
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(settings, indent = 2) + "\n", encoding = "utf-8")
+    except OSError:
+        typer.echo(
+            f"Warning: couldn't write {path} — set CLAUDE_CODE_ATTRIBUTION_HEADER "
+            'to "0" in its "env" section yourself, or local inference will be much slower.',
+            err = True,
+        )
+        return
     typer.echo(f"Disabled Claude Code's attribution header in {path} (it breaks KV-cache reuse).")
 
 
@@ -204,7 +223,9 @@ def _merge_codex_config(existing: str, base: str) -> str:
         if chunks[0] and not chunks[0].endswith("\n"):
             chunks[0] += "\n"
         chunks[0] += f'oss_provider = "{_CODEX_PROFILE}"\n'
-    text = "".join(c for c in chunks if not c.startswith(_PROVIDER_HEADER))
+    # Drop the provider table and any stale [model_providers.unsloth_api.*] subtables.
+    stale = (_PROVIDER_HEADER, _PROVIDER_HEADER[:-1] + ".")
+    text = "".join(c for c in chunks if not c.startswith(stale))
     if not text.endswith("\n"):
         text += "\n"
     if not text.endswith("\n\n"):
@@ -230,7 +251,13 @@ def write_codex_config(base: str, model: dict) -> None:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
 
-    profile_text = f'model_provider = "{_CODEX_PROFILE}"\nmodel = {json.dumps(model["id"])}\n'
+    # oss_provider here too: codex --oss picks the provider from it, and the
+    # profile layer must beat a user-set value (e.g. "ollama") in config.toml.
+    profile_text = (
+        f'oss_provider = "{_CODEX_PROFILE}"\n'
+        f'model_provider = "{_CODEX_PROFILE}"\n'
+        f"model = {json.dumps(model['id'])}\n"
+    )
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
@@ -241,10 +268,14 @@ def write_codex_config(base: str, model: dict) -> None:
 
 
 def _print_env(env: dict, command: list) -> None:
-    template = '$env:{} = "{}"' if os.name == "nt" else 'export {}="{}"'
+    if os.name == "nt":
+        for name, value in env.items():
+            typer.echo(f'$env:{name} = "{value}"')
+        typer.echo(" ".join(command))
+        return
     for name, value in env.items():
-        typer.echo(template.format(name, value))
-    typer.echo(" ".join(command))
+        typer.echo(f"export {name}={shlex.quote(value)}")
+    typer.echo(shlex.join(command))
 
 
 def _launch(command: list, env: dict, install_hint: str) -> NoReturn:
@@ -257,7 +288,8 @@ def _launch(command: list, env: dict, install_hint: str) -> NoReturn:
         code = subprocess.run([executable, *command[1:]], env = {**os.environ, **env}).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
-    raise typer.Exit(code = code)
+    # Negative returncode means killed by signal N; shells expect 128+N.
+    raise typer.Exit(code = code if code >= 0 else 128 - code)
 
 
 @connect_app.command("claude", context_settings = _PASSTHROUGH)
@@ -293,7 +325,12 @@ def claude(
     if not launch:
         _print_env(env, command)
         return
-    _launch(command, env, install_hint = "curl -fsSL https://claude.ai/install.sh | bash")
+    install_hint = (
+        "irm https://claude.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://claude.ai/install.sh | bash"
+    )
+    _launch(command, env, install_hint = install_hint)
 
 
 @connect_app.command("codex", context_settings = _PASSTHROUGH)
