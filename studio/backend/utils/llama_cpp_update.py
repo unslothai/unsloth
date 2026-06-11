@@ -130,9 +130,17 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
     value: Optional[dict] = None
     try:
         proc = subprocess.run(
-            [sys.executable, str(script), "--resolve-prebuilt", "latest",
-             "--output-format", "json"],
-            capture_output = True, text = True, timeout = 60,
+            [
+                sys.executable,
+                str(script),
+                "--resolve-prebuilt",
+                "latest",
+                "--output-format",
+                "json",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0 and out:
@@ -154,9 +162,7 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run(
-            [binary, "--version"], capture_output = True, text = True, timeout = 20
-        )
+        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -183,6 +189,7 @@ def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
                 return parent
     try:
         from utils.paths.storage_roots import studio_root
+
         sr = studio_root()
         legacy = Path.home() / ".unsloth" / "studio"
         try:

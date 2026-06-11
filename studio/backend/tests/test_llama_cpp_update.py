@@ -74,7 +74,13 @@ def _no_prebuilt(monkeypatch):
     monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None)
 
 
-def _prebuilt(monkeypatch, *, repo = "unslothai/llama.cpp", release_tag = "b9585", asset = None):
+def _prebuilt(
+    monkeypatch,
+    *,
+    repo = "unslothai/llama.cpp",
+    release_tag = "b9585",
+    asset = None,
+):
     """Stub the host prebuilt probe to report an available prebuilt."""
     payload = {
         "prebuilt_available": True,
@@ -174,8 +180,9 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    _prebuilt(monkeypatch, repo = "unslothai/llama.cpp",
-              asset = "app-b9585-linux-x64-rocm-gfx110X.tar.gz")
+    _prebuilt(
+        monkeypatch, repo = "unslothai/llama.cpp", asset = "app-b9585-linux-x64-rocm-gfx110X.tar.gz"
+    )
 
     captured = {}
 
@@ -552,7 +559,9 @@ def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
     class _Proc:
         returncode = 0
         # stderr noise plus the JSON line on stdout (installer logs to stderr).
-        stdout = '{"prebuilt_available": true, "repo": "unslothai/llama.cpp", "release_tag": "b9585"}'
+        stdout = (
+            '{"prebuilt_available": true, "repo": "unslothai/llama.cpp", "release_tag": "b9585"}'
+        )
         stderr = "[llama-prebuilt] some log\n"
 
     def _fake_run(cmd, **kwargs):
@@ -593,6 +602,7 @@ def test_installed_build_number(monkeypatch):
             returncode = 0
             stdout = ""
             stderr = text
+
         monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
         return upd._installed_build_number("/bin/llama-server")
 

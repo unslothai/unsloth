@@ -24,21 +24,33 @@ if str(_studio) not in sys.path:
 
 ilp = importlib.import_module("install_llama_prebuilt")
 
-if not hasattr(ilp, "published_repo_for_host") or not hasattr(ilp, "resolve_simple_install_release_plans"):
+if not hasattr(ilp, "published_repo_for_host") or not hasattr(
+    ilp, "resolve_simple_install_release_plans"
+):
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
 
-FORK = ilp.DEFAULT_PUBLISHED_REPO   # unslothai/llama.cpp
-UPSTREAM = ilp.UPSTREAM_REPO        # ggml-org/llama.cpp
+FORK = ilp.DEFAULT_PUBLISHED_REPO  # unslothai/llama.cpp
+UPSTREAM = ilp.UPSTREAM_REPO  # ggml-org/llama.cpp
 
 
 def _host(**kw):
     base = dict(
-        system = "Linux", machine = "x86_64",
-        is_windows = False, is_linux = False, is_macos = False,
-        is_x86_64 = False, is_arm64 = False,
-        nvidia_smi = None, driver_cuda_version = None, compute_caps = [],
-        visible_cuda_devices = None, has_physical_nvidia = False, has_usable_nvidia = False,
-        has_rocm = False, rocm_gfx_target = None, macos_version = None,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = False,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        rocm_gfx_target = None,
+        macos_version = None,
     )
     base.update(kw)
     return ilp.HostInfo(**base)
@@ -47,22 +59,33 @@ def _host(**kw):
 def test_published_repo_for_host():
     # CPU-only Linux (x64 and arm64) -> ggml-org upstream.
     assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True)) == UPSTREAM
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64")) == UPSTREAM
+    assert (
+        ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64"))
+        == UPSTREAM
+    )
     # GPU Linux -> fork.
-    assert ilp.published_repo_for_host(
-        _host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True)
-    ) == FORK
+    assert (
+        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True))
+        == FORK
+    )
     assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
     # Windows and macOS -> fork.
-    assert ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True)) == FORK
-    assert ilp.published_repo_for_host(
-        _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-    ) == FORK
+    assert (
+        ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
+        == FORK
+    )
+    assert (
+        ilp.published_repo_for_host(
+            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
+        )
+        == FORK
+    )
 
 
 def _run_resolve(monkeypatch, capsys, plans_or_exc):
     monkeypatch.setattr(
-        ilp, "detect_host",
+        ilp,
+        "detect_host",
         lambda: _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64"),
     )
 
@@ -72,7 +95,11 @@ def _run_resolve(monkeypatch, capsys, plans_or_exc):
         return ("b9585", plans_or_exc)
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
-    monkeypatch.setattr(sys, "argv", ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+    )
     rc = ilp.main()
     assert rc == ilp.EXIT_SUCCESS
     return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -80,8 +107,11 @@ def _run_resolve(monkeypatch, capsys, plans_or_exc):
 
 def test_resolve_prebuilt_available(monkeypatch, capsys):
     plan = SimpleNamespace(
-        release_tag = "b9585", llama_tag = "b9585",
-        attempts = [SimpleNamespace(name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")],
+        release_tag = "b9585",
+        llama_tag = "b9585",
+        attempts = [
+            SimpleNamespace(name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+        ],
     )
     out = _run_resolve(monkeypatch, capsys, [plan])
     assert out["prebuilt_available"] is True
