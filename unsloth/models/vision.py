@@ -284,6 +284,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         input_ids = kwargs["input"]
     elif "input_features" in kwargs:
         input_ids = kwargs["input_features"]
+    elif "inputs_embeds" in kwargs:
+        # canonical HF name for embedding inputs (e.g. multimodal generate)
+        input_ids = kwargs["inputs_embeds"]
     elif "input_embeds" in kwargs:
         input_ids = kwargs["input_embeds"]
     elif "inputs" in kwargs:
@@ -1288,6 +1291,15 @@ class FastBaseModel:
         tokenizer.padding_side = "left"  # Force inference
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = "left"  # Force inference
+        # Audio feature extractors must stay right padded: left (a text setting,
+        # forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4
+        # audio token counts (crash on transformers < 5.10).
+        feature_extractor = getattr(tokenizer, "feature_extractor", None)
+        if (
+            feature_extractor is not None
+            and getattr(feature_extractor, "padding_side", None) == "left"
+        ):
+            feature_extractor.padding_side = "right"
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length

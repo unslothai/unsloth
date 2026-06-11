@@ -1717,8 +1717,15 @@ _ensure_rocm_probe_env() {
 
 # Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
 # KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
+# Always returns 1 (false) when an NVIDIA GPU is present: blocks every
+# detection path (rocminfo, amd-smi, KFD sysfs) from producing a false
+# positive on NVIDIA-only or NVIDIA-primary hosts, even when ROCm tools
+# are co-installed.
 _has_amd_rocm_gpu() {
     _ensure_rocm_probe_env
+    if _has_usable_nvidia_gpu; then
+        return 1
+    fi
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
@@ -1726,27 +1733,71 @@ _has_amd_rocm_gpu() {
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     elif [ -e /dev/kfd ] && \
-         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
+        # 560+) can register KFD topology nodes with non-zero gpu_id but
+        # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
+        # NVIDIA-only hosts to the ROCm install path.
         return 0
     fi
     return 1
 }
 
+# ── Bounded command runner ──
+# Runs a command under a 10s timeout when the `timeout` binary is available,
+# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
+# driver init or after a reset) from hanging the installer: a timed-out probe
+# exits nonzero and is treated exactly like a failed probe. No-op semantics on
+# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
+_run_bounded() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
+# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
+# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
+# var, so the probes below cannot see the distinction on their own.
+_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
+}
+
 # ── NVIDIA usable-GPU helper ──
-# Returns 0 (true) only if nvidia-smi is present AND actually lists a GPU.
-# Prevents AMD-only hosts with a stale nvidia-smi on PATH from being routed
-# into the CUDA branch.
+# Returns 0 (true) if an NVIDIA GPU is present and usable.
+# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
+# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
+# -- handles PATH gaps, subprocess timeouts, and driver init races that
+# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
+# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
 _has_usable_nvidia_gpu() {
+    if _cvd_hides_nvidia; then
+        return 1
+    fi
     _nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nvsmi="nvidia-smi"
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _nvsmi="/usr/bin/nvidia-smi"
-    else
-        return 1
     fi
-    "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'
+    if [ -n "$_nvsmi" ]; then
+        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # ── Detect GPU and choose PyTorch index URL ──
@@ -1763,14 +1814,16 @@ get_torch_index_url() {
     # packages) is not sufficient: otherwise an AMD-only host would
     # silently install CUDA wheels.
     _smi=""
+    _nvidia_detected=0
     if _has_usable_nvidia_gpu; then
+        _nvidia_detected=1
         if command -v nvidia-smi >/dev/null 2>&1; then
             _smi="nvidia-smi"
         elif [ -x "/usr/bin/nvidia-smi" ]; then
             _smi="/usr/bin/nvidia-smi"
         fi
     fi
-    if [ -z "$_smi" ]; then
+    if [ "$_nvidia_detected" -eq 0 ]; then
         # No NVIDIA GPU -- check for AMD ROCm GPU.
         # PyTorch only publishes ROCm wheels for linux-x86_64; skip the
         # ROCm branch entirely on aarch64 / arm64 / other architectures
@@ -1847,7 +1900,11 @@ get_torch_index_url() {
     # of the legacy "CUDA Version: X.Y"; accept both with two BRE expressions
     # (POSIX sed does not support "?" without -E).  The two patterns are
     # mutually exclusive per line, so head -1 picks the first emitted match.
-    _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
+    # Bound the call (a wedged nvidia-smi would otherwise hang here) and force
+    # the C locale for stable parsing. LC_ALL is exported inside this command
+    # substitution subshell so it reaches nvidia-smi through _run_bounded
+    # without depending on `env`; the export is scoped to the subshell.
+    _cuda_ver=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null \
         | sed -n \
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
@@ -2098,6 +2155,21 @@ _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
+# Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
+# downstream scripts (setup.sh -> install_python_stack.py) know what was
+# chosen here and can skip ROCm-specific repair steps on CUDA/CPU hosts.
+# Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR
+# whose base path happens to contain "rocm" or "gfx" must not mislabel a
+# cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix
+# overrides in gfxNNNN/, so the trailing slash is stripped first).
+_torch_index_leaf="${TORCH_INDEX_URL%/}"
+_torch_index_leaf="${_torch_index_leaf##*/}"
+case "$_torch_index_leaf" in
+    rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
+    cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
+esac
+
 # rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
 # All other ROCm tags and CUDA stay within <2.11.0.
 case "$TORCH_INDEX_URL" in
@@ -2333,7 +2405,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.1" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2346,7 +2418,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.1" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2550,7 +2622,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.1" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2568,7 +2640,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.1" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.6.2" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2600,7 +2672,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.1" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.2" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
