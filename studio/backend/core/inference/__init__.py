@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Inference submodule - backend for model loading and generation.
+"""Inference submodule - backend for model loading and generation.
 
-The default get_inference_backend() returns an InferenceOrchestrator that
-delegates to a subprocess. The original InferenceBackend runs inside the
-subprocess and can be imported directly from .inference when needed.
+get_inference_backend() returns an InferenceOrchestrator that delegates to a
+subprocess; the original InferenceBackend runs inside it and can be imported
+from .inference directly.
 
-Symbols are exposed lazily through ``__getattr__`` (PEP 562) so that
-importing a stdlib-only helper from this package (e.g.
-``from core.inference._html_to_md import html_to_markdown``) does not
-eagerly pull in the orchestrator or the GGUF/llama-server backend.
-That matters for the document-extractor HTML path which must keep
-working in environments where the inference extras are unavailable or
-broken.
+Symbols are lazy (PEP 562 ``__getattr__``) so importing a stdlib-only helper
+(e.g. ``core.inference._html_to_md``) never pulls in the orchestrator or the
+GGUF backend - the document-extractor HTML path must work even when the
+inference extras are broken or missing.
 """
 
 from typing import Any

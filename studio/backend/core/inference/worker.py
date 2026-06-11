@@ -71,10 +71,8 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 
 def _resolve_trust_remote_code(config: dict) -> bool:
-    # Auto-enable trust_remote_code for NemotronH/Nano models only.
-    # NemotronH has config parsing bugs requiring trust_remote_code=True.
-    # Other transformers 5.x models are native and do NOT need it.
-    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    # Auto-enable trust_remote_code only for NemotronH/Nano (config parsing
+    # bugs require it). Must NOT match Llama-Nemotron (standard Llama arch).
     trust_remote_code = config.get("trust_remote_code", False)
     if not trust_remote_code:
         model_name = config["model_name"]

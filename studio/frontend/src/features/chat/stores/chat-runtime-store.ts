@@ -135,11 +135,9 @@ function loadRagNumber(
 }
 
 /**
- * Built-in OCR model presets selectable from the Document Extraction settings.
- * "default" means: use the loaded chat VLM when it is vision-capable,
- * otherwise behave as no dedicated OCR model.
- * "none" means: no dedicated OCR model override.
- * "custom" means: a user-supplied HF id or local path (see `customOcrModelId`).
+ * OCR model presets in the Document Extraction settings. "default" follows
+ * the loaded chat VLM (else no override); "none" disables the override;
+ * "custom" is a user-supplied HF id or local path (`customOcrModelId`).
  */
 export type OcrModelPresetId = "deepseek-ocr" | "glm-ocr" | "paddleocr-vl";
 export type OcrModelSelection =
@@ -149,9 +147,8 @@ export type OcrModelSelection =
   | "none";
 
 /**
- * Transient state for the temporary OCR-model swap performed during scanned-PDF
- * extraction. Lives in the store (not localStorage) so the settings sheet, the
- * composer, and the chat header can all subscribe to a single source of truth.
+ * Transient state of the temporary OCR-model swap during extraction. In the
+ * store (not localStorage) so settings sheet, composer, and header share it.
  */
 export type OcrPhase =
   | "idle"
@@ -175,21 +172,15 @@ export interface DocExtractSettings {
   maxVisualPayloads: number;
   /** Approx chars/4 token budget injected into the outgoing message. */
   tokenBudget: number;
-  /**
-   * Selected OCR model. "default" follows the loaded VLM if present;
-   * "none" keeps the OCR override empty; a preset id loads that preset;
-   * "custom" reads from `customOcrModelId`.
-   */
+  /** Selected OCR model: "default" follows the loaded VLM, "none" disables
+   * the override, a preset id loads it, "custom" reads customOcrModelId. */
   ocrModel: OcrModelSelection;
   /** HF id or absolute local path used when `ocrModel === "custom"`. */
   customOcrModelId: string;
   /** GGUF variant filename for custom OCR repos that ship GGUF; null otherwise. */
   customOcrGgufVariant: string | null;
-  /**
-   * Frontend-side cap on parallel `/chat/extract-document` requests.
-   * Mirrors the backend `_EXTRACT_SEMAPHORE` so dropping many files at
-   * once queues client-side instead of producing 503-busy responses.
-   */
+  /** Client cap on parallel /chat/extract-document requests, mirroring the
+   * backend _EXTRACT_SEMAPHORE so multi-drops queue instead of 503ing. */
   extractConcurrency: number;
 }
 

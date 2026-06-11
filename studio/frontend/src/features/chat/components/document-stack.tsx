@@ -421,11 +421,9 @@ function DocumentStackCardLayer({
 }
 
 /**
- * State model for the document stack:
- * - activeDocumentIndex controls the front card only.
- * - hoveredDocumentIndex controls temporary background-card preview only.
- * - orderedDocuments is the stable render order from props.
- * - navigationDirection and animationState are arrow/click transition hints.
+ * State model: activeDocumentIndex drives the front card,
+ * hoveredDocumentIndex the background-card preview, orderedDocuments the
+ * stable render order; navigationDirection/animationState are transition hints.
  */
 export function DocumentStack({
   items,

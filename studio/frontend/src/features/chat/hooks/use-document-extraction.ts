@@ -24,17 +24,12 @@ export type DocumentExtractionCaptionProgress = {
   totalPages: number;
 };
 
-// ---------------------------------------------------------------------------
-// Non-React helper — usable outside component tree (e.g. async generators
-// inside runtime-provider's adapter). The hook wraps this for convenience.
-// ---------------------------------------------------------------------------
+// Non-React helper, usable outside the component tree (runtime-provider's
+// async generator adapters); the hook below wraps it.
 
 export interface DocumentExtractionRunnerOptions {
-  /**
-   * Captioning progress: fired once with `{current:0, total}` before
-   * any figure starts, then once per figure as captions complete.
-   * Skipped entirely when no figures need captioning (no VLM, max=0).
-   */
+  /** Fired once with `{current:0, total}` before captioning starts, then per
+   * figure; skipped when nothing needs captioning (no VLM, max=0). */
   onCaptionProgress?: (progress: DocumentExtractionCaptionProgress) => void;
   /** Notifies when the parsing phase begins (before captioning). */
   onParseStart?: () => void;
@@ -49,13 +44,10 @@ export interface DocumentExtractionRunner {
 }
 
 /**
- * Creates a stateful extraction runner that owns its own AbortController.
- * Reads settings from the Zustand store at call time (not at creation time)
- * so changes to tokenBudget / describeImages take effect on the next call.
- *
- * This factory is intentionally framework-free so it can be used inside
- * async generator functions in runtime-provider.tsx without violating the
- * Rules of Hooks.
+ * Stateful extraction runner owning its own AbortController. Settings are
+ * read from the store at call time so changes apply on the next call.
+ * Framework-free so async generators in runtime-provider.tsx can use it
+ * without violating the Rules of Hooks.
  */
 export function createDocumentExtractionRunner(): DocumentExtractionRunner {
   let controller: AbortController | null = null;
@@ -64,7 +56,6 @@ export function createDocumentExtractionRunner(): DocumentExtractionRunner {
     file: File,
     options?: DocumentExtractionRunnerOptions,
   ): Promise<ExtractedDocument> => {
-    // Read settings at call time so latest values are always used.
     const { docExtract } = useChatRuntimeStore.getState();
 
     if (!docExtract.enabled) {
@@ -84,12 +75,9 @@ export function createDocumentExtractionRunner(): DocumentExtractionRunner {
     controller = new AbortController();
     const signal = controller.signal;
 
-    // Wrap extraction in the OCR-model orchestrator. When the user has
-    // selected an OCR preset (or a custom OCR model), this temporarily
-    // swaps the active chat model with the OCR model for the duration of
-    // the extraction call, then restores the original chat model in
-    // `finally`. With ocrModel === "default" or "none" the orchestrator is
-    // a no-op pass-through and behaviour matches the loaded-model path.
+    // The OCR orchestrator temporarily swaps the chat model for the selected
+    // OCR preset/custom model and restores it in `finally`; with ocrModel
+    // "default"/"none" it is a no-op pass-through.
     const handleProgress = (event: ExtractDocumentProgressEvent) => {
       if (event.stage === "parsing") {
         options?.onParseStart?.();
@@ -103,10 +91,8 @@ export function createDocumentExtractionRunner(): DocumentExtractionRunner {
       }
     };
 
-    // Gate concurrent extractions so we never exceed the backend's
-    // _EXTRACT_SEMAPHORE (default 2). Slot is held until the request
-    // finishes — including the OCR-model swap — so the next runner
-    // doesn't start a swap while another extraction is mid-flight.
+    // Gate concurrency at the backend's _EXTRACT_SEMAPHORE (default 2);
+    // the slot spans the OCR swap so runners never overlap a swap.
     const release = await acquireExtractionSlot(signal);
     let result: ExtractedDocument;
     try {
@@ -150,10 +136,7 @@ export function createDocumentExtractionRunner(): DocumentExtractionRunner {
   return { run, abort };
 }
 
-// ---------------------------------------------------------------------------
-// React hook — thin wrapper around createDocumentExtractionRunner that
-// keeps the runner instance stable across renders via useRef.
-// ---------------------------------------------------------------------------
+// React hook: createDocumentExtractionRunner kept stable across renders.
 
 export interface UseDocumentExtractionResult {
   extract: (
@@ -164,15 +147,9 @@ export interface UseDocumentExtractionResult {
 }
 
 /**
- * React hook for document extraction. Owns a single AbortController
- * per hook instance; calling `abort()` cancels any in-flight request.
- *
- * Settings (`tokenBudget`, `describeImages`, etc.) are read from the
- * Zustand store at extraction time — not at hook instantiation — so
- * settings changes are always reflected on the next extraction.
- *
- * For use outside React component trees (e.g. async generators), use
- * {@link createDocumentExtractionRunner} directly.
+ * Document-extraction hook; `abort()` cancels any in-flight request.
+ * Settings are read at extraction time, so changes always apply. Outside
+ * React trees use {@link createDocumentExtractionRunner} directly.
  */
 export function useDocumentExtraction(): UseDocumentExtractionResult {
   const runnerRef = useRef<DocumentExtractionRunner | null>(null);

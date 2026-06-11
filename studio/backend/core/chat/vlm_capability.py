@@ -1,20 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Runtime probe: is the currently loaded model vision-capable, and where
-is its OpenAI-compatible endpoint?
+"""Runtime probe: is the loaded model vision-capable, and at which
+OpenAI-compatible endpoint?
 
-Unifies the three Studio inference backends (embedded llama-server for
-GGUF, transformers, Unsloth/LoRA) behind a single ``VlmCapability``
-dataclass. Read-only — never loads or modifies models.
-
-Why this replaces the old ``VISION_ARCHITECTURES`` allow-list:
-- Allow-lists silently exclude legitimately new vision architectures.
-- Runtime probing matches the user's actual loaded model.
-- The document extractor can caption selected visual references through
-  any loaded backend exposing ``/v1/chat/completions`` without
-  hard-coding architecture names.
+Unifies the three Studio backends (embedded llama-server GGUF, transformers,
+Unsloth/LoRA) behind one read-only ``VlmCapability`` dataclass. Replaces the
+static ``VISION_ARCHITECTURES`` allow-list, which silently excluded new
+vision architectures and could not see the actually loaded model.
 """
 
 from __future__ import annotations
@@ -75,9 +68,8 @@ def _probe_gguf(llama: Any = None) -> Optional[VlmCapability]:
     is_vision = bool(getattr(llama, "is_vision", False))
 
     if not base_url or not model_id:
-        # Half-initialised llama-server state — fall through to the
-        # transformers probe instead of returning a misleading
-        # non-vision GGUF result that suppresses the fallback chain.
+        # Half-initialised llama-server state: fall through to the
+        # transformers probe instead of a misleading non-vision GGUF result.
         logger.debug("llama-server reports is_loaded=True but base_url / model id missing")
         return None
 
@@ -99,10 +91,9 @@ def _probe_transformers(self_base_url: Optional[str]) -> Optional[VlmCapability]
         logger.exception("Failed to import transformers inference backend")
         return None
     except ImportError:
-        # A different ImportError variant (e.g. circular import). Treat as
-        # backend-unavailable. Anything else (NameError/AttributeError raised
-        # by core.inference.__init__) propagates so real bugs aren't masked
-        # as "no VLM loaded".
+        # Other ImportError variants (circular import) mean backend
+        # unavailable; NameError/AttributeError propagate so real bugs are
+        # not masked as "no VLM loaded".
         logger.exception("Failed to import transformers inference backend")
         return None
 
@@ -144,10 +135,9 @@ def detect_loaded_vlm(
 ) -> VlmCapability:
     """Identify the active model and whether it can describe images.
 
-    ``self_base_url`` is only consulted when the active model is served
-    by the transformers / Unsloth backend; document image captioning must
-    loop back through our own ``/v1/chat/completions``. GGUF models return
-    llama-server's own URL and ignore this argument.
+    ``self_base_url`` only matters for transformers / Unsloth models, whose
+    captioning loops back through our own ``/v1/chat/completions``; GGUF
+    returns llama-server's URL and ignores it.
     """
     gguf = _probe_gguf(llama_backend)
     if gguf is not None:
@@ -163,11 +153,9 @@ def detect_loaded_vlm(
 def extract_self_base_url(request: Any) -> Optional[str]:
     """Derive a trusted local base URL for the active Studio server.
 
-    The request Host header is attacker-controlled in many deployments,
-    so the returned origin always uses ``127.0.0.1``. Only the server
-    port is discovered, preferring the port published by ``run.py`` and
-    then uvicorn's ASGI scope. ``request.base_url`` is a last-resort
-    fallback for tests and non-uvicorn embedding.
+    The Host header is attacker-controlled, so the origin is always
+    ``127.0.0.1``; only the port is discovered (run.py, then the ASGI scope,
+    then ``request.base_url`` as a test/embedding fallback).
     """
     port: Optional[int] = None
 

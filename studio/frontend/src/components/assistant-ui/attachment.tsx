@@ -327,9 +327,8 @@ const AttachmentUI: FC = () => {
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
   });
-  // Suffix with a per-instance React id so attachments without a stable
-  // `rawAttachment.id` (or that share a typeLabel like "image") still produce
-  // a unique DOM id within a single composer.
+  // Per-instance React id keeps DOM ids unique when attachments lack a
+  // stable `rawAttachment.id` or share a typeLabel.
   const reactInstanceId = useId().replace(/[^A-Za-z0-9_-]/g, "-");
   // Filename in accessible name lets screen readers distinguish same-typed
   // attachments. Sighted users get it via the tooltip.

@@ -91,11 +91,9 @@ def test_no_tracker_enter_inside_async_generators():
 
 
 def test_tracker_enter_exists_in_sync_body_of_chat_completions():
-    # The handler `openai_chat_completions` is a thin wrapper around
-    # `_openai_chat_completions_impl`, where the streaming bodies (and
-    # therefore the tracker registration) live after the document-
-    # extractor refactor. Accept tracker-__enter__ calls that appear in
-    # either function so the structural guarantee survives the wrapper.
+    # openai_chat_completions is a thin wrapper over
+    # _openai_chat_completions_impl, where the streaming bodies (and tracker
+    # registration) live; accept tracker __enter__ calls in either.
     top = None
     for n in ast.walk(_TREE):
         if isinstance(n, ast.AsyncFunctionDef) and n.name in {
@@ -149,9 +147,8 @@ def test_async_generators_cleanup_tracker_in_finally():
 
 
 def test_streaming_responses_have_no_background_task():
-    # The streaming bodies live in `_openai_chat_completions_impl` after
-    # the document-extractor refactor; the public handler is a thin
-    # wrapper. Walk the impl so this guard does not vacuously pass.
+    # Streaming bodies live in _openai_chat_completions_impl; walk the impl
+    # so this guard does not vacuously pass.
     top = None
     for n in ast.walk(_TREE):
         if isinstance(n, ast.AsyncFunctionDef) and n.name in {
@@ -456,10 +453,8 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     # The Unsloth cancel branch must call backend.reset_generation_state() to
     # flush GPU/KV-cache state, else a cancel-via-POST leaves the subprocess
     # dirty for the next request.
-    # `stream_chunks` is nested inside `_openai_chat_completions_impl`
-    # (the implementation function the thin `openai_chat_completions`
-    # wrapper delegates to). Search either function so the test survives
-    # the document-extractor refactor.
+    # stream_chunks is nested inside _openai_chat_completions_impl; search
+    # either function so the test survives the wrapper split.
     fn = None
     top = None
     for n in ast.walk(_TREE):

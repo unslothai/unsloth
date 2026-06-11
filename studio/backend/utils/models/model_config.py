@@ -734,18 +734,10 @@ def is_vision_model(
     hf_token: Optional[str] = None,
     trust_remote_code: bool = False,
 ) -> bool:
-    """
-    Detect vision-language models (VLMs) via architecture in config. Works for
-    fine-tuned models since they inherit the base architecture.
-
-    Models needing transformers 5.x are checked in a .venv_t5/ subprocess.
-    Results are cached per (model_name, token_fingerprint, trust_remote_code)
-    for the process lifetime; transient failures are not cached so they can
-    be retried.
-
-    Args:
-        model_name: Model identifier (HF repo or local path)
-        hf_token: Optional HF token for gated/private models
+    """Detect VLMs via architecture in config (fine-tunes inherit the base
+    architecture). transformers-5.x models are checked in a .venv_t5/
+    subprocess. Definitive results are cached per (model_name,
+    token_fingerprint, trust_remote_code); transient failures are retried.
     """
     # Normalize model name so different casings of the same repo share a key
     try:

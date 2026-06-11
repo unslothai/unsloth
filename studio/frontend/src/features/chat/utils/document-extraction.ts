@@ -314,12 +314,9 @@ export function documentVisualPayloads(
 }
 
 /**
- * Returns the data URL of the first figure that has an extracted image,
- * independent of whether the image will actually be sent to the model.
- *
- * Intended for decorative UI (attachment thumbnails, previews). For the
- * list of images that will be attached to the next message, use
- * {@link documentVisualPayloads}.
+ * Data URL of the first figure with an extracted image; for decorative UI
+ * (thumbnails, previews). Use {@link documentVisualPayloads} for the images
+ * actually attached to the next message.
  */
 export function firstDocumentImageDataUrl(
   document: Pick<ExtractedDocument, "figures">,
@@ -369,14 +366,9 @@ export function buildDocumentImageReferences(
 }
 
 /**
- * Wraps an extracted document as an XML-envelope text block ready to be
- * injected into a chat message.
- *
- * The backend already truncates `markdown` to `token_budget` before
- * returning; `tokens_est` on the response reflects the post-truncation
- * token count. This function trusts `ExtractedDocument.markdown` as-is
- * and performs no further truncation. Callers that need to surface a
- * truncation warning should compare `tokens_est` against their budget.
+ * Wraps an extracted document as an XML-envelope text block for chat
+ * injection. The backend already truncated `markdown` to `token_budget`
+ * (`tokens_est` reflects it), so no further truncation happens here.
  */
 export function wrapExtractedDocumentAsText(
   input: {
@@ -410,15 +402,9 @@ export type DocumentMessagePart =
   | { type: "image"; image: string };
 
 /**
- * Builds the chat message parts for a document attachment.
- *
- * Returns `{ parts, truncated }` where `truncated` is `true` when the
- * backend-reported `tokens_est` exceeds the caller's `tokenBudget`,
- * indicating that the server already trimmed the markdown. Wave 2
- * consumers should surface a warning badge when `truncated` is `true`.
- *
- * NOTE: This function no longer performs any client-side character
- * slicing. The backend is the single source of truth for truncation.
+ * Builds chat message parts for a document attachment. `truncated` is true
+ * when the backend-reported `tokens_est` exceeds `tokenBudget`, meaning the
+ * server already trimmed the markdown; no client-side slicing happens here.
  */
 export function buildDocumentMessageParts(
   input: { filename: string; document: ExtractedDocument },

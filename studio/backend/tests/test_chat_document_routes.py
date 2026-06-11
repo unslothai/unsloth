@@ -428,8 +428,7 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
     app.include_router(route.studio_router, prefix = "/api/inference")
 
     async def fake_extract_document(*_args, **kwargs):
-        # Emit a parsing event then two captioning events to simulate
-        # per-figure progress, then return a minimal result.
+        # Parsing event, two captioning events, then a minimal result.
         progress_cb = kwargs.get("progress_cb")
         if progress_cb is not None:
             await progress_cb({"stage": "parsing"})
@@ -776,11 +775,9 @@ def _make_app(monkeypatch: pytest.MonkeyPatch, fake_extract = None):
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
     monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    # In CI the optional pdf/docx parsers may be absent, which would make
-    # `_raise_if_document_parser_unavailable` fire 501 before any of the
-    # behavioural checks (415/413/422/...) can run. Stub support to
-    # report every format as available; tests that exercise the
-    # "parser missing" path patch this back to False.
+    # CI may lack the optional pdf/docx parsers, which would 501 before the
+    # behavioural checks (415/413/422/...) run. Report every format
+    # available; "parser missing" tests patch this back to False.
     monkeypatch.setattr(
         route,
         "_document_parser_support",
@@ -898,9 +895,8 @@ def test_413_message_does_not_mention_roadmap(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_figures_are_serialized_via_pydantic_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ExtractedFigureModel(**asdict(fig)) must be used so a field-name
-    mismatch in the dataclass surfaces as a validation error, not a
-    silently-wrong response."""
+    """ExtractedFigureModel(**asdict(fig)) makes a dataclass field-name
+    mismatch a validation error, not a silently-wrong response."""
     from core.chat.document_extractor import ExtractedFigure
 
     async def fake_extract(*_args, **_kwargs):

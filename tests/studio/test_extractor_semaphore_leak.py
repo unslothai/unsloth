@@ -1,23 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-Tests that the bounded extractor semaphore in
-``core.chat.document_extractor`` does not leak when multiprocessing
-setup raises *after* a slot has already been acquired.
+"""The bounded extractor semaphore must not leak when multiprocessing setup
+raises after a slot was acquired.
 
-Failure mode the test pins:
-    1. ``_run_extract_process_sync`` acquires ``_EXTRACT_SEMAPHORE``.
-    2. ``multiprocessing.get_context(...)`` / ``ctx.Queue(...)`` /
-       ``ctx.Process(...)`` raises an OSError (fork-resource
-       exhaustion, EAGAIN on Windows under pressure, Queue creation
-       failure on hardened sandboxes, etc).
-    3. The exception escapes before the worker even starts, so the
-       finally block does not run -- and the permit is lost forever.
-
-After the patch, the ``try`` is moved up to cover the
-``get_context`` / ``Queue`` / ``Process`` calls, so the semaphore is
-always released. We assert ``_EXTRACT_SEMAPHORE._value`` is restored
-after a forced failure for every plausible call site.
+Pinned regression: get_context / Queue / Process raising (fork exhaustion,
+Windows EAGAIN) escaped before the try/finally, losing the permit forever.
+The try now covers those calls; assert ``_EXTRACT_SEMAPHORE._value`` is
+restored after a forced failure at each call site.
 """
 
 from __future__ import annotations
@@ -43,7 +32,7 @@ os.environ.setdefault("UNSLOTH_STUDIO_EXTRACT_QUEUE_WAIT", "0")
 def extractor():
     """Yield the document_extractor module.
 
-    We avoid ``importlib.reload`` here because reloading swaps the
+    No ``importlib.reload``: reloading swaps the
     module-level ``_drain_future_exception`` function object out from
     under ``routes.inference`` (which captured it at import time),
     and other tests assert identity between the two references.
@@ -55,10 +44,8 @@ def extractor():
 
 
 def _semaphore_value(mod) -> int:
-    # BoundedSemaphore in CPython exposes the current counter as
-    # ``_value`` -- this is a private implementation detail, but the
-    # test is explicitly about that counter and the alternatives
-    # (probing acquire/release reentrancy) are flakier.
+    # CPython BoundedSemaphore exposes the counter as private ``_value``;
+    # the test is about that counter and the alternatives are flakier.
     return mod._EXTRACT_SEMAPHORE._value
 
 
@@ -125,9 +112,8 @@ def test_semaphore_released_when_mp_setup_fails(extractor, monkeypatch, where):
 
 
 def test_repeated_failure_does_not_drain_pool(extractor, monkeypatch):
-    """Run the failure path 5x and confirm the pool is still at full
-    capacity afterwards -- the regression that hits production is
-    sustained: one permit leaked per failed extraction, and the queue
+    """Run the failure path 5x and confirm full pool capacity afterwards --
+    the production regression is sustained: one permit leaked per failed extraction, and the queue
     eventually deadlocks."""
     initial = _semaphore_value(extractor)
     _force_failure(extractor, monkeypatch, "process")

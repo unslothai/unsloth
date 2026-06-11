@@ -3,12 +3,9 @@
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
-// Module-level FIFO gate shared by every DocumentExtractionRunner. The
-// limit is read from the chat store at acquire/release time so changes to
-// `docExtract.extractConcurrency` apply to the next slot decision without
-// reloading the page. The cap exists to mirror the backend
-// `_EXTRACT_SEMAPHORE` (default 2) so the frontend never queues more
-// requests than the worker pool can serve, avoiding `503 busy` responses.
+// Module-level FIFO gate mirroring the backend `_EXTRACT_SEMAPHORE`
+// (default 2) so the frontend never outruns the worker pool (503 busy).
+// The limit is re-read from the chat store at acquire/release time.
 
 let activeCount = 0;
 let backendLimit: number | null = null;
@@ -46,10 +43,9 @@ export function setExtractionBackendLimit(value: number | null | undefined): voi
 }
 
 /**
- * Reserve a slot in the document-extraction queue. Resolves with a
- * `release` function that MUST be called exactly once (use try/finally).
- * Rejects with an `AbortError` DOMException if the signal aborts before
- * the slot is granted.
+ * Reserve an extraction slot. Resolves with a `release` function that must
+ * be called exactly once (use try/finally); rejects with an AbortError
+ * DOMException if `signal` aborts while waiting.
  */
 export function acquireExtractionSlot(
   signal?: AbortSignal,

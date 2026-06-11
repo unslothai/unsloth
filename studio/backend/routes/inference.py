@@ -1090,12 +1090,9 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server) singleton lives in
-# ``core.inference.llama_cpp``. ``get_llama_cpp_backend`` is already
-# imported above and re-exported from this module so external callers
-# that do ``from routes.inference import get_llama_cpp_backend`` keep
-# resolving to the same process-wide instance that load/list/delete/
-# shutdown all consult.
+# The llama-server singleton lives in core.inference.llama_cpp;
+# get_llama_cpp_backend is imported above and re-exported so external callers
+# keep resolving to the one instance load/list/delete/shutdown consult.
 
 
 @router.post("/load", response_model = LoadResponse)
@@ -1264,7 +1261,6 @@ async def load_model(
                 ),
             )
 
-        # Create config using clean factory method.
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
@@ -1796,9 +1792,8 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     A cancel_id arriving before its stream registers is stashed briefly and
     replayed on registration. Returns {"cancelled": N}.
     """
-    # The cancel body is a tiny dict of identifiers; cap the read so an
-    # authenticated client cannot make this endpoint buffer megabytes
-    # the way the sibling JSON inference endpoints already prevent.
+    # The cancel body is a tiny identifier dict; cap the read so a client
+    # cannot make this endpoint buffer megabytes.
     try:
         body = await _read_json_body_limited(request, max_bytes = 64 * 1024)
         if not isinstance(body, dict):
@@ -2487,16 +2482,9 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
 
 
 def _extract_content_parts(messages: list) -> tuple[str, list[dict], list[str]]:
-    """
-    Parse OpenAI-format messages into components the inference backend expects.
-
-    Handles both plain-string ``content`` and multimodal content-part arrays
-    (``[{type: "text", ...}, {type: "image_url", ...}]``).
-
-    Returns:
-        system_prompt:  System message text (empty string if none).
-        chat_messages:  Non-system messages with content flattened to strings.
-        image_base64s:  Base64 data for image parts, in request order.
+    """Parse OpenAI-format messages (plain-string or content-part arrays) into
+    ``(system_prompt, chat_messages, image_base64s)``: system text (or ""),
+    non-system messages flattened to strings, and image data in request order.
     """
     system_parts: list[str] = []
     chat_messages: list[dict] = []
@@ -6809,16 +6797,11 @@ def _openai_messages_for_passthrough(payload, *, is_vision: bool = True) -> list
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
 
-    ``payload.messages`` are dumped through Pydantic (dropping unset optional
-    fields), so they're already standard OpenAI format -- including
-    ``role="tool"`` tool-result messages and assistant messages carrying
-    structured ``tool_calls``. Content-parts images already in the list are
-    counted, bounded, and data URLs are normalized to PNG.
-
-    When a client uses Studio's legacy ``image_base64`` top-level field, the
-    image is re-encoded to PNG (llama-server's stb_image has limited format
-    support) and spliced into the last user message as an OpenAI ``image_url``
-    content part so vision + function-calling requests work transparently.
+    Pydantic dumps already give standard OpenAI format (role="tool" results,
+    structured tool_calls); content-part images are counted, bounded, and
+    normalized to PNG. A legacy top-level ``image_base64`` is re-encoded to
+    PNG (llama-server's stb_image is picky) and spliced into the last user
+    message so vision + function-calling requests work transparently.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
@@ -7469,15 +7452,12 @@ async def _read_multipart_form_limited(request: Request, *, max_bytes: int):
         raise HTTPException(status_code = 400, detail = exc.message) from exc
 
 
-# Cap on /completions and /embeddings JSON bodies. Those proxy payloads should
-# be small (a few prompts + sampling params); 10 MB is generous headroom while
-# still protecting against unbounded buffering when a client sends a falsified
-# Content-Length and streams a much larger body.
+# Cap on /completions and /embeddings JSON bodies: small proxy payloads, so
+# 10 MB is generous while still bounding buffering on spoofed Content-Length.
 _OPENAI_PROXY_BODY_MAX_BYTES = 10 * 1024 * 1024
-# Chat-completions also carries multimodal data URLs. Keep it bounded, but
-# large enough that document extraction's visual-payload budget reaches the
-# existing per-image guards instead of being rejected by the JSON body reader
-# first.
+# Chat-completions also carries multimodal data URLs: bounded, but large
+# enough that document extraction's visual budget reaches the per-image
+# guards instead of being rejected by the JSON body reader first.
 _OPENAI_CHAT_BODY_IMAGE_SLOTS = max(
     1,
     min(
@@ -7492,12 +7472,8 @@ _OPENAI_CHAT_BODY_MAX_BYTES = max(
 
 
 async def _read_json_body_limited(request: Request, *, max_bytes: int) -> Any:
-    """Stream the request body, enforce a hard byte cap, then parse as JSON.
-
-    Unlike trusting Content-Length, this aborts mid-stream once the cap is
-    exceeded so a spoofed header cannot force the server to buffer arbitrary
-    payloads before parsing.
-    """
+    """Stream the body, enforce a hard byte cap mid-stream, then parse JSON,
+    so a spoofed Content-Length cannot force unbounded buffering."""
     total = 0
     chunks: list[bytes] = []
     async for chunk in request.stream():
@@ -7546,11 +7522,9 @@ def _preflight_pdf_page_count(file_bytes: bytes, filename: str, content_type: st
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(file_bytes), strict = False)
-        # Many PDFs report ``is_encrypted=True`` even though they only use a
-        # null/empty user password and open fine (Acrobat-distilled docs,
-        # the classic Orimi test PDF, scanner output). Try the empty
-        # password before refusing; PyMuPDF's ``needs_pass`` is the real
-        # signal in the fallback branch below.
+        # Many PDFs report is_encrypted=True with only a null user password
+        # (Acrobat-distilled docs, the Orimi test PDF). Try the empty password
+        # first; PyMuPDF's needs_pass is the real signal in the fallback.
         if getattr(reader, "is_encrypted", False):
             try:
                 if reader.decrypt("") == 0:
@@ -7561,9 +7535,8 @@ def _preflight_pdf_page_count(file_bytes: bytes, filename: str, content_type: st
             except HTTPException:
                 raise
             except Exception:
-                # ``decrypt`` itself failed (corrupt /Encrypt dict, unknown
-                # algorithm). Fall through to the PyMuPDF fallback rather
-                # than declaring the file encrypted.
+                # decrypt failed (corrupt /Encrypt, unknown algorithm); fall
+                # through to PyMuPDF rather than declaring it encrypted.
                 raise RuntimeError("pypdf decrypt probe failed")
         return len(reader.pages)
     except HTTPException:
@@ -7579,11 +7552,9 @@ def _preflight_pdf_page_count(file_bytes: bytes, filename: str, content_type: st
         import pymupdf as _pymupdf  # type: ignore
         doc = _pymupdf.open(stream = file_bytes, filetype = "pdf")
         try:
-            # PyMuPDF's ``needs_pass`` is True only when an actual password
-            # is required. ``is_encrypted`` is True for any file with an
-            # /Encrypt dict, which includes the common null-password case
-            # that opens fine. Refuse only when a password is actually
-            # needed.
+            # needs_pass is True only when a password is actually required;
+            # is_encrypted also flags the null-password case that opens fine.
+            # Refuse only on needs_pass.
             if getattr(doc, "needs_pass", False):
                 raise HTTPException(
                     status_code = 422,
@@ -7632,10 +7603,8 @@ async def document_support_endpoint(
 ):
     """Whether document extraction + per-figure captions are available.
 
-    Polled by the frontend when the settings panel mounts and when the
-    loaded model changes. The response drives the "describe figures"
-    toggle: when ``vlm.is_vlm`` is false the UI disables the toggle and
-    surfaces ``vlm.reason`` as tooltip text.
+    Polled on settings mount and model change; when ``vlm.is_vlm`` is false
+    the UI disables the describe toggle and shows ``vlm.reason`` as tooltip.
     """
     if _extract_document is None or _detect_loaded_vlm is None:
         return DocumentSupportResponse(
@@ -7687,14 +7656,12 @@ async def document_support_endpoint(
 async def extract_document_endpoint(
     fastapi_request: Request, current_subject: str = Depends(get_current_subject)
 ):
-    """Upload a PDF / DOCX / HTML / MD / text file and stream
-    progress events plus a final layout-aware Markdown payload.
+    """Upload a PDF / DOCX / HTML / MD / text file; stream NDJSON progress
+    events plus a final layout-aware Markdown payload.
 
-    Response is NDJSON (one JSON object per line). Validation errors
-    raised before streaming begins return as standard HTTP 4xx/5xx.
-    Once the stream starts, the final line is `{"stage":"result", ...}`
-    or `{"stage":"error", ...}`. Large documents (>200 pages) are
-    rejected with 413 until the background-job path lands.
+    Pre-stream validation errors return standard HTTP 4xx/5xx; after that the
+    final line is ``{"stage":"result"|"error", ...}``. Documents over 200
+    pages are rejected with 413 until the background-job path lands.
     """
     if _extract_document is None:
         raise HTTPException(
@@ -7914,9 +7881,8 @@ async def extract_document_endpoint(
                     progress_cb = _progress_cb,
                 )
             )
-            # Always drain the task's exception so a busy/cancel race
-            # doesn't leave an orphan "Future exception was never retrieved"
-            # in the logs when the body iterator exits early.
+            # Drain the task's exception so a busy/cancel race doesn't log
+            # "Future exception was never retrieved" on early exit.
             extraction_task.add_done_callback(_drain_doc_future_exception)
             disconnect_task = asyncio.create_task(
                 _wait_for_document_request_disconnect(fastapi_request, cancel_event)
@@ -7951,11 +7917,9 @@ async def extract_document_endpoint(
                             extraction_task.cancel()
                         raise _DocumentExtractionCancelled("document extraction was cancelled")
 
-                    # The shield-wrapper may complete (cancelled) before
-                    # the underlying extraction_task is done; calling
-                    # ``.result()`` in that window raises
-                    # InvalidStateError. Wait for the real task before
-                    # consuming its result.
+                    # The shield wrapper can finish (cancelled) before the real
+                    # task; .result() in that window raises InvalidStateError,
+                    # so wait on the task itself.
                     if extraction_task.done():
                         # Drain any remaining progress events before result.
                         while not progress_queue.empty():
@@ -7967,8 +7931,7 @@ async def extract_document_endpoint(
                         result = extraction_task.result()
                         break
                     if extract_wait in done:
-                        # Shield-wrapper finished but the real task is
-                        # still running. Re-arm the wait on a fresh
+                        # Wrapper done, task still running: re-arm a fresh
                         # shielded future and loop.
                         extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
                         extract_wait.add_done_callback(_drain_doc_future_exception)
@@ -8091,7 +8054,6 @@ async def extract_document_endpoint(
             media_type = "application/x-ndjson",
         )
     finally:
-        # _EXTRACT_SEMAPHORE is owned solely by _run_extract_process_sync; the
-        # worker maps a busy semaphore to DocumentExtractionBusy → an in-stream
-        # error event above.
+        # _EXTRACT_SEMAPHORE is owned by _run_extract_process_sync; a busy
+        # semaphore becomes DocumentExtractionBusy -> in-stream error above.
         pass

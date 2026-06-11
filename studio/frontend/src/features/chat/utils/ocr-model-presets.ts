@@ -10,9 +10,8 @@ import type {
 export type { OcrModelPresetId, OcrModelSelection };
 
 /**
- * A built-in OCR model preset advertised in the Document Extraction settings
- * sheet. The HF id is used verbatim for `validateModel` and `loadModel`
- * requests; the orchestrator never substitutes another id server-side.
+ * Built-in OCR preset for the Document Extraction settings sheet. The HF id
+ * is used verbatim for `validateModel`/`loadModel`; never substituted.
  */
 export interface OcrModelPreset {
   id: OcrModelPresetId;
@@ -24,9 +23,8 @@ export interface OcrModelPreset {
 }
 
 /**
- * The resolved load target for an OCR run. Built from a preset OR from the
- * user's custom path. `null` means "no dedicated OCR model swap" — the
- * extraction route can still use the loaded chat VLM when one is active.
+ * Resolved load target for an OCR run (preset or custom path). `null` means
+ * no dedicated OCR swap; extraction may still use the loaded chat VLM.
  */
 export interface OcrModelTarget {
   source: "preset" | "custom";
@@ -65,9 +63,8 @@ export const OCR_MODEL_PRESETS: readonly OcrModelPreset[] = [
 ];
 
 /**
- * Heuristic for whether a custom HF id is likely to need `trust_remote_code`.
- * Conservative — flips on for known OCR repo prefixes; falls back to false.
- * The validate route is still authoritative; this only seeds the UI hint.
+ * Heuristic: does a custom HF id likely need `trust_remote_code`? Seeds the
+ * UI hint only; the validate route stays authoritative.
  */
 function looksLikeTrcModel(id: string): boolean {
   const normalized = id.trim().toLowerCase();

@@ -1546,8 +1546,7 @@ class AnthropicMessagesResponse(BaseModel):
 
 
 class ExtractedFigureModel(BaseModel):
-    """A single extracted visual reference, optionally described by a
-    locally-loaded vision model."""
+    """An extracted visual reference, optionally captioned by the loaded VLM."""
 
     id: str = Field(..., description = "Stable id (e.g. 'fig-0')")
     page: Optional[int] = Field(None, description = "1-based page number, if known")
@@ -1576,10 +1575,7 @@ class ExtractedFigureModel(BaseModel):
 
 
 class ExtractDocumentResponse(BaseModel):
-    """
-    Returned synchronously from ``POST /chat/extract-document`` for
-    small docs, or as the final SSE event for larger ones.
-    """
+    """Sync response of ``POST /chat/extract-document`` (or the final SSE event)."""
 
     schema_version: int = Field(1, description = "Document extraction payload schema version")
     filename: str = Field(..., description = "Original filename uploaded")
@@ -1647,11 +1643,8 @@ class VlmCapabilityModel(BaseModel):
 
 
 class DocumentSupportResponse(BaseModel):
-    """Returned by GET /chat/document-support.
-
-    Drives the Chat settings-card toggles. ``max_visual_payloads`` is kept
-    for older clients as an informational hint, not a hard request cap.
-    """
+    """GET /chat/document-support response; drives the Chat settings toggles.
+    ``max_visual_payloads`` is an informational hint, not a hard cap."""
 
     schema_version: int = Field(1, description = "Document support payload schema version")
     extraction_available: bool = Field(

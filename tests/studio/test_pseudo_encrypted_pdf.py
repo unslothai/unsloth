@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-Tests that PDFs with a null/empty user password (very common; Acrobat
-distillation often writes /Encrypt dicts with no password) are NOT
-falsely rejected as "encrypted" by either the preflight or the
-extractor.
+"""Null-password PDFs (Acrobat-distilled /Encrypt dicts, the Orimi test
+file) must not be rejected as encrypted by the preflight or the extractor.
 
-Failure mode the test pins:
-    The classic Orimi PDF Test File (and many scanner-output PDFs)
-    carry "Standard V2 R3 128-bit RC4" encryption with an empty user
-    password -- the file opens without prompting in any reader.
-    Pre-fix, both ``routes.inference._preflight_pdf_page_count`` and
-    ``core.chat.document_extractor._extract_pdf`` returned HTTP 422
-    "Encrypted PDFs are not supported" because they checked
-    ``is_encrypted`` rather than ``needs_pass``. After the fix the
-    file is accepted and its text is extracted.
+Pinned regression: both paths checked ``is_encrypted`` instead of
+``needs_pass`` and 422'd files that open without a password prompt.
 """
 
 from __future__ import annotations
@@ -31,8 +21,7 @@ if str(_BACKEND) not in sys.path:
 
 
 def _make_pseudo_encrypted_pdf() -> bytes:
-    """Mint a tiny PDF with an empty user password (mirrors what
-    Orimi's test file and many distiller pipelines produce)."""
+    """Mint a tiny PDF with an empty user password (Orimi-style)."""
     pymupdf = pytest.importorskip("pymupdf")
     doc = pymupdf.open()
     page = doc.new_page()
@@ -51,8 +40,7 @@ def _make_pseudo_encrypted_pdf() -> bytes:
 
 
 def test_extract_pdf_accepts_null_password(monkeypatch):
-    """The extractor must not raise DocumentExtractionEncrypted for a
-    PDF whose user password is the empty string. PyMuPDF's
+    """No DocumentExtractionEncrypted for an empty-password PDF. PyMuPDF's
     ``needs_pass`` is the canonical signal; ``is_encrypted`` is too
     aggressive."""
     from core.chat import document_extractor as mod
@@ -72,9 +60,7 @@ def test_extract_pdf_accepts_null_password(monkeypatch):
 
 
 def test_preflight_pdf_page_count_accepts_null_password():
-    """The pre-extraction preflight at
-    ``routes.inference._preflight_pdf_page_count`` must accept
-    null-password PDFs."""
+    """_preflight_pdf_page_count must accept null-password PDFs."""
     from routes.inference import _preflight_pdf_page_count
 
     file_bytes = _make_pseudo_encrypted_pdf()
@@ -87,8 +73,7 @@ def test_preflight_pdf_page_count_accepts_null_password():
 
 
 def test_extract_pdf_still_rejects_password_required(monkeypatch):
-    """Sanity-check the other direction: a PDF that actually requires
-    a non-empty user password must still raise
+    """A PDF that truly requires a password must still raise
     DocumentExtractionEncrypted."""
     pymupdf = pytest.importorskip("pymupdf")
     doc = pymupdf.open()

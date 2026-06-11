@@ -263,8 +263,8 @@ class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
 
     const retryCount = documentExtractionRetryCount(file);
 
-    // Yield initial running state. The NDJSON endpoint reports server-side
-    // parse/caption progress, not browser upload progress.
+    // Initial running state; NDJSON reports server-side parse/caption
+    // progress, not browser upload progress.
     const initial0: DocumentPendingAttachment = {
       ...base,
       retryCount,
@@ -277,9 +277,8 @@ class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
 
     let lastProgress = 0;
 
-    // Drive progress through stream events: parsing → 0.10, captioning
-    // → 0.20–1.00 mapped from `current/total`. Older "upload progress"
-    // is no longer reported (the endpoint now streams NDJSON).
+    // Progress from stream events: parsing -> 0.10, captioning -> 0.20-1.00
+    // from current/total. Upload progress is no longer reported.
     type ProgressResolver = { resolve: (v: number) => void };
     const progressQueue: number[] = [];
     let progressResolver: ProgressResolver | null = null;

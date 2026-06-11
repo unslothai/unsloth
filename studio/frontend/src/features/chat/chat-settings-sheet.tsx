@@ -2082,9 +2082,8 @@ function DocumentExtractionSection() {
   ]);
 
   function applyMode(mode: DocExtractMode) {
-    // OCR selection grants vision capability for the extraction window, so
-    // describe-images and visual-payload defaults should match the
-    // "VLM available" branch even if no VLM is loaded right now.
+    // An OCR selection grants vision capability at extract time, so defaults
+    // match the "VLM available" branch even with no VLM loaded.
     setDocExtract(getDocExtractModePreset(mode, visionReadyForExtraction));
   }
 

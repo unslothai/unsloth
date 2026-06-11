@@ -1047,12 +1047,10 @@ export function SharedComposer({
           next.push({ id: crypto.randomUUID(), file });
           continue;
         }
-        // Handle document files (PDF / DOCX / MD / HTML)
         if (isDocumentFile(file)) {
           void uploadDocument(file);
           continue;
         }
-        // Unsupported file type
         toast.error(`Unsupported file type: ${file.type || file.name}`);
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
@@ -1088,7 +1086,6 @@ export function SharedComposer({
   }
 
   const removePendingDoc = useCallback((id: string) => {
-    // Abort any in-flight extraction for this doc
     const runner = docRunnersRef.current.get(id);
     if (runner) {
       runner.abort();

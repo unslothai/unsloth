@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Chat-surface helpers that do not belong in ``core/inference`` (tightly
-coupled to model backends) and explicitly not in ``core/data_recipe``
-(owns dataset pipelines).
+"""Chat-surface helpers (not core/inference or core/data_recipe).
 
-Exposes the document-extraction pipeline used when a user drops a
-PDF / DOCX / HTML / MD / TXT file into the chat composer. PDF parsing
-uses PyMuPDF4LLM, DOCX uses mammoth. PPTX is not supported here —
-convert to PDF first.
+Exposes the document-extraction pipeline for files dropped into the chat
+composer: PDF via PyMuPDF4LLM, DOCX via mammoth; PPTX unsupported.
 """
 
 from __future__ import annotations

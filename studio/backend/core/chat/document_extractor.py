@@ -1,31 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Document extractor for the Chat composer.
+"""Document extractor for the Chat composer.
 
-Given raw file bytes (PDF / DOCX / HTML / MD / TXT), produce Markdown
-suitable to splice into an outgoing chat message. When a vision-capable
-model is loaded, selected figures are captioned through our OpenAI-compatible
-``/v1/chat/completions`` surface after conversion.
+Converts raw file bytes (PDF via pymupdf4llm, DOCX via mammoth, HTML to
+Markdown, text/MD as UTF-8 with replacement) into Markdown to splice into an
+outgoing chat message. With a vision-capable model loaded, selected figures
+are captioned through the OpenAI-compat ``/v1/chat/completions`` surface.
 
-This build uses **PyMuPDF4LLM** (via ``pymupdf4llm`` / ``pymupdf``) for PDF
-parsing and **mammoth** for DOCX conversion. Plain-text and Markdown inputs
-are decoded as UTF-8 with replacement; HTML inputs are converted to Markdown.
-
-Notes and limitations:
-
-* **OCR is disabled.** There is no local OCR pass in this build, so scanned
-  PDFs without a text layer will yield empty or near-empty Markdown. The
-  ``use_vlm_ocr`` flag is still accepted for API compatibility; when set it
-  renders bounded page images so a loaded vision model can describe them.
-* **PPTX is not supported** in this build. ``SUPPORTED_SUFFIXES`` and
-  ``SUPPORTED_MIME_TYPES`` no longer advertise the PowerPoint types.
-* Parser dependencies are checked per format so plain-text, Markdown, and HTML
-  still work when optional PDF or DOCX libraries are missing.
-* If the loaded model is not vision-capable, image description is silently
-  skipped and ``figures`` comes back with captions set to ``None``;
-  ``describe_skipped_reason`` carries the diagnostic text.
+No local OCR: scanned PDFs without a text layer yield near-empty Markdown;
+``use_vlm_ocr`` instead renders bounded page images for VLM captioning. PPTX
+is not advertised. Parser deps are checked per format, and without a vision
+model captions are ``None`` with ``describe_skipped_reason`` set.
 """
 
 from __future__ import annotations
@@ -134,10 +120,8 @@ _LOCAL_VLM_CAPTION_CONCURRENCY = 1
 _DEFAULT_VLM_CAPTION_CONCURRENCY = 3
 _EXTRACT_CONCURRENCY = max(1, int(os.environ.get("UNSLOTH_STUDIO_EXTRACT_CONCURRENCY", "2")))
 _EXTRACT_SEMAPHORE = threading.BoundedSemaphore(_EXTRACT_CONCURRENCY)
-# Bounded queue wait: callers park here for a slot instead of failing fast
-# with 503 when the worker pool is saturated. Tuned so a fast burst (e.g.
-# multi-select 4 PDFs) drains naturally without surfacing busy errors,
-# while truly stuck workers still time out via _EXTRACT_TIMEOUT_SECONDS.
+# Callers park here for a slot instead of failing fast with 503; bursts drain
+# naturally while stuck workers still hit _EXTRACT_TIMEOUT_SECONDS.
 _EXTRACT_QUEUE_WAIT_SECONDS = max(
     0.0,
     float(os.environ.get("UNSLOTH_STUDIO_EXTRACT_QUEUE_WAIT", "60")),
@@ -174,10 +158,7 @@ def _normalized_suffix(filename: str, content_type: str = "") -> str:
 
 
 class DocumentExtractionUnavailable(RuntimeError):
-    """Document extraction backend is not installed or failed to import.
-
-    The backend is PyMuPDF4LLM + mammoth for parsed document formats.
-    """
+    """Extraction backend (PyMuPDF4LLM + mammoth) missing or failed to import."""
 
 
 class DocumentExtractionTimeout(RuntimeError):
@@ -214,9 +195,8 @@ except Exception as _docx_extract_exc:  # pragma: no cover
 else:
     _DOCX_EXTRACTION_IMPORT_ERROR = None
 
-# The dispatcher can still extract plain text / code / data files when PDF or
-# DOCX optional parsers are missing. Format-specific helpers raise
-# DocumentExtractionUnavailable only when that format is actually requested.
+# Plain text / code / data formats still work when PDF/DOCX parsers are
+# missing; helpers raise DocumentExtractionUnavailable only when requested.
 DOCUMENT_EXTRACTION_AVAILABLE = True
 _DOCUMENT_EXTRACTION_IMPORT_ERROR: Optional[BaseException] = (
     _PDF_EXTRACTION_IMPORT_ERROR or _DOCX_EXTRACTION_IMPORT_ERROR
@@ -380,18 +360,15 @@ async def _describe_image_via_vlm(
         message = choice.get("message") or {}
         finish_reason = choice.get("finish_reason")
 
-        # Some chat templates (Gemma 3/3n via llama-server, Qwen3 always-think)
-        # route the entire visible reply into ``reasoning_content`` and leave
-        # ``content`` empty.  The chat UI handles this in its streaming
-        # consumer (see ``llama_cpp._chat_completion``); mirror that fallback
-        # here so non-streaming callers see the same answer.
+        # Some templates (Gemma 3/3n GGUF, Qwen3 always-think) put the whole
+        # reply in reasoning_content and leave content empty; mirror the chat
+        # UI streaming fallback (llama_cpp._chat_completion) here.
         candidates: list[Any] = [
             message.get("content"),
             message.get("reasoning_content"),
             message.get("text"),
         ]
-        # Some servers return content as a list of parts (OpenAI multimodal);
-        # join any text parts into one string before checking emptiness.
+        # Content may be OpenAI multimodal parts; join text before the check.
         normalized: list[str] = []
         for raw in candidates:
             if isinstance(raw, str):
@@ -414,8 +391,7 @@ async def _describe_image_via_vlm(
                 list(message.keys()),
             )
             return None, (f"VLM caption empty (finish_reason={finish_reason!r})")
-        # Prefer the first non-empty candidate
-        # (content > reasoning_content > text).
+        # First non-empty of content > reasoning_content > text.
         return normalized[0], None
     except Exception as exc:
         logger.debug("VLM caption request failed", exc_info = True)
@@ -425,12 +401,10 @@ async def _describe_image_via_vlm(
 def _build_extract_options(
     *, extract_images: bool, use_vlm_ocr: bool, max_visual_payloads: int
 ) -> tuple[dict, list[str]]:
-    """Return ``(options, build_warnings)``.
+    """Return ``(options, build_warnings)`` for the sync extract dispatcher.
 
-    The options dict is a simple bag of flags consumed by the synchronous
-    extract dispatcher. There is no local OCR pass available in this build;
-    ``use_vlm_ocr=True`` is implemented as a bounded full-page visual
-    extraction fallback for VLM captioning.
+    No local OCR in this build; ``use_vlm_ocr=True`` becomes a bounded
+    full-page visual extraction fallback for VLM captioning.
     """
     build_warnings: list[str] = []
     if use_vlm_ocr:
@@ -545,20 +519,15 @@ def _append_page_image_figure(
 def _extract_pdf(
     file_bytes: bytes, max_figures: int, use_vlm_ocr: bool, max_visual_payloads: int
 ) -> tuple[str, list[ExtractedFigure], int, int, int]:
-    """Extract Markdown + figures from a PDF via PyMuPDF4LLM.
-
-    Returns ``(markdown, figures, page_count, truncated_count, seen)``.
-    """
+    """PDF -> ``(markdown, figures, page_count, truncated_count, seen)`` via PyMuPDF4LLM."""
     _ensure_pdf_backend()
     assert pymupdf is not None and pymupdf4llm is not None  # for type-checkers
 
     doc = pymupdf.open(stream = file_bytes, filetype = "pdf")
     try:
-        # ``is_encrypted`` is True for any file with an /Encrypt dict
-        # (very common for Acrobat-distilled PDFs, scanner output, the
-        # classic Orimi test file). ``needs_pass`` is the real "user
-        # password required" signal. Refuse extraction only when an
-        # actual password is missing.
+        # is_encrypted flags any /Encrypt dict (Acrobat-distilled PDFs, scanner
+        # output, the Orimi test file); needs_pass is the real password signal.
+        # Refuse only when a password is required.
         if getattr(doc, "needs_pass", False):
             raise DocumentExtractionEncrypted(
                 "Encrypted PDF; provide a password before extracting it."
@@ -718,10 +687,7 @@ def _run_extract_sync(
     options: dict,
     content_type: str = "",
 ) -> tuple[str, list[ExtractedFigure], int, int, int]:
-    """Synchronous dispatch by file suffix.
-
-    Returns ``(markdown, figures, page_count, truncated_count, seen)``.
-    """
+    """Sync dispatch by suffix -> ``(markdown, figures, page_count, truncated_count, seen)``."""
     suffix = _normalized_suffix(filename, content_type)
     extract_images = bool(options.get("extract_images"))
     use_vlm_ocr = bool(options.get("use_vlm_ocr"))
@@ -758,16 +724,14 @@ def _run_extract_worker(
 
 
 def _drain_future_exception(fut: Any) -> None:
-    """Retrieve a future's exception (if any) so asyncio's gc-time
-    "Future exception was never retrieved" warning stays quiet when the
-    awaiting task is cancelled mid-flight (e.g. client disconnect or
-    AbortController abort)."""
+    """Retrieve a future's exception so asyncio's "Future exception was never
+    retrieved" warning stays quiet when the awaiting task is cancelled."""
     try:
         if fut.cancelled():
             return
         fut.exception()
     except BaseException:
-        # Never let a drain hook itself raise — best effort only.
+        # Best effort only; a drain hook must never raise.
         pass
 
 
@@ -791,9 +755,8 @@ def _run_extract_process_sync(
 ) -> tuple[str, list[ExtractedFigure], int, int, int]:
     if cancel_event is not None and cancel_event.is_set():
         raise DocumentExtractionCancelled("document extraction was cancelled")
-    # Park up to _EXTRACT_QUEUE_WAIT_SECONDS waiting for a slot, polling
-    # cancel_event so a client disconnect during the wait short-circuits
-    # cleanly instead of holding the request open.
+    # Park up to _EXTRACT_QUEUE_WAIT_SECONDS for a slot, polling cancel_event
+    # so a client disconnect short-circuits instead of holding the request.
     deadline = time.monotonic() + _EXTRACT_QUEUE_WAIT_SECONDS
     acquired = _EXTRACT_SEMAPHORE.acquire(blocking = False)
     while True:
@@ -811,18 +774,14 @@ def _run_extract_process_sync(
     if not acquired:
         raise DocumentExtractionBusy("document extraction is busy")
 
-    # Everything past the semaphore acquisition must live inside the
-    # try/finally so the slot is released even if multiprocessing
-    # context creation / Queue allocation / Process construction
-    # itself raises (e.g. OSError on fork-resource exhaustion, EAGAIN
-    # on Windows under load).
+    # Everything past the acquire lives in this try/finally so the slot is
+    # released even if mp context / Queue / Process construction raises
+    # (fork-resource exhaustion, Windows EAGAIN).
     result_queue = None
     proc = None
     try:
-        # Prefer "fork" only on Linux. macOS defaults to "spawn" in
-        # modern Python because Objective-C runtimes (loaded by
-        # PyMuPDF/CoreFoundation/Quartz) crash under fork. Windows has
-        # never supported fork.
+        # fork only on Linux: ObjC runtimes (PyMuPDF/Quartz) crash under fork
+        # on macOS, and Windows has no fork.
         import sys as _sys
 
         if os.name == "nt" or _sys.platform == "darwin":
@@ -856,10 +815,9 @@ def _run_extract_process_sync(
                     _terminate_extract_process(proc)
                     raise DocumentExtractionCancelled("document extraction was cancelled")
                 if not proc.is_alive():
-                    # The worker may have put its result and exited
-                    # between the queue.get timeout and this is_alive
-                    # check. Drain the queue once more before declaring
-                    # failure so a successful extraction is not lost.
+                    # Worker may have queued its result and exited between the
+                    # get timeout and is_alive; drain once more so a success is
+                    # not lost.
                     try:
                         message = result_queue.get_nowait()
                     except queue.Empty:
@@ -876,9 +834,8 @@ def _run_extract_process_sync(
             proc.terminate()
             proc.join(2)
         if message is None:
-            # One more attempt after the join completes; covers the
-            # case where the worker exited cleanly with a result still
-            # queued.
+            # Post-join drain: the worker may have exited cleanly with a
+            # result still queued.
             try:
                 message = result_queue.get_nowait()
             except queue.Empty:
@@ -979,10 +936,8 @@ async def extract_document(
 
     try:
         if _run_extract_sync is _RUN_EXTRACT_SYNC_ORIGINAL:
-            # Drive run_in_executor directly (rather than asyncio.to_thread)
-            # so we can attach a done-callback that retrieves the future's
-            # exception even when the awaiting task is cancelled — silences
-            # "Future exception was never retrieved" noise on busy/cancel.
+            # run_in_executor (not asyncio.to_thread) so a done-callback can
+            # retrieve the exception even if the awaiting task is cancelled.
             loop = asyncio.get_running_loop()
             extract_future = loop.run_in_executor(
                 None,
@@ -1003,8 +958,8 @@ async def extract_document(
                 seen,
             ) = await extract_future
         else:
-            # Tests monkeypatch _run_extract_sync directly; preserve that seam
-            # without forcing patched callables through multiprocessing spawn.
+            # Tests monkeypatch _run_extract_sync; keep patched callables out
+            # of multiprocessing spawn.
             loop = asyncio.get_running_loop()
             (
                 markdown,
@@ -1036,7 +991,7 @@ async def extract_document(
     except DocumentExtractionUnavailable:
         raise
     except ValueError:
-        # Unsupported file type — surface unchanged so the route can map to 415.
+        # Surface unchanged so the route maps it to 415.
         raise
     except Exception as exc:
         logger.exception("document extraction failed for %s", filename)

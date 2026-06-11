@@ -92,10 +92,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/**
- * Check whether a model is a vision model by asking the backend.
- * Calls POST /api/models/check-vision so HF tokens never enter URLs.
- */
+/** Check vision capability via POST /api/models/check-vision so HF tokens never enter URLs. */
 export async function checkVisionModel(
   modelName: string,
   hfToken?: string,

@@ -6020,10 +6020,9 @@ _llama_cpp_backend: Optional[LlamaCppBackend] = None
 def get_llama_cpp_backend() -> LlamaCppBackend:
     """Return the process-wide GGUF llama-server backend.
 
-    Keep the singleton in ``core.inference`` so core helpers such as
-    ``core.chat.detect_loaded_vlm`` do not need to import route modules.
-    The instance is lazy to avoid subprocess cleanup side effects for
-    callers that only import model helpers.
+    Lives in core.inference so core helpers (core.chat.detect_loaded_vlm)
+    need no route imports; lazy so model-helper imports get no subprocess
+    cleanup side effects.
     """
     global _llama_cpp_backend
     if _llama_cpp_backend is None:

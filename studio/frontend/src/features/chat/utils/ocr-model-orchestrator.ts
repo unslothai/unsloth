@@ -86,20 +86,12 @@ function clearStaleOcrErrorPhase(): void {
 /**
  * Run `args.run()` against the OCR model selected in `args.settings`.
  *
- * Lifecycle, in order:
- *   1. Resolve the target — if the user picked "default"/"none" or extraction
- *      is disabled, run the inner function directly with no model swap.
- *   2. Validate the OCR model. If validation fails (or trust_remote_code is
- *      required and the user has it disabled), reject before unloading.
- *   3. If a chat model is loaded and not already the OCR target, unload it.
- *   4. Load the OCR model.
- *   5. Run the inner function (extraction).
- *   6. In `finally`, restore the snapshot — but never overwrite a manual
- *      mid-run model swap. Reconcile the store from `getInferenceStatus()`
- *      if the active model changed.
- *
- * Concurrent calls are serialized through a module-level promise queue so
- * two simultaneous uploads never fight over the global active model.
+ * Lifecycle: resolve target ("default"/"none"/disabled -> run directly);
+ * validate the OCR model before unloading anything; unload the chat model;
+ * load the OCR model; run; then in `finally` restore the snapshot without
+ * ever overwriting a manual mid-run swap (reconcile from
+ * getInferenceStatus() if the active model changed). Concurrent calls are
+ * serialized through a module-level promise queue.
  */
 export async function runWithTemporaryOcrModel<T>(
   args: RunWithTemporaryOcrModelArgs<T>,
@@ -488,9 +480,8 @@ async function runUnlocked<T>({
   signal,
   run,
 }: RunWithTemporaryOcrModelArgs<T>): Promise<T> {
-  // A previous run may have left ocrPhase="error" on its way out. Clear it
-  // here so the UI banner from that earlier failure doesn't bleed into the
-  // start of this run.
+  // Clear a leftover ocrPhase="error" so an earlier failure's banner does
+  // not bleed into this run.
   if (useChatRuntimeStore.getState().ocrPhase === "error") {
     setOcrPhase("idle");
   }
@@ -574,11 +565,9 @@ async function runUnlocked<T>({
       }
       applyLoadedModelToStore(target.modelId, target.ggufVariant, loaded);
       invalidateDocumentSupportCache();
-      // Bounded probe: wait until the server-side document-support endpoint
-      // reports the OCR model as the active VLM, so any UI consumer that
-      // re-reads support during extraction sees the up-to-date capability.
-      // Times out silently — extraction itself uses runtime detect_loaded_vlm()
-      // and is unaffected by stale cache.
+      // Bounded probe until document-support reports the OCR model as the
+      // active VLM, so UI consumers see fresh capability. Times out silently;
+      // extraction uses runtime detect_loaded_vlm() regardless.
       await waitForDocumentSupportVision(ocrIdentity, signal);
       didSwap = true;
     }
@@ -767,17 +756,13 @@ async function restoreSnapshotOrReconcile(
   }
 }
 
-// UI-accuracy poll only; extract correctness uses runtime detect_loaded_vlm()
-// regardless. Capped low because this runs inside the orchestrator queue —
-// every extra second blocks subsequent uploads from starting.
+// UI-accuracy poll only (extract uses detect_loaded_vlm()). Capped low:
+// it runs inside the orchestrator queue and delays subsequent uploads.
 const VISION_PROBE_MAX_MS = 2000;
 const VISION_PROBE_INTERVAL_MS = 500;
 
-/**
- * Maps a failed OCR phase to a user-facing toast title + description so the
- * surface error message reflects which step actually broke (validation vs
- * unload vs load vs restore).
- */
+/** Map a failed OCR phase to a toast title + description reflecting which
+ * step broke (validation vs unload vs load vs restore). */
 function describeFailure(
   phase: OcrPhase,
   target: OcrModelTarget,
@@ -818,13 +803,10 @@ function describeFailure(
 }
 
 /**
- * Re-attempt loading the snapshot's chat model. Bound to the failed
- * orchestrator run's snapshot so the user can recover from a restore failure
- * via the toast action without re-running the divergence checks (which would
- * trip on the user's previous chat model still being absent server-side).
- *
- * The leading equality check short-circuits if a subsequent run already
- * restored the model.
+ * Re-attempt loading the snapshot's chat model from the failure toast,
+ * skipping the divergence checks (they would trip on the chat model still
+ * being absent server-side). The leading equality check short-circuits if a
+ * later run already restored it.
  */
 function enqueueRestoreRetry(snapshot: ChatModelSnapshot): Promise<void> {
   const restored = queue.then(
@@ -871,11 +853,9 @@ async function retryRestoreSnapshot(
 }
 
 /**
- * Bounded poll on the document-support endpoint after an OCR model load,
- * waiting until the server reports a vision-capable model. Bypasses the
- * 30 s `documentSupportCache` so UI consumers don't briefly observe the
- * pre-OCR vision state. Times out silently — the extract route uses runtime
- * `detect_loaded_vlm()` so correctness is unaffected.
+ * Bounded post-load poll until document-support reports a vision-capable
+ * model, bypassing the 30 s cache so the UI never shows the pre-OCR state.
+ * Times out silently; the extract route uses detect_loaded_vlm().
  */
 async function waitForDocumentSupportVision(
   expected: OcrIdentity,

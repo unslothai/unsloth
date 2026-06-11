@@ -140,10 +140,7 @@ export type DocumentExtractionErrorCode =
   | "extraction_failed"
   | "aborted";
 
-/**
- * Client-side representation of a document the user has attached to the
- * composer but not yet sent.
- */
+/** A document attached to the composer but not yet sent. */
 export interface PendingDocumentAttachment {
   id: string;
   filename: string;
@@ -155,9 +152,8 @@ export interface PendingDocumentAttachment {
 }
 
 /**
- * Discriminated attachment type for documents, extending assistant-ui's
- * PendingAttachment with document-specific fields. Replaces untyped
- * `as PendingAttachment` casts at the assistant-ui boundary.
+ * Document attachment extending assistant-ui's PendingAttachment with
+ * document fields. Replaces untyped `as PendingAttachment` casts at the assistant-ui boundary.
  */
 export interface DocumentPendingAttachment extends PendingAttachment {
   type: "document";
@@ -172,30 +168,20 @@ export interface DocumentPendingAttachment extends PendingAttachment {
   retryCount?: number;
 }
 
-/**
- * A DocumentPendingAttachment that has completed extraction and is ready
- * to be sent.
- */
+/** A DocumentPendingAttachment with extraction complete, ready to send. */
 export type DocumentCompleteAttachment = DocumentPendingAttachment & {
   status: { type: "complete" };
 };
 
-/**
- * Runtime type guard — narrows any assistant-ui attachment to
- * DocumentPendingAttachment. Use this instead of `as` casts.
- */
+/** Narrows an assistant-ui attachment to DocumentPendingAttachment. */
 export function isDocumentAttachment(
   a: PendingAttachment | CompleteAttachment,
 ): a is DocumentPendingAttachment {
   return a.type === "document";
 }
 
-/**
- * Thrown when `send()` encounters a document attachment whose extracted
- * content has been lost (e.g. the File reference was not preserved). The
- * caller should mark the attachment incomplete and prompt the user to
- * re-attach.
- */
+/** Thrown when `send()` finds a document attachment whose extracted content
+ * was lost; the caller marks it incomplete and prompts a re-attach. */
 export class DocumentExtractionLostError extends Error {
   constructor() {
     super("Document extraction content is missing; re-attach the file.");

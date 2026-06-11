@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for the chat document extractor + VLM capability probe.
+"""Tests for the chat document extractor + VLM capability probe.
 
-Probe tests run regardless of the extraction backend because they only
-shape-check :mod:`core.chat.vlm_capability`. Backend-backed tests skip
-cleanly when the optional deps (pymupdf / pymupdf4llm / mammoth) are
-missing.
+Probe tests only shape-check core.chat.vlm_capability; backend-backed tests
+skip when the optional deps (pymupdf / pymupdf4llm / mammoth) are missing.
 """
 
 from __future__ import annotations

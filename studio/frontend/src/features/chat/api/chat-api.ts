@@ -791,17 +791,11 @@ export type ExtractDocumentProgressEvent =
     };
 
 /**
- * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive
- * layout-aware Markdown plus optional figure captions produced by the
- * currently-loaded vision model. A 501 from the backend means the
- * extraction extras are not installed server-side.
- *
- * The endpoint streams NDJSON: zero or more `{stage, ...}` progress
- * events followed by a final `{stage:"result", data}` or
- * `{stage:"error", status_code, detail}` line. Pass `onProgress` to
- * receive intermediate events (e.g. captioning progress). Pass an
- * `AbortSignal` to cancel; abortion rejects with
- * `DOMException("Aborted", "AbortError")`.
+ * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive layout-aware
+ * Markdown plus optional vision-model figure captions; 501 means the
+ * extraction extras are not installed server-side. Streams NDJSON progress
+ * events (`onProgress`) before a final `result`/`error` line; an aborted
+ * `AbortSignal` rejects with an "AbortError" DOMException.
  */
 export function extractDocument(
   file: File,
@@ -958,9 +952,8 @@ export function extractDocument(
 }
 
 /**
- * Probe the server for document-extraction support and the currently
- * loaded model's vision capability. Polled by the Chat settings card
- * to drive the "describe figures" toggle state + tooltip.
+ * Probe server document-extraction support and the loaded model's vision
+ * capability; polled by Chat settings to drive the "describe figures" toggle.
  */
 export async function getDocumentSupport(
   signal?: AbortSignal,
