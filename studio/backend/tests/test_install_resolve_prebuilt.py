@@ -153,9 +153,7 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
 def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
     # fork so a HIP source build is not offered an upstream CPU prebuilt.
-    monkeypatch.setattr(
-        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True)
-    )
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
     monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
     seen = {}
 

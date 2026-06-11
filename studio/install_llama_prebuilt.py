@@ -3054,7 +3054,9 @@ def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool =
     even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
     if host.is_macos:
         return DEFAULT_PUBLISHED_REPO
-    has_gpu = host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
+    has_gpu = (
+        host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
+    )
     return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
 
 
