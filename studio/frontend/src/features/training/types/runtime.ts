@@ -24,8 +24,8 @@ export interface TrainingStatusResponse {
     epoch?: number;
     step?: number;
     total_steps?: number;
-    loss?: number;
-    learning_rate?: number;
+    loss?: number | null;
+    learning_rate?: number | null;
     output_dir?: string;
   } | null;
   metric_history?: {
@@ -90,7 +90,8 @@ export interface TrainingRuntimeState {
   currentStep: number;
   totalSteps: number;
   currentEpoch: number;
-  currentLoss: number;
+  // null means the latest step reported a non-finite (NaN/Inf) loss
+  currentLoss: number | null;
   currentLearningRate: number;
   progressPercent: number;
   elapsedSeconds: number | null;

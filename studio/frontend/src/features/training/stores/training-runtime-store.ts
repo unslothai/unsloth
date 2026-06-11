@@ -212,8 +212,13 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailTotal === "number"
             ? Math.max(detailTotal, 0)
             : state.totalSteps,
+        // Explicit null means a non-finite loss step; do not keep the stale value
         currentLoss:
-          typeof detailLoss === "number" ? detailLoss : state.currentLoss,
+          detailLoss === null
+            ? null
+            : typeof detailLoss === "number"
+              ? detailLoss
+              : state.currentLoss,
         currentLearningRate:
           typeof detailLr === "number" ? detailLr : state.currentLearningRate,
         currentEpoch:
@@ -251,9 +256,11 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
             ? Math.max(latestStep, state.currentStep)
             : state.currentStep,
         currentLoss:
-          typeof payload.current_loss === "number"
-            ? payload.current_loss
-            : state.currentLoss,
+          payload.current_loss === null
+            ? null
+            : typeof payload.current_loss === "number"
+              ? payload.current_loss
+              : state.currentLoss,
         currentLearningRate:
           typeof payload.current_lr === "number"
             ? payload.current_lr
@@ -274,7 +281,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         jobId: payload.job_id || state.jobId,
         currentStep: step,
         totalSteps: Math.max(payload.total_steps, state.totalSteps),
-        currentLoss: currentLoss ?? state.currentLoss,
+        currentLoss: payload.loss === null ? null : (currentLoss ?? state.currentLoss),
         currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,
         currentEpoch: payload.epoch ?? state.currentEpoch,

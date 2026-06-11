@@ -528,10 +528,17 @@ async def get_training_metrics(
         grad_norm_history = getattr(backend, "grad_norm_history", [])
         grad_norm_step_history = getattr(backend, "grad_norm_step_history", [])
 
-        # Get current values
-        current_loss = loss_history[-1] if loss_history else None
-        current_lr = lr_history[-1] if lr_history else None
-        current_step = step_history[-1] if step_history else None
+        # Current values come from live progress: histories are finite-only
+        # and would replay the last finite loss after a NaN/Inf step
+        progress = getattr(backend, "_progress", None)
+        if progress is not None and getattr(progress, "step", 0) > 0:
+            current_loss = progress.loss
+            current_lr = progress.learning_rate
+            current_step = progress.step
+        else:
+            current_loss = loss_history[-1] if loss_history else None
+            current_lr = lr_history[-1] if lr_history else None
+            current_step = step_history[-1] if step_history else None
 
         return TrainingMetricsResponse(
             loss_history = loss_history,
@@ -642,6 +649,25 @@ async def stream_training_progress(
             lines.append("")  # double newline terminates the event
             return "\n".join(lines)
 
+        def current_progress_values(fallback_step: int):
+            """Current sample from live progress. Histories are finite-only,
+            so they would replay the last finite loss during NaN/Inf steps."""
+            tp = getattr(backend, "_progress", None)
+            if tp is not None and getattr(tp, "step", 0) > 0:
+                total = tp.total_steps or tp.step
+                return tp.step, tp.loss, tp.learning_rate, total, tp.epoch, tp
+            if backend.step_history:
+                step = backend.step_history[-1]
+                return (
+                    step,
+                    backend.loss_history[-1] if backend.loss_history else None,
+                    backend.lr_history[-1] if backend.lr_history else None,
+                    step,
+                    None,
+                    tp,
+                )
+            return fallback_step, None, None, 0, None, tp
+
         # ── Retry directive ──────────────────────────────────────
         # Tell the browser to reconnect after 3 seconds if the connection drops
         yield "retry: 3000\n\n"
@@ -714,23 +740,22 @@ async def stream_training_progress(
 
             # If not active, send final state and exit
             if not is_active:
-                if backend.step_history:
-                    final_step = backend.step_history[-1]
-                    final_loss = (
-                        backend.loss_history[-1] if backend.loss_history else None
-                    )
-                    final_lr = backend.lr_history[-1] if backend.lr_history else None
-                    final_total_steps = (
-                        getattr(tp, "total_steps", final_step) if tp else final_step
-                    )
-                    final_epoch = getattr(tp, "epoch", None) if tp else None
+                (
+                    final_step,
+                    final_loss,
+                    final_lr,
+                    final_total_steps,
+                    final_epoch,
+                    tp_final,
+                ) = current_progress_values(-1)
+                if final_step > 0:
                     payload = build_progress(
                         final_step,
                         final_loss,
                         final_lr,
                         final_total_steps,
                         final_epoch,
-                        progress = tp,
+                        progress = tp_final,
                     )
                     yield format_sse(
                         payload.model_dump_json(), event = "complete", event_id = final_step
@@ -754,24 +779,15 @@ async def stream_training_progress(
 
         while backend.is_training_active():
             try:
-                if backend.step_history:
-                    current_step = backend.step_history[-1]
-                    current_loss = (
-                        backend.loss_history[-1] if backend.loss_history else None
-                    )
-                    current_lr = backend.lr_history[-1] if backend.lr_history else None
-                    tp_inner = getattr(
-                        getattr(backend, "trainer", None), "training_progress", None
-                    )
-                    current_total_steps = (
-                        getattr(tp_inner, "total_steps", current_step)
-                        if tp_inner
-                        else current_step
-                    )
-                    current_epoch = (
-                        getattr(tp_inner, "epoch", None) if tp_inner else None
-                    )
-
+                (
+                    current_step,
+                    current_loss,
+                    current_lr,
+                    current_total_steps,
+                    current_epoch,
+                    tp_inner,
+                ) = current_progress_values(0)
+                if current_step > 0:
                     # Only send if step changed
                     if current_step != last_step:
                         progress_payload = build_progress(
@@ -865,14 +881,14 @@ async def stream_training_progress(
                 break
 
         # ── Final "complete" event ───────────────────────────────
-        final_step = backend.step_history[-1] if backend.step_history else last_step
-        final_loss = backend.loss_history[-1] if backend.loss_history else None
-        final_lr = backend.lr_history[-1] if backend.lr_history else None
-        final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
-        final_total_steps = (
-            getattr(final_tp, "total_steps", final_step) if final_tp else final_step
-        )
-        final_epoch = getattr(final_tp, "epoch", None) if final_tp else None
+        (
+            final_step,
+            final_loss,
+            final_lr,
+            final_total_steps,
+            final_epoch,
+            final_tp,
+        ) = current_progress_values(last_step)
         final_payload = build_progress(
             final_step,
             final_loss,

@@ -3,11 +3,10 @@
 
 """Pin Studio's behavior when a training event reports non-finite (NaN/Inf) loss.
 
-The training event handler used to filter NaN/Inf to None silently while
-leaving the previous finite loss in progress.loss — so the API kept reporting
-the stale value as if everything were fine. We now drop the stale value:
-clients see loss=None at the affected step and a one-shot warning is logged.
-Training continues; the run is not marked failed.
+The event handler used to filter NaN/Inf to None silently while leaving the
+previous finite loss in progress.loss, so the API kept reporting the stale
+value. We now clear it: clients see loss=None at the affected step and a
+one-shot warning is logged. Training continues; the run is not marked failed.
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ class TestNonfiniteLossSoftHandling:
         assert b._progress.loss == pytest.approx(0.97)
         assert b._progress.error is None
         assert b._should_stop is False
-        assert getattr(b._progress, "_nonfinite_loss_warned", False) is False
+        assert b._nonfinite_loss_warned is False
 
     def test_nan_loss_clears_progress_loss(self):
         b = _make_backend()
@@ -60,7 +59,7 @@ class TestNonfiniteLossSoftHandling:
         assert b._progress.error is None
         assert b._should_stop is False
         # Warning flag is set so we don't re-log on every subsequent NaN step
-        assert b._progress._nonfinite_loss_warned is True
+        assert b._nonfinite_loss_warned is True
 
     def test_inf_loss_clears_progress_loss(self):
         b = _make_backend()
@@ -68,7 +67,7 @@ class TestNonfiniteLossSoftHandling:
         assert b._progress.loss is None
         assert b._progress.error is None
         assert b._should_stop is False
-        assert b._progress._nonfinite_loss_warned is True
+        assert b._nonfinite_loss_warned is True
 
     def test_negative_inf_loss_clears_progress_loss(self):
         b = _make_backend()
@@ -76,19 +75,37 @@ class TestNonfiniteLossSoftHandling:
         assert b._progress.loss is None
         assert b._progress.error is None
         assert b._should_stop is False
-        assert b._progress._nonfinite_loss_warned is True
+        assert b._nonfinite_loss_warned is True
 
-    def test_repeated_nan_only_warns_once(self):
-        """Subsequent NaN events must not re-fire the warning flag setter.
-        The flag should already be True after the first NaN."""
+    def test_repeated_nan_only_warns_once(self, monkeypatch):
+        """Only the first NaN logs a warning; later NaNs stay quiet."""
+        import core.training.training as training_module
+
+        warnings = []
+        monkeypatch.setattr(
+            training_module,
+            "logger",
+            type(
+                "LoggerStub",
+                (),
+                {
+                    "warning": lambda self, *a, **k: warnings.append(a),
+                    "info": lambda self, *a, **k: None,
+                    "debug": lambda self, *a, **k: None,
+                    "error": lambda self, *a, **k: None,
+                },
+            )(),
+        )
         b = _make_backend()
         b._handle_event(_progress_event(step=1, loss=0.97))
         b._handle_event(_progress_event(step=2, loss=float("nan")))
-        assert b._progress._nonfinite_loss_warned is True
-        # Further NaN steps don't change anything we care about
+        assert b._nonfinite_loss_warned is True
+        assert len(warnings) == 1
+        # Further NaN steps stay quiet
         b._handle_event(_progress_event(step=3, loss=float("nan")))
         b._handle_event(_progress_event(step=4, loss=float("nan")))
-        assert b._progress._nonfinite_loss_warned is True
+        assert len(warnings) == 1
+        assert b._nonfinite_loss_warned is True
         assert b._progress.loss is None
         assert b._progress.error is None
         assert b._should_stop is False
@@ -103,4 +120,4 @@ class TestNonfiniteLossSoftHandling:
         b._handle_event(_progress_event(step=3, loss=0.85))
         assert b._progress.loss == pytest.approx(0.85)
         # Warning flag stays set (we don't reset it on recovery)
-        assert b._progress._nonfinite_loss_warned is True
+        assert b._nonfinite_loss_warned is True
