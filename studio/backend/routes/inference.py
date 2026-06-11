@@ -1046,9 +1046,7 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
             # Detect the drafter first: a separate drafter (Gemma) exempts the
             # sub-3B drop, so the appeared/disappeared check must run for it too.
             detected = detect_mtp_file(llama_backend.gguf_path)
-            if not _auto_mode_drops_mtp(
-                req_mode, size_b, has_separate_drafter = bool(detected)
-            ):
+            if not _auto_mode_drops_mtp(req_mode, size_b, has_separate_drafter = bool(detected)):
                 stored = llama_backend.mtp_draft_path
                 try:
                     detected_resolved = Path(detected).resolve() if detected else None

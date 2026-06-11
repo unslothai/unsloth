@@ -1282,7 +1282,8 @@ def _resolve_real(monkeypatch, repo, drafter, mode):
 
 
 @pytest.mark.parametrize(
-    "repo, drafter, auto_spec, auto_ngram_knobs", _REAL_REPO_MATRIX,
+    "repo, drafter, auto_spec, auto_ngram_knobs",
+    _REAL_REPO_MATRIX,
     ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
 )
 def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngram_knobs):
@@ -1298,7 +1299,9 @@ def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngra
         assert parsed.get("--spec-draft-n-max") == "2"
         assert backend.speculative_type == "draft-mtp"
         # gemma ships a separate drafter; Qwen bakes the head into the GGUF.
-        assert (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
     else:  # ngram-mod (sub-3B MTP drop)
         assert parsed.get("--spec-type") == "ngram-mod"
         assert "--model-draft" not in parsed  # draft head dropped
@@ -1309,7 +1312,8 @@ def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngra
 
 
 @pytest.mark.parametrize(
-    "repo, drafter", [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
     ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
 )
 def test_real_repo_off_emits_nothing(monkeypatch, repo, drafter):
@@ -1321,7 +1325,8 @@ def test_real_repo_off_emits_nothing(monkeypatch, repo, drafter):
 
 
 @pytest.mark.parametrize(
-    "repo, drafter", [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
     ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
 )
 def test_real_repo_forced_mtp_never_aborts(monkeypatch, repo, drafter):
@@ -1333,7 +1338,9 @@ def test_real_repo_forced_mtp_never_aborts(monkeypatch, repo, drafter):
     if is_real_mtp:
         assert parsed.get("--spec-type") == "draft-mtp"
         assert backend.speculative_type == "draft-mtp"
-        assert (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
     else:
         assert "--spec-type" not in parsed
         assert "--spec-default" in flags

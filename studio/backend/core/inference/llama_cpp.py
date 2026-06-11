@@ -3820,9 +3820,7 @@ class LlamaCppBackend:
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
         _mtp_too_small = (
-            _mtp_size_b is not None
-            and _mtp_size_b < _MTP_MIN_SIZE_B
-            and not bool(mtp_draft_path)
+            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
 
         if user_owns_spec_type:
