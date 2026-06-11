@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { toast } from "@/lib/toast";
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactElement } from "react";
+import { type ReactElement, useEffect, useRef } from "react";
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -14,9 +14,9 @@ interface LlamaUpdateBannerProps {
 }
 
 /**
- * Non-invasive "Update llama.cpp" affordance. Appears bottom-right when a newer
- * prebuilt is available, fades on its own after ~10s, and re-surfaces hourly.
- * Clicking Update swaps the prebuilt in place via POST /api/llama/update.
+ * Non-invasive "Update llama.cpp" affordance. Appears bottom-right ~1s after a
+ * newer prebuilt is detected and stays up until dismissed (click outside / X)
+ * or updated. Clicking Update swaps the prebuilt in place via POST /api/llama/update.
  */
 export function LlamaUpdateBanner({
   enabled = true,
@@ -32,16 +32,38 @@ export function LlamaUpdateBanner({
         `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to use it.`,
       );
     } else if (result) {
-      toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
+      toast.error(
+        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
+      );
     }
   }
 
-  const show = visible && status != null && (status.update_available || applying);
+  const show =
+    visible && status != null && (status.update_available || applying);
+  const bannerRef = useRef<HTMLDivElement>(null);
+
+  // Dismiss when the user clicks anything outside the banner. Kept off while an
+  // update is applying so the progress stays visible.
+  useEffect(() => {
+    if (!show || applying) return;
+    function onPointerDown(event: PointerEvent) {
+      if (
+        bannerRef.current &&
+        !bannerRef.current.contains(event.target as Node)
+      ) {
+        dismiss();
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [show, applying, dismiss]);
 
   return (
     <AnimatePresence>
       {show ? (
         <motion.div
+          ref={bannerRef}
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -50,7 +72,7 @@ export function LlamaUpdateBanner({
           data-testid="llama-update-banner"
         >
           <div className="corner-squircle relative overflow-hidden border border-border/60 bg-background/95 px-4 py-3 shadow-lg backdrop-blur-md">
-            {!applying ? (
+            {applying ? null : (
               <button
                 type="button"
                 onClick={dismiss}
@@ -73,7 +95,7 @@ export function LlamaUpdateBanner({
                   />
                 </svg>
               </button>
-            ) : null}
+            )}
 
             <div className="flex items-center gap-2 pr-5">
               <span className="text-base" aria-hidden="true">

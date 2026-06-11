@@ -655,6 +655,100 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 # =====================================================================
+# Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
+# preserve_thinking must reach llama-server via chat_template_kwargs,
+# gated on template capabilities like the non-passthrough paths.
+# =====================================================================
+
+
+def _reasoning_backend(
+    supports_reasoning = True,
+    reasoning_style = "enable_thinking",
+    reasoning_always_on = False,
+    supports_preserve_thinking = False,
+):
+    """Bare LlamaCppBackend with just the reasoning capability flags set,
+    so _build_openai_passthrough_body exercises the real
+    _request_reasoning_kwargs gating."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._supports_reasoning = supports_reasoning
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_always_on = reasoning_always_on
+    backend._supports_preserve_thinking = supports_preserve_thinking
+    return backend
+
+
+class TestPassthroughReasoningKwargs:
+    def _payload(self, **fields):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            **fields,
+        )
+
+    def test_enable_thinking_forwarded(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(),
+        )
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_preserve_thinking_forwarded_when_template_supports_it(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = True, preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
+        )
+        assert body["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "preserve_thinking": True,
+        }
+
+    def test_preserve_thinking_dropped_when_template_lacks_it(self):
+        body = _build_openai_passthrough_body(
+            self._payload(preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = False),
+        )
+        assert "chat_template_kwargs" not in body
+
+    def test_reasoning_effort_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(reasoning_effort = "high"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
+
+    def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
+    def test_always_on_reasoning_skips_thinking_kwargs(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_always_on = True),
+        )
+        assert "chat_template_kwargs" not in body
+
+    def test_no_reasoning_fields_omits_chat_template_kwargs(self):
+        body = _build_openai_passthrough_body(
+            self._payload(),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
+        )
+        assert "chat_template_kwargs" not in body
+
+
+# =====================================================================
 # OpenAI API compatibility helpers — verified spec edge cases
 # =====================================================================
 
