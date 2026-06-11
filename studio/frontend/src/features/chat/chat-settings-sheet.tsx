@@ -1615,8 +1615,8 @@ function ConfirmToolCallsToggle() {
           Confirm tool calls
         </span>
         <InfoHint>
-          When on, every tool call pauses for your approval in the chat before
-          it runs.
+          When on, local Studio tool calls pause for your approval before they
+          run. Provider-hosted tools are not gated here.
         </InfoHint>
       </div>
       <Switch

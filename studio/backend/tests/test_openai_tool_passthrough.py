@@ -479,6 +479,7 @@ class TestChatCompletionRequestToolFields:
     def test_n_rejected_for_non_gguf_path(self, monkeypatch):
         class _NoGGUFBackend:
             is_loaded = False
+            supports_tools = False
 
         class _InferenceBackend:
             active_model_name = "test-model"
@@ -493,6 +494,45 @@ class TestChatCompletionRequestToolFields:
             },
         )
         self._assert_unsupported_n(resp)
+
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {"chat_template_info": {"template": "chatml"}}}
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                raise AssertionError("tool loop should be rejected before starting")
+
+            def generate_chat_completion(self, **kwargs):
+                raise AssertionError("plain path should not be used")
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda backend, chat_template: {"supports_tools": True},
+        )
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "requires stream=true" in body["error"]["message"]
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -1204,6 +1244,45 @@ class TestGgufVisionToolRouting:
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            raise AssertionError("tool loop should be rejected before starting")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            confirm_tool_calls = True,
+            stream = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+        assert exc.value.status_code == 400
+        assert "requires stream=true" in exc.value.detail["error"]["message"]
 
     def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
         import routes.inference as inf_mod

@@ -404,25 +404,28 @@ type ChatRuntimeStore = {
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
-   * When on, every tool call pauses for an explicit allow/deny in the
-   * chat before it runs.
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
    */
   confirmToolCalls: boolean;
   /**
-   * Per-session set of tool names the user chose to auto-approve via
-   * "Always allow". Keyed by thread/session id so allowing a tool in one
-   * chat does not silently auto-approve it in another. Not persisted
-   * across reloads.
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
    */
   alwaysAllowToolsBySession: Map<string, Set<string>>;
   /**
    * Tool calls currently paused awaiting the user's allow/deny decision,
    * keyed by the frontend tool-call id. Each entry carries the backend
    * ``approvalId`` to echo back and the ``sessionId`` the generation runs
-   * under, so the confirmation always resolves the exact pending call.
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
    * Only backend-gated local tool calls are added here.
    */
-  toolConfirmations: Record<string, { approvalId: string; sessionId: string }>;
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -505,6 +508,7 @@ type ChatRuntimeStore = {
     toolCallId: string,
     approvalId: string,
     sessionId: string,
+    autoAllowKey: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -1112,11 +1116,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId) =>
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

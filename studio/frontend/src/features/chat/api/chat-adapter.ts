@@ -1435,6 +1435,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -2597,6 +2600,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         id,
                         (toolEvent.approval_id as string) || "",
                         sandboxSessionId ?? "",
+                        toolConfirmationScopeId,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

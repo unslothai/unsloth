@@ -42,8 +42,10 @@ export function ToolConfirmationControls({
     (s) => s.clearToolConfirmation,
   );
   const sessionId = confirmation?.sessionId ?? "";
+  const autoAllowKey = confirmation?.autoAllowKey ?? "";
   const autoAllowed = useChatRuntimeStore(
-    (s) => s.alwaysAllowToolsBySession.get(sessionId)?.has(toolName) ?? false,
+    (s) =>
+      s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false,
   );
 
   const [decided, setDecided] = useState(false);
@@ -112,7 +114,7 @@ export function ToolConfirmationControls({
         variant="outline"
         disabled={pending !== null}
         onClick={() => {
-          if (sessionId) allowToolAlways(sessionId, toolName);
+          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           void resolve("allow");
         }}
       >
