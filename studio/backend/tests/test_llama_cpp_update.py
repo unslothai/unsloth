@@ -232,7 +232,11 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
         stderr = ""
 
     def _fake_run(cmd, **kwargs):
-        captured["cmd"] = list(cmd)
+        cmd = list(cmd)
+        # Status polls probe `llama-server --version`; keep the installer argv.
+        if "--version" in cmd:
+            return _Proc()
+        captured["cmd"] = cmd
         _write_install(install_dir, "b9585")  # installer writes the marker
         return _Proc()
 
@@ -268,6 +272,10 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
         stderr = ""
 
     def _fake_run(cmd, **kwargs):
+        cmd = list(cmd)
+        # Status polls probe `llama-server --version`; keep the installer argv.
+        if "--version" in cmd:
+            return _Proc()
         captured["cmd"] = cmd
         # Simulate the installer writing a new marker with the latest tag.
         _write_install(install_dir, "b9518")
@@ -374,7 +382,11 @@ def _capture_install_cmd(
         stderr = ""
 
     def _fake_run(cmd, **kwargs):
-        captured["cmd"] = list(cmd)
+        cmd = list(cmd)
+        # Status polls probe `llama-server --version`; keep the installer argv.
+        if "--version" in cmd:
+            return _Proc()
+        captured["cmd"] = cmd
         _write_install(install_dir, latest, repo = repo, asset = asset)
         return _Proc()
 
