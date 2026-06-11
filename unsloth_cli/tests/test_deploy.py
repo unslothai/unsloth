@@ -156,12 +156,8 @@ def test_create_instance_mounts_volume_at_workspace_and_opens_ports(monkeypatch)
     assert captured["volume_mount_path"] == "/workspace"
     assert "8000/http" in captured["ports"]
     assert "22/tcp" in captured["ports"]
-    command = captured["docker_args"]
-    assert "UNSLOTH_STUDIO_HOME=/workspace/.unsloth/studio" in command
-    assert ".bootstrap_password" in command
-    assert "printenv UNSLOTH_ADMIN_PASSWORD" in command
-    assert "secret" not in command
-    assert "unsloth studio --api-only -p 8000 -H 0.0.0.0" in command
+    assert captured["env"] == {"UNSLOTH_ADMIN_PASSWORD": "secret"}
+    assert "docker_args" not in captured
 
 
 def test_wait_ready_waits_for_runtime(monkeypatch):
@@ -544,10 +540,8 @@ def test_bootstrap_drives_full_chain_and_prints_endpoint(monkeypatch):
     ]
     assert client.calls[1] == ("login", "unsloth", "bootstrap-pw")
     assert client.calls[2][1] == "bootstrap-pw" and client.calls[2][2] != "bootstrap-pw"
-    command = pod_kwargs["docker_args"]
-    assert "UNSLOTH_STUDIO_HOME=/workspace/.unsloth/studio" in command
-    assert "printenv UNSLOTH_ADMIN_PASSWORD" in command
-    assert "bootstrap-pw" not in command
+    assert pod_kwargs["env"] == {"UNSLOTH_ADMIN_PASSWORD": "bootstrap-pw"}
+    assert "docker_args" not in pod_kwargs
 
     assert "sk-unsloth-fake-key" in result.output
     assert "unsloth/Llama-3.2-1B-Instruct" in result.output
