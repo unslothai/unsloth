@@ -58,6 +58,7 @@ from routes.inference import (
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
     _normalise_responses_input,
+    _responses_tool_output_text,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
@@ -392,6 +393,100 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[0].role == "tool"
         # Content is serialised so llama-server sees a string.
         assert json.loads(msgs[0].content) == [{"type": "output_text", "text": "ok"}]
+
+    def test_empty_function_call_output_gets_no_output_sentinel(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "",
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].content == "(no output)"
+        ChatMessage(**msgs[0].model_dump(exclude_none = True))
+
+    def test_whitespace_function_call_output_gets_no_output_sentinel(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "   \n\t",
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content == "(no output)"
+
+    def test_empty_content_array_output_gets_no_output_sentinel(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content == "(no output)"
+
+    def test_image_content_array_tool_output_is_serialised(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert json.loads(msgs[0].content)[0]["type"] == "image"
+
+    def test_image_payload_outside_output_gets_no_output_sentinel(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].content == "(no output)"
+
+    def test_tool_output_serializer_preserves_non_empty_text(self):
+        assert _responses_tool_output_text("done") == "done"
+        assert _responses_tool_output_text("  done  ") == "  done  "
 
 
 # =====================================================================
@@ -809,4 +904,18 @@ class TestTranslatedMessagesValidate:
         for m in msgs:
             # Building a fresh ChatMessage from the dump round-trips the
             # role-shape validator — the passthrough's key invariant.
+            ChatMessage(**m.model_dump(exclude_none = True))
+
+    def test_empty_tool_output_round_trips_through_chat_message_validator(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_empty",
+                    "output": "",
+                },
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        for m in msgs:
             ChatMessage(**m.model_dump(exclude_none = True))
