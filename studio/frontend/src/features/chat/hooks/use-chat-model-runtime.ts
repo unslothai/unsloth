@@ -489,15 +489,12 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto whenever the user
-            // switches to a different model. Spec strategy is a
-            // per-model decision: a sub-3B non-MTP GGUF that ran with
-            // "Off" should not carry that choice into a 27B MTP GGUF
-            // where Auto would auto-promote to draft-mtp. The user can
-            // still pick a forced mode on the new model; this just
-            // clears the stale prior-model choice so the backend's
-            // platform-aware path runs by default. Same applies to
-            // spec_draft_n_max which is MTP-only.
+            // Reset Speculative Decoding to Auto on model switch: spec
+            // strategy is per-model, so a sub-3B non-MTP GGUF's "Off" must
+            // not carry into a 27B MTP GGUF where Auto auto-promotes to
+            // draft-mtp. Clears the stale prior choice so the backend's
+            // platform-aware path runs by default; same for spec_draft_n_max
+            // (MTP-only). The user can still force a mode on the new model.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
               useChatRuntimeStore.setState({
                 speculativeType: null,
@@ -741,17 +738,15 @@ export function useChatModelRuntime() {
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models (GGUF and non-GGUF).
-        // Then, once the download wraps (or for already-cached models),
-        // poll the llama-server mmap phase so "Starting model..." no
-        // longer looks frozen for several minutes on large MoE models.
+        // Poll download progress for non-cached models, then (after download
+        // or for cached models) poll the llama-server mmap phase so "Starting
+        // model..." doesn't look frozen for minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate / ETA estimation.
-        // Shared across download + mmap phases so the estimator doesn't
-        // reset when the phase flips.
+        // Rolling window of byte samples for rate/ETA estimation, shared
+        // across download + mmap phases so it survives phase flips.
         type Sample = { t: number; b: number };
         const MIN_SAMPLES = 3;
         const MIN_WINDOW = 3_000; // ms

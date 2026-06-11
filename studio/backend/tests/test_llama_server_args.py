@@ -513,8 +513,14 @@ def test_strip_shadowing_flags_defaults_strip_everything():
 def test_extra_args_disable_mmproj_detects_flag():
     assert extra_args_disable_mmproj(["--no-mmproj"]) is True
     assert extra_args_disable_mmproj(["--threads", "12", "--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--no-mmproj-auto"]) is True
 
 
 def test_extra_args_disable_mmproj_false_when_absent():
     assert extra_args_disable_mmproj(None) is False
     assert extra_args_disable_mmproj(["--threads", "12"]) is False
+
+
+def test_extra_args_disable_mmproj_last_wins():
+    assert extra_args_disable_mmproj(["--no-mmproj", "--mmproj-auto"]) is False
+    assert extra_args_disable_mmproj(["--mmproj-auto", "--no-mmproj-auto"]) is True
