@@ -25,6 +25,10 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
+def _has_closing_single_quote(address: str, start: int) -> bool:
+    return "'" in address[start + 1 :]
+
+
 def _split_windows_command_line(address: str) -> list[str]:
     """Parse a Windows command line using the same backslash/quote rules that
     subprocess.list2cmdline() writes. This keeps trailing backslashes before a
@@ -59,7 +63,8 @@ def _split_windows_command_line(address: str) -> list[str]:
         if ch == "'":
             if backslashes:
                 current.extend("\\" * backslashes)
-            if quote_char is None:
+                arg_started = True
+            if quote_char is None and not arg_started and _has_closing_single_quote(address, i):
                 quote_char = "'"
             elif quote_char == "'":
                 quote_char = None

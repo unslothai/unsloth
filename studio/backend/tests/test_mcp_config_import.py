@@ -74,6 +74,8 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         ["C:\\Program Files\\Foo\\", "server.js"],
         ["C:\\Program Files\\Foo\\", '{"foo":"bar"}'],
         ["'C:\\Program Files\\node\\node.exe'", "server.js"],
+        ["node", "O'Reilly"],
+        ["node", "C:\\Users\\O'Reilly\\server.js"],
         ["node", ""],
     ],
 )
@@ -89,6 +91,15 @@ def test_parse_manual_single_quoted_windows_command(monkeypatch):
     assert mcp_client.parse_stdio_command(command) == [
         "C:\\Program Files\\node\\node.exe",
         "server.js",
+    ]
+
+
+def test_parse_windows_apostrophes_as_literals(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert mcp_client.parse_stdio_command("node O'Reilly") == ["node", "O'Reilly"]
+    assert mcp_client.parse_stdio_command("node C:\\Users\\O'Reilly\\server.js") == [
+        "node",
+        "C:\\Users\\O'Reilly\\server.js",
     ]
 
 
