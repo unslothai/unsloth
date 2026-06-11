@@ -75,7 +75,6 @@ def evaluate_merged_model(
     gc.collect()
 
 
-# Main execution code should be wrapped in this guard
 def training_run(result_queue):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "meta-llama/Llama-3.2-3B-Instruct",
@@ -145,12 +144,10 @@ def training_run(result_queue):
     </answer>"""
 
         def format_limo(example):
-            # Create the assistant response
             assistant_response = f"<reasoning>\n{example['solution']}\n</reasoning>\n<answer>\n{example['answer']}\n</answer>"
 
-            # Return a DICTIONARY with the conversation in a field
             return {
-                "prompt": [  # ← This is the key change - wrap in a dict
+                "prompt": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": example["question"]},
                     {"role": "assistant", "content": assistant_response},
@@ -379,7 +376,6 @@ def training_run(result_queue):
         print("COMPREHENSIVE MODEL COMPARISON")
         print(f"{'='*80}")
 
-        # Main table
         print(
             f"{'Model':<15} {'Format %':<10} {'Exact %':<10} {'Plausible %':<12} {'Confidence':<12}"
         )
@@ -394,7 +390,6 @@ def training_run(result_queue):
                 f"{result['avg_confidence']:<12.3f}"
             )
 
-        # Improvement analysis
         if len(all_results) > 1:
             print(f"\n{'='*50}")
             print("IMPROVEMENT ANALYSIS")
@@ -415,7 +410,6 @@ def training_run(result_queue):
                 print(f"  Exact matches:     {exact_improvement:+.1f}%")
                 print(f"  Plausible matches: {plausible_improvement:+.1f}%")
 
-        # Save comparison
         comparison_data = {
             "summary": all_results,
             "best_model": max(all_results, key = lambda x: x["exact_match_pct"]),
@@ -445,23 +439,18 @@ def training_run(result_queue):
 
     from datasets import load_dataset
 
-    # Load GSM8K
     gsm8k_dataset = load_dataset("openai/gsm8k", "main", split = "train")
-
-    # Load LIMO (adjust this based on your access method)
     limo_train = load_dataset("GAIR/LIMO", split = "train")
 
-    # Prepare datasets
     gsm8k_train = prepare_gsm8k_dataset(gsm8k_dataset)
     limo_train = prepare_limo_dataset(limo_train)
 
     print(f"  GSM8K train: {len(gsm8k_train)}")
     print(f"  LIMO train:  {len(limo_train) if limo_train else 0}")
 
-    # Store results
     all_results = []
 
-    # Single temperature evaluation on combined dataset
+    # Single temperature evaluation on combined dataset.
     results = evaluate_model_aime(
         model = model,
         tokenizer = tokenizer,
@@ -557,16 +546,13 @@ def training_run(result_queue):
             response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
         )
 
-        # Train
         print(f"🚂 Starting SFT training on {len(limo_train)} examples...")
         trainer.train()
 
-        # Save checkpoint
         model.save_pretrained("qlora_checkpoint")
         tokenizer.save_pretrained("qlora_checkpoint")
         print("💾 Qlora checkpoint saved!")
 
-        # Cleanup
         del trainer
         cleanup_memory()
 
@@ -574,7 +560,6 @@ def training_run(result_queue):
     else:
         print("⚠️ Skipping Qlora training - no LIMO dataset available")
 
-    # Cleanup
     cleanup_memory()
 
     global PRINTED_TIMES
@@ -596,7 +581,7 @@ def training_run(result_queue):
         ]
 
         scores = []
-        # Print only every few steps
+        # Print only every few steps.
         global PRINTED_TIMES
         global PRINT_EVERY_STEPS
         if PRINTED_TIMES % PRINT_EVERY_STEPS == 0:
@@ -613,10 +598,9 @@ def training_run(result_queue):
             if guess is None:
                 scores.append(0)
                 continue
-            # Convert to numbers
             try:
                 true_answer = float(true_answer.strip())
-                # Remove commas like in 123,456
+                # Remove commas like in 123,456.
                 guess = float(guess.strip().replace(",", ""))
                 scores.append(1.5 if guess == true_answer else -0.5)
             except:
@@ -628,7 +612,6 @@ def training_run(result_queue):
     print("🎯 STAGE 2: GRPO Fine-Tuning on GSM8K")
     print(f"{'*'*60}")
 
-    # Get max prompt length
     max_prompt_length, _ = get_max_prompt_length(gsm8k_train, tokenizer)
     max_prompt_length = min(max_prompt_length + 10, 512)  # Add buffer, cap at 512
 
@@ -670,16 +653,13 @@ def training_run(result_queue):
         train_dataset = gsm8k_train,
     )
 
-    # Train
     print(f"🚂 Starting GRPO training on {len(gsm8k_train)} examples...")
     trainer.train()
 
-    # Save checkpoint
     model.save_pretrained("grpo_checkpoint")
     tokenizer.save_pretrained("grpo_checkpoint")
     print("💾 GRPO checkpoint saved!")
 
-    # Cleanup
     del trainer
     del training_args
     cleanup_memory()
@@ -708,7 +688,6 @@ def training_run(result_queue):
     print("💾 SAVING FINAL MODEL")
     print(f"{'='*60}")
 
-    # Save as merged model
     try:
         model.save_pretrained_merged("final_merged_model", tokenizer, save_method = "merged_16bit")
         print("✅ Merged model saved to: final_merged_model/")
@@ -722,7 +701,6 @@ def training_run(result_queue):
 
     result_queue.put(results)
 
-    # Clean up
     del model
     del tokenizer
     torch.cuda.empty_cache()
@@ -771,7 +749,7 @@ if __name__ == "__main__":
     result_queue = mp.Queue()
     all_results = []
 
-    # run main finetuning and grpo loop
+    # Run main finetuning and GRPO loop.
     p = mp.Process(target = training_run, args = (result_queue,))
     p.start()
     p.join()
@@ -779,7 +757,7 @@ if __name__ == "__main__":
     results = result_queue.get()
     all_results = results
 
-    # evaluate merged model loaded 16bits
+    # Evaluate merged model loaded 16bits.
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, False))
     p.start()
     p.join()
@@ -808,11 +786,8 @@ if __name__ == "__main__":
 
     safe_remove_directory("./unsloth_compiled_cache")
 
-    # AIME-specific comparison function
-
     print(f"\n{'='*80}")
     print("🏆 FINAL TRAINING PIPELINE RESULTS")
     print(f"{'='*80}")
 
-    # Use the AIME-specific comparison
     compare_aime_results(all_results)

@@ -1,28 +1,18 @@
 """
-generate_dataset_with_none.py
+Generate a small synthetic dataset with intentional None/empty turns so
+dataset_none_detect.py can be verified end-to-end.
 
-Generates a small synthetic dataset that intentionally contains None/empty
-turns so dataset_none_detect.py can be verified end-to-end.
-
-Produces three formats:
-  - chatml  (messages column, role/content turns)
-  - sharegpt (conversations column, from/value turns)
-  - alpaca  (instruction/output columns)
-
-Each format gets ~20 rows; roughly half have at least one bad turn.
-
-No heavy dependencies -- just `datasets`.
+Three formats: chatml (messages, role/content), sharegpt (conversations,
+from/value), and alpaca (instruction/output). ~20 rows each; roughly half
+have at least one bad turn. Only depends on `datasets`.
 """
 
 from datasets import Dataset
 
-# ---------------------------------------------------------------------------
 # ChatML (messages, role/content)
-# ---------------------------------------------------------------------------
 
-# NOTE: pyarrow requires uniform types in a column, so rows with messages=None
-# or messages="not a list" (P1 cases) live in a SEPARATE dataset (see
-# make_chatml_p1_dataset below) so pyarrow can infer the column type correctly.
+# pyarrow requires uniform types in a column, so messages=None / non-list (P1)
+# rows live in a SEPARATE dataset so pyarrow can infer the column type.
 
 _CHATML_ROWS = [
     # clean rows
@@ -133,10 +123,9 @@ _CHATML_ROWS = [
     {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
 ]
 
-# P1 test rows: messages is None or non-list.
-# Stored as a plain list of dicts rather than an HF Dataset because pyarrow
-# cannot mix list and non-list values in the same column.  The test runner
-# uses a lightweight mock to exercise find_none_chatml directly.
+# P1 test rows: messages is None or non-list. Stored as plain dicts (not an
+# HF Dataset) since pyarrow can't mix list and non-list values in one column;
+# the test runner mocks find_none_chatml directly.
 _CHATML_P1_ROWS = [
     {"messages": None},  # whole column None
     {"messages": "not a list"},  # wrong type
@@ -148,9 +137,7 @@ def make_chatml_p1_rows() -> list:
     return list(_CHATML_P1_ROWS)
 
 
-# ---------------------------------------------------------------------------
 # ShareGPT (conversations, from/value)
-# ---------------------------------------------------------------------------
 
 _SHAREGPT_ROWS = [
     # clean
@@ -207,9 +194,7 @@ _SHAREGPT_ROWS = [
     {"conversations": [None, {"from": "gpt", "value": "Hi"}]},
 ]
 
-# ---------------------------------------------------------------------------
 # Alpaca (instruction / output columns)
-# ---------------------------------------------------------------------------
 
 _ALPACA_ROWS = [
     # clean

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Inference API
-"""
+"""Pydantic schemas for the Inference API."""
 
 from __future__ import annotations
 
@@ -74,7 +72,7 @@ class LoadRequest(BaseModel):
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "still accepted. Ignored for non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -108,12 +106,7 @@ class UnloadRequest(BaseModel):
 
 
 class ValidateModelRequest(BaseModel):
-    """
-    Lightweight validation request to check whether a model identifier
-    *can be resolved* into a ModelConfig.
-
-    This does NOT actually load weights into GPU memory.
-    """
+    """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
     native_path_lease: Optional[str] = Field(
@@ -126,11 +119,9 @@ class ValidateModelRequest(BaseModel):
 
 
 class ValidateModelResponse(BaseModel):
-    """
-    Result of model validation.
+    """Result of model validation.
 
-    valid == True means ModelConfig.from_identifier() succeeded and basic
-    introspection (GGUF / LoRA / vision flags) is available.
+    valid == True means from_identifier() succeeded and GGUF/LoRA/vision flags are available.
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
@@ -245,10 +236,8 @@ class UnloadResponse(BaseModel):
 class LoadProgressResponse(BaseModel):
     """Progress of the active GGUF load, sampled on demand.
 
-    Used by the UI to show a real progress bar during the
-    post-download warmup window (mmap + CUDA upload), rather than a
-    generic "Starting model..." spinner that freezes for minutes on
-    large MoE models.
+    Drives a real progress bar during the post-download warmup (mmap + CUDA upload)
+    instead of a spinner that freezes for minutes on large MoE models.
     """
 
     phase: Optional[str] = Field(
@@ -357,6 +346,17 @@ class InferenceStatusResponse(BaseModel):
             "False -> recommend `unsloth studio update`."
         ),
     )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it. None when MTP engaged or was not "
+            "requested."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (
@@ -406,13 +406,9 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape. The frontend sends either
-    ``{type:"input_document", file_data:"data:application/pdf;base64,..."}``
-    or ``{type:"input_document", file_url:"https://..."}``, plus optional
-    ``filename`` and ``media_type``. ``external_provider`` translates this
-    onto Anthropic's ``document`` block or OpenAI Responses' ``input_file``
-    block for vision-capable providers; non-vision providers drop the
-    part entirely (handled in ``_build_external_messages``).
+    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
+    dropped for non-vision providers.
     """
 
     type: Literal["input_document"]
@@ -437,10 +433,8 @@ class InputDocumentContentPart(BaseModel):
 class OpenAIReasoningContentPart(BaseModel):
     """OpenAI Responses reasoning item paired with a tool output.
 
-    Reasoning models can require the previous ``reasoning`` output item
-    to be replayed immediately before an ``image_generation_call`` id
-    when manually managing Responses context. This part is OpenAI-only;
-    routes strip it for every other provider before proxying.
+    Reasoning models may require this replayed before an ``image_generation_call``
+    id. OpenAI-only; routes strip it for other providers before proxying.
     """
 
     type: Literal["reasoning"]
@@ -452,12 +446,9 @@ class OpenAIReasoningContentPart(BaseModel):
 class ImageGenerationCallContentPart(BaseModel):
     """OpenAI Responses image_generation call reference.
 
-    OpenAI accepts prior ``image_generation_call`` items in the next
-    Responses ``input`` array so follow-up prompts can edit or refine a
-    generated image without resending the base64 payload. The frontend
-    forwards this as a synthetic assistant content part when building
-    the next OpenAI Responses request; ``external_provider`` translates
-    it back to the provider-specific top-level input item.
+    Prior ``image_generation_call`` items let follow-up prompts edit a generated
+    image without resending the payload. The frontend forwards it as a synthetic
+    assistant part; ``external_provider`` maps it back to a top-level input item.
     """
 
     type: Literal["image_generation_call"]
@@ -469,18 +460,12 @@ class ImageGenerationCallContentPart(BaseModel):
 
 
 class CompactionContentPart(BaseModel):
-    """Anthropic server-side compaction state, attached to an assistant
-    message for round-tripping on the next turn.
+    """Anthropic server-side compaction state, round-tripped on the next turn.
 
-    When Anthropic runs compaction during a request, the response
-    carries a ``{"type": "compaction", "content": "<summary>"}`` block
-    on the assistant message. The chat-adapter persists it onto the
-    stored message; the next turn's outbound request must forward it
-    back so Anthropic recognises the existing compaction state and
-    doesn't re-summarise the conversation from scratch. See
-    ``external_provider._stream_anthropic`` for the wire-side handling
-    and https://platform.claude.com/docs/en/build-with-claude/compaction
-    for the upstream contract.
+    Anthropic returns a ``compaction`` block on the assistant message; the next
+    request must forward it back so Anthropic reuses the compaction state instead
+    of re-summarising. See ``external_provider._stream_anthropic`` and
+    https://platform.claude.com/docs/en/build-with-claude/compaction
     """
 
     type: Literal["compaction"]
@@ -516,13 +501,14 @@ ContentPart = Annotated[
 class ChatMessage(BaseModel):
     """Single message in a chat conversation.
 
-    ``content`` is a string or a list of multimodal content parts. Assistant
-    messages with only ``tool_calls`` populated may set ``content=None``.
-    Missing ``tool_call_id`` on ``role="tool"`` is resolved at the
-    ``ChatCompletionRequest`` layer by walking back to the preceding assistant.
+    ``content`` is a string or list of multimodal parts. Assistant messages with
+    only ``tool_calls`` may set ``content=None``. Missing ``tool_call_id`` on
+    ``role="tool"`` is resolved at the ``ChatCompletionRequest`` layer.
     """
 
-    role: Literal["system", "user", "assistant", "tool"] = Field(..., description = "Message role")
+    role: Literal["system", "user", "assistant", "tool", "developer"] = Field(
+        ..., description = "Message role"
+    )
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
@@ -558,8 +544,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -571,16 +559,13 @@ class ChatMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """
-    OpenAI-compatible chat completion request.
+    """OpenAI-compatible chat completion request.
 
-    Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
+    Non-OpenAI extension fields are marked with 'x-unsloth'.
     """
 
-    # Accept unknown fields defensively so future OpenAI fields (seed,
-    # response_format, logprobs, frequency_penalty, etc.) don't get
-    # silently dropped by Pydantic before route code runs. Mirrors
-    # AnthropicMessagesRequest and ResponsesRequest.
+    # Accept unknown fields so future OpenAI fields aren't dropped before route
+    # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
 
     model: str = Field(
@@ -620,6 +605,34 @@ class ChatCompletionRequest(BaseModel):
             "{'type': 'function', 'function': {'name': ...}}"
         ),
     )
+    max_completion_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "OpenAI upper bound on generated tokens (supersedes the deprecated max_tokens).",
+    )
+    n: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 128,
+        description = "Number of chat completion choices to generate.",
+    )
+    logprobs: Optional[bool] = Field(
+        None, description = "Whether to return log probabilities of the output tokens."
+    )
+    top_logprobs: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 20,
+        description = "Number of most likely tokens (0-20) to return per position; requires logprobs=true.",
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None, description = "Whether to enable parallel function calling during tool use."
+    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    stream_options: Optional[dict] = Field(
+        None,
+        description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
@@ -631,7 +644,8 @@ class ChatCompletionRequest(BaseModel):
         None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None,
+        description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
@@ -680,6 +694,16 @@ class ChatCompletionRequest(BaseModel):
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
+    )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
         ge = 0,
@@ -693,6 +717,16 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
+            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "autoinject_min_score?}. Candidate pools and the RRF constant come from "
+            "server config. The model never sees this; the server resolves which "
+            "documents to search."
+        ),
     )
     cancel_id: Optional[str] = Field(
         None,
@@ -738,18 +772,13 @@ class ChatCompletionRequest(BaseModel):
     @field_validator("enable_prompt_caching", mode = "before")
     @classmethod
     def _coerce_enable_prompt_caching(cls, value: Any) -> Any:
-        """Preserve the pre-PR coercion: the field used to be Optional[bool],
-        so callers historically sent JSON strings `"true"` / `"false"` and
-        Pydantic v1 coerced them. Widening to Optional[Union[bool, str]] for
-        Gemini cache resource names lets `"false"` slip through as a truthy
-        string. Coerce the canonical bool literals back so explicit opt-outs
-        stay opt-out."""
+        """Coerce JSON bool strings back to bool. Widening to Union[bool, str] for
+        Gemini cache names would let `"false"` read as truthy, so canonical bool
+        literals are coerced to keep explicit opt-outs working."""
         if isinstance(value, str):
             lowered = value.strip().lower()
-            # Match Pydantic v1's BooleanField coercion table (yes/y/on/t/1
-            # and no/n/off/f/0) so opt-outs that used to parse still parse.
-            # Anything else is preserved as a string for Gemini's
-            # cachedContent resource path.
+            # Match Pydantic v1's bool coercion table; anything else stays a
+            # string for Gemini's cachedContent resource path.
             if lowered in ("true", "t", "1", "yes", "y", "on"):
                 return True
             if lowered in ("false", "f", "0", "no", "n", "off"):
@@ -836,11 +865,10 @@ class ChatCompletionRequest(BaseModel):
 
         OpenAI / Anthropic passthrough require the result id to match the
         assistant's tool_calls[].id. Prefer function.name match, else first
-        unconsumed tool_call; synth random id only if no candidate exists.
-        Crossing a user turn breaks the lookup.
+        unconsumed tool_call; synth a random id only if none exists. A user
+        turn breaks the lookup.
         """
-        # Pre-mark explicit ids first so a sibling missing-id result does not
-        # steal one already claimed by name.
+        # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
         def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
@@ -902,12 +930,10 @@ class ChatCompletionRequest(BaseModel):
 
 
 class OpenAIContainerRequest(BaseModel):
-    """
-    Shared body for the three OpenAI container endpoints (list / create
-    / delete). Carries the encrypted API key + base URL so the route
-    handler can decrypt it and proxy to the user's OpenAI account.
-    Same pattern as the inference proxy endpoints — keeps the key off
-    persistent storage on the backend.
+    """Shared body for the OpenAI container endpoints (list / create / delete).
+
+    Carries the encrypted API key + base URL so the route can decrypt and proxy
+    to the user's account, keeping the key off backend persistent storage.
     """
 
     encrypted_api_key: str = Field(
@@ -971,12 +997,16 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
+
+
 class ChunkChoice(BaseModel):
     """A single choice in a streaming chunk."""
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length"]] = None
+    finish_reason: Optional[OpenAIFinishReason] = None
+    logprobs: Optional[dict] = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -999,6 +1029,7 @@ class CompletionMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: str
+    refusal: Optional[str] = None
 
 
 class CompletionChoice(BaseModel):
@@ -1006,7 +1037,8 @@ class CompletionChoice(BaseModel):
 
     index: int = 0
     message: CompletionMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: OpenAIFinishReason = "stop"
+    logprobs: Optional[dict] = None
 
 
 class CompletionUsage(BaseModel):
@@ -1015,6 +1047,17 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
+    )
+    completion_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        }
+    )
 
 
 class ChatCompletion(BaseModel):
@@ -1026,6 +1069,7 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+    system_fingerprint: Optional[str] = None
 
 
 # =====================================================================
@@ -1054,11 +1098,9 @@ class ResponsesInputImagePart(BaseModel):
 class ResponsesOutputTextPart(BaseModel):
     """Assistant ``output_text`` content part replayed on subsequent turns.
 
-    When a client (OpenAI Codex CLI, OpenAI Python SDK agents) loops on a
-    stateless Responses endpoint, prior assistant messages are round-tripped
-    as ``{"role":"assistant","content":[{"type":"output_text","text":...,
-    "annotations":[],"logprobs":[]}]}``. We preserve the text and ignore
-    the annotations/logprobs metadata when flattening into Chat Completions.
+    Clients looping on a stateless Responses endpoint round-trip prior assistant
+    messages as ``output_text`` parts; we keep the text and ignore the
+    annotations/logprobs when flattening into Chat Completions.
     """
 
     type: Literal["output_text"]
@@ -1070,11 +1112,10 @@ class ResponsesOutputTextPart(BaseModel):
 
 
 class ResponsesUnknownContentPart(BaseModel):
-    """Catch-all for content-part types we don't model explicitly.
+    """Catch-all for unmodelled content-part types.
 
-    Keeps validation green when a client sends newer part types (e.g.
-    ``input_audio``, ``input_file``) we haven't mapped; these are silently
-    skipped during normalisation rather than rejected with a 422.
+    Keeps validation green for newer part types (e.g. ``input_audio``); skipped
+    during normalisation rather than rejected with a 422.
     """
 
     type: str
@@ -1097,18 +1138,15 @@ class ResponsesInputMessage(BaseModel):
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
 
-    # Codex (gpt-5.3-codex+) attaches a `phase` field ("commentary" |
-    # "final_answer") to assistant messages and requires clients to preserve
-    # it on subsequent turns. We accept and round-trip it; llama-server does
-    # not care about it.
+    # Codex attaches a `phase` field to assistant messages and requires clients
+    # to preserve it across turns; we round-trip it, llama-server ignores it.
     model_config = {"extra": "allow"}
 
 
 class ResponsesFunctionCallInputItem(BaseModel):
-    """A prior assistant function_call being replayed in a multi-turn Responses input.
+    """A prior assistant function_call replayed in a multi-turn Responses input.
 
-    The Responses API represents tool calls as top-level input items (not
-    nested inside assistant messages), correlated across turns by ``call_id``.
+    Tool calls are top-level input items (not nested), correlated by ``call_id``.
     """
 
     type: Literal["function_call"]
@@ -1125,7 +1163,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
 class ResponsesFunctionCallOutputInputItem(BaseModel):
     """A tool result supplied by the client for a prior function_call.
 
-    Replaces Chat Completions' ``role="tool"`` message. Correlated to the
+    Replaces Chat Completions' ``role="tool"`` message. Correlated to its
     originating call by ``call_id``.
     """
 
@@ -1139,13 +1177,10 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
 
 
 class ResponsesUnknownInputItem(BaseModel):
-    """Catch-all for Responses input item types we don't model explicitly.
+    """Catch-all for unmodelled Responses input item types.
 
-    Covers ``reasoning`` items (replayed from prior o-series / gpt-5 turns)
-    and any future item types the client may send. These items are dropped
-    during normalisation — llama-server-backed GGUFs cannot consume them —
-    but keeping them in the request-model union stops unrelated turns from
-    failing validation with a 422.
+    Covers ``reasoning`` items and future types. Dropped during normalisation
+    (GGUFs can't consume them), but kept in the union so unrelated turns don't 422.
     """
 
     type: str
@@ -1156,13 +1191,9 @@ class ResponsesUnknownInputItem(BaseModel):
 def _responses_input_item_discriminator(v: Any) -> str:
     """Route a Responses input item to the correct tagged variant.
 
-    Pydantic's default smart-union matching fails when one variant in the
-    union is tagged with a strict ``Literal`` (``function_call`` /
-    ``function_call_output``) and the incoming dict uses a different
-    ``type`` — the other variants' validation errors are hidden and the
-    outer ``Union[str, list[...]]`` reports a misleading "Input should be a
-    valid string" error. An explicit discriminator makes the routing
-    deterministic and lets us fall through to the catch-all.
+    Pydantic's smart-union matching misreports errors when a strict-``Literal``
+    variant doesn't match; an explicit discriminator makes routing deterministic
+    and falls through to the catch-all.
     """
     if isinstance(v, dict):
         t = v.get("type")
@@ -1191,12 +1222,10 @@ ResponsesInputItem = Annotated[
 
 
 class ResponsesFunctionTool(BaseModel):
-    """Flat function-tool definition used by the Responses API request.
+    """Flat function-tool definition for the Responses API request.
 
-    Unlike Chat Completions (which nests ``{"name": ..., "parameters": ...}``
-    inside a ``"function"`` key), the Responses API uses a flat shape with
-    ``type``, ``name``, ``description``, ``parameters``, and ``strict`` at the
-    top level of each tool entry.
+    Unlike Chat Completions (nested under a ``"function"`` key), this uses a flat
+    shape with ``type``/``name``/``description``/``parameters``/``strict`` at top level.
     """
 
     type: Literal["function"]
@@ -1220,11 +1249,9 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
-    # OpenAI function-calling fields — forwarded to llama-server via the
-    # Chat Completions pass-through (see routes/inference.py). Typed as a
-    # plain list so built-in tool shapes (``web_search``, ``file_search``,
-    # ``mcp``, ...) round-trip without validation errors — the translator
-    # picks out only ``type=="function"`` entries for forwarding.
+    # OpenAI function-calling fields, forwarded via the Chat Completions
+    # pass-through. Plain list so built-in tool shapes round-trip without
+    # validation errors; the translator forwards only ``type=="function"`` entries.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
@@ -1280,10 +1307,7 @@ class ResponsesOutputMessage(BaseModel):
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
-    Unlike Chat Completions (which nests tool calls inside the assistant
-    message), the Responses API emits each tool call as its own top-level
-    ``output`` item so clients can correlate results via ``call_id`` on the
-    next turn.
+    Each tool call is its own top-level ``output`` item, correlated via ``call_id``.
     """
 
     type: Literal["function_call"] = "function_call"
@@ -1439,7 +1463,7 @@ class AnthropicMessagesRequest(BaseModel):
     top_k: Optional[int] = None
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
-    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    # [x-unsloth] extensions mirroring the OpenAI endpoint convenience fields
     min_p: Optional[float] = Field(
         None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
@@ -1492,6 +1516,8 @@ class AnthropicMessagesRequest(BaseModel):
 
 class AnthropicUsage(BaseModel):
     input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     output_tokens: int = 0
 
 

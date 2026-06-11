@@ -556,8 +556,8 @@ export function LocalRecipeModelSelector({
             return;
           }
         } catch {
-          // Non-GGUF local models commonly have no variant endpoint. Fall
-          // through to regular selection so users can still choose them.
+          // Non-GGUF local models commonly have no variant endpoint;
+          // fall through to regular selection so they stay choosable.
         } finally {
           setProbingVariantModelId(null);
         }
@@ -591,7 +591,7 @@ export function LocalRecipeModelSelector({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        sideOffset={6}
+        sideOffset={0}
         className="menu-soft-surface nodrag nowheel gap-0 overflow-hidden p-0"
         style={{
           width:

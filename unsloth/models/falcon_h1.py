@@ -62,9 +62,7 @@ try:
         FalconH1Attention,
     )
 except ModuleNotFoundError:
-    # if we are on an old version of transformers technically it should fail in the try except above
-    # but if somehow we make it here, we need to raise an error since FalconH1Attention is not available
-    # or renamed
+    # FalconH1Attention unavailable or renamed (old transformers).
     raise ImportError(
         "Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1."
     )
@@ -487,8 +485,7 @@ def _FalconH1_fast_forward_inference(
     attention_fast_forward_inference = FalconH1Attention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
-    # This makes the attention and MLP customisable.
-    # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
+    # Makes attention and MLP customisable (e.g. qwen3/cohere custom attention).
     def FalconH1Model_fast_forward_inference_custom(
         self,
         input_ids,
