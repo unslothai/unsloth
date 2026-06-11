@@ -436,7 +436,7 @@ class TestNormaliseResponsesInputWithTools:
         msgs = _normalise_responses_input(payload)
         assert msgs[0].content == "(no output)"
 
-    def test_anthropic_image_only_tool_output_is_serialised(self):
+    def test_image_content_array_tool_output_is_serialised(self):
         payload = ResponsesRequest(
             input = [
                 {
@@ -458,6 +458,31 @@ class TestNormaliseResponsesInputWithTools:
         msgs = _normalise_responses_input(payload)
         assert msgs[0].role == "tool"
         assert json.loads(msgs[0].content)[0]["type"] == "image"
+
+    def test_image_payload_outside_output_gets_no_output_sentinel(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].content == "(no output)"
 
     def test_tool_output_serializer_preserves_non_empty_text(self):
         assert _responses_tool_output_text("done") == "done"
