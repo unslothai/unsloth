@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOADER_PATH = REPO_ROOT / "unsloth" / "models" / "loader.py"
 VISION_PATH = REPO_ROOT / "unsloth" / "models" / "vision.py"
 UTILS_PATH = REPO_ROOT / "unsloth" / "models" / "_utils.py"
+LLAMA_PATH = REPO_ROOT / "unsloth" / "models" / "llama.py"
 
 
 def _source(path):
@@ -95,6 +96,13 @@ def test_fast_model_consumes_user_config_kwarg():
 def test_fast_base_model_consumes_user_config_kwarg():
     tree = ast.parse(_source(VISION_PATH))
     method = _class_method(tree, "FastBaseModel", "from_pretrained")
+
+    assert _assigns_from_kwargs_pop(method, "user_config", "config")
+
+
+def test_fast_llama_model_consumes_user_config_kwarg():
+    tree = ast.parse(_source(LLAMA_PATH))
+    method = _class_method(tree, "FastLlamaModel", "from_pretrained")
 
     assert _assigns_from_kwargs_pop(method, "user_config", "config")
 

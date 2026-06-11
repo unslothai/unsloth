@@ -2262,11 +2262,18 @@ class FastLlamaModel:
         assert dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32
 
         # RoPE Scaling
-        model_config = AutoConfig.from_pretrained(
-            model_name,
-            token = token,
-            attn_implementation = "sdpa",
-        )
+        # Respect a user-provided config so it is the single config object used
+        # everywhere below; otherwise HF would receive it again through **kwargs
+        # alongside our own config= and fail with a duplicate-kwarg TypeError.
+        user_config = kwargs.pop("config", None)
+        if user_config is not None:
+            model_config = user_config
+        else:
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                attn_implementation = "sdpa",
+            )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
