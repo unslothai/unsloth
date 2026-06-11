@@ -672,6 +672,20 @@ def _remove_sparsity_from_base_weights(peft_model):
     return count
 
 
+# Families whose last-registered LayerNorm is a true terminal LN. ALBERT is
+# excluded: its LayerNorms are shared across repeated layers, so swapping the
+# last-registered one for Identity would corrupt every layer pass.
+_FUSED_POOLING_SAFE_TYPES = {
+    "bert",
+    "roberta",
+    "xlm-roberta",
+    "electra",
+    "mpnet",
+    "distilbert",
+    "modernbert",
+}
+
+
 def _patch_fused_pooling(st_model):
     """Fuse final LayerNorm + mean Pooling into single Triton kernel."""
     if not _HAS_FUSED_POOLING:
@@ -711,6 +725,11 @@ def _patch_fused_pooling(st_model):
     inner = transformer_mod.auto_model
     if hasattr(inner, "_orig_mod"):
         inner = inner._orig_mod
+
+    _ft_cfg = getattr(inner, "config", None)
+    if str(getattr(_ft_cfg, "model_type", "")).lower() not in _FUSED_POOLING_SAFE_TYPES:
+        return False
+
     base = inner
     if hasattr(base, "base_model"):
         base = base.base_model
@@ -890,33 +909,24 @@ def _register_varlen_attention():
                 softmax_scale = scaling,
             )
             attn_output = out.transpose(0, 1).unsqueeze(0)
-        elif _XFORMERS_ATTN_AVAILABLE:
+        elif _XFORMERS_ATTN_AVAILABLE and (dropout == 0.0 or _XFORMERS_DROPOUT_SAFE):
+            # Pre-Ampere xformers can't apply attention dropout; with dropout > 0
+            # fall through to bool-mask SDPA, which applies it on the attention probs.
             q_x = query.transpose(1, 2)
             k_x = key.transpose(1, 2)
             v_x = value.transpose(1, 2)
             attn_bias = _XFormersBlockDiagonalMask.from_seqlens(seq_lengths.tolist())
-            if _XFORMERS_DROPOUT_SAFE:
-                out_x = _xformers_memory_efficient_attention(
-                    q_x,
-                    k_x,
-                    v_x,
-                    attn_bias = attn_bias,
-                    p = dropout,
-                    scale = scaling,
-                )
-            else:
-                out_x = _xformers_memory_efficient_attention(
-                    q_x,
-                    k_x,
-                    v_x,
-                    attn_bias = attn_bias,
-                    p = 0.0,
-                    scale = scaling,
-                )
-                if dropout > 0.0:
-                    out_x = F.dropout(out_x, p = dropout, training = True)
+            out_x = _xformers_memory_efficient_attention(
+                q_x,
+                k_x,
+                v_x,
+                attn_bias = attn_bias,
+                p = dropout,
+                scale = scaling,
+            )
             attn_output = out_x.transpose(1, 2)
-        elif _VARLEN_ATTN_AVAILABLE:
+        elif _VARLEN_ATTN_AVAILABLE and dropout == 0.0:
+            # torch varlen_attn has no dropout arg; with dropout > 0 use bool-mask SDPA.
             q = query.squeeze(0).transpose(0, 1).contiguous()
             k = key.squeeze(0).transpose(0, 1).contiguous()
             v = value.squeeze(0).transpose(0, 1).contiguous()
@@ -1087,6 +1097,15 @@ def _patch_unpadded_encoder(st_model, model_type):
         inner = inner._orig_mod
     config = inner.config
 
+    # The packed forward must reset positions per sequence via position_ids; if the
+    # model's forward can't accept them (e.g. DistilBERT on transformers 4.x), the
+    # packed row would silently get absolute positions 0..total_tokens, so skip.
+    _fwd_params = getattr(transformer_mod, "model_forward_params", None)
+    if _fwd_params is None:
+        _fwd_params = set(inspect.signature(inner.forward).parameters)
+    if "position_ids" not in _fwd_params:
+        return False
+
     _orig_attn_impl = getattr(config, "_attn_implementation", "sdpa")
 
     # XLM-RoBERTa position_ids start at padding_idx + 1
@@ -1157,34 +1176,26 @@ def _patch_unpadded_encoder(st_model, model_type):
                     softmax_scale = scale,
                 )
                 return out.transpose(0, 1).unsqueeze(0)
-            elif _XFORMERS_ATTN_AVAILABLE:
+            elif _XFORMERS_ATTN_AVAILABLE and (dropout_p == 0.0 or _XFORMERS_DROPOUT_SAFE):
+                # Pre-Ampere xformers can't apply attention dropout; with dropout > 0
+                # fall through to the bool-mask SDPA fallback below, which applies it
+                # on the attention probs.
                 seq_lengths = config._unsloth_seq_lengths
                 q_x = query.transpose(1, 2)
                 k_x = key.transpose(1, 2)
                 v_x = value.transpose(1, 2)
                 attn_bias = _XFormersBlockDiagonalMask.from_seqlens(seq_lengths.tolist())
-                if _XFORMERS_DROPOUT_SAFE:
-                    out_x = _xformers_memory_efficient_attention(
-                        q_x,
-                        k_x,
-                        v_x,
-                        attn_bias = attn_bias,
-                        p = dropout_p,
-                        scale = scale,
-                    )
-                else:
-                    out_x = _xformers_memory_efficient_attention(
-                        q_x,
-                        k_x,
-                        v_x,
-                        attn_bias = attn_bias,
-                        p = 0.0,
-                        scale = scale,
-                    )
-                    if dropout_p > 0.0:
-                        out_x = F.dropout(out_x, p = dropout_p, training = True)
+                out_x = _xformers_memory_efficient_attention(
+                    q_x,
+                    k_x,
+                    v_x,
+                    attn_bias = attn_bias,
+                    p = dropout_p,
+                    scale = scale,
+                )
                 return out_x.transpose(1, 2)
-            elif _VARLEN_ATTN_AVAILABLE:
+            elif _VARLEN_ATTN_AVAILABLE and dropout_p == 0.0:
+                # torch varlen_attn has no dropout arg; with dropout > 0 use bool-mask SDPA.
                 out = _torch_varlen_attn(
                     q,
                     k,
@@ -1196,15 +1207,22 @@ def _patch_unpadded_encoder(st_model, model_type):
                     is_causal = is_causal,
                 )
                 return out.transpose(0, 1).unsqueeze(0)
+            # Packed-call fallback: a block-diagonal bool mask keeps sequence
+            # boundaries while letting SDPA apply true attention dropout.
+            seq_lengths = config._unsloth_seq_lengths
+            segment_ids = torch.repeat_interleave(
+                torch.arange(seq_lengths.shape[0], device = query.device),
+                seq_lengths.long(),
+            )
+            bool_mask = segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1)
             return _original_sdpa(
                 query,
                 key,
                 value,
-                attn_mask = attn_mask,
+                attn_mask = bool_mask.unsqueeze(0).unsqueeze(0),
                 dropout_p = dropout_p,
-                is_causal = is_causal,
+                is_causal = False,
                 scale = scale,
-                **extra_kwargs,
             )
 
         def _bool_mask_sdpa(
@@ -1268,6 +1286,15 @@ def _patch_unpadded_encoder(st_model, model_type):
         # cumsum) on lightly-padded batches that will bail out.
         total_tokens = int(attention_mask.sum().item())
         if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
+            return _original_forward(features, **kwargs)
+
+        # Packed position_ids restart at 0 per sequence, which matches the padded
+        # forward of absolute-position encoders only for right-padded rows.
+        _row_lengths = attention_mask.sum(dim = 1)
+        _right_padded = (
+            torch.arange(S, device = device).unsqueeze(0) < _row_lengths.unsqueeze(1)
+        ).to(attention_mask.dtype)
+        if not torch.equal(attention_mask, _right_padded):
             return _original_forward(features, **kwargs)
 
         seq_info = get_encoder_seq_info(attention_mask)
@@ -1784,59 +1811,62 @@ def _save_pretrained_torchao(
     push_to_hub = False,
     token = None,
 ):
+    # The restore guard must also cover the torchao conversion below: fused pooling
+    # swapped the encoder's final LayerNorm for Identity, and the exported weights
+    # must contain the real LayerNorm.
     with _restore_fused_pooling_ln(self):
         self.save_pretrained(save_directory)
 
-    inner_model = self[0].auto_model
-    if hasattr(inner_model, "_orig_mod"):
-        inner_model = inner_model._orig_mod
+        inner_model = self[0].auto_model
+        if hasattr(inner_model, "_orig_mod"):
+            inner_model = inner_model._orig_mod
 
-    # merge LoRA first
-    if hasattr(inner_model, "merge_and_unload"):
-        inner_model = inner_model.merge_and_unload()
+        # merge LoRA first
+        if hasattr(inner_model, "merge_and_unload"):
+            inner_model = inner_model.merge_and_unload()
 
-    transformer_path = "0_Transformer"
-    modules_path = os.path.join(save_directory, "modules.json")
-    if os.path.exists(modules_path):
-        try:
-            with open(modules_path, "r", encoding = "utf-8") as f:
-                modules = json.load(f)
-            for m in modules:
-                if m.get("type", "").endswith("Transformer"):
-                    transformer_path = m.get("path", "")
-                    break
-        except:
-            pass
+        transformer_path = "0_Transformer"
+        modules_path = os.path.join(save_directory, "modules.json")
+        if os.path.exists(modules_path):
+            try:
+                with open(modules_path, "r", encoding = "utf-8") as f:
+                    modules = json.load(f)
+                for m in modules:
+                    if m.get("type", "").endswith("Transformer"):
+                        transformer_path = m.get("path", "")
+                        break
+            except:
+                pass
 
-    transformer_dir = os.path.join(save_directory, transformer_path)
-    transformer_dir = os.path.abspath(transformer_dir)
+        transformer_dir = os.path.join(save_directory, transformer_path)
+        transformer_dir = os.path.abspath(transformer_dir)
 
-    if tokenizer is None:
-        tokenizer = self.tokenizer
+        if tokenizer is None:
+            tokenizer = self.tokenizer
 
-    @contextlib.contextmanager
-    def patch_unsloth_save():
-        original_causal = transformers.AutoModelForCausalLM
-        original_rmtree = shutil.rmtree
-        # unsloth_save_pretrained_torchao expects AutoModelForCausalLM
-        transformers.AutoModelForCausalLM = transformers.AutoModel
-        # prevent unsloth from deleting the unquantized model directory
-        shutil.rmtree = lambda *args, **kwargs: None
-        try:
-            yield
-        finally:
-            transformers.AutoModelForCausalLM = original_causal
-            shutil.rmtree = original_rmtree
+        @contextlib.contextmanager
+        def patch_unsloth_save():
+            original_causal = transformers.AutoModelForCausalLM
+            original_rmtree = shutil.rmtree
+            # unsloth_save_pretrained_torchao expects AutoModelForCausalLM
+            transformers.AutoModelForCausalLM = transformers.AutoModel
+            # prevent unsloth from deleting the unquantized model directory
+            shutil.rmtree = lambda *args, **kwargs: None
+            try:
+                yield
+            finally:
+                transformers.AutoModelForCausalLM = original_causal
+                shutil.rmtree = original_rmtree
 
-    with patch_unsloth_save():
-        unsloth_save_pretrained_torchao(
-            inner_model,
-            transformer_dir,
-            tokenizer = tokenizer,
-            torchao_config = torchao_config,
-            push_to_hub = push_to_hub,
-            token = token,
-        )
+        with patch_unsloth_save():
+            unsloth_save_pretrained_torchao(
+                inner_model,
+                transformer_dir,
+                tokenizer = tokenizer,
+                torchao_config = torchao_config,
+                push_to_hub = push_to_hub,
+                token = token,
+            )
 
     torchao_dir = transformer_dir + "-torchao"
     if os.path.exists(torchao_dir):
@@ -2945,6 +2975,14 @@ class FastSentenceTransformer(FastModel):
         "electra",
     }
 
+    # get_peft_model LoRA target defaults for encoder families whose projection
+    # names differ from the BERT-style query/key/value/dense fallback.
+    LORA_TARGET_MODULE_DEFAULTS = {
+        "distilbert": ["q_lin", "k_lin", "v_lin", "out_lin", "lin1", "lin2"],
+        "mpnet": ["q", "k", "v", "o", "dense"],
+        "modernbert": ["Wqkv", "Wo", "Wi"],
+    }
+
     @staticmethod
     def _estimate_compile_threshold(
         model,
@@ -3193,20 +3231,22 @@ class FastSentenceTransformer(FastModel):
             _disable_sdpa = any(_m in model_type.lower() for _m in DISABLE_SDPA_MODEL_NAMES)
 
             # flash_attn_2 selection stays layered on top of the shared resolver:
-            # enable for models that natively support it, and force-enable for the
-            # known encoder types in _UNPAD_SUPPORTED_TYPES (our varlen path).
+            # only request it at load time when the model class itself supports it
+            # (transformers 4.x: _supports_flash_attn_2, 5.x: _supports_flash_attn).
+            # Forcing it for other types (e.g. MPNet) makes from_pretrained reject
+            # the requested implementation before the Unsloth varlen patch could
+            # ever take over.
             supports_flash_attn_2 = False
             if not _disable_sdpa:
                 if config is not None:
                     try:
                         model_class = resolve_model_class(auto_model, config)
-                        supports_flash_attn_2 = getattr(
-                            model_class, "_supports_flash_attn_2", False
+                        supports_flash_attn_2 = bool(
+                            getattr(model_class, "_supports_flash_attn_2", False)
+                            or getattr(model_class, "_supports_flash_attn", False)
                         )
                     except:
                         supports_flash_attn_2 = False
-                if not supports_flash_attn_2 and model_type in _UNPAD_SUPPORTED_TYPES:
-                    supports_flash_attn_2 = True
                 if supports_flash_attn_2:
                     try:
                         import flash_attn  # noqa: F401
@@ -3236,6 +3276,10 @@ class FastSentenceTransformer(FastModel):
                 print(
                     f"Unsloth: Using fast encoder path for {model_type} with 4-bit quantization{attn_str}"
                 )
+            elif load_in_8bit:
+                print(
+                    f"Unsloth: Using fast encoder path for {model_type} with 8-bit quantization{attn_str}"
+                )
             else:
                 print(
                     f"Unsloth: Using fast encoder path for {model_type} (torch.compile{attn_str})"
@@ -3250,6 +3294,12 @@ class FastSentenceTransformer(FastModel):
                     bnb_4bit_quant_type = "nf4",
                     bnb_4bit_use_double_quant = True,
                 )
+                model_kwargs["quantization_config"] = bnb_config
+                st_device = None
+            elif load_in_8bit:
+                from transformers import BitsAndBytesConfig
+
+                bnb_config = BitsAndBytesConfig(load_in_8bit = True)
                 model_kwargs["quantization_config"] = bnb_config
                 st_device = None
 
@@ -3325,6 +3375,22 @@ class FastSentenceTransformer(FastModel):
                 with _restore_fused_pooling_ln(self):
                     self.save_pretrained(save_directory)
                     tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                    # modules.json points the Transformer module at "" (root) on
+                    # modern sentence-transformers, "0_Transformer" on legacy layouts;
+                    # the merged weights must land where reload looks for them.
+                    transformer_path = ""
+                    modules_path = os.path.join(save_directory, "modules.json")
+                    if os.path.exists(modules_path):
+                        try:
+                            with open(modules_path, "r", encoding = "utf-8") as f:
+                                modules = json.load(f)
+                            for m in modules:
+                                if m.get("type", "").endswith("Transformer"):
+                                    transformer_path = m.get("path", "")
+                                    break
+                        except:
+                            pass
+                    transformer_dir = os.path.join(save_directory, transformer_path)
                     if hasattr(self[0], "auto_model"):
                         inner = self[0].auto_model
                         if hasattr(inner, "_orig_mod"):
@@ -3333,9 +3399,23 @@ class FastSentenceTransformer(FastModel):
                             _remove_sparsity_from_base_weights(inner)
                         if hasattr(inner, "merge_and_unload"):
                             merged = inner.merge_and_unload()
-                            merged.save_pretrained(save_directory)
+                            merged.save_pretrained(transformer_dir)
+                            # self.save_pretrained above wrote the PEFT adapter into
+                            # the module dir; drop it so reload uses the merged
+                            # weights instead of applying the adapter on top.
+                            for _adapter_file in (
+                                "adapter_model.safetensors",
+                                "adapter_model.bin",
+                                "adapter_config.json",
+                            ):
+                                _adapter_path = os.path.join(transformer_dir, _adapter_file)
+                                if os.path.exists(_adapter_path):
+                                    try:
+                                        os.remove(_adapter_path)
+                                    except OSError:
+                                        pass
                         elif hasattr(inner, "save_pretrained"):
-                            inner.save_pretrained(save_directory)
+                            inner.save_pretrained(transformer_dir)
                     if tokenizer is not None:
                         tokenizer.save_pretrained(save_directory)
                     FastSentenceTransformer._add_unsloth_branding(save_directory)
@@ -3640,12 +3720,7 @@ class FastSentenceTransformer(FastModel):
     def get_peft_model(
         model,
         r = 16,
-        target_modules = [
-            "query",
-            "key",
-            "value",
-            "dense",
-        ],
+        target_modules = None,  # resolved per model_type; BERT-style names by default
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -3666,6 +3741,23 @@ class FastSentenceTransformer(FastModel):
         if "task_type" not in kwargs:
             kwargs["task_type"] = "FEATURE_EXTRACTION"
             print("Setting task_type to FEATURE_EXTRACTION")
+
+        if target_modules is None:
+            # DistilBERT/MPNet/ModernBERT use different projection names than the
+            # BERT-style default; with the wrong names PEFT finds no targets at all
+            # (DistilBERT) or silently adapts only the FFN (MPNet).
+            _tm_cfg = None
+            if isinstance(model, SentenceTransformer):
+                for _tm_mod in model:
+                    if hasattr(_tm_mod, "auto_model"):
+                        _tm_cfg = getattr(_tm_mod.auto_model, "config", None)
+                        break
+            else:
+                _tm_cfg = getattr(model, "config", None)
+            _tm_type = str(getattr(_tm_cfg, "model_type", "")).lower()
+            target_modules = FastSentenceTransformer.LORA_TARGET_MODULE_DEFAULTS.get(
+                _tm_type, ["query", "key", "value", "dense"]
+            )
 
         if isinstance(model, SentenceTransformer):
             # Check if this is a fast encoder model (uses torch.compile instead of Unsloth patching)
