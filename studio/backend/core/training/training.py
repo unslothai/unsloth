@@ -534,9 +534,7 @@ class TrainingBackend:
                 except (TypeError, ValueError):
                     logger.debug("Could not convert loss to float: %s", _raw_loss)
                     _safe_loss = None
-                _loss_is_nonfinite = (
-                    _safe_loss is not None and not math.isfinite(_safe_loss)
-                )
+                _loss_is_nonfinite = _safe_loss is not None and not math.isfinite(_safe_loss)
                 if _loss_is_nonfinite:
                     # Drop the value rather than laundering it back to the last
                     # finite loss; clients see loss=None at this step so the NaN
