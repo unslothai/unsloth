@@ -524,3 +524,28 @@ def test_extra_args_disable_mmproj_false_when_absent():
 def test_extra_args_disable_mmproj_last_wins():
     assert extra_args_disable_mmproj(["--no-mmproj", "--mmproj-auto"]) is False
     assert extra_args_disable_mmproj(["--mmproj-auto", "--no-mmproj-auto"]) is True
+
+
+def test_strip_shadowing_flags_drops_model_draft_with_spec():
+    # --model-draft (and aliases) are Studio-managed since the separate
+    # MTP drafter support: an inherited copy must not last-wins-override
+    # the auto-detected drafter.
+    out = strip_shadowing_flags(
+        ["--model-draft", "/old/mtp.gguf", "-md", "/old2.gguf", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_model_draft_without_spec():
+    out = strip_shadowing_flags(
+        ["--model-draft", "/custom/mtp.gguf"],
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["--model-draft", "/custom/mtp.gguf"]

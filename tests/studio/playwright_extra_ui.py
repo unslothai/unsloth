@@ -332,6 +332,21 @@ with sync_playwright() as p:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        if compare_item.count() == 0:
+            # Compare chat moved into the "More" submenu; hover, then click fallback.
+            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
+            if more_trigger.count() > 0:
+                more_trigger.hover()
+                page.wait_for_timeout(400)
+                compare_item = page.get_by_role(
+                    "menuitem", name = re.compile(r"Compare chat", re.I)
+                ).first
+                if compare_item.count() == 0:
+                    more_trigger.click(force = True)
+                    page.wait_for_timeout(400)
+                    compare_item = page.get_by_role(
+                        "menuitem", name = re.compile(r"Compare chat", re.I)
+                    ).first
         if compare_item.count() > 0:
             compare_item.click(force = True)
             compare_opened = True
