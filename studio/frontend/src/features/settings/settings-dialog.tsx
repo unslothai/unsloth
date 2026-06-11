@@ -155,18 +155,18 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[32px] items-center gap-2.5 rounded-[11px] pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                      "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "max-sm:shrink-0",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
-                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white",
+                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white",
                     )}
                   >
                     {active && (
                       <motion.span
                         layoutId="settings-active-pill"
-                        className="absolute inset-0 rounded-[11px] bg-[#ececec] dark:bg-[#2d2f33]"
+                        className="absolute inset-0 rounded-full bg-[#ececec] dark:bg-[#3a3d43]"
                         transition={
                           reduced
                             ? { duration: 0 }
@@ -202,7 +202,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={t("settings.dialog.closeAriaLabel")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

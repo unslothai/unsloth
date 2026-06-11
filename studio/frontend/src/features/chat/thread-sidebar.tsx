@@ -331,7 +331,7 @@ export function ThreadSidebar({
 
       {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-sm">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Rename chat</DialogTitle>
           </DialogHeader>
