@@ -773,6 +773,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         query = str(query),
         scope_kb_id = scope.get("kb_id"),
         scope_thread_id = scope.get("thread_id"),
+        scope_project_id = scope.get("project_id"),
         top_k = top_k,
         **_scope_retrieval_kwargs(scope),
     )
@@ -880,6 +881,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             query = query,
             scope_kb_id = rag_scope.get("kb_id"),
             scope_thread_id = rag_scope.get("thread_id"),
+            scope_project_id = rag_scope.get("project_id"),
             top_k = top_k,
             min_dense_score = floor,
             **_scope_retrieval_kwargs(rag_scope),

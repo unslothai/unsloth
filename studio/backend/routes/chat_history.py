@@ -332,6 +332,20 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
+    try:
+        from storage import rag_db
+        if rag_db.RAG_AVAILABLE:
+            from core.rag import store as rag_store
+            conn = rag_db.get_connection()
+            try:
+                scope = rag_store.project_scope(project_id)
+                for doc in rag_store.list_documents(conn, scope):
+                    rag_store.delete_document(conn, doc["id"])
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
+        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     return ChatProject(**project)
 
 

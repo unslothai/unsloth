@@ -29,6 +29,15 @@ def thread_scope(thread_id: str) -> str:
     return f"thread_{thread_id}"
 
 
+def project_scope(project_id: str) -> str:
+    return f"project_{project_id}"
+
+
+def _scopes(scope) -> list[str]:
+    """Search helpers accept one scope or several (e.g. project + thread)."""
+    return [scope] if isinstance(scope, str) else list(scope)
+
+
 def _f32(vector) -> bytes:
     """Pack a vector into float32 bytes for vec0."""
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
@@ -96,19 +105,21 @@ def create_document(
     sha256: str,
     kb_id: str | None = None,
     thread_id: str | None = None,
+    project_id: str | None = None,
     status: str = "pending",
     stored_path: str | None = None,
     document_id: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents(id, scope, kb_id, thread_id, filename, sha256, status, "
-        "stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
+        "status, stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
             kb_id,
             thread_id,
+            project_id,
             filename,
             sha256,
             status,
@@ -137,7 +148,8 @@ def set_document_status(
 
 def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, scope, kb_id, thread_id, filename, sha256, status, error, num_chunks, created_at "
+        "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
+        "num_chunks, created_at "
         "FROM documents WHERE scope=? ORDER BY created_at DESC",
         (scope,),
     ).fetchall()
@@ -220,30 +232,39 @@ def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
     conn.commit()
 
 
-def search_lexical(conn: sqlite3.Connection, scope: str, query: str, k: int):
-    """BM25 lexical search. Returns [(chunk_id, score)], higher = better."""
+def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
+    """BM25 lexical search over one scope or several. Returns
+    [(chunk_id, score)], higher = better."""
     mq = _match_query(query)
     if not mq:
         return []
+    scopes = _scopes(scope)
+    placeholders = ",".join("?" * len(scopes))
     rows = conn.execute(
-        "SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-        "WHERE chunks_fts MATCH ? AND scope=? ORDER BY s LIMIT ?",
-        (mq, scope, k),
+        f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+        f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) ORDER BY s LIMIT ?",
+        (mq, *scopes, k),
     ).fetchall()
     # bm25() is negative (more negative = better); flip to higher-is-better.
     return [(r["chunk_id"], -r["s"]) for r in rows]
 
 
-def search_dense(conn: sqlite3.Connection, scope: str, vector, k: int):
-    """Cosine KNN over vec0. Returns [(chunk_id, 1 - distance)]."""
+def search_dense(conn: sqlite3.Connection, scope, vector, k: int):
+    """Cosine KNN over vec0 for one scope or several. Returns
+    [(chunk_id, 1 - distance)]. vec0 KNN constrains its partition key by
+    equality, so multi-scope runs one query per scope and merges by score."""
     if not rag_db.vec_table_exists(conn):
         return []
-    rows = conn.execute(
-        "SELECT chunk_id, distance FROM chunks_vec "
-        "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
-        (scope, _f32(vector), k),
-    ).fetchall()
-    return [(r["chunk_id"], 1.0 - r["distance"]) for r in rows]
+    out: list[tuple[str, float]] = []
+    for s in _scopes(scope):
+        rows = conn.execute(
+            "SELECT chunk_id, distance FROM chunks_vec "
+            "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
+            (s, _f32(vector), k),
+        ).fetchall()
+        out.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
+    out.sort(key = lambda t: t[1], reverse = True)
+    return out[:k]
 
 
 def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:

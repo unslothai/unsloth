@@ -41,6 +41,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Folder02Icon,
   FolderAddIcon,
   Search01Icon,
   Upload01Icon,
@@ -347,12 +348,12 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[160px] rounded-[14px] bg-card p-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+              className="min-h-[172px] rounded-[26px] bg-card p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] dark:shadow-none"
             >
-              <Skeleton className="h-5 w-2/3 rounded-[6px]" />
-              <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
-              <Skeleton className="mt-2 h-4 w-4/5 rounded-[6px]" />
-              <Skeleton className="mt-12 h-3 w-24 rounded-[6px]" />
+              <Skeleton className="size-10 rounded-[14px]" />
+              <Skeleton className="mt-4 h-5 w-2/3 rounded-[8px]" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded-[8px]" />
+              <Skeleton className="mt-8 h-3 w-24 rounded-[8px]" />
             </div>
           ))}
         </div>
@@ -407,19 +408,23 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] bg-card p-5 text-left shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-accent/40 dark:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-shadow duration-200 hover:shadow-[0_12px_32px_-12px_rgba(0,0,0,0.18)] dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
-                <h2 className="truncate pr-2 text-[16px] font-semibold text-foreground">
-                  {project.name}
-                </h2>
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-muted text-foreground/70 transition-colors group-hover/project-card:bg-primary/10 group-hover/project-card:text-primary">
+                  <HugeiconsIcon
+                    icon={Folder02Icon}
+                    strokeWidth={1.75}
+                    className="size-5"
+                  />
+                </span>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/project-card:opacity-100"
+                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/project-card:opacity-100"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -480,12 +485,15 @@ export function ProjectsPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
+              <h2 className="mt-4 truncate text-[16px] font-semibold text-foreground">
+                {project.name}
+              </h2>
               {project.instructions ? (
-                <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
+                <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
                   {project.instructions}
                 </p>
               ) : null}
-              <span className="mt-auto pt-4 text-xs text-muted-foreground">
+              <span className="mt-auto pt-4 text-xs text-muted-foreground/80">
                 Updated {formatUpdatedAgo(project.updatedAt)}
               </span>
             </div>
