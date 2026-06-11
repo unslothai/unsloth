@@ -129,6 +129,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
     try:
         from storage import rag_db
         from core.rag import store as rag_store
+
         if not rag_db.RAG_AVAILABLE:
             logger.warning(
                 "Skipping RAG source deletion for project %s because RAG is unavailable",

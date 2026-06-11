@@ -43,9 +43,7 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
 
 
 def _resolve_scope(
-    scope_kb_id: str | None,
-    scope_thread_id: str | None,
-    scope_project_id: str | None,
+    scope_kb_id: str | None, scope_thread_id: str | None, scope_project_id: str | None
 ) -> str | None:
     if scope_kb_id:
         return kb_scope(scope_kb_id)
