@@ -1,11 +1,7 @@
-"""
+"""Test model registration methods.
 
-Test model registration methods
-Checks that model registration methods work for respective models as well as all models
-The check is performed
-- by registering the models
-- checking that the instantiated models can be found on huggingface hub by querying for the model id
-
+Registers each model set and checks the registered model ids exist on the
+Hugging Face Hub.
 """
 
 from dataclasses import dataclass

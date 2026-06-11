@@ -756,10 +756,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         configs = applyRenameToConfigs(configs, oldName, newName);
       }
 
-      // When a provider toggles between local and external, keep already
-      // linked model_config nodes in sync. applyRenameToConfigs above has
-      // already propagated any name change, so providerName here is the
-      // post-rename value.
+      // When a provider toggles local/external, keep linked model_config nodes
+      // in sync. applyRenameToConfigs above already propagated any name change,
+      // so providerName here is the post-rename value.
       if (current.kind === "model_provider" && next.kind === "model_provider") {
         const prevIsLocal = current.is_local === true;
         const nextIsLocal = next.is_local === true;

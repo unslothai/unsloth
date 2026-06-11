@@ -4,13 +4,13 @@
 """
 Integration tests for the external providers API.
 
-Requires a running Unsloth Studio server. Configure via environment variables:
+Requires a running Unsloth Studio server. Configure via env vars:
 
     export STUDIO_TEST_URL="http://localhost:8888"   # default
     export STUDIO_TEST_USER="unsloth"                # default
     export STUDIO_TEST_PASSWORD="..."                # required — see .bootstrap_password
 
-    # Provider API keys — any left unset will have their tests automatically skipped
+    # Provider API keys — tests skip when their key is unset
     export OPENAI_API_KEY="sk-..."
     export MISTRAL_API_KEY="..."
     export GOOGLE_API_KEY="..."
@@ -38,15 +38,14 @@ BASE_URL = os.getenv("STUDIO_TEST_URL", "http://localhost:8000")
 USERNAME = os.getenv("STUDIO_TEST_USER", "unsloth")
 PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 
-# These tests require a live Studio server reachable at BASE_URL with a known
-# bootstrap password. Skip the whole module when that environment is missing
-# (e.g. on CI runners) so pytest discovery does not error out.
+# Skip the whole module when no live Studio server / bootstrap password is
+# available (e.g. on CI) so pytest discovery does not error out.
 pytestmark = pytest.mark.skipif(
     not PASSWORD,
     reason = "Integration test requires a running Studio server; set STUDIO_TEST_PASSWORD to enable.",
 )
 
-# Map provider_type → (env var name, model to use for inference test)
+# provider_type → (env var name, model for inference test)
 _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openai": ("OPENAI_API_KEY", "gpt-4o-mini"),
     "mistral": ("MISTRAL_API_KEY", "mistral-small-2506"),
@@ -73,11 +72,9 @@ def _url(path: str) -> str:
 
 
 def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
-    """
-    Read a streaming SSE response and return (assembled_text, saw_done).
+    """Read an SSE response, return (assembled_text, saw_done).
 
-    Each chunk is a JSON object with choices[0].delta.content.
-    The stream ends with `data: [DONE]`.
+    Each chunk is JSON with choices[0].delta.content; stream ends at `data: [DONE]`.
     """
     reply_parts: list[str] = []
     saw_done = False
@@ -93,7 +90,7 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
             break
         try:
             chunk = json.loads(data)
-            # Handle both error payloads and normal chunks
+            # Handle error payloads and normal chunks
             if "error" in chunk:
                 raise RuntimeError(f"Provider error in stream: {chunk['error']}")
             delta = chunk.get("choices", [{}])[0].get("delta", {})
@@ -111,20 +108,12 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
 
 @pytest.fixture(scope = "session")
 def auth_headers() -> dict[str, str]:
-    """
-    Log in once per session and return auth headers.
+    """Log in once per session and return auth headers.
 
-    On a fresh Studio install the bootstrap password triggers a forced password
-    change (must_change_password=True).  Any subsequent API call using that token
-    returns 403 "Password change required".  This fixture detects that state,
-    automatically completes the change-password flow, and re-logs in so all other
-    tests get a fully usable token.
-
-    The new password used during auto-change is:
-        STUDIO_TEST_NEW_PASSWORD  (env var, optional)
-        or PASSWORD + "-test"     (derived default)
-
-    On the second run, set STUDIO_TEST_PASSWORD to the new password.
+    On a fresh install the bootstrap password forces a change; this fixture
+    detects must_change_password, auto-completes the change (new password =
+    STUDIO_TEST_NEW_PASSWORD or PASSWORD + "-test"), and re-logs in. On the
+    second run, set STUDIO_TEST_PASSWORD to the new password.
     """
     assert PASSWORD, (
         "STUDIO_TEST_PASSWORD is not set.\n"
@@ -142,8 +131,8 @@ def auth_headers() -> dict[str, str]:
     assert token, "access_token is empty"
 
     if body.get("must_change_password"):
-        # Bootstrap token is restricted — only /api/auth/change-password works with it.
-        # Auto-complete the forced change so the rest of the tests get a full token.
+        # Bootstrap token only works with change-password; auto-complete the
+        # forced change so the rest of the tests get a full token.
         new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
         change_resp = requests.post(
             _url("/api/auth/change-password"),
@@ -175,12 +164,10 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
 
 @pytest.fixture(scope = "session")
 def vision_image_data_url() -> str:
-    """
-    Download the sloth image once per session and return it as a base64 data URI.
+    """Download the sloth image once per session as a base64 data URI.
 
-    Using a data URI instead of a remote URL ensures every provider receives
-    the image inline — Gemini's OpenAI-compatible layer does not fetch external
-    HTTP URLs, so raw image_url links silently produce empty replies for Gemini.
+    A data URI sends the image inline; Gemini's OpenAI-compatible layer doesn't
+    fetch external HTTP URLs, so raw image_url links give empty Gemini replies.
     """
     resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
     resp.raise_for_status()
@@ -191,11 +178,10 @@ def vision_image_data_url() -> str:
 
 @pytest.fixture(scope = "session")
 def encrypt_key(public_key_pem: str):
+    """Return encrypt_key(plaintext) -> base64 RSA-OAEP ciphertext.
+
+    Uses the backend's RSA public key; mirrors the frontend.
     """
-    Return a callable encrypt_key(plaintext: str) -> str (base64 RSA-OAEP ciphertext).
-    Uses the backend's RSA public key — mirrors what the frontend does.
-    """
-    # Decode PEM → load RSA public key
     pem_bytes = public_key_pem.encode("utf-8")
     rsa_pub = serialization.load_pem_public_key(pem_bytes)
 
@@ -298,8 +284,8 @@ class TestRegistry:
 
 class TestProviderCRUD:
     """
-    These tests run sequentially within the class and share state via class variables.
-    They create, read, update, and delete a single test provider config.
+    Run sequentially, sharing state via class variables. Create, read, update,
+    and delete a single test provider config.
     """
 
     _created_id: str = ""
@@ -356,7 +342,7 @@ class TestProviderCRUD:
         )
         assert resp.status_code == 204, f"Delete failed ({resp.status_code}): {resp.text}"
 
-        # Confirm gone from list
+        # Confirm gone
         list_resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         ids = [p["id"] for p in list_resp.json()]
         assert TestProviderCRUD._created_id not in ids, "Deleted provider still in list"
@@ -366,7 +352,7 @@ class TestProviderCRUD:
 # ── TestProviderInference ────────────────────────────────────────────
 
 
-# Build parametrize list: (provider_type, model, api_key) for configured providers only
+# Parametrize (provider_type, model, api_key) for configured providers
 _INFERENCE_PARAMS = [
     pytest.param(
         ptype,
@@ -384,8 +370,8 @@ _INFERENCE_PARAMS = [
 
 class TestProviderInference:
     """
-    Live inference tests — one parametrized set per provider.
-    Each test is automatically skipped when the provider's API key env var is not set.
+    Live inference tests, one parametrized set per provider. Each is skipped
+    when the provider's API key env var is unset.
     """
 
     @pytest.mark.parametrize("provider_type,model,api_key", _INFERENCE_PARAMS)
@@ -475,7 +461,7 @@ class TestProviderInference:
 
 # ── TestVisionInference ─────────────────────────────────────────────
 
-# Sloth photo — used to test vision routing across providers
+# Sloth photo for testing vision routing across providers
 _VISION_IMAGE_URL = "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
 
 _VISION_PARAMS = [
@@ -496,8 +482,8 @@ _VISION_PARAMS = [
 
 class TestVisionInference:
     """
-    Send a 1×1 white PNG alongside a text question to each vision-capable provider.
-    Verifies that image content parts survive the proxy and the provider replies.
+    Send a 1×1 white PNG plus a text question to each vision-capable provider.
+    Verifies image content parts survive the proxy and the provider replies.
     """
 
     @pytest.mark.parametrize("provider_type,model,api_key", _VISION_PARAMS)
@@ -556,12 +542,10 @@ class TestVisionInference:
 
 class TestLocalInferenceUnaffected:
     def test_chat_without_provider(self, auth_headers: dict[str, str]):
-        """
-        POST /v1/chat/completions without provider fields must not return 422 or 500.
+        """POST /v1/chat/completions without provider fields must not 422/500.
 
-        200 = a local model is loaded and responded.
-        503 = no model loaded (expected in test environment — that's fine).
-        Any other 4xx/5xx (except 503) = regression in request handling.
+        200 = local model responded; 503 = no model loaded (fine in tests);
+        any other 4xx/5xx = request-handling regression.
         """
         resp = requests.post(
             _url("/v1/chat/completions"),

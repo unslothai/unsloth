@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for :mod:`utils.models.gguf_metadata`. Synthesise small GGUF
-headers in tmp dirs so we never depend on real model files."""
+"""Tests for :mod:`utils.models.gguf_metadata`. Synthesise small GGUF headers
+in tmp dirs so we never depend on real model files."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def test_metadata_is_cached(tmp_path: Path):
     )
     first = read_gguf_general_metadata(str(p))
     assert first == {"general.basename": "First"}
-    # Force size change so the (path, mtime, size) key invalidates.
+    # Change size so the (path, mtime, size) cache key invalidates.
     _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.basename": "Second", "general.organization": "X"},

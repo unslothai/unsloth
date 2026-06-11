@@ -35,10 +35,10 @@ def _parse_function_param_defaults(source: str, func_name: str) -> dict:
 
 
 def _parse_argparse_add_argument_default(source: str, option_name: str):
-    """Return the 'default' kwarg value for add_argument(option_name, ...) in *source*.
+    """Return the 'default' kwarg for add_argument(option_name, ...) in *source*.
 
-    Walks the entire module so the call can live in __main__ or in a helper
-    function — only handles ast.Constant defaults.
+    Walks the whole module so the call may live in __main__ or a helper;
+    only handles ast.Constant defaults.
     """
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -59,12 +59,10 @@ def _parse_argparse_add_argument_default(source: str, option_name: str):
 
 
 def test_run_server_default_host_is_loopback():
-    """run_server() parameter default for 'host' must be 127.0.0.1, not 0.0.0.0.
+    """run_server() 'host' default must be 127.0.0.1, not 0.0.0.0.
 
-    Binding to 0.0.0.0 by default exposes the service on all network
-    interfaces, contradicting the documented "privacy first / 100% local"
-    guarantee.  Loopback (127.0.0.1) is the least-permissive default;
-    users who need network access can pass -H 0.0.0.0 explicitly.
+    0.0.0.0 exposes the service on all interfaces; loopback is the
+    least-permissive default. Users needing network access pass -H 0.0.0.0.
     """
     source = _RUN_PY.read_text()
     defaults = _parse_function_param_defaults(source, "run_server")
@@ -81,7 +79,7 @@ def test_argparse_default_host_is_loopback():
     """argparse --host add_argument default must be 127.0.0.1.
 
     When run.py is invoked directly (python run.py), the argparse default
-    should match the function default so direct execution is equally safe.
+    must match the function default so direct execution is equally safe.
     """
     source = _RUN_PY.read_text()
     host_default = _parse_argparse_add_argument_default(source, "--host")

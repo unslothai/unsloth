@@ -692,11 +692,8 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         pass
 
         result = self.base_layer(x, *args, **kwargs)
-        # As per Tim Dettmers, for 4bit, we need to defensively clone here.
-        # The reason is that in some cases, an error can occur that backprop
-        # does not work on a manipulated view. This issue may be solved with
-        # newer PyTorch versions but this would need extensive testing to be
-        # sure.
+        # Per Tim Dettmers: for 4bit, defensively clone -- backprop can fail on a
+        # manipulated view (may be fixed in newer PyTorch, untested).
         result = result.clone()
 
         for active_adapter in self.active_adapters:

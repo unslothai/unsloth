@@ -34,13 +34,13 @@ def rebind_experts_to_shared_buffer(moe_block: Qwen3MoeSparseMoeBlock, config: Q
     buffer_gate = torch.empty(num_experts, interm_size, hidden_size, device = device, dtype = dtype)
     buffer_down = torch.empty(num_experts, hidden_size, interm_size, device = device, dtype = dtype)
 
-    # Step 2: Copy existing expert weights into buffers
+    # Copy existing expert weights into buffers
     for i, expert in enumerate(moe_block.experts):
         buffer_up[i].copy_(expert.up_proj.weight.data)
         buffer_gate[i].copy_(expert.gate_proj.weight.data)
         buffer_down[i].copy_(expert.down_proj.weight.data)
 
-    # Step 3: Rebind expert weights to views in shared buffer
+    # Rebind expert weights to views in the shared buffer
     for i, expert in enumerate(moe_block.experts):
         expert.up_proj.weight = torch.nn.Parameter(buffer_up[i])
         expert.gate_proj.weight = torch.nn.Parameter(buffer_gate[i])
@@ -332,13 +332,11 @@ def run_backward(
 
 
 class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
-    """
-    Reference implementation of MoE block using grouped gemm.
+    """Reference MoE block using triton grouped gemm.
 
-    This is the same as the Qwen3MoeGroupedGEMMBlock but with triton grouped gemm in place of torch-native grouped gemm implementation.
-
-    NOTE: This is NOT to be used for production as it contains many extra checks and saves all intermediate results for debugging.
-    See grouped_gemm/reference/moe_block.py for a cleaner implementation.
+    Like Qwen3MoeGroupedGEMMBlock but with triton (not torch-native) grouped gemm.
+    NOT for production: it saves intermediate results and runs extra checks for
+    debugging. See grouped_gemm/reference/moe_block.py for a cleaner version.
     """
 
     def __init__(
@@ -406,14 +404,13 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
-        # Pre-processing
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
+        # Pre-processing: token counts per expert + token-order -> expert-order
+        # gather indices (auxiliary, not recorded in the autograd graph).
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # 2. permute_x -> permutation will be fused in prologue of first grouped gemm
+        # permute_x fuses the permutation into the first grouped gemm's prologue
         if not self.permute_x:
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
             assert hidden_states.shape == (total_tokens, hidden_dim)
@@ -452,15 +449,14 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
-        # Post-processing
-        # 1. Unpermute from expert order to token order
+        # Post-processing: unpermute expert order -> token order
         if not self.permute_y:
             hidden_states_unpermute = unpermute(second_gemm, gather_indices)
             assert hidden_states_unpermute.shape == (total_tokens, hidden_dim)
         else:
             hidden_states_unpermute = second_gemm
 
-        # 2. Merge topk weights
+        # Merge topk weights
         hidden_states = (
             hidden_states_unpermute.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]
