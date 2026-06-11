@@ -2890,7 +2890,27 @@ def detect_host() -> HostInfo:
         except Exception:
             pass
 
+    # Linux /proc/driver/nvidia/gpus fallback: the NVIDIA driver exposes one
+    # subdir per GPU here regardless of nvidia-smi state, so a host whose
+    # nvidia-smi is absent from PATH, wedged, or failing is still recognised as
+    # NVIDIA. Mirrors the fallback added to install.sh / install_python_stack.py
+    # in PR 6174 so the prebuilt installer does not misroute such hosts to ROCm
+    # or CPU. driver_cuda_version / compute_caps stay unset here; downstream
+    # CUDA asset selection treats unknown SMs as "prefer portable" and an
+    # unknown driver runtime line as "no published CUDA match" (returns None,
+    # no crash), so planning falls back to a source build with GGML_CUDA=ON.
+    if is_linux and not has_physical_nvidia:
+        try:
+            proc_gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(proc_gpu_dir) and os.listdir(proc_gpu_dir):
+                has_physical_nvidia = True
+                has_usable_nvidia = visible_device_tokens != []
+        except OSError:
+            pass
+
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
+    # NVIDIA takes precedence: when an NVIDIA GPU is usable, skip ROCm probing
+    # entirely so co-installed ROCm tools cannot misroute the host (PR 6174).
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
@@ -2898,7 +2918,7 @@ def detect_host() -> HostInfo:
 
     has_rocm = False
     rocm_gfx_target: str | None = None
-    if is_linux:
+    if is_linux and not has_usable_nvidia:
         # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
         # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
         # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
@@ -2937,7 +2957,7 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
-    elif is_windows:
+    elif is_windows and not has_usable_nvidia:
         # Windows: prefer active probes that validate GPU presence.
         # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
         # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
