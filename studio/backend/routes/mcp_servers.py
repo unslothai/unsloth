@@ -245,8 +245,7 @@ async def refresh_mcp_server_tools(
 
 @router.post("/import", response_model = McpServerImportResult)
 async def import_mcp_servers(
-    payload: McpServerImportRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: McpServerImportRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Bulk-register servers from a standard mcpServers JSON config (issue
     #5936). Each entry rides the existing create path: _validate_url applies

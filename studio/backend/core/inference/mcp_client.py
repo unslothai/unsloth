@@ -45,7 +45,6 @@ def join_stdio_command(parts: list[str]) -> str:
     paths round-trip through the posix=False quote-strip; posix uses shlex."""
     if sys.platform == "win32":
         import subprocess
-
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
 
