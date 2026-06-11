@@ -514,9 +514,18 @@ _CTX_FIT_VRAM_FRACTION = 0.90
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
-def _auto_mode_drops_mtp(req_mode: Optional[str], size_b: Optional[float]) -> bool:
-    """Auto mode drops MTP below _MTP_MIN_SIZE_B (draft-mtp regresses there);
-    forced mtp / mtp+ngram engage regardless of size."""
+def _auto_mode_drops_mtp(
+    req_mode: Optional[str],
+    size_b: Optional[float],
+    *,
+    has_separate_drafter: bool = False,
+) -> bool:
+    """Auto mode drops MTP below _MTP_MIN_SIZE_B for an embedded draft head
+    (its per-token cost regresses there); a separate drafter (Gemma) is a tiny
+    standalone model that still speeds up below 3B, so it never drops. Forced
+    mtp / mtp+ngram engage regardless of size."""
+    if has_separate_drafter:
+        return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
@@ -2910,19 +2919,14 @@ class LlamaCppBackend:
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
                     # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops. Skipped when the user disabled MTP, drives
-                    # --spec-type manually via extra_args, or in auto mode on a
-                    # sub-3B model (e.g. Gemma E2B) where the resolver drops
-                    # MTP anyway -- no point fetching a drafter it never uses.
-                    # Forced mtp / mtp+ngram still download (user override).
+                    # this no-ops, so the size gate stays out of it: a separate
+                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
+                    # below decides the final emission. Skipped only when the
+                    # user disabled MTP or drives --spec-type manually.
                     _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-                    _auto_drops_mtp = _auto_mode_drops_mtp(
-                        _spec_canon, _extract_model_size_b(model_identifier)
-                    )
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _auto_drops_mtp
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         mtp_draft_path = self._download_mtp(
@@ -3002,8 +3006,12 @@ class LlamaCppBackend:
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
+                    # Sub-3B drops MTP only for an embedded head; a separate
+                    # drafter (Gemma) engages and needs its VRAM reserved.
                     _mtp_sub_3b_for_fit = (
-                        _mtp_size_for_fit is not None and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        _mtp_size_for_fit is not None
+                        and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        and not bool(mtp_draft_path)
                     )
                     _mtp_will_engage = bool(
                         not _extra_args_set_spec_type(extra_args)
@@ -3771,18 +3779,26 @@ class LlamaCppBackend:
               https://github.com/ggml-org/llama.cpp/pull/18471
               MTP guide: unsloth.ai/docs/models/qwen3.6#mtp-guide
 
-        Sub-3B dense MTP regresses vs spec-off: the draft head's per-token
-        cost exceeds the acceptance savings at this scale. Q4_K_XL clean
-        bench (each prompt once after an unrelated warmup) on B200 + x86 CPU:
+        Sub-3B dense MTP regresses vs spec-off when the head is baked into the
+        main GGUF (Qwen): the draft head's per-token cost exceeds the
+        acceptance savings at this scale. Q4_K_XL clean bench (each prompt once
+        after an unrelated warmup) on B200 + x86 CPU:
           0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
           2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
           0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
           2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
           4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
+        A separate drafter (Gemma's root mtp-*.gguf) is a different, cheaper
+        mechanism that wins even below 3B, so it is exempt from the sub-3B drop
+        (``mtp_draft_path`` set -> not too small). B200 Q4_K_XL bench, draft-mtp
+        n=2 vs OFF: gemma-4-E2B (2B) = 1.21x, accept ~0.65 (vs ngram = 1.00x);
+        gemma-4-E4B (4B) and 12B engage as usual.
         Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
-        diverse content); forced MTP on a model with no head/drafter defaults
-        back (mtp -> spec-default, mtp+ngram -> ngram-mod) since llama-server
-        aborts otherwise; sub-3B real-MTP engages with a warning.
+        diverse content) for an embedded sub-3B head; forced MTP on a model
+        with no head/drafter defaults back (mtp -> spec-default, mtp+ngram ->
+        ngram-mod) since llama-server aborts otherwise; a drafter the binary
+        cannot build (older prebuilt, or a CUDA kernel limit) aborts the spawn
+        and the load retries once without speculative decoding.
         """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
@@ -3801,7 +3817,11 @@ class LlamaCppBackend:
         )
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
-        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B
+        # The sub-3B regression is an embedded-head cost; a separate drafter
+        # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        _mtp_too_small = (
+            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
