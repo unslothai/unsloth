@@ -32,6 +32,29 @@ def _request_with_hf_token():
     return types.SimpleNamespace(query_params = {"hf_token": "secret"})
 
 
+# A YAML-known TRC vision model: is_vision + trust_remote_code come from the
+# defaults, so resolution must report vision without a live probe.
+_YAML_TRC_VISION_DEFAULTS = {
+    "model": {"is_vision": True},
+    "inference": {"trust_remote_code": True},
+}
+
+
+def _patch_yaml_trc_vision(monkeypatch):
+    """Stub load_model_defaults to the TRC-vision YAML and make the live
+    vision probe an error, so a test fails loudly if resolution probes."""
+
+    def fail_vision(*_args, **_kwargs):
+        raise AssertionError("YAML-known TRC VLM must not probe before opt-in")
+
+    monkeypatch.setattr(
+        models_route,
+        "load_model_defaults",
+        lambda _model: _YAML_TRC_VISION_DEFAULTS,
+    )
+    monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
+
+
 def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     calls: dict[str, str] = {}
 
@@ -100,20 +123,9 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
         is_lora = False
         base_model = None
 
-    def fail_vision(*_args, **_kwargs):
-        raise AssertionError("YAML-known TRC VLM should not probe before opt-in")
-
+    _patch_yaml_trc_vision(monkeypatch)
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
     monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
-    monkeypatch.setattr(
-        models_route,
-        "load_model_defaults",
-        lambda _model: {
-            "model": {"is_vision": True},
-            "inference": {"trust_remote_code": True},
-        },
-    )
-    monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", lambda *_args, **_kw: False)
     monkeypatch.setattr(model_config_module, "detect_audio_type", lambda *_args, **_kw: None)
     monkeypatch.setattr(
@@ -137,18 +149,7 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
 
 
 def test_check_vision_reports_yaml_trc_vision_without_probe(monkeypatch):
-    def fail_vision(*_args, **_kwargs):
-        raise AssertionError("YAML-known TRC VLM should not probe before opt-in")
-
-    monkeypatch.setattr(
-        models_route,
-        "load_model_defaults",
-        lambda _model: {
-            "model": {"is_vision": True},
-            "inference": {"trust_remote_code": True},
-        },
-    )
-    monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
+    _patch_yaml_trc_vision(monkeypatch)
 
     result = asyncio.run(
         models_route.check_vision_model(
@@ -162,19 +163,7 @@ def test_check_vision_reports_yaml_trc_vision_without_probe(monkeypatch):
 
 
 def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
-    monkeypatch.setattr(
-        models_route,
-        "load_model_defaults",
-        lambda _model: {
-            "model": {"is_vision": True},
-            "inference": {"trust_remote_code": True},
-        },
-    )
-
-    def fail_vision(*_args, **_kwargs):
-        raise AssertionError("YAML-known TRC VLM should not depend on live probe")
-
-    monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
+    _patch_yaml_trc_vision(monkeypatch)
 
     result = asyncio.run(
         models_route.check_vision_model(
@@ -188,24 +177,14 @@ def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
     assert result.is_vision is True
 
 
-def test_get_model_config_rejects_hf_token_query() -> None:
+@pytest.mark.parametrize(
+    "route_fn",
+    ["get_model_config", "check_vision_model"],
+)
+def test_rejects_hf_token_query(route_fn) -> None:
     with pytest.raises(models_route.HTTPException) as exc_info:
         asyncio.run(
-            models_route.get_model_config(
-                request = _request_with_hf_token(),
-                model_name = "org/model",
-                current_subject = "test-subject",
-            )
-        )
-
-    assert exc_info.value.status_code == 400
-    assert "POST JSON" in exc_info.value.detail
-
-
-def test_check_vision_rejects_hf_token_query() -> None:
-    with pytest.raises(models_route.HTTPException) as exc_info:
-        asyncio.run(
-            models_route.check_vision_model(
+            getattr(models_route, route_fn)(
                 request = _request_with_hf_token(),
                 model_name = "org/model",
                 current_subject = "test-subject",

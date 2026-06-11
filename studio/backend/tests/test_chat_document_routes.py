@@ -50,6 +50,62 @@ class _FakeStreamingRequest:
             yield chunk
 
 
+def make_extract_result(**overrides):
+    """A fake high-level extraction result (what _extract_document returns)
+    with sensible defaults; pass overrides per test."""
+    fields = {
+        "markdown": "# Doc\n",
+        "page_count": 1,
+        "tokens_est": 2,
+        "figures": [],
+        "describe_skipped_reason": None,
+        "vlm_source": "none",
+        "vlm_model": None,
+        "warnings": [],
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _make_app(
+    monkeypatch,
+    fake_extract = None,
+    *,
+    detect_vlm = None,
+    llama_backend = None,
+):
+    """FastAPI test client with the document-extraction seams stubbed.
+
+    `detect_vlm` overrides the probe result (default: no model loaded);
+    `llama_backend` stubs get_llama_cpp_backend for GGUF caption-auth tests.
+    """
+    app = FastAPI()
+    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
+    app.include_router(route.studio_router, prefix = "/api/inference")
+    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
+    # CI may lack the optional pdf/docx parsers, which would 501 before the
+    # behavioural checks (415/413/422/...) run. Report every format
+    # available; "parser missing" tests patch this back to False.
+    monkeypatch.setattr(
+        route,
+        "_document_parser_support",
+        lambda: {"pdf": True, "docx": True, "html": True, "text": True},
+    )
+    monkeypatch.setattr(route, "_document_parser_unavailable_reasons", lambda: {})
+    monkeypatch.setattr(
+        route,
+        "_extract_self_base_url",
+        lambda _request: "http://127.0.0.1:8000",
+    )
+    cap = detect_vlm if detect_vlm is not None else VlmCapability.none("no model loaded")
+    monkeypatch.setattr(route, "_detect_loaded_vlm", lambda *_args, **_kwargs: cap)
+    if fake_extract is not None:
+        monkeypatch.setattr(route, "_extract_document", fake_extract)
+    if llama_backend is not None:
+        monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: llama_backend)
+    return TestClient(app)
+
+
 def test_reject_oversized_content_length_allows_missing_header() -> None:
     route._reject_oversized_content_length(_FakeRequest({}))
 
@@ -423,10 +479,6 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
     endpoint streams progress events plus a final `{stage:"result"}`."""
     import json as _json
 
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
     async def fake_extract_document(*_args, **kwargs):
         # Parsing event, two captioning events, then a minimal result.
         progress_cb = kwargs.get("progress_cb")
@@ -450,31 +502,9 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
                     "total_pages": 3,
                 }
             )
-        return SimpleNamespace(
-            markdown = "# Stream\n",
-            page_count = 3,
-            tokens_est = 5,
-            figures = [],
-            describe_skipped_reason = None,
-            vlm_source = "none",
-            vlm_model = None,
-            warnings = [],
-        )
+        return make_extract_result(markdown = "# Stream\n", page_count = 3, tokens_est = 5)
 
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-
-    client = TestClient(app)
+    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     response = client.post(
         "/api/inference/chat/extract-document",
         headers = {
@@ -502,39 +532,13 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
 
 
 def test_extract_document_endpoint_accepts_multipart_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
     captured: dict[str, object] = {}
 
     async def fake_extract_document(*_args, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(
-            markdown = "# Smoke\n",
-            page_count = 1,
-            tokens_est = 2,
-            figures = [],
-            describe_skipped_reason = None,
-            vlm_source = "none",
-            vlm_model = None,
-            warnings = [],
-        )
+        return make_extract_result(markdown = "# Smoke\n")
 
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-
-    client = TestClient(app)
+    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     response = client.post(
         "/api/inference/chat/extract-document",
         headers = {"Authorization": "Bearer test-token"},
@@ -559,16 +563,7 @@ def test_extract_document_endpoint_does_not_globally_gate_on_pdf_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_extract_document(*_args, **_kwargs):
-        return SimpleNamespace(
-            markdown = "# Text\n",
-            page_count = 1,
-            tokens_est = 2,
-            figures = [],
-            describe_skipped_reason = None,
-            vlm_source = "none",
-            vlm_model = None,
-            warnings = [],
-        )
+        return make_extract_result(markdown = "# Text\n")
 
     client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", False)
@@ -584,45 +579,27 @@ def test_extract_document_endpoint_does_not_globally_gate_on_pdf_backend(
 def test_extract_document_endpoint_uses_llama_api_key_for_gguf_captions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
     captured: dict[str, object] = {}
 
     async def fake_extract_document(*_args, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(
+        return make_extract_result(
             markdown = "# Smoke\n",
-            page_count = 1,
-            tokens_est = 2,
-            figures = [],
-            describe_skipped_reason = None,
             vlm_source = "gguf",
             vlm_model = "vision.gguf",
-            warnings = [],
         )
 
-    llama_backend = SimpleNamespace(api_key = "llama-secret")
-    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
-    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: llama_backend)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability(
+    client = _make_app(
+        monkeypatch,
+        fake_extract = fake_extract_document,
+        detect_vlm = VlmCapability(
             is_vlm = True,
             endpoint_url = "http://127.0.0.1:8080",
             model_name = "vision.gguf",
             source = "gguf",
         ),
+        llama_backend = SimpleNamespace(api_key = "llama-secret"),
     )
-
-    client = TestClient(app)
     response = client.post(
         "/api/inference/chat/extract-document",
         headers = {"Authorization": "Bearer studio-token"},
@@ -634,95 +611,118 @@ def test_extract_document_endpoint_uses_llama_api_key_for_gguf_captions(
     assert captured["authorization_header"] == "Bearer llama-secret"
 
 
-def test_extract_document_endpoint_maps_busy_worker_to_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
-    async def busy_extract_document(*_args, **_kwargs):
-        raise route._DocumentExtractionBusy("document extraction is busy")
-
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(route, "_extract_document", busy_extract_document)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        files = {"file": ("sample.md", b"# Smoke\n", "text/markdown")},
-    )
-
-    assert response.status_code == 503
-
-
-def test_extract_document_endpoint_maps_value_error_to_415(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
-    async def fake_extract_document(*_args, **_kwargs):
-        raise ValueError("Unsupported file type: upload.bin")
-
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        files = {"file": ("upload.bin", b"hello", "text/plain")},
-    )
-
-    assert response.status_code == 415
-    assert "Unsupported file type" in response.json()["detail"]
-
-
-def test_extract_document_endpoint_maps_parse_value_error_to_400(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("make_exc", "alias_attr", "filename", "content", "mime", "data", "status", "detail"),
+    [
+        pytest.param(
+            lambda: route._DocumentExtractionBusy("document extraction is busy"),
+            None,
+            "sample.md",
+            b"# Smoke\n",
+            "text/markdown",
+            None,
+            503,
+            None,
+            id = "busy-503",
+        ),
+        pytest.param(
+            lambda: ValueError("Unsupported file type: upload.bin"),
+            None,
+            "upload.bin",
+            b"hello",
+            "text/plain",
+            None,
+            415,
+            "Unsupported file type",
+            id = "value-error-415",
+        ),
+        pytest.param(
+            lambda: ValueError("Could not parse document"),
+            None,
+            "upload.md",
+            b"# hello",
+            "text/markdown",
+            None,
+            400,
+            "Could not parse document",
+            id = "parse-value-error-400",
+        ),
+        pytest.param(
+            lambda: extractor.DocumentExtractionTimeout("timed out"),
+            "_DocumentExtractionTimeout",
+            "doc.md",
+            b"# Doc\n",
+            "text/markdown",
+            {"describe_images": "false"},
+            504,
+            "120",
+            id = "timeout-504",
+        ),
+        pytest.param(
+            lambda: route._DocumentExtractionEncrypted("Encrypted PDF"),
+            None,
+            "doc.md",
+            b"# Doc\n",
+            "text/markdown",
+            {"describe_images": "false"},
+            422,
+            "Encrypted PDF",
+            id = "encrypted-422",
+        ),
+        pytest.param(
+            lambda: route._DocumentExtractionCancelled("cancelled"),
+            None,
+            "doc.md",
+            b"# Doc\n",
+            "text/markdown",
+            {"describe_images": "false"},
+            499,
+            "Client closed request",
+            id = "cancelled-499",
+        ),
+        pytest.param(
+            lambda: extractor.DocumentExtractionUnavailable("document extraction is not installed"),
+            "_DocumentExtractionUnavailable",
+            "doc.md",
+            b"# Doc\n",
+            "text/markdown",
+            {"describe_images": "false"},
+            501,
+            None,
+            id = "unavailable-501",
+        ),
+    ],
+)
+def test_extract_document_endpoint_maps_extraction_errors(
+    monkeypatch, make_exc, alias_attr, filename, content, mime, data, status, detail
 ) -> None:
-    async def fake_extract_document(*_args, **_kwargs):
-        raise ValueError("Could not parse document")
+    """Each extractor failure maps to a stable HTTP status (and detail)."""
+    if alias_attr is not None:
+        # The route catches its own alias of the extractor exception; re-bind it
+        # to the real class the fake raises (a no-op when the import succeeded,
+        # but keeps the status mapping pinned to the real exception type).
+        monkeypatch.setattr(route, alias_attr, type(make_exc()))
 
-    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
+    async def fake_extract(*_args, **_kwargs):
+        raise make_exc()
+
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
-        files = {"file": ("upload.md", b"# hello", "text/markdown")},
+        data = data,
+        files = {"file": (filename, content, mime)},
     )
 
-    assert response.status_code == 400
-    assert "Could not parse document" in response.json()["detail"]
+    assert response.status_code == status
+    if detail is not None:
+        actual = response.json()["detail"]
+        # The 499 detail is a fixed constant; pin it exactly.
+        assert actual == detail if status == 499 else detail in actual
 
 
 def test_extract_document_endpoint_reports_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_extract_document(*_args, **_kwargs):
-        return SimpleNamespace(
-            markdown = "word " * 2000,
-            page_count = 1,
-            tokens_est = 2500,
-            figures = [],
-            describe_skipped_reason = None,
-            vlm_source = "none",
-            vlm_model = None,
-            warnings = [],
-        )
+        return make_extract_result(markdown = "word " * 2000, tokens_est = 2500)
 
     client = _make_app(monkeypatch, fake_extract_document)
     response = client.post(
@@ -739,27 +739,10 @@ def test_extract_document_endpoint_reports_truncated(monkeypatch: pytest.MonkeyP
 def test_extract_document_endpoint_sanitizes_extract_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-
     async def fake_extract_document(*_args, **_kwargs):
         raise RuntimeError("local path C:/secret/model/cache leaked")
 
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-
-    client = TestClient(app)
+    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     response = client.post(
         "/api/inference/chat/extract-document",
         files = {"file": ("sample.md", b"# Smoke\n", "text/markdown")},
@@ -767,40 +750,6 @@ def test_extract_document_endpoint_sanitizes_extract_errors(
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Extraction failed"
-
-
-def _make_app(monkeypatch: pytest.MonkeyPatch, fake_extract = None):
-    """Helper: create a FastAPI test app with extraction stubs applied."""
-    app = FastAPI()
-    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
-    app.include_router(route.studio_router, prefix = "/api/inference")
-    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    # CI may lack the optional pdf/docx parsers, which would 501 before the
-    # behavioural checks (415/413/422/...) run. Report every format
-    # available; "parser missing" tests patch this back to False.
-    monkeypatch.setattr(
-        route,
-        "_document_parser_support",
-        lambda: {"pdf": True, "docx": True, "html": True, "text": True},
-    )
-    monkeypatch.setattr(
-        route,
-        "_document_parser_unavailable_reasons",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        route,
-        "_extract_self_base_url",
-        lambda _request: "http://127.0.0.1:8000",
-    )
-    monkeypatch.setattr(
-        route,
-        "_detect_loaded_vlm",
-        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
-    )
-    if fake_extract is not None:
-        monkeypatch.setattr(route, "_extract_document", fake_extract)
-    return TestClient(app)
 
 
 def test_document_support_reports_format_parser_availability(
@@ -900,9 +849,7 @@ def test_figures_are_serialized_via_pydantic_model(monkeypatch: pytest.MonkeyPat
     from core.chat.document_extractor import ExtractedFigure
 
     async def fake_extract(*_args, **_kwargs):
-        return SimpleNamespace(
-            markdown = "# Doc\n",
-            page_count = 1,
+        return make_extract_result(
             tokens_est = 3,
             figures = [
                 ExtractedFigure(
@@ -917,10 +864,6 @@ def test_figures_are_serialized_via_pydantic_model(monkeypatch: pytest.MonkeyPat
                     image_height = None,
                 )
             ],
-            describe_skipped_reason = None,
-            vlm_source = "none",
-            vlm_model = None,
-            warnings = [],
         )
 
     client = _make_app(monkeypatch, fake_extract = fake_extract)
@@ -935,43 +878,6 @@ def test_figures_are_serialized_via_pydantic_model(monkeypatch: pytest.MonkeyPat
     assert len(figs) == 1
     assert figs[0]["id"] == "fig-0"
     assert figs[0]["caption"] == "A chart"
-
-
-def test_extraction_timeout_returns_504(monkeypatch: pytest.MonkeyPatch) -> None:
-    from core.chat.document_extractor import DocumentExtractionTimeout
-
-    async def fake_extract(*_args, **_kwargs):
-        raise DocumentExtractionTimeout("timed out")
-
-    monkeypatch.setattr(
-        route,
-        "_DocumentExtractionTimeout",
-        DocumentExtractionTimeout,
-    )
-    client = _make_app(monkeypatch, fake_extract = fake_extract)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        data = {"describe_images": "false"},
-        files = {"file": ("doc.md", b"# Doc\n", "text/markdown")},
-    )
-
-    assert response.status_code == 504
-    assert "120" in response.json()["detail"]
-
-
-def test_encrypted_extraction_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_extract(*_args, **_kwargs):
-        raise route._DocumentExtractionEncrypted("Encrypted PDF")
-
-    client = _make_app(monkeypatch, fake_extract = fake_extract)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        data = {"describe_images": "false"},
-        files = {"file": ("doc.md", b"# Doc\n", "text/markdown")},
-    )
-
-    assert response.status_code == 422
-    assert "Encrypted PDF" in response.json()["detail"]
 
 
 def test_real_encrypted_pdf_preflight_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -998,21 +904,6 @@ def test_real_encrypted_pdf_preflight_returns_422(monkeypatch: pytest.MonkeyPatc
     assert "Encrypted PDF" in response.json()["detail"]
 
 
-def test_cancelled_extraction_returns_499(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_extract(*_args, **_kwargs):
-        raise route._DocumentExtractionCancelled("cancelled")
-
-    client = _make_app(monkeypatch, fake_extract = fake_extract)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        data = {"describe_images": "false"},
-        files = {"file": ("doc.md", b"# Doc\n", "text/markdown")},
-    )
-
-    assert response.status_code == 499
-    assert response.json()["detail"] == "Client closed request"
-
-
 def test_endpoint_returns_415_for_unsupported_mime(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_app(monkeypatch)
     response = client.post(
@@ -1029,26 +920,6 @@ def test_endpoint_returns_400_for_empty_file(monkeypatch: pytest.MonkeyPatch) ->
         files = {"file": ("empty.md", b"", "text/markdown")},
     )
     assert response.status_code == 400
-
-
-def test_endpoint_returns_501_when_extraction_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    from core.chat.document_extractor import DocumentExtractionUnavailable
-
-    async def fake_extract(*_args, **_kwargs):
-        raise DocumentExtractionUnavailable("document extraction is not installed")
-
-    monkeypatch.setattr(
-        route,
-        "_DocumentExtractionUnavailable",
-        DocumentExtractionUnavailable,
-    )
-    client = _make_app(monkeypatch, fake_extract = fake_extract)
-    response = client.post(
-        "/api/inference/chat/extract-document",
-        data = {"describe_images": "false"},
-        files = {"file": ("doc.md", b"# Doc\n", "text/markdown")},
-    )
-    assert response.status_code == 501
 
 
 def test_endpoint_returns_415_for_pptx(monkeypatch: pytest.MonkeyPatch) -> None:

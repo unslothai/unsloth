@@ -9,15 +9,7 @@ Pinned regression: both paths checked ``is_encrypted`` instead of
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-
-_BACKEND = Path(__file__).resolve().parents[2] / "studio" / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _make_pseudo_encrypted_pdf() -> bytes:

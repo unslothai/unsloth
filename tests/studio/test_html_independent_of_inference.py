@@ -21,11 +21,9 @@ from pathlib import Path
 import pytest
 
 
+# sys.path bootstrap lives in tests/studio/conftest.py; _BACKEND is still
+# needed for the subprocess header below.
 _BACKEND = Path(__file__).resolve().parents[2] / "studio" / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-
 _HEADER = f"import sys, importlib\nsys.path.insert(0, {str(_BACKEND)!r})\n"
 
 

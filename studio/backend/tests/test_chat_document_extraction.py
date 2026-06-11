@@ -24,6 +24,77 @@ from core.chat.vlm_capability import (
 
 
 # ---------------------------------------------------------------------- #
+# Shared fakes/factories                                                 #
+# ---------------------------------------------------------------------- #
+
+
+def install_fake_extract(
+    monkeypatch,
+    *,
+    returns = None,
+    extract = None,
+):
+    """Mark extraction available and swap the _run_extract_sync seam. Pass
+    `returns` for a fixed (markdown, figures, pages, trunc, seen) tuple, or
+    `extract` for a custom (file_bytes, filename, options, content_type)
+    callable when the result depends on the options."""
+    from core.chat import document_extractor as de
+
+    if extract is None:
+
+        def extract(
+            _fb,
+            _fn,
+            _opts,
+            _ct = "",
+        ):
+            return returns
+
+    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
+    monkeypatch.setattr(de, "_run_extract_sync", extract)
+
+
+def make_figures(
+    n,
+    *,
+    encoded_until = None,
+    size_with_payload = False,
+):
+    """Build n ExtractedFigure rows. `encoded_until` (None = all) sets how
+    many carry image_mime/image_base64; `size_with_payload` ties width/height
+    to the payload instead of a constant 10."""
+    from core.chat.document_extractor import ExtractedFigure
+
+    figs = []
+    for i in range(n):
+        has_payload = encoded_until is None or i < encoded_until
+        figs.append(
+            ExtractedFigure(
+                id = f"fig-{i}",
+                page = i + 1,
+                caption = None,
+                kind = "figure",
+                image_mime = "image/jpeg" if has_payload else None,
+                image_base64 = "b64" if has_payload else None,
+                image_width = (10 if has_payload else None) if size_with_payload else 10,
+                image_height = (10 if has_payload else None) if size_with_payload else 10,
+            )
+        )
+    return figs
+
+
+def vlm_cap(source = "transformers", *, endpoint_url = "http://127.0.0.1:8000"):
+    """A loaded vision-capable VlmCapability for ``capability=`` arguments."""
+    return VlmCapability(
+        is_vlm = True,
+        endpoint_url = endpoint_url,
+        model_name = "vlm",
+        source = source,
+        reason = None,
+    )
+
+
+# ---------------------------------------------------------------------- #
 # VlmCapability dataclass                                                #
 # ---------------------------------------------------------------------- #
 
@@ -364,28 +435,14 @@ async def test_max_figures_zero_sets_describe_skipped_reason(
     when a VLM is available."""
     from core.chat import document_extractor as de
 
-    def fake_extract(
-        _fb,
-        _fn,
-        _opts,
-        _ct = "",
-    ):
-        return "# Smoke\n", [], 1, 0, 0
-
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, returns = ("# Smoke\n", [], 1, 0, 0))
 
     result = await de.extract_document(
         b"# Smoke\n",
         "sample.md",
         describe_images = True,
         max_figures = 0,
-        capability = VlmCapability(
-            is_vlm = True,
-            endpoint_url = "http://127.0.0.1:8000",
-            model_name = "vlm",
-            source = "transformers",
-        ),
+        capability = vlm_cap(),
     )
 
     assert result.describe_skipped_reason == (
@@ -413,8 +470,7 @@ async def test_run_extract_sync_seam_receives_content_type(monkeypatch: pytest.M
         received["content_type"] = ct
         return "ok", [], 0, 0, 0
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
 
     await de.extract_document(
         b"hello",
@@ -545,7 +601,6 @@ async def test_multi_figure_extraction_encoded_visuals_capped_at_3(
     """Only _MAX_ENCODED_VISUALS (3) figures may have image_base64 set;
     remaining figures beyond the cap must have image_base64=None."""
     from core.chat import document_extractor as de
-    from core.chat.document_extractor import ExtractedFigure
 
     def fake_extract(
         _fb,
@@ -553,23 +608,10 @@ async def test_multi_figure_extraction_encoded_visuals_capped_at_3(
         _opts,
         _ct = "",
     ):
-        figs = [
-            ExtractedFigure(
-                id = f"fig-{i}",
-                page = i + 1,
-                caption = None,
-                kind = "figure",
-                image_mime = "image/jpeg" if i < de._MAX_ENCODED_VISUALS else None,
-                image_base64 = "b64" if i < de._MAX_ENCODED_VISUALS else None,
-                image_width = 10,
-                image_height = 10,
-            )
-            for i in range(5)
-        ]
+        figs = make_figures(5, encoded_until = de._MAX_ENCODED_VISUALS)
         return "# Multi\n", figs, 5, 0, 5
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
 
     result = await de.extract_document(
         b"dummy",
@@ -591,7 +633,6 @@ async def test_multi_figure_extraction_respects_configured_visual_cap(
 ) -> None:
     """The caller can raise the image-byte cap up to the server safety maximum."""
     from core.chat import document_extractor as de
-    from core.chat.document_extractor import ExtractedFigure
 
     def fake_extract(
         _fb,
@@ -599,24 +640,10 @@ async def test_multi_figure_extraction_respects_configured_visual_cap(
         opts,
         _ct = "",
     ):
-        max_visuals = opts["max_visual_payloads"]
-        figs = [
-            ExtractedFigure(
-                id = f"fig-{i}",
-                page = i + 1,
-                caption = None,
-                kind = "figure",
-                image_mime = "image/jpeg" if i < max_visuals else None,
-                image_base64 = "b64" if i < max_visuals else None,
-                image_width = 10,
-                image_height = 10,
-            )
-            for i in range(6)
-        ]
+        figs = make_figures(6, encoded_until = opts["max_visual_payloads"])
         return "# Multi\n", figs, 6, 0, 6
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
 
     result = await de.extract_document(
         b"dummy",
@@ -639,7 +666,6 @@ async def test_partial_vlm_failure_records_per_figure_error(
     """When one describe call raises, only the failing figure gets an
     error; the others still receive captions."""
     from core.chat import document_extractor as de
-    from core.chat.document_extractor import ExtractedFigure
 
     def fake_extract(
         _fb,
@@ -647,20 +673,7 @@ async def test_partial_vlm_failure_records_per_figure_error(
         _opts,
         _ct = "",
     ):
-        figs = [
-            ExtractedFigure(
-                id = f"fig-{i}",
-                page = i + 1,
-                caption = None,
-                kind = "figure",
-                image_mime = "image/jpeg",
-                image_base64 = "b64",
-                image_width = 10,
-                image_height = 10,
-            )
-            for i in range(3)
-        ]
-        return "# Doc\n", figs, 3, 0, 3
+        return "# Doc\n", make_figures(3), 3, 0, 3
 
     call_idx: Dict[str, int] = {"n": 0}
 
@@ -673,23 +686,15 @@ async def test_partial_vlm_failure_records_per_figure_error(
             raise RuntimeError("VLM exploded on figure 1")
         return f"caption-{idx}", None
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
     monkeypatch.setattr(de, "_describe_image_via_vlm", fake_describe)
 
-    cap = VlmCapability(
-        is_vlm = True,
-        endpoint_url = "http://127.0.0.1:9999",
-        model_name = "vlm",
-        source = "gguf",
-        reason = None,
-    )
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
         describe_images = True,
         max_figures = 10,
-        capability = cap,
+        capability = vlm_cap("gguf", endpoint_url = "http://127.0.0.1:9999"),
     )
 
     figs = [f for f in result.figures if f.kind == "figure"]
@@ -708,7 +713,6 @@ async def test_local_vlm_captioning_serializes_requests(monkeypatch: pytest.Monk
     import asyncio
 
     from core.chat import document_extractor as de
-    from core.chat.document_extractor import ExtractedFigure
 
     def fake_extract(
         _fb,
@@ -716,20 +720,7 @@ async def test_local_vlm_captioning_serializes_requests(monkeypatch: pytest.Monk
         _opts,
         _ct = "",
     ):
-        figs = [
-            ExtractedFigure(
-                id = f"fig-{i}",
-                page = i + 1,
-                caption = None,
-                kind = "figure",
-                image_mime = "image/jpeg",
-                image_base64 = "b64",
-                image_width = 10,
-                image_height = 10,
-            )
-            for i in range(3)
-        ]
-        return "# Doc\n", figs, 3, 0, 3
+        return "# Doc\n", make_figures(3), 3, 0, 3
 
     active = 0
     max_active = 0
@@ -742,8 +733,7 @@ async def test_local_vlm_captioning_serializes_requests(monkeypatch: pytest.Monk
         active -= 1
         return "caption", None
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
     monkeypatch.setattr(de, "_describe_image_via_vlm", fake_describe)
 
     result = await de.extract_document(
@@ -751,13 +741,7 @@ async def test_local_vlm_captioning_serializes_requests(monkeypatch: pytest.Monk
         "doc.pdf",
         describe_images = True,
         max_figures = 10,
-        capability = VlmCapability(
-            is_vlm = True,
-            endpoint_url = "http://127.0.0.1:8000",
-            model_name = "vlm",
-            source = "transformers",
-            reason = None,
-        ),
+        capability = vlm_cap(),
     )
 
     assert max_active == 1
@@ -769,7 +753,6 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from core.chat import document_extractor as de
-    from core.chat.document_extractor import ExtractedFigure
 
     def fake_extract(
         _fb,
@@ -777,29 +760,17 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
         opts,
         _ct = "",
     ):
-        max_visuals = opts["max_visual_payloads"]
-        figs = []
-        for i in range(5):
-            has_payload = i < max_visuals
-            figs.append(
-                ExtractedFigure(
-                    id = f"fig-{i}",
-                    page = i + 1,
-                    caption = None,
-                    kind = "figure",
-                    image_mime = "image/jpeg" if has_payload else None,
-                    image_base64 = "b64" if has_payload else None,
-                    image_width = 10 if has_payload else None,
-                    image_height = 10 if has_payload else None,
-                )
-            )
+        figs = make_figures(
+            5,
+            encoded_until = opts["max_visual_payloads"],
+            size_with_payload = True,
+        )
         return "# Doc\n", figs, 5, 0, 5
 
     async def fake_describe(**_kwargs):
         return "caption", None
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
     monkeypatch.setattr(de, "_describe_image_via_vlm", fake_describe)
 
     result = await de.extract_document(
@@ -808,13 +779,7 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
         describe_images = True,
         max_figures = 5,
         max_visual_payloads = 5,
-        capability = VlmCapability(
-            is_vlm = True,
-            endpoint_url = "http://127.0.0.1:8000",
-            model_name = "vlm",
-            source = "transformers",
-            reason = None,
-        ),
+        capability = vlm_cap(),
     )
 
     captioned = [figure for figure in result.figures if figure.caption]
@@ -832,14 +797,6 @@ async def test_extraction_timeout_raises_document_extraction_timeout(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import DocumentExtractionTimeout
 
-    def fake_extract(
-        _fb,
-        _fn,
-        _opts,
-        _ct = "",
-    ):
-        return "# Doc\n", [], 0, 0, 0
-
     async def fake_wait_for(coro, timeout):
         try:
             coro.close()
@@ -847,8 +804,7 @@ async def test_extraction_timeout_raises_document_extraction_timeout(
             pass
         raise _asyncio.TimeoutError()
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, returns = ("# Doc\n", [], 0, 0, 0))
     monkeypatch.setattr(_asyncio, "wait_for", fake_wait_for)
 
     with pytest.raises(DocumentExtractionTimeout):
@@ -879,8 +835,7 @@ async def test_docx_path_uses_mammoth_output(monkeypatch: pytest.MonkeyPatch) ->
         assert filename.endswith(".docx")
         return "**bold** text", [], 0, 0, 0
 
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, extract = fake_extract)
 
     result = await de.extract_document(
         b"PK\x03\x04",
@@ -898,16 +853,7 @@ async def test_use_vlm_ocr_emits_warning_when_requested(monkeypatch: pytest.Monk
     ships no OCR engine — the extractor must surface a warning."""
     from core.chat import document_extractor as de
 
-    def fake_extract(
-        _fb,
-        _fn,
-        _opts,
-        _ct = "",
-    ):
-        return "# Doc\n", [], 1, 0, 0
-
-    monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
-    monkeypatch.setattr(de, "_run_extract_sync", fake_extract)
+    install_fake_extract(monkeypatch, returns = ("# Doc\n", [], 1, 0, 0))
 
     result = await de.extract_document(
         b"dummy",
