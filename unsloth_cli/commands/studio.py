@@ -205,7 +205,8 @@ def _load_run_module():
 
     loaded = sys.modules.get("studio.backend.run")
     if loaded is not None:
-        loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
         if loaded_path == run_py.resolve():
             _RUN_MODULE = loaded
             return _RUN_MODULE
