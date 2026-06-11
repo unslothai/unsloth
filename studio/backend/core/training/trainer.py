@@ -3592,7 +3592,10 @@ class UnslothTrainer:
                 try:
                     num_samples = len(self.trainer.train_dataset)
                 except TypeError:
-                    pass
+                    logger.debug(
+                        "train_dataset does not support len(); falling back to "
+                        "raw dataset size for step estimation."
+                    )
 
             if num_samples is None:
                 num_samples = len(
