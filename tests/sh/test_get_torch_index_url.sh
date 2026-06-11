@@ -13,6 +13,8 @@ FAIL=0
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
 {
+    sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_has_amd_rocm_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"

@@ -155,9 +155,44 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+# Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
+# NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
+_setup_run_smi() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 when an NVIDIA GPU is present and usable. Primary probe is
+# `nvidia-smi -L` (timeout-bounded). Fallback is /proc/driver/nvidia/gpus,
+# which the driver populates per GPU regardless of nvidia-smi state -- handles
+# PATH gaps and driver init races. Mirrors install.sh _has_usable_nvidia_gpu
+# (PR 6174) so setup routes the same way as the torch installer.
+_setup_has_usable_nvidia_gpu() {
+    _setup_nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _setup_nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _setup_nvsmi="/usr/bin/nvidia-smi"
+    fi
+    if [ -n "$_setup_nvsmi" ]; then
+        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+           | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 _cuda_driver_max_version() {
     command -v nvidia-smi >/dev/null 2>&1 || return 0
-    nvidia-smi 2>/dev/null \
+    _setup_run_smi nvidia-smi 2>/dev/null \
         | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
         | head -1 || true
 }
@@ -815,25 +850,42 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
-if command -v rocminfo >/dev/null 2>&1 && \
-   rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
-elif command -v amd-smi >/dev/null 2>&1 && \
-     amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    [ -z "$_setup_gfx_all" ] && \
-        _setup_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-        '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+# NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
+# a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
+# This also keeps a wedged rocminfo/amd-smi from hanging setup before the
+# host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_usable_nvidia_gpu; then
+    _setup_nvidia_usable=true
+fi
+if [ "$_setup_nvidia_usable" != true ]; then
+    if command -v rocminfo >/dev/null 2>&1 && \
+       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
+            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_setup_gfx_all" ] && \
+            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif [ -e /dev/kfd ] && \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
+        # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
+        # missing but the kernel exposes the GPU, so the source-build gate
+        # below does not drop them to a CPU llama.cpp build. No gfx arch is
+        # available from this path; name-based inference handles it.
+        _setup_amd_detected=true
+    fi
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1 && \
-   nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
-    _setup_nvidia_usable=true
+if [ "$_setup_nvidia_usable" = true ]; then
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -1271,23 +1323,36 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-                GPU_BACKEND="cuda"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-                GPU_BACKEND="cuda"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                # Pick the newest cuda-XX.X directory
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-                GPU_BACKEND="cuda"
+            # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
+            # (_setup_nvidia_usable, computed in the GPU summary block above).
+            # A CUDA toolkit alone (CPU-only build container, leftover packages)
+            # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
+            # binary that fails at runtime, so fall through to the CPU build.
+            # CUDA_VISIBLE_DEVICES=-1 deliberately hides the GPU (same policy
+            # as the _LINUX_HAS_GPU repo-routing block).
+            if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+                if command -v nvcc &>/dev/null; then
+                    NVCC_PATH="$(command -v nvcc)"
+                    GPU_BACKEND="cuda"
+                elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                    NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                    export PATH="/usr/local/cuda/bin:$PATH"
+                    GPU_BACKEND="cuda"
+                elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                    # Pick the newest cuda-XX.X directory
+                    NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                    GPU_BACKEND="cuda"
+                fi
             fi
 
-            # Check for ROCm (AMD) only if CUDA was not already selected
+            # Check for ROCm (AMD) only if CUDA was not already selected, and
+            # only when an AMD GPU was actually detected (_setup_amd_detected).
+            # hipcc presence alone (HIP SDK, no GPU) must not select a HIP build.
+            # NVIDIA-usable hosts never build HIP (defense in depth: the AMD
+            # probes above are already skipped when NVIDIA is usable).
             ROCM_HIPCC=""
-            if [ -z "$GPU_BACKEND" ]; then
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_usable" != true ] && [ "$_setup_amd_detected" = true ]; then
                 if command -v hipcc &>/dev/null; then
                     ROCM_HIPCC="$(command -v hipcc)"
                     GPU_BACKEND="rocm"
@@ -1349,7 +1414,7 @@ else
 
                         CUDA_ARCHS=""
                         if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                             while IFS= read -r _cap; do
                                 _cap=$(echo "$_cap" | tr -d '[:space:]')
                                 if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -1455,7 +1520,7 @@ else
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
                 fi
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+            elif [ -d /usr/local/cuda ] || _setup_run_smi nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
             elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, ROCm driver found but hipcc missing)"

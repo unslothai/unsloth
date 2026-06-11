@@ -299,7 +299,10 @@ function Get-CudaComputeCapability {
     if (-not $smiExe) { return $null }
 
     try {
-        $raw = & $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null
+        # Bounded: a wedged nvidia-smi must not hang setup after the initial
+        # -L probe succeeded (the helper merges stderr after stdout, so the
+        # first line is still the compute_cap value).
+        $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
         # nvidia-smi may return multiple GPUs; take the first one
@@ -363,10 +366,10 @@ function Get-PytorchCudaTag {
     if (-not $smiExe) { return "cu126" }
 
     try {
-        # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
-        # ErrorRecord objects leak into $output and break the -match.
-        $output = & $smiExe 2>&1 | Out-String
+        # Bounded: a wedged nvidia-smi must not hang setup. The helper merges
+        # stderr into the returned string, matching the old 2>&1 | Out-String
+        # shape (plain 2>$null leaks ErrorRecord objects in PS 5.1).
+        $output = Invoke-NvidiaSmiBounded $smiExe
         # Newer NVIDIA drivers (e.g. 610.x on Windows) print
         # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
         # Accept both spellings so we don't fall through to the cu126 default.
@@ -667,16 +670,58 @@ try {
 # ============================================
 # 1a. GPU detection
 # ============================================
+# ── Helper: run nvidia-smi under a timeout ──
+# A wedged NVIDIA driver can make nvidia-smi block during init or after a reset;
+# WaitForExit bounds it (mirrors Invoke-AmdSmiNoElevate below) so detection
+# cannot hang setup. No RunAsInvoker compat layer: nvidia-smi does not
+# auto-elevate. Returns combined stdout+stderr; "" on timeout/failure.
+function Invoke-NvidiaSmiBounded {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+        [int]$TimeoutSec = 10
+    )
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = ($SmiArgs -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            $global:LASTEXITCODE = 124
+            return ""
+        }
+        $global:LASTEXITCODE = $proc.ExitCode
+        return ($outTask.Result + "`n" + $errTask.Result)
+    } catch {
+        $global:LASTEXITCODE = 1
+        return ""
+    }
+}
+
+# ── Helper: nvidia-smi -L lists at least one real GPU ──
+# Exit code 0 alone is not enough: a stale/driverless nvidia-smi can exit 0
+# while listing no GPU, which would mark an AMD host NVIDIA and suppress ROCm
+# detection. Require a "GPU <n>:" data row.
+function Test-NvidiaSmiHasGpu {
+    param([Parameter(Mandatory = $true)][string]$Exe)
+    $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+    return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
+}
+
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
     $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if ($nvSmiCmd) {
-        & $nvSmiCmd.Source *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $HasNvidiaSmi = $true
-            $NvidiaSmiExe = $nvSmiCmd.Source
-        }
+    if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $nvSmiCmd.Source
     }
 } catch {}
 # Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
@@ -689,8 +734,7 @@ if (-not $HasNvidiaSmi) {
     foreach ($p in $nvSmiDefaults) {
         if (Test-Path $p) {
             try {
-                & $p *> $null
-                if ($LASTEXITCODE -eq 0) {
+                if (Test-NvidiaSmiHasGpu $p) {
                     $HasNvidiaSmi = $true
                     $NvidiaSmiExe = $p
                     Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
@@ -1151,7 +1195,8 @@ function Resolve-CudaToolkit {
 
 $DriverMaxCuda = $null
 try {
-    $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
+    # Bounded: source-build toolkit resolution must not hang on a wedged smi.
+    $smiOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe
     # Newer drivers report "CUDA UMD Version: X.Y" instead of "CUDA Version: X.Y"; accept both.
     if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"

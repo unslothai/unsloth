@@ -1745,6 +1745,20 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
+# ── Bounded command runner ──
+# Runs a command under a 10s timeout when the `timeout` binary is available,
+# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
+# driver init or after a reset) from hanging the installer: a timed-out probe
+# exits nonzero and is treated exactly like a failed probe. No-op semantics on
+# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
+_run_bounded() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
 # ── NVIDIA usable-GPU helper ──
 # Returns 0 (true) if an NVIDIA GPU is present and usable.
 # Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
@@ -1759,7 +1773,7 @@ _has_usable_nvidia_gpu() {
         _nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_nvsmi" ]; then
-        if "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
     fi
@@ -1871,7 +1885,11 @@ get_torch_index_url() {
     # of the legacy "CUDA Version: X.Y"; accept both with two BRE expressions
     # (POSIX sed does not support "?" without -E).  The two patterns are
     # mutually exclusive per line, so head -1 picks the first emitted match.
-    _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
+    # Bound the call (a wedged nvidia-smi would otherwise hang here) and force
+    # the C locale for stable parsing. LC_ALL is exported inside this command
+    # substitution subshell so it reaches nvidia-smi through _run_bounded
+    # without depending on `env`; the export is scoped to the subshell.
+    _cuda_ver=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null \
         | sed -n \
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
@@ -2125,10 +2143,16 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
 # downstream scripts (setup.sh -> install_python_stack.py) know what was
 # chosen here and can skip ROCm-specific repair steps on CUDA/CPU hosts.
-case "$TORCH_INDEX_URL" in
-    */rocm*|*/gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
-    */cpu)          export UNSLOTH_TORCH_BACKEND="cpu"  ;;
-    *)              export UNSLOTH_TORCH_BACKEND="cuda" ;;
+# Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR
+# whose base path happens to contain "rocm" or "gfx" must not mislabel a
+# cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix
+# overrides in gfxNNNN/, so the trailing slash is stripped first).
+_torch_index_leaf="${TORCH_INDEX_URL%/}"
+_torch_index_leaf="${_torch_index_leaf##*/}"
+case "$_torch_index_leaf" in
+    rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
+    cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
 # rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
