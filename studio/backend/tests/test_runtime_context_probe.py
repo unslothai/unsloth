@@ -17,10 +17,8 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-sys.modules.setdefault("structlog", _structlog_stub)
 
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
@@ -50,9 +48,25 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+# Stub heavy deps only while importing the module under test, then restore
+# sys.modules so the fakes can't shadow the real packages for later tests
+# (llama_cpp keeps its own references to whatever it imported here).
+_inserted_stubs: list[str] = []
+for _name, _stub in (
+    ("loggers", _loggers_stub),
+    ("structlog", _structlog_stub),
+    ("httpx", _httpx_stub),
+):
+    if _name not in sys.modules:
+        sys.modules[_name] = _stub
+        _inserted_stubs.append(_name)
+
+try:
+    from core.inference.llama_cpp import LlamaCppBackend
+finally:
+    for _name in _inserted_stubs:
+        sys.modules.pop(_name, None)
 
 
 def _backend(**kwargs):
@@ -133,6 +147,18 @@ class TestApplyRuntimeContextProbe:
             launch_ctx = 8192,
             use_fit = False,
             n_parallel = 4,
+        )
+        assert inst.requested_context_length is None
+
+    def test_failed_probe_clears_stale_requested_context(self):
+        # A reload can replace the server without unload_model; a probe
+        # that then fails must not report the previous load's reduction.
+        inst = _backend(requested_context_length = 8192)
+        inst._apply_runtime_context_probe(
+            None,
+            launch_ctx = 4096,
+            use_fit = True,
+            n_parallel = 1,
         )
         assert inst.requested_context_length is None
 

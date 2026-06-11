@@ -207,6 +207,52 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
+_FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+# llama.cpp common.cpp is_truthy / is_falsey value sets.
+_FIT_TRUTHY: frozenset[str] = frozenset({"on", "enabled", "1", "true"})
+_FIT_FALSEY: frozenset[str] = frozenset({"off", "disabled", "0", "false"})
+
+
+def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
+    """Return the last user-supplied ``--fit`` on/off value, or None.
+
+    Studio appends pass-through args after its own ``--fit on``, so a user
+    ``--fit`` last-wins at llama-server; runtime context reporting needs the
+    same answer. Unknown values are ignored (llama-server rejects them).
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[bool] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _FIT_FLAGS:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                # Bare --fit never reaches a healthy server; nothing to report.
+                i += 1
+                continue
+            raw_value = tokens[i + 1]
+            i += 2
+
+        value = str(raw_value).strip().lower()
+        if value in _FIT_TRUTHY:
+            override = True
+        elif value in _FIT_FALSEY:
+            override = False
+
+    return override
+
+
 def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last-wins cache type if extras pass cache flags.
 

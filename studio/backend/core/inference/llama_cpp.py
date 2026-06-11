@@ -30,6 +30,7 @@ import httpx
 from core.inference.llama_server_args import (
     parse_cache_override,
     parse_ctx_override,
+    parse_fit_override,
     resolve_cache_type_kv,
     resolve_requested_ctx,
 )
@@ -787,11 +788,13 @@ class LlamaCppBackend:
     ) -> None:
         """Sync effective/requested context from probed per-slot ``n_ctx``."""
         slots = max(1, n_parallel)
+        # Reset first: a failed/skipped probe must not leave a previous
+        # load's reduction warning in place.
+        self._requested_context_length = None
         if runtime_ctx is None or runtime_ctx <= 0:
             return
 
         self._effective_context_length = runtime_ctx
-        self._requested_context_length = None
 
         if launch_ctx is None or launch_ctx <= 0:
             return
@@ -3295,7 +3298,10 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
                 self._launch_context_length = effective_ctx if effective_ctx > 0 else None
-                self._launch_use_fit = use_fit
+                # Pass-through --fit last-wins over Studio's GPU-selection
+                # decision, since extras are appended after Studio's flags.
+                fit_override = parse_fit_override(extra_args)
+                self._launch_use_fit = use_fit if fit_override is None else fit_override
                 self._launch_n_parallel = max(1, n_parallel)
 
                 # Wait for llama-server to become healthy.
@@ -3315,7 +3321,7 @@ class LlamaCppBackend:
                 self._apply_runtime_context_probe(
                     runtime_ctx,
                     launch_ctx = self._launch_context_length,
-                    use_fit = bool(use_fit),
+                    use_fit = bool(self._launch_use_fit),
                     n_parallel = self._launch_n_parallel or 1,
                 )
 
