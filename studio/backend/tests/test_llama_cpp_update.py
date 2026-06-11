@@ -61,6 +61,9 @@ def _clean_state(monkeypatch):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    # Deterministic markerless paths: no host-pinned binary, no custom dir.
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     yield
@@ -79,6 +82,7 @@ def _prebuilt(
     *,
     repo = "unslothai/llama.cpp",
     release_tag = "b9585",
+    llama_tag = None,
     asset = None,
 ):
     """Stub the host prebuilt probe to report an available prebuilt."""
@@ -86,7 +90,7 @@ def _prebuilt(
         "prebuilt_available": True,
         "repo": repo,
         "release_tag": release_tag,
-        "llama_tag": release_tag,
+        "llama_tag": llama_tag or release_tag,
         "asset": asset or f"llama-{release_tag}-bin-macos-arm64.tar.gz",
         "install_kind": "macos-arm64",
     }
@@ -122,6 +126,42 @@ def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
     assert st["source_build"] is True
     assert st["latest_tag"] == "b9585"
     assert st["published_repo"] == "unslothai/llama.cpp"
+
+
+def test_status_source_build_compares_llama_tag(monkeypatch, tmp_path):
+    # release_tag may be a fork wrapper (v1.0); compare/display the upstream
+    # llama_tag (b9457) so a source build is not wrongly judged newer.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "v1.0", llama_tag = "b9457")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9000)
+    st = upd.get_update_status()
+    assert st["latest_tag"] == "b9457"  # not the wrapper tag
+    assert st["update_available"] is True  # 9000 < 9457
+
+
+def test_status_source_build_pinned_binary_not_offered(monkeypatch, tmp_path):
+    # LLAMA_SERVER_PATH pins a custom binary outside any llama.cpp dir; an apply
+    # could not take effect, so the button must not surface.
+    binary = tmp_path / "custom" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(binary))
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch)
+    st = upd.get_update_status()
+    assert st["supported"] is False
+    assert st["update_available"] is False
+
+
+def test_llama_install_root_pinned_returns_none(monkeypatch, tmp_path):
+    binary = tmp_path / "custom" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(binary))
+    assert upd._llama_install_root(str(binary)) is None
 
 
 def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):

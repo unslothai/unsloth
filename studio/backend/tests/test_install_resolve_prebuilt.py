@@ -69,11 +69,19 @@ def test_published_repo_for_host():
         == FORK
     )
     assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
-    # Windows and macOS -> fork.
+    # CPU-only Windows -> ggml-org (setup.ps1: the fork ships no win-cpu bundle).
     assert (
         ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
+        == UPSTREAM
+    )
+    # GPU Windows -> fork.
+    assert (
+        ilp.published_repo_for_host(
+            _host(system = "Windows", is_windows = True, is_x86_64 = True, has_usable_nvidia = True)
+        )
         == FORK
     )
+    # macOS -> fork regardless of GPU (ggml-org macOS bundles need too-new macOS).
     assert (
         ilp.published_repo_for_host(
             _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")

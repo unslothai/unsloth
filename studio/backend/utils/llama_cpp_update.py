@@ -187,6 +187,10 @@ def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
         for parent in Path(binary).parents:
             if parent.name == "llama.cpp":
                 return parent
+    # A pinned LLAMA_SERVER_PATH always wins in _find_llama_server_binary, so a
+    # prebuilt installed into the default root would be ignored: don't manage it.
+    if os.environ.get("LLAMA_SERVER_PATH"):
+        return None
     try:
         from utils.paths.storage_roots import studio_root
 
@@ -208,8 +212,14 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    latest = res.get("release_tag")
+    # llama_tag is the upstream build (bNNNN, what --version reports); release_tag
+    # can be a fork wrapper tag, so compare/display against llama_tag.
+    latest = res.get("llama_tag") or res.get("release_tag")
     if not latest:
+        return None
+    # No resolvable install root (e.g. a pinned LLAMA_SERVER_PATH we cannot
+    # manage) means an apply would not take effect, so do not offer.
+    if _llama_install_root(binary) is None:
         return None
     installed_build = _installed_build_number(binary)
     m = re.search(r"(\d+)", latest)

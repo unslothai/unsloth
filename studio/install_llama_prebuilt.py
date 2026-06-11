@@ -3046,12 +3046,13 @@ def _apply_host_overrides(
 
 
 def published_repo_for_host(host: HostInfo) -> str:
-    """The release repo setup.sh picks for this host (setup.sh ~940-956):
-    CPU-only Linux (x86_64 or arm64) -> ggml-org upstream; GPU Linux, all
-    Windows, all macOS -> the unsloth fork. A usable GPU is NVIDIA-usable or
-    ROCm. Pure (no I/O); mirrors the only place this mapping lived (shell)."""
-    has_gpu = host.has_usable_nvidia or host.has_rocm
-    if host.is_linux and not has_gpu:
+    """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
+    fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
+    -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
+    or ROCm) -> the fork. Pure (no I/O); mirrors the shell setup routing."""
+    if host.is_macos:
+        return DEFAULT_PUBLISHED_REPO
+    if not (host.has_usable_nvidia or host.has_rocm):
         return UPSTREAM_REPO
     return DEFAULT_PUBLISHED_REPO
 
