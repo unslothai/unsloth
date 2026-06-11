@@ -414,7 +414,24 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
         print_studio_stop_hint()
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
+        _print_cloudflare_line()
         print_studio_stop_hint()
+
+
+def _print_cloudflare_line() -> None:
+    """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
+
+    Reads the module-level URL set by ``run_server``. Prints nothing when the
+    tunnel is disabled or failed -- failures are silently ignored.
+    """
+    if not _cloudflare_url:
+        return
+    from startup_banner import stdout_supports_color
+
+    accent = "\033[38;5;150;1m"
+    reset = "\033[0m"
+    line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
+    print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -584,6 +601,13 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
+    # 6. Stop the Cloudflare tunnel (if started).
+    try:
+        from cloudflare_tunnel import stop_studio_tunnel
+        stop_studio_tunnel()
+    except Exception as e:
+        logger.warning("Error stopping Cloudflare tunnel: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 
@@ -593,6 +617,10 @@ _server = None
 
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
+
+# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
+_cloudflare_url = None
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -769,6 +797,7 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
+    cloudflare: bool = True,
 ):
     """
     Start the FastAPI server.
@@ -973,6 +1002,21 @@ def run_server(
     if api_only:
         print(f"TAURI_PORT={port}", flush = True)
 
+    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # unreachable). Started pre-banner and even when silent so the CLI banner can
+    # read app.state.cloudflare_url; torn down by _graceful_shutdown.
+    global _cloudflare_url
+    _cloudflare_url = None
+    app.state.cloudflare_url = None
+    _cloudflare_enabled = cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
+    if _cloudflare_enabled:
+        try:  # best-effort: any failure must not block startup
+            from cloudflare_tunnel import start_studio_tunnel
+            _cloudflare_url = start_studio_tunnel(port)
+            app.state.cloudflare_url = _cloudflare_url
+        except Exception as e:
+            logger.debug("Cloudflare tunnel skipped: %s", e)
+
     if not silent:
         _emit_startup_output(host, port, display_host)
 
@@ -1011,6 +1055,13 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    parser.add_argument(
+        "--cloudflare",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
+               "(default on; --no-cloudflare to disable)",
+    )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
@@ -1037,6 +1088,7 @@ if __name__ == "__main__":
         silent = args.silent,
         api_only = args.api_only,
         llama_parallel_slots = args.parallel,
+        cloudflare = args.cloudflare,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
