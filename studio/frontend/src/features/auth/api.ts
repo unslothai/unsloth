@@ -175,7 +175,7 @@ export async function authFetch(
           "You appear to be offline. Check your network connection and try again.",
         );
       }
-      throw new Error("Studio isn't running -- please relaunch it.");
+      throw new Error("Unsloth isn't running -- please relaunch it.");
     }
     throw err;
   }

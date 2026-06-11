@@ -46,12 +46,28 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   if (fetched) return usePlatformStore.getState().deviceType;
 
   try {
-    const res = await fetch(apiUrl("/api/health"));
+    // /api/health only reports the server's device_type to authed callers.
+    // Read the token from storage directly: importing features/auth here
+    // would be an import cycle (auth/session imports this store).
+    const token =
+      typeof window === "undefined"
+        ? null
+        : localStorage.getItem("unsloth_auth_token");
+    const res = await fetch(apiUrl("/api/health"), {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
     if (res.ok) {
       const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
-      usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+      // Cache only a server-reported platform. Unauthenticated responses fall
+      // back to the browser platform, which can differ from the host (WSL,
+      // SSH); keeping fetched=false retries once a token exists.
+      usePlatformStore.setState({
+        deviceType,
+        chatOnly,
+        fetched: data.device_type !== undefined,
+      });
       return deviceType;
     }
   } catch {
