@@ -81,6 +81,34 @@ def _install_httpcore_asyncgen_silencer() -> None:
 _install_httpcore_asyncgen_silencer()
 
 
+def _loaded_chat_template() -> Optional[str]:
+    """Chat template of the currently loaded GGUF model, if any."""
+    try:
+        return get_llama_cpp_backend().chat_template
+    except Exception:
+        return None
+
+
+def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
+    """A chat-template raise_exception message to surface, but only when it appears
+    verbatim in chat_template (simple substring check), so we never leak arbitrary
+    llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
+    if not chat_template:
+        return None
+    marker = "Jinja Exception:"
+    idx = error_text.find(marker)
+    if idx == -1:
+        return None
+    candidate = error_text[idx + len(marker) :]
+    # llama-server appends JSON after the message; cut at the first boundary.
+    for stop in ('"', "\n"):
+        cut = candidate.find(stop)
+        if cut != -1:
+            candidate = candidate[:cut]
+    candidate = candidate.strip()
+    return candidate if candidate and candidate in chat_template else None
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     # httpx transport failures from the async pass-through helpers. Any
@@ -106,6 +134,9 @@ def _friendly_error(exc: Exception) -> str:
         return (
             "Lost connection to the model server. It may have crashed -- try reloading the model."
         )
+    template_msg = _template_raise_message(msg, _loaded_chat_template())
+    if template_msg:
+        return f"An internal error occurred: {template_msg}"
     return "An internal error occurred"
 
 
@@ -209,6 +240,169 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         status_code = status_code,
         detail = f"llama-server error: {text[:500]}",
     )
+
+
+_OVERFLOW_TRUNCATE_MAX_RETRIES = 3
+# Truncated-prompt share of the real window; the rest is generation headroom
+# so a near-full prompt cannot cut a tool call mid-JSON at the wall.
+_OVERFLOW_PROMPT_TARGET_FRACTION = 0.75
+
+
+def _overflow_truncation_requested(payload) -> bool:
+    """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
+    for clients that cannot send custom fields) opted into truncation."""
+    requested = getattr(payload, "context_overflow", None)
+    if requested is not None:
+        return requested == "truncate_middle"
+    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
+
+
+def _parse_overflow_counts(err_text: str):
+    """(n_prompt_tokens, n_ctx) from an exceed_context_size_error body, or
+    None. Tolerates \\" around keys (body may be a re-wrapped JSON string)."""
+    m_prompt = _re.search(r'n_prompt_tokens\\?"?\s*:\s*(\d+)', err_text)
+    m_ctx = _re.search(r'n_ctx\\?"?\s*:\s*(\d+)', err_text)
+    if m_prompt and m_ctx:
+        return int(m_prompt.group(1)), int(m_ctx.group(1))
+    return None
+
+
+def _estimate_message_tokens(msg: dict) -> int:
+    try:
+        return max(1, len(json.dumps(msg, ensure_ascii = False)) // 4)
+    except Exception:
+        return 1
+
+
+def _truncate_middle_messages(messages: list, keep_ratio: float):
+    """Drop whole turn-groups from the middle of an OpenAI message list.
+
+    Always kept: leading system message(s), the first group (task anchor),
+    and the trailing groups. A group is a user message, or an assistant
+    message plus its following tool results, so surviving tool_calls stay
+    paired with their results as chat templates require.
+    Returns (new_messages, dropped_message_count).
+    """
+    if not messages or keep_ratio >= 1.0:
+        return messages, 0
+
+    head: list = []
+    idx = 0
+    while idx < len(messages) and messages[idx].get("role") in ("system", "developer"):
+        head.append(messages[idx])
+        idx += 1
+
+    groups: list[list] = []
+    for msg in messages[idx:]:
+        role = msg.get("role")
+        if role == "tool" and groups:
+            groups[-1].append(msg)
+        elif role == "tool":
+            groups.append([msg])  # orphan tool result; treat as its own group
+        else:
+            groups.append([msg])
+
+    # Anchor group plus the last 3 groups stay.
+    protected_tail = min(3, max(1, len(groups) - 1))
+    if len(groups) <= 1 + protected_tail:
+        return messages, 0
+
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    target_est = int(total_est * keep_ratio)
+
+    anchor = groups[0]
+    middle = groups[1:-protected_tail]
+    tail = groups[-protected_tail:]
+
+    current_est = total_est
+    kept_middle: list[list] = list(middle)
+    dropped = 0
+    # Drop oldest-first until the estimate fits the target.
+    while kept_middle and current_est > target_est:
+        victim = kept_middle.pop(0)
+        dropped += len(victim)
+        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+
+    if dropped == 0:
+        return messages, 0
+
+    new_messages = head + anchor
+    for grp in kept_middle:
+        new_messages.extend(grp)
+    for grp in tail:
+        new_messages.extend(grp)
+    return new_messages, dropped
+
+
+_CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
+# Generous head+tail first; cut harder if the estimate still misses the target.
+_CLIP_KEEP_CHARS = (1500, 400)
+
+
+def _clip_long_contents(messages: list, target_est: int) -> int:
+    """Clip oversized string contents middle-out until ``target_est`` is met.
+
+    Tool results first, then earlier user turns, the final message last.
+    Message count and roles never change, so tool pairing holds even when
+    group-dropping could not free enough. Returns messages clipped.
+    """
+
+    def _candidates():
+        tools = [m for m in messages if m.get("role") == "tool"]
+        users = [m for m in messages[:-1] if m.get("role") == "user"]
+        last = [messages[-1]] if messages else []
+        return tools + users + last
+
+    clipped = 0
+    for keep in _CLIP_KEEP_CHARS:
+        for msg in _candidates():
+            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+                return clipped
+            content = msg.get("content")
+            if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
+                continue
+            msg["content"] = content[:keep] + _CLIP_MARKER + content[-keep:]
+            clipped += 1
+    return clipped
+
+
+def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
+    """Shrink a passthrough body after an upstream context overflow: drop
+    middle turn-groups, clip still-oversized contents, clamp ``max_tokens``
+    to the generation headroom. Returns False when nothing could shrink."""
+    counts = _parse_overflow_counts(err_text)
+    messages = body.get("messages") or []
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    if counts:
+        n_prompt, n_ctx = counts
+        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        # Scale the server-token target into char-estimate units.
+        target_est = int(total_est * keep_ratio)
+    else:
+        n_ctx = None
+        keep_ratio = 0.6  # no counts in the error; cut conservatively
+        target_est = int(total_est * keep_ratio)
+
+    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
+    if dropped:
+        body["messages"] = new_messages
+    clipped = 0
+    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
+        clipped = _clip_long_contents(body.get("messages") or [], target_est)
+    if not dropped and not clipped:
+        return False
+    if n_ctx:
+        headroom = max(1024, int(n_ctx * (1.0 - _OVERFLOW_PROMPT_TARGET_FRACTION)))
+        cur_max = body.get("max_tokens")
+        body["max_tokens"] = min(cur_max, headroom) if cur_max else headroom
+    logger.warning(
+        "context_overflow=truncate_middle: dropped %d middle messages, clipped "
+        "%d contents (keep_ratio %.2f); retrying within the real window",
+        dropped,
+        clipped,
+        keep_ratio,
+    )
+    return True
 
 
 def _anthropic_stream_error_event(exc):
@@ -387,6 +581,7 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -396,7 +591,10 @@ try:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -414,6 +612,7 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -423,7 +622,10 @@ except ImportError:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -896,35 +1098,42 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
 logger = get_logger(__name__)
 
 
-def _validate_native_mmproj_companion(mmproj_path: str | None, gguf_path: str | None) -> None:
-    if not mmproj_path or not gguf_path:
+def _validate_native_gguf_companion(
+    companion_path: str | None, gguf_path: str | None, label: str
+) -> None:
+    """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
+    would otherwise hand to llama-server: must be a regular file (no symlink
+    escaping the leased directory) living next to the selected GGUF."""
+    if not companion_path or not gguf_path:
         return
     import stat as _stat_module
 
-    mm = Path(mmproj_path)
+    companion = Path(companion_path)
     gguf = Path(gguf_path)
     try:
-        mm_lstat = os.lstat(mm)
+        companion_lstat = os.lstat(companion)
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
-    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+    if _stat_module.S_ISLNK(companion_lstat.st_mode) or not _stat_module.S_ISREG(
+        companion_lstat.st_mode
+    ):
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion must be a regular file.",
+            detail = f"Native {label} must be a regular file.",
         )
     try:
-        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
             raise HTTPException(
                 status_code = 400,
-                detail = "Native vision companion must live next to the selected GGUF.",
+                detail = f"Native {label} must live next to the selected GGUF.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
 
 
@@ -949,13 +1158,11 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         llama_backend.cache_type_kv
     ):
         return False
-    # Vision loads silently drop speculative decoding (llama_cpp.py gates spec
-    # on ``not is_vision``), so treat the request as ``off`` against the
-    # backend's ``None`` to avoid a redundant reload.
-    if llama_backend.is_vision:
-        req_mode = "off"
-    else:
-        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    # Spec decoding works on vision models too (MTP is mmproj-compatible,
+    # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
+    # the real requested mode -- coercing vision to ``off`` here used to
+    # swallow every spec-mode change on a vision model as already_loaded.
+    req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
@@ -977,6 +1184,33 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
+    # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
+    # next to the loaded weights changes the launch command (--model-draft),
+    # so a duplicate /load must reload rather than dedupe. Always compare the
+    # detected vs stored drafter when the mode can use one and the user does
+    # not own --spec-type: the resolved-path compare is cheap and handles all
+    # four cases (both None -> match; one None -> reload; equal -> match;
+    # different -> reload), including a drafter deleted out from under a
+    # running server. Runs last: it stats the filesystem, so every pure-memory
+    # comparison above short-circuits first. Resolve both sides since the
+    # stored launch path may be a snapshot symlink while detect_mtp_file
+    # returns the resolved blob.
+    if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
+        effective_extras = (
+            request.llama_extra_args
+            if request.llama_extra_args is not None
+            else llama_backend.extra_args
+        )
+        if not _extra_args_set_spec_type(effective_extras):
+            detected = detect_mtp_file(llama_backend.gguf_path)
+            stored = llama_backend.mtp_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
     return True
 
 
@@ -1282,12 +1516,26 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                if native_grant_backed and config.gguf_mmproj_file:
-                    _validate_native_mmproj_companion(config.gguf_mmproj_file, config.gguf_file)
+                if native_grant_backed:
+                    if config.gguf_mmproj_file:
+                        _validate_native_gguf_companion(
+                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                        )
+                    if config.gguf_mtp_file:
+                        # The drafter is optional (unlike mmproj for a vision
+                        # model): drop it rather than fail the load.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
+                            config.gguf_mtp_file = None
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    mtp_draft_path = config.gguf_mtp_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
@@ -1821,6 +2069,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
+                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
@@ -2031,6 +2280,172 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
         waveform = resampler(waveform)
 
     return waveform.squeeze(0).numpy()
+
+
+# Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
+# cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
+# bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
+# can expand to a far larger PCM array than the encoded-size cap implies.
+_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
+_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_SECONDS = 30 * 60
+_WAV_HEADER_BYTES = 44
+_MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
+
+
+def _sniff_audio_container(raw: bytes) -> Optional[str]:
+    """Return 'wav' or 'mp3' if the bytes are a container llama-server accepts
+    directly (so we can forward them untouched), else None (needs transcoding)."""
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        return "wav"
+    # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
+    # with 0xFF, so the simple sync check doesn't collide).
+    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
+        return "mp3"
+    return None
+
+
+def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
+    """Encode a mono float32 array as 16-bit PCM WAV bytes.
+
+    Torch-free (numpy + stdlib only) so it works on no-torch GGUF-only installs;
+    the shared audio_codecs helper pulls in torch at import time.
+    """
+    import io
+    import wave
+
+    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
+    if arr.size == 0:
+        raise ValueError("decoded audio is empty")
+    peak = float(np.abs(arr).max())
+    if peak > 1.0:
+        arr = arr / peak
+    pcm = (arr * 32767.0).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def _resample_mono_linear(arr: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Small numpy-only resampler for upload size limiting."""
+    if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
+        return arr
+    duration = len(arr) / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    if target_len == len(arr):
+        return arr
+    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
+    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
+    return np.interp(target_x, source_x, arr).astype(np.float32)
+
+
+def _fit_transcoded_audio_to_wav_cap(arr: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
+    """Downsample only when needed so transcoded WAV stays within the upload cap."""
+    if sample_rate <= 0:
+        raise ValueError("decoded audio has an invalid sample rate")
+    wav_bytes = _WAV_HEADER_BYTES + len(arr) * 2
+    if wav_bytes <= _MAX_AUDIO_RAW_BYTES:
+        return arr, sample_rate
+
+    duration = len(arr) / float(sample_rate)
+    max_samples = max(1, (_MAX_AUDIO_RAW_BYTES - _WAV_HEADER_BYTES) // 2)
+    target_rate = int(max_samples // duration)
+    if target_rate < _MIN_TRANSCODE_AUDIO_SAMPLE_RATE:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    target_rate = min(sample_rate, target_rate)
+    fitted = _resample_mono_linear(arr, sample_rate, target_rate)
+    if _WAV_HEADER_BYTES + len(fitted) * 2 > _MAX_AUDIO_RAW_BYTES:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    return fitted, target_rate
+
+
+def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
+    """Decode audio bytes to (mono float32 array, native sample_rate).
+
+    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. librosa
+    (ffmpeg-backed) additionally covers m4a/webm but needs a real path and is
+    absent on no-torch GGUF-only installs. Both imports are inside the fallback
+    so a missing decoder degrades to the next one (and finally a clear error)
+    rather than crashing.
+    """
+    import io
+
+    try:
+        import soundfile as sf
+        arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
+    except Exception:
+        try:
+            import librosa
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "this audio format needs librosa, which is not installed in "
+                "GGUF-only environments; use wav, mp3, ogg or flac"
+            ) from e
+        import os
+        import tempfile
+        from utils.paths import ensure_dir, tmp_root
+
+        with tempfile.NamedTemporaryFile(
+            suffix = ".audio",
+            delete = False,
+            dir = str(ensure_dir(tmp_root())),
+        ) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        try:
+            arr, sr = librosa.load(tmp_path, sr = None, mono = True)
+        finally:
+            os.unlink(tmp_path)
+    if arr.ndim > 1:
+        arr = arr.mean(axis = 1)
+    if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
+        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
+    return arr, sr
+
+
+def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
+    """Return (base64, format) ready for llama-server's input_audio part.
+
+    llama-server's API only accepts wav/mp3, and decodes/resamples/down-mixes
+    them itself, so wav and mp3 uploads are forwarded untouched (no decode, no
+    PCM payload inflation). Other containers (m4a/ogg/webm/flac) are decoded to
+    a mono WAV. Blocking; call via a thread from async paths.
+    """
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
+    raw = base64.b64decode(b64)
+    passthrough = _sniff_audio_container(raw)
+    if passthrough is not None:
+        return b64, passthrough
+
+    arr, sr = _decode_audio_mono(raw)
+    arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
+    return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
+
+
+def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
+    """Append an input_audio part to the last user message, in place.
+
+    Audio rides in the message list like image_url parts do, so it flows through
+    both the plain and tool-calling generation paths.
+    """
+    part = {
+        "type": "input_audio",
+        "input_audio": {"data": audio_b64, "format": audio_format},
+    }
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            else:
+                msg["content"] = [{"type": "text", "text": content or ""}, part]
+            return
 
 
 def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
@@ -2990,9 +3405,12 @@ async def openai_chat_completions(
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
+            # This path forwards the request verbatim, so the transcoded audio
+            # never gets injected. (The agentic tool loop below does support
+            # audio.)
             raise HTTPException(
                 status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
+                detail = "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
 
         # Preserve the vision guard from the non-passthrough path below:
@@ -3043,11 +3461,34 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        # Forward uploaded audio as an input_audio part. wav/mp3 pass through
+        # untouched (llama-server decodes and resamples them via the mmproj
+        # audio encoder); other containers are transcoded to WAV here. The part
+        # is injected into the message list below so it rides through both the
+        # plain and tool-calling paths, exactly like image_url parts.
+        audio_b64 = None
+        audio_format = "wav"
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
-            )
+            if not getattr(llama_backend, "_has_audio_input", False):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Audio provided but current GGUF model does not support audio input.",
+                )
+            if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = "Audio file is too large (max ~25 MB).",
+                )
+            try:
+                audio_b64, audio_format = await asyncio.to_thread(
+                    _prepare_audio_for_llama, payload.audio_base64
+                )
+            except Exception as e:
+                logger.warning("Audio decode failed: %s", e, exc_info = True)
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Could not decode the provided audio file.",
+                )
 
         gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
@@ -3055,6 +3496,8 @@ async def openai_chat_completions(
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
+        if audio_b64:
+            _inject_audio_part(gguf_messages, audio_b64, audio_format)
 
         cancel_event = threading.Event()
 
@@ -3088,6 +3531,12 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # Drop the RAG tool without a scope: nothing to search over.
+            if not payload.rag_scope:
+                tools_to_use = [
+                    t for t in tools_to_use if t["function"]["name"] != "search_knowledge_base"
+                ]
+
             if _mcp_allowed:
                 tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
@@ -3107,6 +3556,21 @@ async def openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
             )
+
+            # Nudge the model to ground in attached documents instead of memory.
+            _tool_names = {(t.get("function") or {}).get("name") for t in (tools_to_use or [])}
+            _rag_active = "search_knowledge_base" in _tool_names and payload.rag_scope
+            if _rag_active:
+                _rag_nudge = (
+                    "The user has attached documents to this conversation. Relevant "
+                    "passages are retrieved and provided to you automatically; base "
+                    "your answer on them and cite them. You can also call "
+                    "search_knowledge_base to look for more. Do not answer from "
+                    "memory when the attached documents are relevant."
+                )
+                # Prefix the date when the tool nudge is empty (RAG-only tool set).
+                _date_line = f"The current date is {_date.today().isoformat()}."
+                _nudge = _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -3153,6 +3617,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 )
 
@@ -3592,6 +4057,12 @@ async def openai_chat_completions(
         else:
             _sf_tools_to_use = ALL_TOOLS
 
+        # Drop the RAG tool unless the request carries a retrieval scope.
+        if not payload.rag_scope:
+            _sf_tools_to_use = [
+                t for t in _sf_tools_to_use if t["function"]["name"] != "search_knowledge_base"
+            ]
+
         if _sf_mcp_allowed:
             _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
@@ -3606,6 +4077,25 @@ async def openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
         )
+
+        # RAG nudge, mirroring the GGUF path.
+        _sf_tool_names = {(t.get("function") or {}).get("name") for t in (_sf_tools_to_use or [])}
+        _sf_rag_active = "search_knowledge_base" in _sf_tool_names and payload.rag_scope
+        if _sf_rag_active:
+            _sf_rag_nudge = (
+                "The user has attached documents to this conversation. Relevant "
+                "passages are retrieved and provided to you automatically; base "
+                "your answer on them and cite them. You can also call "
+                "search_knowledge_base to look for more. Do not answer from "
+                "memory when the attached documents are relevant."
+            )
+            # Prefix the date when the tool nudge is empty (RAG-only tool set).
+            _sf_date_line = f"The current date is {_date.today().isoformat()}."
+            _sf_nudge = (
+                _sf_date_line + " " + _sf_rag_nudge
+                if not _sf_nudge
+                else _sf_nudge + " " + _sf_rag_nudge
+            )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -3658,6 +4148,7 @@ async def openai_chat_completions(
                 if payload.tool_call_timeout is not None
                 else 300,
                 session_id = payload.session_id,
+                rag_scope = payload.rag_scope,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -4128,26 +4619,35 @@ def _openai_model_objects() -> list[dict]:
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
-        models.append(
-            {
-                "id": llama_backend.model_identifier,
-                "object": "model",
-                "created": _created,
-                "owned_by": "local",
-            }
-        )
+        entry = {
+            "id": llama_backend.model_identifier,
+            "object": "model",
+            "created": _created,
+            "owned_by": "local",
+        }
+        # Extension fields: the real per-request window (post /props readback)
+        # so clients can budget/compact against the enforced limit.
+        if llama_backend.context_length:
+            entry["context_length"] = llama_backend.context_length
+        if llama_backend.max_context_length:
+            entry["max_context_length"] = llama_backend.max_context_length
+        models.append(entry)
 
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
-        models.append(
-            {
-                "id": backend.active_model_name,
-                "object": "model",
-                "created": _created,
-                "owned_by": "local",
-            }
+        entry = {
+            "id": backend.active_model_name,
+            "object": "model",
+            "created": _created,
+            "owned_by": "local",
+        }
+        _sf_ctx = getattr(backend, "context_length", None) or getattr(
+            backend, "max_seq_length", None
         )
+        if _sf_ctx:
+            entry["context_length"] = _sf_ctx
+        models.append(entry)
 
     return models
 
@@ -4704,7 +5204,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
-    body = _build_openai_passthrough_body(chat_req, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
@@ -5439,6 +5941,8 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                # Anthropic passthrough has no rag_scope field (RAG is local-only).
+                rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
             )
 
@@ -6408,7 +6912,11 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
-def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
+def _build_openai_passthrough_body(
+    payload,
+    backend_ctx = None,
+    llama_backend = None,
+) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only known OpenAI / llama-server fields are forwarded, so Studio-specific
@@ -6419,12 +6927,19 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    # When the caller asked for a specific reasoning mode, forward it via
-    # chat_template_kwargs so the Jinja template renders with (or without) the
-    # reasoning preamble.
-    tpl_kwargs = None
-    if payload.enable_thinking is not None:
-        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
+    # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
+    # preserve_thinking) via chat_template_kwargs so the Jinja template renders
+    # in the caller's mode, gated on the active template's capabilities exactly
+    # like the non-passthrough paths.
+    tpl_kwargs = (
+        llama_backend._request_reasoning_kwargs(
+            payload.enable_thinking,
+            payload.reasoning_effort,
+            payload.preserve_thinking,
+        )
+        if llama_backend is not None
+        else None
+    )
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -6459,7 +6974,9 @@ async def _openai_passthrough_stream(
     the client sees a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -6477,27 +6994,32 @@ async def _openai_passthrough_stream(
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
-        try:
-            req = client.build_request("POST", target_url, json = body)
-            resp = await client.send(req, stream = True)
-        except httpx.RequestError as e:
-            # llama-server subprocess crashed / starting / unreachable.
-            logger.error("openai passthrough stream: upstream unreachable: %s", e)
-            if resp is not None:
+        _truncate_budget = (
+            _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
+        )
+        while True:
+            try:
+                req = client.build_request("POST", target_url, json = body)
+                resp = await client.send(req, stream = True)
+            except httpx.RequestError as e:
+                # llama-server subprocess crashed / starting / unreachable.
+                logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                if resp is not None:
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
                 try:
-                    await resp.aclose()
+                    await client.aclose()
                 except Exception:
                     pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code = 502,
-                detail = _friendly_error(e),
-            )
+                raise HTTPException(
+                    status_code = 502,
+                    detail = _friendly_error(e),
+                )
 
-        if resp.status_code != 200:
+            if resp.status_code == 200:
+                break
             err_bytes = await resp.aread()
             err_text = err_bytes.decode("utf-8", errors = "replace")
             logger.error(
@@ -6510,6 +7032,14 @@ async def _openai_passthrough_stream(
                 await resp.aclose()
             except Exception:
                 pass
+            # Opt-in overflow policy: shrink and retry instead of a fatal 400.
+            if (
+                _truncate_budget > 0
+                and _classify_llama_generation_error(Exception(err_text))
+                and _apply_overflow_truncation(body, err_text)
+            ):
+                _truncate_budget -= 1
+                continue
             try:
                 await client.aclose()
             except Exception:
@@ -6604,22 +7134,37 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     ``tool_calls``, and accurate ``usage`` token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
-    except httpx.RequestError as e:
-        # llama-server subprocess crashed / starting / unreachable. Surface the
-        # same friendly message the sync chat path emits so operators don't see
-        # a bare 500 with no diagnostic.
-        logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
-        raise HTTPException(
-            status_code = 502,
-            detail = _friendly_error(e),
-        )
+    _truncate_budget = (
+        _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
+    )
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(target_url, json = body, timeout = 600)
+        except httpx.RequestError as e:
+            # llama-server subprocess crashed / starting / unreachable. Surface the
+            # same friendly message the sync chat path emits so operators don't see
+            # a bare 500 with no diagnostic.
+            logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            break
+        # Opt-in overflow policy: shrink and retry instead of a fatal 400.
+        if (
+            _truncate_budget > 0
+            and _classify_llama_generation_error(Exception(resp.text))
+            and _apply_overflow_truncation(body, resp.text)
+        ):
+            _truncate_budget -= 1
+            continue
         raise _openai_passthrough_error(resp.status_code, resp.text)
 
     # The guided-decoding fence wraps each choice's JSON content in a

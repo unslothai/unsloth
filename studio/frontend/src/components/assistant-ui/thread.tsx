@@ -13,6 +13,7 @@ import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
   thinkEffortAriaLabel,
@@ -22,6 +23,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -34,6 +36,8 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { MascotImg } from "@/components/mascot-img";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,18 +50,31 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import {
+  listPromptEntries,
+  type PromptEntry,
+} from "@/features/chat/api/prompts-api";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
+import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -77,11 +94,13 @@ import {
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -94,7 +113,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -127,6 +145,83 @@ import {
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
+
+// Single-chat prompt queue. State lives at module level so it survives the
+// Composer remount when the first queued message creates a new thread, and
+// detection subscribes to the store's runningByThreadId rather than
+// aui.thread() (unbound on the welcome screen).
+
+import { create as _createZustand } from "zustand";
+
+// Module-level Zustand so ComposerRightControls re-renders across Composer mounts.
+interface _QueueUIState { isRunning: boolean; current: number; total: number; }
+const _useQueueUI = _createZustand<_QueueUIState>(() => ({
+  isRunning: false, current: 0, total: 0,
+}));
+
+let _qItems: string[] = [];
+let _qIndex = 0;
+let _qIsRunning = false;
+let _qPrevStoreRunning = false;
+let _qStoreUnsub: (() => void) | null = null;
+
+// Points to the current Composer's aui (updated every render), so it stays valid
+// after a remount.
+let _qGetAui: () => ReturnType<typeof useAui> = () => {
+  throw new Error("aui not initialised");
+};
+
+function _qStopSubscription() {
+  if (_qStoreUnsub) { _qStoreUnsub(); _qStoreUnsub = null; }
+  _qPrevStoreRunning = false;
+}
+
+function _qAdvance() {
+  const nextIndex = _qIndex + 1;
+  if (nextIndex >= _qItems.length) {
+    _qIsRunning = false;
+    _qItems = [];
+    _qIndex = 0;
+    _qStopSubscription();
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    toast.success("Prompt queue complete");
+    return;
+  }
+  _qIndex = nextIndex;
+  _useQueueUI.setState({ current: nextIndex + 1, total: _qItems.length });
+  const next = _qItems[nextIndex];
+  toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
+    description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+  });
+  _qPrevStoreRunning = false; // catch the next run
+  setTimeout(() => {
+    _qGetAui().thread().append({
+      role: "user",
+      content: [{ type: "text", text: next }],
+      createdAt: new Date(),
+    } as never);
+  }, 100);
+}
+
+function _qStartSubscription() {
+  _qStopSubscription();
+  // runningByThreadId tracks the actual thread (not aui.thread()), so detection
+  // survives navigation.
+  _qStoreUnsub = useChatRuntimeStore.subscribe((state) => {
+    if (!_qIsRunning) { _qStopSubscription(); return; }
+    const isRunning = Object.keys(state.runningByThreadId).length > 0;
+    const wasRunning = _qPrevStoreRunning;
+    _qPrevStoreRunning = isRunning;
+    if (wasRunning && !isRunning) {
+      _qAdvance();
+    }
+  });
+}
+
+interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
+const PromptQueueContext = createContext<_QueueCallbacks>({
+  startQueue: () => {}, stopQueue: () => {},
+});
 
 // Gap (px) between last message and floating composer; bottom spacer tracks
 // composer height plus this gap so chat can scroll fully above the composer.
@@ -443,6 +538,8 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
+      {/* Document preview, opened by citation badges. */}
+      <DocumentPreviewMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -643,8 +740,8 @@ function buildWelcome(hour: number, name: string): Welcome {
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
-    g("Ready when you are.", "large sloth thumbs.png"),
+    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
+    g("Ready when you are", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
     g("How can I help?", "sloth sir large.png"),
   ];
@@ -684,17 +781,16 @@ const ThreadWelcome: FC<{
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName]);
 
-  const currentEmojiSrc = `/Sloth emojis/${welcome.sloth}`;
+  const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            <img
+            <MascotImg
               src={currentEmojiSrc}
-              alt="Sloth mascot"
               className="size-[44px] -translate-y-[2px]"
             />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -778,10 +874,12 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   // More than 4 pills: collapse to icons only. Search and Code always show;
-  // Images, Canvas and MCP are conditional.
+  // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
+      (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -847,6 +945,7 @@ const Composer: FC<{
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled ||
+    ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
@@ -890,18 +989,88 @@ const Composer: FC<{
   // Docked composer opens upward; the welcome composer opens downward by
   // default and only flips up via collision detection when it won't fit.
   const effectiveMenuSide = menuSide ?? "bottom";
+
+  // While this thread's docs index, hold the send and fire it once they finish so
+  // retrieval covers all of them.
+  const [indexingActive, setIndexingActive] = useState(false);
+  const [pendingSend, setPendingSend] = useState(false);
+  const pendingSendRef = useRef(false);
+  const waitToastRef = useRef<string | number | null>(null);
+
+  const dismissWaitToast = useCallback(() => {
+    if (waitToastRef.current !== null) {
+      toast.dismiss(waitToastRef.current);
+      waitToastRef.current = null;
+    }
+  }, []);
+
+  const cancelQueuedSend = useCallback(() => {
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+  }, [dismissWaitToast]);
+
+  const enqueueSend = useCallback(() => {
+    if (pendingSendRef.current) return;
+    pendingSendRef.current = true;
+    setPendingSend(true);
+    waitToastRef.current = toast("Waiting for documents to finish indexing", {
+      description:
+        "Your message will send automatically once indexing finishes.",
+      duration: Infinity,
+      cancel: { label: "Cancel", onClick: cancelQueuedSend },
+    });
+  }, [cancelQueuedSend]);
+
   const shouldBlockSend = useCallback(
     () =>
       !hasSendableContent || isComposingRef.current || hasPendingAttachments,
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
-  const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+  // Gate for both form submit and the Send button. Returns true when it handled
+  // the event (blocked or queued) so callers stop.
+  const interceptSend = useCallback(
+    (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        return;
+        return true;
       }
+      if (indexingActive && !overlay) {
+        event.preventDefault();
+        enqueueSend();
+        return true;
+      }
+      return false;
+    },
+    [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
+  );
+
+  // Fire the parked send once indexing clears, unless the user emptied the
+  // composer while waiting (then drop it quietly).
+  useEffect(() => {
+    if (!pendingSend || indexingActive) return;
+    const { text, attachments } = aui.composer().getState();
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+    if (text.trim().length > 0 || attachments.length > 0) {
+      aui.composer().send();
+    }
+  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+
+  // Drop any queued send + toast on unmount (e.g. thread switch).
+  useEffect(
+    () => () => {
+      pendingSendRef.current = false;
+      if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
+    },
+    [],
+  );
+
+  const handleSubmit = useCallback(
+    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+      if (interceptSend(event)) return;
 
       if (overlay) {
         const trimmed = composerText.trim();
@@ -949,19 +1118,58 @@ const Composer: FC<{
       aui,
       closeOverlay,
       composerText,
-      disabled,
+      interceptSend,
       overlay,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
-      shouldBlockSend,
     ],
   );
+
+  // Update the getter every render so the queue always calls the current
+  // Composer's aui (post-remount).
+  _qGetAui = () => aui;
+
+  const stopQueue = useCallback(() => {
+    _qIsRunning = false;
+    _qStopSubscription();
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    _qItems = [];
+    _qIndex = 0;
+    try { _qGetAui().thread().cancelRun(); } catch {}
+  }, []);
+
+  const startQueue = useCallback((items: string[]) => {
+    const filtered = items.filter((p) => p.trim());
+    if (!filtered.length) return;
+    _qItems = filtered;
+    _qIndex = 0;
+    _qIsRunning = true;
+    _useQueueUI.setState({ isRunning: true, current: 1, total: filtered.length });
+    toast(`Prompt 1 / ${filtered.length}`, {
+      description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+    });
+    // Subscribe BEFORE appending so we don't miss a very fast completion.
+    _qStartSubscription();
+    setTimeout(() => {
+      _qGetAui().thread().append({
+        role: "user",
+        content: [{ type: "text", text: filtered[0] }],
+        createdAt: new Date(),
+      } as never);
+    }, 50);
+  }, []);
+
+  const queueContextValue: _QueueCallbacks = { startQueue, stopQueue };
 
   const composerContent = (
     <>
       <ComposerAttachments />
       <PendingAudioChip />
+      <ThreadDocumentsBar
+        threadId={referenceThreadId}
+        onIndexingChange={setIndexingActive}
+      />
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
@@ -977,6 +1185,7 @@ const Composer: FC<{
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
+              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
               {mcpEnabledForChat ? (
                 <McpComposerButton side={effectiveMenuSide} />
@@ -1007,7 +1216,8 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          shouldBlockSend={shouldBlockSend}
+          onSendClick={interceptSend}
+          pendingSend={pendingSend}
           menuSide={effectiveMenuSide}
         />
       </div>
@@ -1015,6 +1225,7 @@ const Composer: FC<{
   );
 
   return (
+    <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
@@ -1050,6 +1261,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </PromptQueueContext.Provider>
   );
 };
 
@@ -1174,63 +1386,6 @@ function useImeComposerInputHandlers() {
     isComposingRef: composingRef,
   };
 }
-
-// Audio upload row, only for audio-input models.
-const ComposerAudioMenuItem: FC = () => {
-  const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
-  const activeModel = useChatRuntimeStore((s) => {
-    const checkpoint = s.params.checkpoint;
-    return s.models.find((m) => m.id === checkpoint);
-  });
-
-  const handleAudioFile = useCallback(
-    async (file: File) => {
-      if (file.size > MAX_AUDIO_SIZE) {
-        return;
-      }
-      try {
-        const base64 = await fileToBase64(file);
-        setPendingAudio(base64, file.name);
-      } catch {
-        // skip
-      }
-    },
-    [setPendingAudio],
-  );
-
-  // Build the input on document.body, not in the menu: selecting the item
-  // closes the dropdown, unmounting a menu-rendered input before the OS picker
-  // returns and dropping the file.
-  const pickAudio = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = AUDIO_ACCEPT;
-    input.hidden = true;
-    document.body.appendChild(input);
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) handleAudioFile(file);
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [handleAudioFile]);
-
-  if (!activeModel?.hasAudioInput) {
-    return null;
-  }
-
-  return (
-    <DropdownMenuItem onSelect={() => pickAudio()}>
-      <HeadphonesIcon />
-      Upload audio
-    </DropdownMenuItem>
-  );
-};
 
 // Phosphor microphone. Inlined to avoid a new icon dependency.
 const MicIcon: FC<{ className?: string }> = ({ className }) => (
@@ -1409,7 +1564,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           side={side}
           align="end"
           avoidCollisions={true}
-          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[160px]"
+          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
         >
           {isEffort ? (
             <>
@@ -1422,7 +1577,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     setPreserveThinking(false);
                   }}
                 >
-                  <CheckIcon
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                     className={cn(
                       "unsloth-tick size-4",
                       effectiveReasoningVisualEnabled && "opacity-0",
@@ -1447,7 +1604,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       }
                     }}
                   >
-                    <CheckIcon
+                    <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                       className={cn(
                         "unsloth-tick size-4",
                         !(
@@ -1475,7 +1634,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   }
                 }}
               >
-                <CheckIcon
+                <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                   className={cn(
                     "unsloth-tick size-4",
                     !effectiveReasoningEnabled && "opacity-0",
@@ -1499,7 +1660,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 }
               }}
             >
-              <CheckIcon
+              <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                 className={cn(
                   "unsloth-tick size-4",
                   !preserveThinking && "opacity-0",
@@ -1604,6 +1767,7 @@ const WebSearchToggle: FC = () => {
         }
       }}
       className="composer-pill-btn"
+      data-pill-label="Search"
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
@@ -1639,6 +1803,7 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Code"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
@@ -1680,6 +1845,7 @@ const ImagesToggle: FC = () => {
       disabled={disabled}
       onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
       className="composer-pill-btn"
+      data-pill-label="Images"
       data-active={imageToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         imageToolsEnabled
@@ -1706,6 +1872,7 @@ const ArtifactsToggle: FC = () => {
       type="button"
       onClick={() => setArtifactsEnabled(false)}
       className="composer-pill-btn"
+      data-pill-label="Canvas"
       data-active="true"
       aria-label="Disable canvas"
     >
@@ -1779,6 +1946,21 @@ const ToolStatusDisplay: FC = () => {
 };
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
+const AUDIO_ACCEPT_TOKEN_RE =
+  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+
+function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
+  if (audioEnabled || accept === "*") {
+    return accept;
+  }
+  const filtered = accept
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+    .join(",");
+  return filtered || accept;
+}
+
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
@@ -1793,11 +1975,23 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  // Shared gate so the menu row agrees with the RAG pill.
+  const ragDisabled = useRagToolDisabled();
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    if (!activeCheckpoint || s.modelLoading) {
+      return false;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -1857,10 +2051,76 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const aui = useAui();
+  const composerCanAddAttachments = useAuiState(
+    ({ composer }) => composer.isEditing,
+  );
+  const pickAttachment = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.hidden = true;
+
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    if (attachmentAccept !== "*") {
+      input.accept = attachmentAccept;
+    }
+
+    document.body.appendChild(input);
+    input.onchange = (event) => {
+      const files = (event.target as HTMLInputElement).files;
+      if (files) {
+        for (const file of files) {
+          void aui.composer().addAttachment(file);
+        }
+      }
+      document.body.removeChild(input);
+    };
+    input.oncancel = () => {
+      if (!input.files || input.files.length === 0) {
+        document.body.removeChild(input);
+      }
+    };
+    input.click();
+  }, [aui, audioAttachmentsEnabled]);
+  // Disable Export chat until the thread has content.
+  const messageCount = useAuiState(({ thread }) => thread.messages.length);
+  const { startQueue } = useContext(PromptQueueContext);
+
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      setRecentPrompts(
+        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
+      );
+    } catch {
+    }
+  }, []);
 
   return (
     <>
-    <DropdownMenu>
+    <PromptStorageDialog
+      open={promptStorageOpen}
+      onOpenChange={setPromptStorageOpen}
+      onUse={(text) => {
+        aui.composer().setText(text);
+      }}
+      onRunList={(items) => {
+        setPromptStorageOpen(false);
+        startQueue(items);
+      }}
+    />
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) void refreshRecentPrompts();
+      }}
+    >
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -1873,19 +2133,19 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
       <DropdownMenuContent
         side={side}
         align="start"
-        sideOffset={2}
+        sideOffset={0}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[212px]"
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
-        <ComposerPrimitive.AddAttachment asChild={true}>
-          <DropdownMenuItem>
-            <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
-            Add photos &amp; files
-          </DropdownMenuItem>
-        </ComposerPrimitive.AddAttachment>
-        <ComposerAudioMenuItem />
+        <DropdownMenuItem
+          disabled={!composerCanAddAttachments}
+          onSelect={() => pickAttachment()}
+        >
+          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          Add photos &amp; files
+        </DropdownMenuItem>
         <DropdownMenuItem
           disabled={searchDisabled}
           className={
@@ -1906,7 +2166,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <GlobeIcon />
           Web search
           {toolsEnabled && !searchDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -1918,14 +2182,19 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           }
           onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
         >
+          {/* Scale, not width: an oversized box pushed the label out of line. */}
           <HugeiconsIcon
             icon={CodeIcon}
             strokeWidth={2}
-            className="size-[1.175rem]!"
+            className="scale-[1.12]"
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         {supportsBuiltinImageGeneration && (
@@ -1941,18 +2210,31 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
-              <CheckIcon className="ml-auto" />
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
             ) : null}
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className={artifactsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+          disabled={ragDisabled}
+          className={
+            ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
+          }
+          onSelect={() => setRagEnabled(!ragEnabled)}
         >
-          <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-          Canvas
-          {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+          Chat with Files
+          {ragEnabled && !ragDisabled ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
+          ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={mcpDisabled}
@@ -1966,14 +2248,107 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
           MCP
           {mcpEnabledForChat && !mcpDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
-        {/* RAG hidden temporarily */}
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                Saved prompts
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                {recentPrompts.map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onSelect={() => aui.composer().setText(p.text)}
+                  >
+                    <span className="truncate">{p.name}</span>
+                  </DropdownMenuItem>
+                ))}
+                {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                  All saved prompts…
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                disabled={!activeThreadId || messageCount === 0}
+              >
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                Export chat
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationRawJsonl(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  Raw JSONL
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationCsv(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    if (!activeThreadId) return;
+                    exportConversationShareGPT(activeThreadId).catch(() =>
+                      toast.error("Export failed."),
+                    );
+                  }}
+                >
+                  ShareGPT JSONL
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuItem
+              className={
+                artifactsEnabled ? "text-primary font-medium" : undefined
+              }
+              onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+            >
+              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+              Canvas
+              {artifactsEnabled ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -2015,9 +2390,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
-  shouldBlockSend?: () => boolean;
+  onSendClick?: (event: { preventDefault: () => void }) => void;
+  pendingSend?: boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, shouldBlockSend, menuSide }) => {
+}> = ({ disabled, onSendClick, pendingSend, menuSide }) => {
+  const isQueueRunning = _useQueueUI((s) => s.isRunning);
+  const queueCurrent = _useQueueUI((s) => s.current);
+  const queueTotal = _useQueueUI((s) => s.total);
+  const { stopQueue } = useContext(PromptQueueContext);
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -2045,40 +2425,58 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning}>
-        <ComposerPrimitive.Send asChild={true}>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            disabled={disabled}
-            onClick={(event) => {
-              if (shouldBlockSend?.()) {
-                event.preventDefault();
-              }
-            }}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <ComposerPrimitive.Cancel asChild={true}>
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-cancel ml-1.5 size-8 rounded-full"
-            aria-label="Stop generating"
-          >
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-          </Button>
-        </ComposerPrimitive.Cancel>
-      </AuiIf>
+      {isQueueRunning ? (
+        <button
+          type="button"
+          onClick={stopQueue}
+          aria-label="Stop prompt queue"
+          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <SquareIcon className="size-2.5 shrink-0 fill-current" />
+          <span className="tabular-nums">
+            Stop queue {queueCurrent}/{queueTotal}
+          </span>
+        </button>
+      ) : (
+        <>
+          <AuiIf condition={({ thread }) => !thread.isRunning}>
+            <ComposerPrimitive.Send asChild={true}>
+              <TooltipIconButton
+                tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
+                side="bottom"
+                type="submit"
+                variant="default"
+                size="icon"
+                // Stay clickable while docs index so a click can queue the send;
+                // disabled only once a send is parked.
+                disabled={disabled || pendingSend}
+                onClick={(event) => onSendClick?.(event)}
+                className="aui-composer-send ml-1.5 size-8 rounded-full"
+                aria-label="Send message"
+              >
+                {pendingSend ? (
+                  <Spinner className="size-[18px]" />
+                ) : (
+                  <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+                )}
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </AuiIf>
+          <AuiIf condition={({ thread }) => thread.isRunning}>
+            <ComposerPrimitive.Cancel asChild={true}>
+              <Button
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+                aria-label="Stop generating"
+              >
+                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              </Button>
+            </ComposerPrimitive.Cancel>
+          </AuiIf>
+        </>
+      )}
     </div>
   );
 };
@@ -2141,6 +2539,7 @@ const AssistantMessage: FC = () => {
             tools: {
               by_name: {
                 web_search: WebSearchToolUI,
+                search_knowledge_base: KnowledgeBaseToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
@@ -2152,6 +2551,7 @@ const AssistantMessage: FC = () => {
           }}
         />
         <SourcesGroup />
+        <RagSourcesGroup />
         <MessageError />
       </div>
 
@@ -2238,7 +2638,7 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
@@ -2260,7 +2660,7 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
@@ -2318,7 +2718,7 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>

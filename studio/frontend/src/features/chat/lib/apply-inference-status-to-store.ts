@@ -154,6 +154,7 @@ export function applyActiveModelStatusToStore(
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
+    specFallbackReason: status.spec_fallback_reason ?? null,
     ...(prevState.loadedSpeculativeType === null && {
       speculativeType: currentSpecType,
       loadedSpeculativeType: currentSpecType,

@@ -63,6 +63,7 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p logs
           set -o pipefail
