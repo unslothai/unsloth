@@ -150,10 +150,8 @@ CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
     """
-    Detect if llama.cpp uses CMake-only build system.
-    Modern llama.cpp (post-migration) has a Makefile that prints a deprecation
-    message instead of actually building. We detect this by checking if the
-    Makefile contains the deprecation notice.
+    True if llama.cpp's Makefile is the post-CMake-migration deprecation stub
+    (or missing entirely), so `make` cannot build it.
     """
     makefile_path = os.path.join(llama_cpp_dir, "Makefile")
     if not os.path.exists(makefile_path):
@@ -161,8 +159,7 @@ def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
         return True
     try:
         with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
-            content = f.read(4096)  # Only read first 4KB
-            # Check for the deprecation message in the Makefile
+            content = f.read(4096)
             if "cmake" in content.lower() and "deprecated" in content.lower():
                 return True
             if "Build system changed" in content:
@@ -1143,11 +1140,11 @@ def install_llama_cpp_make_non_blocking():
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
 
-    # Detect CMake-only build system before trying make (avoids confusing error messages)
+    # Skip the make-clean probe on CMake-only checkouts (its error output is misleading)
     IS_CMAKE = _is_cmake_only_llama_cpp("llama.cpp")
 
     if not IS_CMAKE:
-        # Try make clean silently to confirm make still works
+        # Confirm make still works, silently
         try:
             result = subprocess.run(
                 ["make", "clean", "-C", "llama.cpp"],
@@ -1156,7 +1153,7 @@ def install_llama_cpp_make_non_blocking():
             )
             IS_CMAKE = result.returncode != 0
         except FileNotFoundError:
-            # make executable not found, fallback to CMake
+            # No make executable; use CMake
             IS_CMAKE = True
 
     if not IS_CMAKE:
