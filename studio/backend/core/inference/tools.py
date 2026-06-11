@@ -39,6 +39,9 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
+# Splits the UI source-map from the result; loops strip it (like __IMAGES__).
+RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
+
 # Import these at module level so the preexec_fn closure triggers no imports in
 # the forked child (which can deadlock multi-threaded servers).
 _libc = None
@@ -539,7 +542,41 @@ RENDER_HTML_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, RENDER_HTML_TOOL]
+# Duplicated (not imported from core.rag.tool) so the registry never pulls in
+# the RAG stack; dispatch imports it lazily.
+SEARCH_KNOWLEDGE_BASE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge_base",
+        "description": (
+            "Search the user's uploaded documents and knowledge bases for "
+            "relevant passages. Use this whenever the question may be answered "
+            "by the attached documents, then cite the returned chunks."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max chunks to return.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+ALL_TOOLS = [
+    WEB_SEARCH_TOOL,
+    PYTHON_TOOL,
+    TERMINAL_TOOL,
+    RENDER_HTML_TOOL,
+    SEARCH_KNOWLEDGE_BASE_TOOL,
+]
 
 
 # OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
@@ -652,14 +689,19 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    rag_scope: dict | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
     ``timeout``: int seconds, ``None`` = no limit, unset = ``_EXEC_TIMEOUT``.
     ``session_id``: optional ID for per-conversation sandbox isolation.
+    ``rag_scope``: hidden per-request RAG context the model never sees; consumed
+    by ``search_knowledge_base``.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "search_knowledge_base":
+        return _search_knowledge_base(arguments, rag_scope)
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -694,6 +736,208 @@ def execute_tool(
     if name == "terminal":
         return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout, session_id)
     return f"Unknown tool: {name}"
+
+
+def _opt_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _scope_retrieval_kwargs(scope: dict) -> dict:
+    """Retrieval mode from rag_scope; candidate pools and RRF come from config."""
+    mode = scope.get("mode")
+    return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
+
+
+def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
+    """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model
+    supplies only ``query``/``top_k``). Lazy import; missing sqlite-vec degrades
+    to a friendly message."""
+    scope = rag_scope or {}
+    query = (arguments or {}).get("query", "")
+    if not query or not str(query).strip():
+        return "Error: query is empty."
+    try:
+        from storage import rag_db
+        if not rag_db.RAG_AVAILABLE:
+            return "Knowledge base search is unavailable on this server."
+        from core.rag.tool import search_knowledge_base_with_sources
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG tool unavailable: %s", exc)
+        return "Knowledge base search is unavailable on this server."
+
+    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
+    text, sources = search_knowledge_base_with_sources(
+        query = str(query),
+        scope_kb_id = scope.get("kb_id"),
+        scope_thread_id = scope.get("thread_id"),
+        top_k = top_k,
+        **_scope_retrieval_kwargs(scope),
+    )
+    # Append the UI source-map after the sentinel; loops strip it before the model.
+    if sources:
+        import json as _json
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    return text
+
+
+# Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
+# on-topic queries, skips weak ones) and helps small models that under-call the tool.
+# Tunable via RAG_AUTOINJECT_MIN_SCORE.
+_AUTOINJECT_DEFAULT_FLOOR = 0.70
+
+
+def _autoinject_enabled() -> bool:
+    return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _autoinject_floor() -> float:
+    raw = os.environ.get("RAG_AUTOINJECT_MIN_SCORE")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_FLOOR
+
+
+# Lean: injecting the full top_k every turn prefills thousands of tokens.
+_AUTOINJECT_DEFAULT_TOP_K = 4
+
+
+def _autoinject_top_k() -> int:
+    raw = os.environ.get("RAG_AUTOINJECT_TOP_K")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_TOP_K
+
+
+def _last_user_text(conversation: list[dict]) -> str:
+    """Plain text of the most recent user turn (text parts only)."""
+    for msg in reversed(conversation):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+            ]
+            return " ".join(t for t in parts if t).strip()
+        return ""
+    return ""
+
+
+def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+    """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
+    ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
+    Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
+    ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``).
+
+    Also the small-model fallback: models below ~4B often answer from memory
+    instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
+    attachments consulted regardless of model size."""
+    if not rag_scope:
+        return None
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    if not enabled:
+        return None
+    query = _last_user_text(conversation)
+    if not query:
+        return None
+    try:
+        from storage import rag_db
+        if not rag_db.RAG_AVAILABLE:
+            return None
+        from core.rag.tool import search_for_autoinject
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject unavailable: %s", exc)
+        return None
+
+    floor_override = rag_scope.get("autoinject_min_score")
+    floor = float(floor_override) if floor_override is not None else _autoinject_floor()
+    # Cap at the lean top_k, but honor a lower user setting.
+    lean_k = _autoinject_top_k()
+    sidebar_k = _opt_int(rag_scope.get("default_top_k"))
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    try:
+        found = search_for_autoinject(
+            query = query,
+            scope_kb_id = rag_scope.get("kb_id"),
+            scope_thread_id = rag_scope.get("thread_id"),
+            top_k = top_k,
+            min_dense_score = floor,
+            **_scope_retrieval_kwargs(rag_scope),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject retrieval failed: %s", exc)
+        return None
+    if not found:
+        logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+        return None
+
+    text, sources = found
+    import json as _json
+    import uuid as _uuid
+
+    call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
+    args = {"query": query}
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    events = [
+        {"type": "status", "text": f"Searching documents: {query[:60]}"},
+        {
+            "type": "tool_start",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "arguments": args,
+        },
+        {
+            "type": "tool_end",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "result": full_result,
+        },
+        {"type": "status", "text": ""},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "search_knowledge_base",
+                        "arguments": _json.dumps(args, ensure_ascii = False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "content": text,
+        },
+    ]
+    logger.info("RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80])
+    return {"events": events, "messages": messages}
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
