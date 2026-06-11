@@ -18,6 +18,7 @@ from typing import Optional
 from core.inference.mcp_client import join_stdio_command
 
 _SCALAR = (str, int, float, bool)
+_UNSUPPORTED_STDIO_FIELDS = ("cwd", "envFile")
 
 
 @dataclass
@@ -26,10 +27,31 @@ class ParsedMcpEntry:
     url: str  # joined command (stdio) or http(s) url (remote)
     headers: Optional[dict[str, str]]  # env vars (stdio) or http headers (remote)
     is_stdio: bool
+    is_enabled: bool = True
+    use_oauth: bool = False
 
 
 def _coerce_str_dict(value: dict) -> dict[str, str]:
-    return {str(k): str(v) for k, v in value.items()}
+    return {str(k): str(v) for k, v in value.items() if v is not None}
+
+
+def _has_input_reference(value: object) -> bool:
+    if isinstance(value, str):
+        return "${input:" in value
+    if isinstance(value, list):
+        return any(_has_input_reference(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_input_reference(item) for item in value.values())
+    return False
+
+
+def _enabled_from_spec(label: str, spec: dict) -> tuple[Optional[bool], Optional[str]]:
+    disabled = spec.get("disabled")
+    if disabled is None:
+        return True, None
+    if not isinstance(disabled, bool):
+        return None, f"{label}: 'disabled' must be true or false."
+    return not disabled, None
 
 
 def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Optional[str]]:
@@ -38,6 +60,12 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         return None, "Server entry has an empty name."
     if not isinstance(spec, dict):
         return None, f"{label}: entry must be an object."
+    if _has_input_reference(spec):
+        return None, f"{label}: '${{input:...}}' variables are not supported by import."
+
+    is_enabled, error = _enabled_from_spec(label, spec)
+    if error:
+        return None, error
 
     has_command = bool(spec.get("command"))
     has_url = bool(spec.get("url"))
@@ -50,6 +78,14 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         command = spec["command"]
         if not isinstance(command, str):
             return None, f"{label}: 'command' must be a string."
+        entry_type = spec.get("type")
+        if entry_type is not None and entry_type != "stdio":
+            return None, f"{label}: stdio entry has unsupported type {entry_type!r}."
+        unsupported = [field for field in _UNSUPPORTED_STDIO_FIELDS if spec.get(field) is not None]
+        if unsupported:
+            return None, f"{label}: import cannot preserve {', '.join(unsupported)}."
+        if spec.get("oauth") is not None:
+            return None, f"{label}: 'oauth' is only supported for remote servers."
         args = spec.get("args") or []
         if not isinstance(args, list) or not all(isinstance(a, _SCALAR) for a in args):
             return None, f"{label}: 'args' must be a list of strings."
@@ -58,16 +94,31 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
             return None, f"{label}: 'env' must be an object."
         url = join_stdio_command([command, *(str(a) for a in args)])
         headers = _coerce_str_dict(env) if env else None
-        return ParsedMcpEntry(label, url, headers, True), None
+        return ParsedMcpEntry(label, url, headers, True, is_enabled = is_enabled), None
 
     url = spec["url"]
     if not isinstance(url, str):
         return None, f"{label}: 'url' must be a string."
+    entry_type = spec.get("type")
+    if entry_type is not None and entry_type not in ("http", "sse"):
+        return None, f"{label}: remote entry has unsupported type {entry_type!r}."
+    if entry_type == "sse" and not url.rstrip("/").endswith("/sse"):
+        return None, f"{label}: explicit SSE transport cannot be preserved for this URL."
+    oauth_raw = spec.get("oauth")
+    if oauth_raw is not None and not isinstance(oauth_raw, dict):
+        return None, f"{label}: 'oauth' must be an object."
     headers_raw = spec.get("headers")
     if headers_raw is not None and not isinstance(headers_raw, dict):
         return None, f"{label}: 'headers' must be an object."
     headers = _coerce_str_dict(headers_raw) if headers_raw else None
-    return ParsedMcpEntry(label, url.strip(), headers, False), None
+    return ParsedMcpEntry(
+        label,
+        url.strip(),
+        headers,
+        False,
+        is_enabled = is_enabled,
+        use_oauth = oauth_raw is not None,
+    ), None
 
 
 def parse_mcp_config(config: object) -> tuple[list[ParsedMcpEntry], list[str]]:

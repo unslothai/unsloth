@@ -25,16 +25,67 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
+def _split_windows_command_line(address: str) -> list[str]:
+    """Parse a Windows command line using the same backslash/quote rules that
+    subprocess.list2cmdline() writes. This keeps trailing backslashes before a
+    closing quote from being doubled in the resulting argv."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    backslashes = 0
+    arg_started = False
+    i = 0
+
+    while i < len(address):
+        ch = address[i]
+        if ch == "\\":
+            backslashes += 1
+            i += 1
+            continue
+        if ch == '"':
+            current.extend("\\" * (backslashes // 2))
+            if backslashes % 2:
+                current.append('"')
+            else:
+                in_quotes = not in_quotes
+            arg_started = True
+            backslashes = 0
+            i += 1
+            continue
+        if ch.isspace() and not in_quotes:
+            if backslashes:
+                current.extend("\\" * backslashes)
+                arg_started = True
+                backslashes = 0
+            if arg_started or current:
+                parts.append("".join(current))
+                current = []
+                arg_started = False
+            i += 1
+            while i < len(address) and address[i].isspace():
+                i += 1
+            continue
+        if backslashes:
+            current.extend("\\" * backslashes)
+            arg_started = True
+            backslashes = 0
+        current.append(ch)
+        arg_started = True
+        i += 1
+
+    if backslashes:
+        current.extend("\\" * backslashes)
+        arg_started = True
+    if arg_started or current:
+        parts.append("".join(current))
+    return parts
+
+
 def parse_stdio_command(address: str) -> list[str]:
     """Split a stdio command line into argv. Shared by route validation and the
     transport so both agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
-    parts = shlex.split(address, posix = posix)
-    if not posix:
-        # posix=False keeps backslash paths but also keeps surrounding quotes;
-        # strip a matched pair so argv reaches the subprocess clean.
-        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
-    return parts
+    return shlex.split(address, posix = posix) if posix else _split_windows_command_line(address)
 
 
 def join_stdio_command(parts: list[str]) -> str:

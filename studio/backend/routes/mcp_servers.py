@@ -274,8 +274,8 @@ async def import_mcp_servers(
             display_name = entry.display_name,
             url = url,
             headers_json = json.dumps(headers) if headers else None,
-            is_enabled = True,
-            use_oauth = False,
+            is_enabled = entry.is_enabled,
+            use_oauth = entry.use_oauth and not is_stdio(url),
         )
         seen_urls.add(url)
         created.append(_row_to_response(mcp_servers_db.get_server(server_id)))

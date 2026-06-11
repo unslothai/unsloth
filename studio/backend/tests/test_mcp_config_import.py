@@ -71,6 +71,8 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         ],
         # A command path with spaces is the case that actually needs quoting.
         ["C:\\Program Files\\node\\node.exe", "server.js"],
+        ["C:\\Program Files\\Foo\\", "server.js"],
+        ["node", ""],
     ],
 )
 def test_join_parse_roundtrip_win32(monkeypatch, parts):
@@ -116,6 +118,39 @@ def test_parse_remote_entry():
     assert entries[0].url == "https://example.com/mcp"
     assert entries[0].is_stdio is False
     assert entries[0].headers == {"Authorization": "Bearer x"}
+
+
+def test_parse_preserves_disabled_and_oauth():
+    cfg = {
+        "servers": {
+            "remote": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "oauth": {"clientId": "client"},
+                "disabled": True,
+            }
+        }
+    }
+    entries, errors = parse_mcp_config(cfg)
+    assert errors == []
+    assert entries[0].is_enabled is False
+    assert entries[0].use_oauth is True
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"command": "node", "args": ["server.js"], "cwd": "/tmp/server"},
+        {"command": "node", "args": ["server.js"], "envFile": ".env"},
+        {"command": "node", "args": ["server.js"], "env": {"API_KEY": "${input:api-key}"}},
+        {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${input:token}"}},
+        {"type": "sse", "url": "https://example.com/custom"},
+    ],
+)
+def test_parse_rejects_unrepresentable_imports(server):
+    entries, errors = parse_mcp_config({"servers": {"bad": server}})
+    assert entries == []
+    assert len(errors) == 1
 
 
 def test_servers_alias_key():
@@ -188,6 +223,15 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
                 "env": {"API_KEY": "sk"},
             },
             "remote": {"url": "https://example.com/mcp"},
+            "oauth": {
+                "type": "http",
+                "url": "https://auth.example.com/mcp",
+                "oauth": {"clientId": "client"},
+            },
+            "disabled": {
+                "url": "https://disabled.example.com/mcp",
+                "disabled": True,
+            },
         }
     }
     res = asyncio.run(
@@ -195,18 +239,22 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
     )
     assert res.errors == []
     assert res.skipped == []
-    assert {c.display_name for c in res.created} == {"fs", "remote"}
+    assert {c.display_name for c in res.created} == {"fs", "remote", "oauth", "disabled"}
     fs = next(c for c in res.created if c.display_name == "fs")
     assert fs.headers == {"API_KEY": "sk"}
     assert fs.use_oauth is False
     assert fs.is_enabled is True
+    oauth = next(c for c in res.created if c.display_name == "oauth")
+    assert oauth.use_oauth is True
+    disabled = next(c for c in res.created if c.display_name == "disabled")
+    assert disabled.is_enabled is False
 
     # Re-importing the same config skips both by url.
     res2 = asyncio.run(
         routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
     )
     assert res2.created == []
-    assert set(res2.skipped) == {"fs", "remote"}
+    assert set(res2.skipped) == {"fs", "remote", "oauth", "disabled"}
 
 
 def test_import_route_gates_stdio_when_disabled(tmp_path, monkeypatch):
