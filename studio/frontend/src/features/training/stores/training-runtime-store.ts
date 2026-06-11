@@ -277,7 +277,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof payload.total_steps === "number" && payload.total_steps > 0
             ? payload.total_steps
             : state.totalSteps,
-        currentLoss: currentLoss ?? state.currentLoss,
+        // A null loss at a new step means the backend reported a non-finite
+        // loss; clear the display instead of keeping the stale value.
+        currentLoss:
+          currentLoss ?? (step > state.currentStep ? null : state.currentLoss),
         currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,
         currentEpoch: payload.epoch ?? state.currentEpoch,

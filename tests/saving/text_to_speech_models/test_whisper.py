@@ -153,7 +153,6 @@ import torch
 
 FastModel.for_inference(model)
 model.eval()
-# Create pipeline without specifying the device
 whisper = pipeline(
     "automatic-speech-recognition",
     model = model,
@@ -161,9 +160,8 @@ whisper = pipeline(
     feature_extractor = tokenizer.feature_extractor,
     processor = tokenizer,
     return_language = True,
-    torch_dtype = torch.float16,  # Remove the device parameter
+    torch_dtype = torch.float16,
 )
-# Example usage
 audio_file = "Speech_12dB_s16.flac"
 transcribed_text = whisper(audio_file)
 # audio, sr = sf.read(audio_file)
@@ -181,13 +179,9 @@ expected_phrases = [
 ]
 
 transcribed_lower = transcribed_text["text"].lower()
-all_phrases_found = all(
-    phrase.lower() in transcribed_lower for phrase in expected_phrases
-)
+all_phrases_found = all(phrase.lower() in transcribed_lower for phrase in expected_phrases)
 
-assert (
-    all_phrases_found
-), f"Expected phrases not found in transcription: {transcribed_text['text']}"
+assert all_phrases_found, f"Expected phrases not found in transcription: {transcribed_text['text']}"
 print("✅ Transcription contains all expected phrases!")
 
 

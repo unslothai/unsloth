@@ -77,7 +77,10 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
 
 
 def weight_dequant_block(
-    x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype = torch.bfloat16
+    x: torch.Tensor,
+    s: torch.Tensor,
+    block_size: int = 128,
+    dtype = torch.bfloat16,
 ) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -94,7 +97,11 @@ def weight_dequant_block(
     return y
 
 
-def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
+def weight_dequant(
+    x: torch.Tensor,
+    s: torch.Tensor,
+    dtype = torch.bfloat16,
+):
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
@@ -121,9 +128,8 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     x = tl.load(x_ptr + offs).to(tl.float32)
     s = tl.max(tl.abs(x)) / 448.0
-    # For a row of all zeros, lets return zeros as is
-    # for LoRA, there are cases where dY has 0 in it and we should not let it be NaN
-    # this is a deviation from the original implementation.
+    # All-zero row: keep scale at 1 so LoRA's zero dY doesn't become NaN
+    # (a deviation from the original implementation).
     s = 1.0 if s == 0 else s
     y = x / s
     y = y.to(y_ptr.dtype.element_ty)
@@ -131,9 +137,7 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
-def act_quant(
-    x: torch.Tensor, block_size: int = 128
-) -> tuple[torch.Tensor, torch.Tensor]:
+def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
         x = x.contiguous()
     assert x.shape[-1] % block_size == 0
@@ -266,9 +270,7 @@ def w8a8_block_fp8_matmul_triton(
     BLOCK_SIZE_K, BLOCK_SIZE_N = block_k, block_n
 
     def grid(META):
-        return (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-        )
+        return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
     _w8a8_block_fp8_matmul[grid](
         A,
@@ -317,13 +319,11 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
-# Note that older versions of fbgemm (<=1.3.0) cause numerical imprecisions resulting in NaNs especially when X has high values in it.
-# So our preference order is fbgemm (>=1.4.0) > torchao > triton. All of these have similar outputs/losses. Never use fbgemm (<=1.3.0) for block quantized FP8 matmul.
-# This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though torchao is 15-30% slower than fbgemm implementation (on H100 GPUs).
+# fbgemm <=1.3.0 causes NaNs for high X values, so never use it for block FP8.
+# Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses).
+# torchao is ~3x faster than the triton kernel but 15-30% slower than fbgemm (H100).
 fp8_block_matmul = (
-    torchao_block_matmul
-    if torchao_blockwise_gemm is not None
-    else w8a8_block_fp8_matmul_triton
+    torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
 )
 
 
@@ -332,13 +332,12 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     def forward(ctx, X, weight, weight_scale):
         m, n = weight.shape
 
-        # Save original scale for backward (before any transformation)
+        # Original scale, saved for backward before any transformation
         original_weight_scale = weight_scale
 
-        # Handle per-tensor quantization: expand scalar to block scale shape
+        # Per-tensor quant: expand scalar to (ceil(m/128), ceil(n/128)) block shape
         if weight_scale.numel() == 1:
             block_size = [128, 128]
-            # Expand scalar to (ceil(m/128), ceil(n/128)) - same value for all blocks
             num_blocks_m = triton.cdiv(m, block_size[0])
             num_blocks_n = triton.cdiv(n, block_size[1])
             weight_scale = weight_scale.expand(num_blocks_m, num_blocks_n).contiguous()
@@ -350,10 +349,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             )
             assert block_size is not None, "block_size is not set"
             if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
-                if (
-                    triton.cdiv(m, block_size[0]) == q
-                    and triton.cdiv(n, block_size[1]) == p
-                ):
+                if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
                     weight_scale = weight_scale.T
                     original_weight_scale = weight_scale  # Update for transposed case
                 else:
@@ -364,7 +360,6 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         if not weight.is_contiguous():
             weight = weight.contiguous()
 
-        # Quantize input and run FP8 matmul
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
             qinput,
@@ -393,27 +388,29 @@ def fp8_torch_block_quant_forward(X, weight, weight_scale):
 
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weight, weight_scale, bias = None):
+    def forward(
+        ctx,
+        x,
+        weight,
+        weight_scale,
+        bias = None,
+    ):
         if weight.shape[0] == weight_scale.shape[0] and (
             weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0
         ):
-            # Edit: The kernel seems to expect that the weight has dimensions divisible by 8. Otherwise it throws `RuntimeError: cutlass cannot implement`
-            # One thing we can do is to pad the weight and weight scale to multiple of 8 and perform a F8F8BF16 operation.
-            # I tried benchmarking that for speed but observed that dequantize+bf16 matmul is significantly faster than padding+f8f8bf16 matmul. So we'll go that route.
-            # So essentially, f8f8bf16_rowise only happens when shapes are proper (no transposes) and divisible by 8.
+            # The kernel needs weight dims divisible by 8 (else `cutlass cannot
+            # implement`). Padding + f8f8bf16 is slower than dequant + bf16 matmul,
+            # so f8f8bf16_rowwise runs only for proper, divisible-by-8 shapes.
 
-            # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
+            # quantize_fp8_per_row squashes leading dims; save the shape first
             output_shape = (*x.shape[:-1], -1)
-            # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
-            # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
+            # x_quantized/x_scale may land on a different device than x (FBGEMM
+            # quantize.cu#L1237). Moving them here produces gibberish; move the
+            # output instead. Compute runs on weight's device regardless.
             x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
                 x.view(-1, x.shape[-1]).contiguous(),
                 scale_ub = getattr(weight, "input_scale_ub", None),
             )
-            # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
-            # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
-
-            # The computation still happens on the device where self.weight is even if x_quantized is not on the same device as self.weight
             weight_scale_float32 = weight_scale.to(torch.float32)
 
             if not weight.is_contiguous():
@@ -425,18 +422,15 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum = True
             )
             output = output + bias if bias is not None else output
-            # Hacky for now, we have the output to the device of x
+            # Move output back to x's device (the move-input path produced gibberish)
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
         elif (
-            weight.shape[0] != weight_scale.shape[0]
-            and weight.shape[1] == weight_scale.shape[0]
+            weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]
         ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
-            # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
-            # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
-            # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
-
+            # Transposed weight/scale (backward dY@W) or non-divisible-by-8 shape
+            # (e.g. Qwen 2.5 VL 7B gate proj 3420x1280): dequant is preferred.
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
@@ -459,13 +453,24 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
 
 @torch_compile
-def fbgemm_fp8_linear(X, weight, weight_scale, bias = None):
+def fbgemm_fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
     return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, weight, weight_scale, bias = None):
+    def forward(
+        ctx,
+        X,
+        weight,
+        weight_scale,
+        bias = None,
+    ):
         orig_shape = X.shape
         X = X.view(-1, X.shape[-1])
 
@@ -479,8 +484,8 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
 
         if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
             if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
-                # weights are transposed during backward pass for training :)
-                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                # Backward transposes the weight; transpose the scale to match
+                # (transposing the weight itself would break matmul with X).
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(
@@ -488,10 +493,9 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
                 )
 
         xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
-        ## TODO: Investigate and resolve the high divergence of this output from baseline
-        # WARNING: This causes the outputs to diverge from expected when X has high values in it.
-        # That results in the model producing gibberish, especially on longer sequences and training loss starting at high values like 8 instead of <1 ideally
-        # Please refrain from using this till this issue is resolved. This exists here just for a future headstart.
+        # TODO: WARNING - diverges from baseline for high X values, producing
+        # gibberish / high starting loss. Do not use until resolved; kept for a
+        # future headstart.
         output = torch.ops.fbgemm.f8f8bf16_blockwise(
             xq, weight.contiguous(), xs, weight_scale.contiguous(), bs_m, bs_n, bs_k
         )
@@ -516,14 +520,18 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
 
 
 @torch_compile
-def fp8_fbgemm_block_linear(X, weight, weight_scale, bias = None):
+def fp8_fbgemm_block_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
     return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
 
 def test_has_fbgemm():
-    # We must manually check if the faster FBGEMM works on the specific GPU
-    # For example RTX 5090 and RTX 4090 does not work
-    # Also SM100 (Blackwell B200/B100) GPUs fail with CUTLASS SM90 kernels
+    # Probe whether the faster FBGEMM works on this GPU. RTX 4090/5090 and
+    # SM100 (Blackwell B200/B100) fail with CUTLASS SM90 kernels.
     # [TODO] Investigate with TorchAO why FBGEMM fails on consumer GPUs
     M, N, K = 128, 128, 128
     xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = "cuda")
@@ -539,8 +547,7 @@ def test_has_fbgemm():
         del out
     except Exception as e:
         error_str = str(e).lower()
-        # Catch any CUTLASS/CUDA errors and disable FBGEMM
-        # This includes MMA instruction errors, architecture mismatches, kernel launch failures, etc.
+        # Disable FBGEMM on any CUTLASS/CUDA error (MMA, arch mismatch, launch, etc.)
         cutlass_cuda_errors = (
             "cutlass",
             "cuda error",
@@ -555,9 +562,7 @@ def test_has_fbgemm():
         is_cutlass_cuda_error = any(err in error_str for err in cutlass_cuda_errors)
 
         if is_cutlass_cuda_error:
-            print(
-                "Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels"
-            )
+            print("Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels")
         else:
             print(
                 f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels"
@@ -574,17 +579,12 @@ if "UNSLOTH_HAS_FBGEMM" not in os.environ:
 try:
     import fbgemm_gpu
 
-    # Older versions cause numerical imprecisions resulting in NaNs especially when X has high values in it.
-    # This is both fast and accurate hence preferred.
-    # This makes it 15% faster than the torchao implementation.
+    # >=1.4.0 is fast and accurate (older versions NaN on high X); ~15% faster
+    # than torchao. Must probe blockwise FBGEMM since consumer GPUs fail.
     if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
-        # We must manually confirm if blockwise FBGEMM works!
-        # This check is a must for consumer grade GPUs which fail
-        # Suppress CUDA device printf during probe -- on Blackwell (SM100) GPUs,
-        # FBGEMM's CUTLASS blockwise kernel (hardcoded SM90) fires thousands of
-        # "Arch conditional MMA" lines to stdout fd 1 before aborting.
+        # Suppress CUDA printf during probe: on Blackwell (SM100), FBGEMM's
+        # SM90 CUTLASS kernel floods stdout with "Arch conditional MMA" before aborting.
         from unsloth.import_fixes import suppress_cuda_printf
-
         with suppress_cuda_printf():
             _has_fbgemm = test_has_fbgemm()
         if _has_fbgemm:
@@ -598,14 +598,16 @@ except:
 
 
 @torch_compile
-def fp8_linear(X, weight, weight_scale, bias = None):
-    # Per-tensor quantization: single scalar scale for entire weight
-    # Block quantized FP8: 2D scale tensor with multiple columns
-    if weight_scale.numel() == 1 or (
-        weight_scale.ndim == 2 and weight_scale.shape[1] > 1
-    ):
+def fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
+    # Per-tensor (scalar scale) or block FP8 (2D scale, multiple columns)
+    if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
-    # Row/channel quantized FP8: 2D scale with shape (n, 1)
+    # Row/channel FP8: 2D scale shaped (n, 1)
     else:
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out

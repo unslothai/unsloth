@@ -60,9 +60,8 @@ export function ArtifactHtmlFrame({
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [allowNetworkAccess, code]);
   const postArtifactHtml = useCallback(() => {
-    // The sandboxed frame intentionally has an opaque origin ("null").
-    // A wildcard target is required here;
-    // the payload is sent only to this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
+    // required; the payload only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",

@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import re
 import sys
 
 import pytest
@@ -57,6 +58,68 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /api/chat/settings
+# ---------------------------------------------------------------------------
+
+
+def test_chat_settings_payload_accepts_fast_mode_presets():
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "inferenceParams": {"fastMode": False},
+            "customPresets": [
+                {
+                    "name": "Fast Opus",
+                    "params": {
+                        "temperature": 0.6,
+                        "topP": 0.95,
+                        "topK": 20,
+                        "minP": 0.01,
+                        "repetitionPenalty": 1.0,
+                        "presencePenalty": 0.0,
+                        "maxTokens": 8192,
+                        "systemPrompt": "",
+                        "trustRemoteCode": False,
+                        "fastMode": True,
+                    },
+                },
+            ],
+        }
+    )
+
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["inferenceParams"]["fastMode"] is False
+    assert dumped["customPresets"][0]["params"]["fastMode"] is True
+
+
+def test_chat_inference_settings_covers_frontend_persisted_fields():
+    # Drift guard: every InferenceParams field the UI persists (all but
+    # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
+    # 400s PUT /api/chat/settings on the next added field (issue #5862).
+    runtime_ts = os.path.join(
+        _backend,
+        "..",
+        "frontend",
+        "src",
+        "features",
+        "chat",
+        "types",
+        "runtime.ts",
+    )
+    if not os.path.exists(runtime_ts):
+        pytest.skip("frontend runtime.ts not present")
+
+    with open(runtime_ts, encoding = "utf-8") as fh:
+        block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
+    assert block, "InferenceParams interface not found in runtime.ts"
+    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
+
+    backend = set(chat_history.ChatInferenceSettings.model_fields)
+    assert persisted == backend, (
+        f"schema drift: frontend-only {persisted - backend}, " f"backend-only {backend - persisted}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # /api/chat/import-ledger
 # ---------------------------------------------------------------------------
 
@@ -102,7 +165,6 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
 def test_record_import_ledger_rejects_oversize_payload():
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         chat_history.ChatImportLedgerRecordRequest(
             threadIds = [f"id-{i}" for i in range(10_001)],

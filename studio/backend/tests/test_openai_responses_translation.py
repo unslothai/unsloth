@@ -5,14 +5,14 @@
 Unit tests for the OpenAI `/v1/responses` translation in external_provider.
 
 Covers:
-- Request body shape: system messages collapse into `instructions`, user/
-  assistant messages go into `input`, sampling knobs Responses does not
-  support (presence_penalty, top_k) are not forwarded.
-- SSE translation: `response.output_text.delta` events become OpenAI Chat
-  Completions chunks, `response.completed` emits a `finish_reason: stop`
-  chunk, the stream terminates with `data: [DONE]`.
-- Image parts in user content are rewritten from Chat Completions
-  `{type: image_url, image_url: {url}}` into Responses
+- Request body shape: system messages collapse into `instructions`,
+  user/assistant messages go into `input`, and unsupported sampling knobs
+  (presence_penalty, top_k) are not forwarded.
+- SSE translation: `response.output_text.delta` → Chat Completions chunks,
+  `response.completed` → a `finish_reason: stop` chunk, stream ends with
+  `data: [DONE]`.
+- Image parts rewritten from Chat Completions
+  `{type: image_url, image_url: {url}}` to Responses
   `{type: input_image, image_url: <url>}`.
 """
 
@@ -101,9 +101,9 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the
-    # only OpenAI ids the registry allowlist exposes) rejects these as
-    # `Unsupported parameter`. Make sure we never silently forward them.
+    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the only
+    # OpenAI ids the registry allowlist exposes) rejects these as `Unsupported
+    # parameter`. Never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
     assert "presence_penalty" not in body
@@ -154,10 +154,7 @@ def test_responses_translates_image_parts(monkeypatch):
 
     parts = captured["body"]["input"][0]["content"]
     assert parts[0] == {"type": "input_text", "text": "What is this?"}
-    assert parts[1] == {
-        "type": "input_image",
-        "image_url": "data:image/png;base64,AAA",
-    }
+    assert parts[1] == {"type": "input_image", "image_url": "data:image/png;base64,AAA"}
     # No max_output_tokens key when caller passes max_tokens=None.
     assert "max_output_tokens" not in captured["body"]
 
@@ -196,7 +193,7 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
     lines = _drive(run())
 
-    # Drop empty / non-data lines for assertion clarity.
+    # Keep only data lines for assertion clarity.
     data_lines = [line for line in lines if line.startswith("data:")]
     payloads = []
     for line in data_lines:
@@ -216,11 +213,11 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
 
 def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypatch):
-    """Round 12: caller-supplied function tools forwarded into /v1/responses
-    must have their `function_call` output items translated back into Chat
-    Completions delta.tool_calls, and the terminal chunk must emit
-    finish_reason="tool_calls" so the frontend's accumulator runs the
-    function instead of seeing finish_reason="stop"."""
+    """Round 12: function tools forwarded into /v1/responses must have their
+    `function_call` output items translated back into Chat Completions
+    delta.tool_calls, and the terminal chunk must emit
+    finish_reason="tool_calls" (not "stop") so the frontend's accumulator runs
+    the function."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [
@@ -291,7 +288,7 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     assert tc["id"] == "call_xyz"
     assert tc["function"]["name"] == "get_weather"
     assert tc["function"]["arguments"] == '{"city":"SF"}'
-    # Final chunk reports tool_calls instead of stop.
+    # Final chunk reports tool_calls, not stop.
     terminal = next(
         p
         for p in payloads
@@ -304,8 +301,8 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
 
 def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
     """Round 13: parallel function_call items must land on distinct
-    delta.tool_calls[].index slots so index-keyed clients don't
-    collapse the second call into the first."""
+    delta.tool_calls[].index slots so index-keyed clients don't collapse the
+    second call into the first."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [
@@ -391,10 +388,10 @@ def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
 
 
 def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeypatch):
-    """Round 13: a second turn after a Responses function call must
-    serialize the tool_calls history and tool result as Responses
-    `function_call` / `function_call_output` input items, not as
-    Chat Completions role="tool" content."""
+    """Round 13: a second turn after a Responses function call must serialize
+    the tool_calls history and tool result as Responses `function_call` /
+    `function_call_output` input items, not Chat Completions role="tool"
+    content."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -497,8 +494,7 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
     finish_reasons = [
         json.loads(line[len("data:") :].strip())["choices"][0]["finish_reason"]
         for line in lines
-        if line.startswith("data:")
-        and line[len("data:") :].strip() not in ("", "[DONE]")
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
     ]
     assert "length" in finish_reasons
 
@@ -730,8 +726,7 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
     data_lines = [
         line[len("data:") :].strip()
         for line in lines
-        if line.startswith("data:")
-        and line[len("data:") :].strip() not in ("", "[DONE]")
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
     ]
     payloads = [json.loads(raw) for raw in data_lines]
     combined = "".join(

@@ -55,9 +55,9 @@ export function InlineModel(props: InlineModelProps): ReactElement {
     );
   }
 
-  // model_config branch - mirror the local-aware provider sync from the
-  // dialog path so inline edits clear stale local-only metadata without
-  // synthesizing the legacy "local" placeholder.
+  // model_config branch: mirror the dialog path's local-aware provider sync so
+  // inline edits clear stale local-only metadata without synthesizing the
+  // legacy "local" placeholder.
   const localNames = props.localProviderNames ?? new Set<string>();
   const modelConfig = props.config;
   const isLinkedToLocal = localNames.has(modelConfig.provider);

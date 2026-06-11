@@ -29,7 +29,6 @@ def _load_run_command():
     """Import `studio` without triggering server start; backend imports
     are lazy inside run()."""
     from unsloth_cli.commands import studio as _studio
-
     return _studio
 
 
@@ -52,6 +51,18 @@ def test_parallel_option_is_registered():
         assert required in flags, f"flag {required!r} missing from --parallel option"
 
 
+def test_context_length_alias_is_registered():
+    """`--context-length` is an operator-facing alias for --max-seq-length."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["max_seq_length"].default
+    flags = set(getattr(opt, "param_decls", None) or [])
+    assert "--max-seq-length" in flags
+    assert "--context-length" in flags
+
+
 def test_parallel_default_is_four():
     """Default must stay at 4 so plain `unsloth studio run` is unchanged."""
     studio_mod = _load_run_command()
@@ -60,9 +71,7 @@ def test_parallel_default_is_four():
     sig = inspect.signature(studio_mod.run)
     opt = sig.parameters["parallel"].default
     default = getattr(opt, "default", None)
-    assert (
-        default == 4
-    ), f"default changed to {default}; would silently alter existing deployments"
+    assert default == 4, f"default changed to {default}; would silently alter existing deployments"
 
 
 def test_parallel_range_guards_are_set():
@@ -179,7 +188,12 @@ def _install_reexec_capture(monkeypatch, *, platform):
     return captured
 
 
-def _invoke_run(monkeypatch, args, *, platform = "linux"):
+def _invoke_run(
+    monkeypatch,
+    args,
+    *,
+    platform = "linux",
+):
     import typer as _typer
 
     studio_mod = _load_run_command()
@@ -224,9 +238,7 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
-    result, captured = _invoke_run(
-        monkeypatch, _BASE + ["--parallel", "12"], platform = platform
-    )
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
     assert (
@@ -249,6 +261,15 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     assert _value_after(argv, "--port") == "8888", argv
 
 
+def test_reexec_forwards_context_length_alias(monkeypatch):
+    """Alias should normalize to the existing child --max-seq-length flag."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--context-length", "8192"])
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--max-seq-length") == "8192", argv
+    assert "--context-length" not in argv, argv
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
@@ -262,6 +283,22 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--temp") == "0.7", argv
 
 
+def test_context_length_banner_line_formats_ints():
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": 4096}) == (
+        "  Context length: 4096 tokens"
+    )
+    assert studio_mod._format_context_length_line({"context_length": "8192"}) == (
+        "  Context length: 8192 tokens"
+    )
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, ""])
+def test_context_length_banner_line_omits_unknown_values(value):
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": value}) is None
+
+
 @pytest.mark.parametrize(
     "user_flag,expected_in_child",
     [
@@ -270,9 +307,7 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
         (None, "--load-in-4bit"),  # default True
     ],
 )
-def test_reexec_forwards_load_in_4bit_in_both_directions(
-    monkeypatch, user_flag, expected_in_child
-):
+def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
     """Re-exec must emit the chosen polarity (or the typer default),
     so a future default flip on one layer can't silently invert
     behaviour for users who never typed the flag."""
@@ -281,16 +316,10 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(
     assert len(captured) == 1
     argv = captured[0]["argv"]
     other_polarity = (
-        "--no-load-in-4bit"
-        if expected_in_child == "--load-in-4bit"
-        else "--load-in-4bit"
+        "--no-load-in-4bit" if expected_in_child == "--load-in-4bit" else "--load-in-4bit"
     )
-    assert (
-        expected_in_child in argv
-    ), f"expected {expected_in_child} in child argv; got {argv}"
-    assert (
-        other_polarity not in argv
-    ), f"unexpected {other_polarity} in child argv; got {argv}"
+    assert expected_in_child in argv, f"expected {expected_in_child} in child argv; got {argv}"
+    assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
 
 
 # Runtime check: fake sys.prefix into the studio venv to bypass
@@ -306,7 +335,6 @@ class _RunServerCaptured(SystemExit):
 
 def _types_module(name):
     import types as _types
-
     return _types.ModuleType(name)
 
 
@@ -354,10 +382,9 @@ def test_studio_default_exposes_parallel_option():
     import inspect
 
     sig = inspect.signature(studio_mod.studio_default)
-    assert "parallel" in sig.parameters, (
-        "studio_default missing `parallel`; API-only path can't set "
-        "llama_parallel_slots"
-    )
+    assert (
+        "parallel" in sig.parameters
+    ), "studio_default missing `parallel`; API-only path can't set llama_parallel_slots"
     opt = sig.parameters["parallel"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--parallel" in decls

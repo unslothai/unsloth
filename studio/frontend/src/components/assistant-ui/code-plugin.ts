@@ -10,8 +10,8 @@ import {
 } from "@streamdown/code";
 import type { BundledLanguage } from "shiki";
 
-// Fence tags LLMs/users commonly write that shiki doesn't expose as aliases.
-// Keys are lower-cased input; values are canonical shiki language ids.
+// Common fence tags shiki doesn't expose as aliases.
+// Keys: lower-cased input; values: canonical shiki language ids.
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
   objectivec: "objective-c",
   "obj-c": "objective-c",
