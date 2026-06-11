@@ -1021,9 +1021,7 @@ def test_run_rejects_missing_explicit_local_model_before_auth(monkeypatch, tmp_p
 
     from unsloth_cli import app
 
-    result = CliRunner().invoke(
-        app, ["deploy", "run", "--yes", "--model", "./lora_mdoel"]
-    )
+    result = CliRunner().invoke(app, ["deploy", "run", "--yes", "--model", "./lora_mdoel"])
     combined = result.output + (result.stderr or "")
     assert result.exit_code != 0
     assert "Local model path does not exist: ./lora_mdoel" in combined

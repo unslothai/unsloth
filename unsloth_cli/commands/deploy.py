@@ -612,9 +612,7 @@ def _is_missing_explicit_local_model(model: Optional[str]) -> bool:
 def _is_explicit_local_model_path(model: str) -> bool:
     path = Path(model).expanduser()
     return (
-        model.startswith(("./", "../", "~"))
-        or path.is_absolute()
-        or path.suffix.lower() == ".gguf"
+        model.startswith(("./", "../", "~")) or path.is_absolute() or path.suffix.lower() == ".gguf"
     )
 
 
