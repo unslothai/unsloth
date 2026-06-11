@@ -2151,7 +2151,6 @@ def unsloth_save_pretrained_gguf(
         if os.path.exists(modules_path):
             try:
                 import json
-
                 with open(modules_path, "r") as f:
                     modules = json.load(f)
                 for m in modules:
@@ -2161,9 +2160,7 @@ def unsloth_save_pretrained_gguf(
             except:
                 pass
 
-        transformer_dir = os.path.abspath(
-            os.path.join(save_directory, transformer_path)
-        )
+        transformer_dir = os.path.abspath(os.path.join(save_directory, transformer_path))
 
         result = unsloth_save_pretrained_gguf(
             inner_model,

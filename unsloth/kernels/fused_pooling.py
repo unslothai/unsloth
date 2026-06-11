@@ -65,9 +65,7 @@ def _fused_layernorm_mean_pool_backward(
         other = 0,
     ).to(tl.float32) / tl.maximum(seq_len.to(tl.float32), 1.0)
 
-    X_row = tl.load(X + row_idx * X_row_stride + col_offsets, mask = mask, other = 0).to(
-        tl.float32
-    )
+    X_row = tl.load(X + row_idx * X_row_stride + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     inv_var = tl.load(r + row_idx).to(tl.float32)
@@ -75,11 +73,7 @@ def _fused_layernorm_mean_pool_backward(
     normed = (X_row - mean) * inv_var
 
     dY_W = dY_row * W_row
-    dX_row = (
-        dY_W
-        - tl.sum(dY_W, axis = 0) / n_cols
-        - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
-    )
+    dX_row = dY_W - tl.sum(dY_W, axis = 0) / n_cols - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
     dX_row = dX_row * inv_var
 
     tl.store(dY + row_idx * dY_row_stride + col_offsets, dX_row, mask = mask)
@@ -127,9 +121,7 @@ def _fused_layernorm_mean_pool_forward(
             tok = base_row + tok_offset
 
             # Load this token's hidden states
-            X_row = tl.load(
-                X + tok * X_row_stride + col_offsets, mask = mask, other = 0
-            ).to(tl.float32)
+            X_row = tl.load(X + tok * X_row_stride + col_offsets, mask = mask, other = 0).to(tl.float32)
 
             # Compute mean
             mean_X = tl.sum(X_row, axis = 0) / n_cols
@@ -160,7 +152,14 @@ def _fused_layernorm_mean_pool_forward(
 class FusedLayerNormMeanPool(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X, W, bias, attention_mask, eps = 1e-12):
+    def forward(
+        ctx,
+        X,
+        W,
+        bias,
+        attention_mask,
+        eps = 1e-12,
+    ):
         batch_size, seq_len, hidden_dim = X.shape
         device = X.device
 
@@ -242,12 +241,10 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
 
         # Build per-token grad: grad_pooled[sentence_of_token] / seq_len_of_token
         # sentence_idx for each row in padded layout
-        sentence_idx = torch.arange(batch_size, device = device).repeat_interleave(
-            seq_len
-        )
-        per_token_grad = grad_pooled[sentence_idx].float() / seq_lengths[
-            sentence_idx
-        ].unsqueeze(1).float().clamp(min = 1)
+        sentence_idx = torch.arange(batch_size, device = device).repeat_interleave(seq_len)
+        per_token_grad = grad_pooled[sentence_idx].float() / seq_lengths[sentence_idx].unsqueeze(
+            1
+        ).float().clamp(min = 1)
 
         # Mask out padding rows
         tok_offsets = torch.arange(seq_len, device = device).repeat(batch_size)
@@ -278,11 +275,7 @@ def fused_layernorm_mean_pool(layernorm, X, attention_mask):
     assert layernorm.bias is not None, "Fused pooling requires LayerNorm with bias"
     W = layernorm.weight
     bias = layernorm.bias
-    eps = (
-        layernorm.variance_epsilon
-        if hasattr(layernorm, "variance_epsilon")
-        else layernorm.eps
-    )
+    eps = layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     if not (X.is_cuda or X.is_xpu):
         # No GPU (is_cuda covers CUDA+ROCm, is_xpu covers Intel) -> Triton can't
         # run, so fall back to eager LayerNorm + masked mean.

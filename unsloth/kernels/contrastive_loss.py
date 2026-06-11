@@ -46,7 +46,12 @@ class FusedContrastiveLoss(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, embeddings_a, embeddings_b, scale = 20.0):
+    def forward(
+        ctx,
+        embeddings_a,
+        embeddings_b,
+        scale = 20.0,
+    ):
         B_a, _dim = embeddings_a.shape
         B_b = embeddings_b.shape[0]
 
@@ -57,9 +62,7 @@ class FusedContrastiveLoss(torch.autograd.Function):
             ctx.save_for_backward(embeddings_a, embeddings_b)
             return embeddings_a.new_zeros(())
 
-        assert (
-            B_a <= B_b
-        ), f"FusedContrastiveLoss requires B_a <= B_b, got {B_a} and {B_b}"
+        assert B_a <= B_b, f"FusedContrastiveLoss requires B_a <= B_b, got {B_a} and {B_b}"
 
         CHUNK = min(64, B_b)
 
@@ -71,12 +74,8 @@ class FusedContrastiveLoss(torch.autograd.Function):
             device = embeddings_a.device,
             dtype = embeddings_a.dtype,
         )
-        running_sum = torch.zeros(
-            B_a, device = embeddings_a.device, dtype = embeddings_a.dtype
-        )
-        pos_logits = torch.zeros(
-            B_a, device = embeddings_a.device, dtype = embeddings_a.dtype
-        )
+        running_sum = torch.zeros(B_a, device = embeddings_a.device, dtype = embeddings_a.dtype)
+        pos_logits = torch.zeros(B_a, device = embeddings_a.device, dtype = embeddings_a.dtype)
 
         for j0 in range(0, B_b, CHUNK):
             j1 = min(j0 + CHUNK, B_b)
@@ -86,9 +85,7 @@ class FusedContrastiveLoss(torch.autograd.Function):
             new_max = torch.maximum(running_max, chunk_max)
             # First chunk: exp(-inf - finite) == 0, so running_sum starts clean.
             rescale = torch.exp(running_max - new_max)
-            running_sum = running_sum * rescale + torch.exp(
-                sim - new_max.unsqueeze(1)
-            ).sum(dim = 1)
+            running_sum = running_sum * rescale + torch.exp(sim - new_max.unsqueeze(1)).sum(dim = 1)
             running_max = new_max
 
             # Gather diagonal positives sim[i, i] in one shot (no per-row loop).
@@ -154,11 +151,15 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
     that uses :class:`FusedContrastiveLoss` under the hood.
     """
 
-    def __init__(self, model, scale = 20.0, similarity_fct = None):
+    def __init__(
+        self,
+        model,
+        scale = 20.0,
+        similarity_fct = None,
+    ):
         super().__init__()
         if similarity_fct is not None:
             import warnings
-
             warnings.warn(
                 "Unsloth: similarity_fct is ignored by FusedContrastiveLoss (cosine similarity is hardcoded).",
                 stacklevel = 2,
@@ -166,10 +167,13 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
         self.model = model
         self.scale = scale
 
-    def forward(self, sentence_features, labels = None):
+    def forward(
+        self,
+        sentence_features,
+        labels = None,
+    ):
         if labels is not None:
             import warnings
-
             warnings.warn(
                 "Unsloth: labels is ignored by FusedContrastiveLoss (positive pairs are diagonal).",
                 stacklevel = 2,
