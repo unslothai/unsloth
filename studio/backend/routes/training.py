@@ -665,10 +665,17 @@ async def stream_training_progress(
 
             # If not active, send final state and exit
             if not is_active:
-                if backend.step_history:
-                    final_step = backend.step_history[-1]
+                _live = (getattr(tp, "step", 0) or 0) if tp else 0
+                if backend.step_history or _live > 0:
+                    final_step = backend.step_history[-1] if backend.step_history else 0
                     final_loss = backend.loss_history[-1] if backend.loss_history else None
                     final_lr = backend.lr_history[-1] if backend.lr_history else None
+                    # Histories skip non-finite steps; report the live step with
+                    # loss=None instead of the last finite pair.
+                    if _live > final_step:
+                        final_step = _live
+                        final_loss = getattr(tp, "loss", None)
+                        final_lr = getattr(tp, "learning_rate", final_lr)
                     final_total_steps = getattr(tp, "total_steps", final_step) if tp else final_step
                     final_epoch = getattr(tp, "epoch", None) if tp else None
                     payload = build_progress(

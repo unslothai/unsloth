@@ -103,6 +103,21 @@ def test_stream_reports_live_step_with_null_loss_during_nan(monkeypatch):
     assert not stale
 
 
+def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
+    # Fresh connection after the run already ended during a NaN stretch: the
+    # immediate complete event must not replay the stale finite pair either.
+    backend = _FakeBackend(active_polls = 0)
+    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
+
+    response = asyncio.run(
+        rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+    )
+    payloads = _progress_payloads(_collect_events(response))
+    final = payloads[-1]
+    assert final["step"] == 5
+    assert final["loss"] is None
+
+
 def test_stream_uses_finite_history_when_progress_in_sync(monkeypatch):
     backend = _FakeBackend(active_polls = 2)
     # Live progress agrees with the history tail: normal finite behavior.
