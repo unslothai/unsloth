@@ -1031,10 +1031,10 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # of an unload. Runs last: it stats the filesystem (two dir scans against
     # the resolved weight path -- covers local dirs and HF cache snapshots
     # alike), so every pure-memory comparison above short-circuits first.
-    # Skipped when auto drops MTP anyway (sub-3B) or the user owns
-    # --spec-type, where a drafter changes nothing. Resolve both sides: the
-    # stored launch path may be a snapshot symlink while detect_mtp_file
-    # returns the resolved blob.
+    # Skipped when the user owns --spec-type, or when auto drops MTP anyway
+    # (sub-3B with an embedded head and no separate drafter). Resolve both
+    # sides: the stored launch path may be a snapshot symlink while
+    # detect_mtp_file returns the resolved blob.
     if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
         effective_extras = (
             request.llama_extra_args
@@ -1042,18 +1042,21 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
             else llama_backend.extra_args
         )
         size_b = extract_model_size_b(llama_backend.model_identifier or "")
-        if not _auto_mode_drops_mtp(req_mode, size_b) and not _extra_args_set_spec_type(
-            effective_extras
-        ):
+        if not _extra_args_set_spec_type(effective_extras):
+            # Detect the drafter first: a separate drafter (Gemma) exempts the
+            # sub-3B drop, so the appeared/disappeared check must run for it too.
             detected = detect_mtp_file(llama_backend.gguf_path)
-            stored = llama_backend.mtp_draft_path
-            try:
-                detected_resolved = Path(detected).resolve() if detected else None
-                stored_resolved = Path(stored).resolve() if stored else None
-            except OSError:
-                return False
-            if detected_resolved != stored_resolved:
-                return False
+            if not _auto_mode_drops_mtp(
+                req_mode, size_b, has_separate_drafter = bool(detected)
+            ):
+                stored = llama_backend.mtp_draft_path
+                try:
+                    detected_resolved = Path(detected).resolve() if detected else None
+                    stored_resolved = Path(stored).resolve() if stored else None
+                except OSError:
+                    return False
+                if detected_resolved != stored_resolved:
+                    return False
     return True
 
 
