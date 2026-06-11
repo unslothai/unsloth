@@ -845,9 +845,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert "LLM tool" in final, (
-            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
-        )
+        assert (
+            "LLM tool" in final
+        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # A literal ``<tool_call>`` in the tool result must not re-trigger: the
