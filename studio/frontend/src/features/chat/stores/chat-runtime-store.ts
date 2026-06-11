@@ -36,7 +36,6 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
-export const CHAT_RAG_ENABLED_KEY = "unsloth_chat_rag_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -417,6 +416,11 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /**
+   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Mirrors InferenceStatusResponse.spec_fallback_reason.
+   */
+  specFallbackReason: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -480,7 +484,7 @@ type ChatRuntimeStore = {
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
-  setRagEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
@@ -746,7 +750,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
-  ragEnabled: loadBool(CHAT_RAG_ENABLED_KEY, false),
+  // RAG is opt-in per session: always starts off, never restored from storage.
+  ragEnabled: false,
   ragSource: loadRagSource(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
@@ -765,6 +770,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedKvCacheDtype: null,
   speculativeType: "auto",
   loadedSpeculativeType: null,
+  specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   loadedIsMultimodal: false,
@@ -977,6 +983,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedKvCacheDtype: null,
       speculativeType: "auto",
       loadedSpeculativeType: null,
+      specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       loadedIsMultimodal: false,
@@ -1072,13 +1079,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
       return { webFetchToolsEnabled };
     }),
-  setRagEnabled: (ragEnabled, options) =>
-    set(() => {
-      if (options?.persist !== false) {
-        saveBool(CHAT_RAG_ENABLED_KEY, ragEnabled);
-      }
-      return { ragEnabled };
-    }),
+  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
   setRagSource: (ragSource) =>
     set(() => {
       saveRagSource(ragSource);

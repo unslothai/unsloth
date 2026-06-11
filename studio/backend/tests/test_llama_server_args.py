@@ -507,3 +507,28 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+def test_strip_shadowing_flags_drops_model_draft_with_spec():
+    # --model-draft (and aliases) are Studio-managed since the separate
+    # MTP drafter support: an inherited copy must not last-wins-override
+    # the auto-detected drafter.
+    out = strip_shadowing_flags(
+        ["--model-draft", "/old/mtp.gguf", "-md", "/old2.gguf", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_model_draft_without_spec():
+    out = strip_shadowing_flags(
+        ["--model-draft", "/custom/mtp.gguf"],
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["--model-draft", "/custom/mtp.gguf"]

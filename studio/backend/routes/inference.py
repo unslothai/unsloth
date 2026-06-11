@@ -428,6 +428,7 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -437,7 +438,10 @@ try:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -455,6 +459,7 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -464,7 +469,10 @@ except ImportError:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import (
+        detect_mtp_file,
+        load_model_defaults,
+    )
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -937,35 +945,42 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
 logger = get_logger(__name__)
 
 
-def _validate_native_mmproj_companion(mmproj_path: str | None, gguf_path: str | None) -> None:
-    if not mmproj_path or not gguf_path:
+def _validate_native_gguf_companion(
+    companion_path: str | None, gguf_path: str | None, label: str
+) -> None:
+    """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
+    would otherwise hand to llama-server: must be a regular file (no symlink
+    escaping the leased directory) living next to the selected GGUF."""
+    if not companion_path or not gguf_path:
         return
     import stat as _stat_module
 
-    mm = Path(mmproj_path)
+    companion = Path(companion_path)
     gguf = Path(gguf_path)
     try:
-        mm_lstat = os.lstat(mm)
+        companion_lstat = os.lstat(companion)
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
-    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+    if _stat_module.S_ISLNK(companion_lstat.st_mode) or not _stat_module.S_ISREG(
+        companion_lstat.st_mode
+    ):
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion must be a regular file.",
+            detail = f"Native {label} must be a regular file.",
         )
     try:
-        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
             raise HTTPException(
                 status_code = 400,
-                detail = "Native vision companion must live next to the selected GGUF.",
+                detail = f"Native {label} must live next to the selected GGUF.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
-            detail = "Native vision companion is no longer accessible.",
+            detail = f"Native {label} is no longer accessible.",
         ) from exc
 
 
@@ -990,13 +1005,11 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         llama_backend.cache_type_kv
     ):
         return False
-    # Vision loads silently drop speculative decoding (llama_cpp.py gates spec
-    # on ``not is_vision``), so treat the request as ``off`` against the
-    # backend's ``None`` to avoid a redundant reload.
-    if llama_backend.is_vision:
-        req_mode = "off"
-    else:
-        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    # Spec decoding works on vision models too (MTP is mmproj-compatible,
+    # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
+    # the real requested mode -- coercing vision to ``off`` here used to
+    # swallow every spec-mode change on a vision model as already_loaded.
+    req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
@@ -1018,6 +1031,33 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
+    # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
+    # next to the loaded weights changes the launch command (--model-draft),
+    # so a duplicate /load must reload rather than dedupe. Always compare the
+    # detected vs stored drafter when the mode can use one and the user does
+    # not own --spec-type: the resolved-path compare is cheap and handles all
+    # four cases (both None -> match; one None -> reload; equal -> match;
+    # different -> reload), including a drafter deleted out from under a
+    # running server. Runs last: it stats the filesystem, so every pure-memory
+    # comparison above short-circuits first. Resolve both sides since the
+    # stored launch path may be a snapshot symlink while detect_mtp_file
+    # returns the resolved blob.
+    if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
+        effective_extras = (
+            request.llama_extra_args
+            if request.llama_extra_args is not None
+            else llama_backend.extra_args
+        )
+        if not _extra_args_set_spec_type(effective_extras):
+            detected = detect_mtp_file(llama_backend.gguf_path)
+            stored = llama_backend.mtp_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
     return True
 
 
@@ -1324,12 +1364,26 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                if native_grant_backed and config.gguf_mmproj_file:
-                    _validate_native_mmproj_companion(config.gguf_mmproj_file, config.gguf_file)
+                if native_grant_backed:
+                    if config.gguf_mmproj_file:
+                        _validate_native_gguf_companion(
+                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                        )
+                    if config.gguf_mtp_file:
+                        # The drafter is optional (unlike mmproj for a vision
+                        # model): drop it rather than fail the load.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
+                            config.gguf_mtp_file = None
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    mtp_draft_path = config.gguf_mtp_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
@@ -1864,6 +1918,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
+                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
@@ -2075,6 +2130,172 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
         waveform = resampler(waveform)
 
     return waveform.squeeze(0).numpy()
+
+
+# Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
+# cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
+# bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
+# can expand to a far larger PCM array than the encoded-size cap implies.
+_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
+_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_SECONDS = 30 * 60
+_WAV_HEADER_BYTES = 44
+_MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
+
+
+def _sniff_audio_container(raw: bytes) -> Optional[str]:
+    """Return 'wav' or 'mp3' if the bytes are a container llama-server accepts
+    directly (so we can forward them untouched), else None (needs transcoding)."""
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        return "wav"
+    # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
+    # with 0xFF, so the simple sync check doesn't collide).
+    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
+        return "mp3"
+    return None
+
+
+def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
+    """Encode a mono float32 array as 16-bit PCM WAV bytes.
+
+    Torch-free (numpy + stdlib only) so it works on no-torch GGUF-only installs;
+    the shared audio_codecs helper pulls in torch at import time.
+    """
+    import io
+    import wave
+
+    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
+    if arr.size == 0:
+        raise ValueError("decoded audio is empty")
+    peak = float(np.abs(arr).max())
+    if peak > 1.0:
+        arr = arr / peak
+    pcm = (arr * 32767.0).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def _resample_mono_linear(arr: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Small numpy-only resampler for upload size limiting."""
+    if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
+        return arr
+    duration = len(arr) / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    if target_len == len(arr):
+        return arr
+    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
+    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
+    return np.interp(target_x, source_x, arr).astype(np.float32)
+
+
+def _fit_transcoded_audio_to_wav_cap(arr: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
+    """Downsample only when needed so transcoded WAV stays within the upload cap."""
+    if sample_rate <= 0:
+        raise ValueError("decoded audio has an invalid sample rate")
+    wav_bytes = _WAV_HEADER_BYTES + len(arr) * 2
+    if wav_bytes <= _MAX_AUDIO_RAW_BYTES:
+        return arr, sample_rate
+
+    duration = len(arr) / float(sample_rate)
+    max_samples = max(1, (_MAX_AUDIO_RAW_BYTES - _WAV_HEADER_BYTES) // 2)
+    target_rate = int(max_samples // duration)
+    if target_rate < _MIN_TRANSCODE_AUDIO_SAMPLE_RATE:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    target_rate = min(sample_rate, target_rate)
+    fitted = _resample_mono_linear(arr, sample_rate, target_rate)
+    if _WAV_HEADER_BYTES + len(fitted) * 2 > _MAX_AUDIO_RAW_BYTES:
+        raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+    return fitted, target_rate
+
+
+def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
+    """Decode audio bytes to (mono float32 array, native sample_rate).
+
+    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. librosa
+    (ffmpeg-backed) additionally covers m4a/webm but needs a real path and is
+    absent on no-torch GGUF-only installs. Both imports are inside the fallback
+    so a missing decoder degrades to the next one (and finally a clear error)
+    rather than crashing.
+    """
+    import io
+
+    try:
+        import soundfile as sf
+        arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
+    except Exception:
+        try:
+            import librosa
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "this audio format needs librosa, which is not installed in "
+                "GGUF-only environments; use wav, mp3, ogg or flac"
+            ) from e
+        import os
+        import tempfile
+        from utils.paths import ensure_dir, tmp_root
+
+        with tempfile.NamedTemporaryFile(
+            suffix = ".audio",
+            delete = False,
+            dir = str(ensure_dir(tmp_root())),
+        ) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        try:
+            arr, sr = librosa.load(tmp_path, sr = None, mono = True)
+        finally:
+            os.unlink(tmp_path)
+    if arr.ndim > 1:
+        arr = arr.mean(axis = 1)
+    if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
+        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
+    return arr, sr
+
+
+def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
+    """Return (base64, format) ready for llama-server's input_audio part.
+
+    llama-server's API only accepts wav/mp3, and decodes/resamples/down-mixes
+    them itself, so wav and mp3 uploads are forwarded untouched (no decode, no
+    PCM payload inflation). Other containers (m4a/ogg/webm/flac) are decoded to
+    a mono WAV. Blocking; call via a thread from async paths.
+    """
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
+    raw = base64.b64decode(b64)
+    passthrough = _sniff_audio_container(raw)
+    if passthrough is not None:
+        return b64, passthrough
+
+    arr, sr = _decode_audio_mono(raw)
+    arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
+    return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
+
+
+def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
+    """Append an input_audio part to the last user message, in place.
+
+    Audio rides in the message list like image_url parts do, so it flows through
+    both the plain and tool-calling generation paths.
+    """
+    part = {
+        "type": "input_audio",
+        "input_audio": {"data": audio_b64, "format": audio_format},
+    }
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            else:
+                msg["content"] = [{"type": "text", "text": content or ""}, part]
+            return
 
 
 def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
@@ -3034,9 +3255,12 @@ async def openai_chat_completions(
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
+            # This path forwards the request verbatim, so the transcoded audio
+            # never gets injected. (The agentic tool loop below does support
+            # audio.)
             raise HTTPException(
                 status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
+                detail = "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
 
         # Preserve the vision guard from the non-passthrough path below:
@@ -3087,11 +3311,34 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        # Forward uploaded audio as an input_audio part. wav/mp3 pass through
+        # untouched (llama-server decodes and resamples them via the mmproj
+        # audio encoder); other containers are transcoded to WAV here. The part
+        # is injected into the message list below so it rides through both the
+        # plain and tool-calling paths, exactly like image_url parts.
+        audio_b64 = None
+        audio_format = "wav"
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
-            )
+            if not getattr(llama_backend, "_has_audio_input", False):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Audio provided but current GGUF model does not support audio input.",
+                )
+            if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = "Audio file is too large (max ~25 MB).",
+                )
+            try:
+                audio_b64, audio_format = await asyncio.to_thread(
+                    _prepare_audio_for_llama, payload.audio_base64
+                )
+            except Exception as e:
+                logger.warning("Audio decode failed: %s", e, exc_info = True)
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Could not decode the provided audio file.",
+                )
 
         gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
@@ -3099,6 +3346,8 @@ async def openai_chat_completions(
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
+        if audio_b64:
+            _inject_audio_part(gguf_messages, audio_b64, audio_format)
 
         cancel_event = threading.Event()
 
@@ -4807,7 +5056,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
-    body = _build_openai_passthrough_body(chat_req, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
@@ -6513,7 +6764,11 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
-def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
+def _build_openai_passthrough_body(
+    payload,
+    backend_ctx = None,
+    llama_backend = None,
+) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only known OpenAI / llama-server fields are forwarded, so Studio-specific
@@ -6524,12 +6779,19 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    # When the caller asked for a specific reasoning mode, forward it via
-    # chat_template_kwargs so the Jinja template renders with (or without) the
-    # reasoning preamble.
-    tpl_kwargs = None
-    if payload.enable_thinking is not None:
-        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
+    # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
+    # preserve_thinking) via chat_template_kwargs so the Jinja template renders
+    # in the caller's mode, gated on the active template's capabilities exactly
+    # like the non-passthrough paths.
+    tpl_kwargs = (
+        llama_backend._request_reasoning_kwargs(
+            payload.enable_thinking,
+            payload.reasoning_effort,
+            payload.preserve_thinking,
+        )
+        if llama_backend is not None
+        else None
+    )
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -6564,7 +6826,9 @@ async def _openai_passthrough_stream(
     the client sees a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -6709,7 +6973,9 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     ``tool_calls``, and accurate ``usage`` token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+    )
 
     try:
         async with httpx.AsyncClient() as client:
