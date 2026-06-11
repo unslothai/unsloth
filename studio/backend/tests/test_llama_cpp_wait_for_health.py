@@ -145,3 +145,111 @@ class TestWaitForHealthResilience:
         monkeypatch.setattr(httpx, "get", should_not_be_called)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert called["n"] == 0
+
+
+class TestCrashLogTail:
+    """The "exited with code X" log must keep the TAIL of the output.
+
+    Crash diagnostics (abort reason, ROCm/CUDA error text) print last,
+    after the long startup banner; head truncation has cut off exactly
+    the diagnostic line in field reports (gfx1151 fit-step abort)."""
+
+    @staticmethod
+    def _capture_error_logs(monkeypatch) -> list:
+        """Capture module-logger .error() messages directly -- immune to
+        whatever logging/structlog config sibling test modules installed."""
+        import core.inference.llama_cpp as _llama_mod
+
+        records: list = []
+        fake_logger = mock.Mock()
+        fake_logger.error = mock.Mock(side_effect = lambda msg, *a, **k: records.append(msg))
+        monkeypatch.setattr(_llama_mod, "logger", fake_logger)
+        return records
+
+    def test_crash_log_keeps_tail_not_head(self, monkeypatch):
+        records = self._capture_error_logs(monkeypatch)
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        # >2000 chars of banner, diagnostic on the final line.
+        banner = [f"load_model: tensor blk.{i} buffer ROCm0" for i in range(80)]
+        diagnostic = "ggml-cuda.cu:103: ROCm error: out of memory"
+        b._stdout_lines = banner + [diagnostic]
+
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+
+        crash_logs = [m for m in records if "exited with code" in m]
+        assert crash_logs, "crash must produce an exited-with-code log"
+        assert diagnostic in crash_logs[-1]
+        assert "Output (tail)" in crash_logs[-1]
+        # The head of the banner must be the part sacrificed to truncation.
+        assert "blk.0 buffer" not in crash_logs[-1]
+
+    def test_crash_log_mentions_log_file_when_present(self, monkeypatch):
+        records = self._capture_error_logs(monkeypatch)
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        b._stdout_lines = ["boom"]
+        b._llama_log_path = Path("C:/logs/llama-123-port-1234.log")
+
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+
+        crash_logs = [m for m in records if "exited with code" in m]
+        assert crash_logs and "llama-123-port-1234.log" in crash_logs[-1]
+
+
+class TestRetryLogFilenameUnique:
+    """The --fit off retry can respawn within the same epoch second; the log
+    filename must carry the attempt index or the second open ("w") truncates
+    the crash log the retry warning just referenced (found by simulation:
+    frozen time.time -> single file, crash evidence gone)."""
+
+    def test_log_name_includes_attempt_index(self):
+        src = (
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        ).read_text(encoding = "utf-8")
+        assert "-try{_spawn_attempt}.log" in src
+
+
+class TestFitOffRetryEligible:
+    """Gate for the one-shot --fit off startup-crash retry.
+
+    Retry only when Studio's own VRAM math placed the model and nothing
+    on the command line chose the fit mode explicitly."""
+
+    def test_eligible_for_plain_ngl_launch(self):
+        cmd = ["llama-server", "-m", "x.gguf", "-ngl", "-1", "--jinja"]
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
+
+    def test_not_eligible_when_use_fit(self):
+        cmd = ["llama-server", "-m", "x.gguf", "--fit", "on"]
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = True) is False
+
+    @pytest.mark.parametrize(
+        "fit_args",
+        [
+            ["--fit", "on"],
+            ["--fit", "off"],
+            ["-fit", "off"],
+            ["--fit=on"],
+            ["-fit=off"],
+        ],
+    )
+    def test_not_eligible_with_explicit_fit_flag(self, fit_args):
+        cmd = ["llama-server", "-m", "x.gguf", *fit_args]
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is False
+
+    @pytest.mark.parametrize(
+        "tuning_args",
+        [
+            ["--fit-ctx", "8192"],
+            ["--fit-target", "1024"],
+            ["-fitc", "4096"],
+            ["-fitt", "512"],
+            ["--fit-ctx=8192"],
+        ],
+    )
+    def test_fit_tuning_flags_do_not_block_retry(self, tuning_args):
+        cmd = ["llama-server", "-m", "x.gguf", *tuning_args]
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
