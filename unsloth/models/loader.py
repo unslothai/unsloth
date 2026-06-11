@@ -134,7 +134,11 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
-def _config_get(config, field_name, default = None):
+def _config_get(
+    config,
+    field_name,
+    default = None,
+):
     if isinstance(config, dict):
         return config.get(field_name, default)
     return getattr(config, field_name, default)
