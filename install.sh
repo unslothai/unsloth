@@ -1733,7 +1733,7 @@ _has_amd_rocm_gpu() {
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     elif [ -e /dev/kfd ] && \
-         awk '/gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
               gpu && amd { found=1 } END{ exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
@@ -1785,14 +1785,16 @@ get_torch_index_url() {
     # packages) is not sufficient: otherwise an AMD-only host would
     # silently install CUDA wheels.
     _smi=""
+    _nvidia_detected=0
     if _has_usable_nvidia_gpu; then
+        _nvidia_detected=1
         if command -v nvidia-smi >/dev/null 2>&1; then
             _smi="nvidia-smi"
         elif [ -x "/usr/bin/nvidia-smi" ]; then
             _smi="/usr/bin/nvidia-smi"
         fi
     fi
-    if [ -z "$_smi" ]; then
+    if [ "$_nvidia_detected" -eq 0 ]; then
         # No NVIDIA GPU -- check for AMD ROCm GPU.
         # PyTorch only publishes ROCm wheels for linux-x86_64; skip the
         # ROCm branch entirely on aarch64 / arm64 / other architectures
