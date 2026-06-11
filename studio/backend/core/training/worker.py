@@ -2143,9 +2143,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
             # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
             # wheel may ship a DLL whose suffix doesn't match. Detect the actual
-            # DLL name and override; "72" is a safe fallback. Values seeded by
-            # the installer are redetectable defaults, while caller overrides
-            # remain authoritative.
+            # DLL name and override. Values seeded by the installer are
+            # redetectable defaults, while caller overrides remain authoritative.
             if (
                 "BNB_ROCM_VERSION" not in os.environ
                 or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
@@ -2174,15 +2173,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
                     pass
-                _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
-                os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
-                os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
-                logger.info(
-                    "Windows ROCm: set BNB_ROCM_VERSION=%s "
-                    "(detected from installed BNB wheel; "
-                    "overrides torch.version.hip auto-detection)",
-                    _bnb_rocm_ver,
-                )
+                # No DLL found and nothing seeded: don't force a ROCm backend
+                # onto a non-ROCm bitsandbytes wheel.
+                _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION")
+                if _bnb_rocm_ver:
+                    os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
+                    os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
+                    logger.info(
+                        "Windows ROCm: set BNB_ROCM_VERSION=%s "
+                        "(detected from installed BNB wheel; "
+                        "overrides torch.version.hip auto-detection)",
+                        _bnb_rocm_ver,
+                    )
 
             # Parse HIP version for the kernel-fix gate below, falling back to
             # the rocm version embedded in torch.__version__ when version.hip is
