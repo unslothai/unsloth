@@ -1284,7 +1284,10 @@ class FastBaseModel:
         # forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4
         # audio token counts (crash on transformers < 5.10).
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
-        if feature_extractor is not None and getattr(feature_extractor, "padding_side", None) == "left":
+        if (
+            feature_extractor is not None
+            and getattr(feature_extractor, "padding_side", None) == "left"
+        ):
             feature_extractor.padding_side = "right"
         m = model
         while hasattr(m, "model"):
