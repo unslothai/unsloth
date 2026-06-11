@@ -1768,8 +1768,7 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
 @studio_router.post("/tool-confirm")
 async def confirm_tool_call(
-    request: ToolConfirmRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
     matched = resolve_tool_decision(
         request.approval_id,
