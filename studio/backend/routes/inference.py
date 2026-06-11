@@ -436,6 +436,7 @@ try:
         detect_mtp_file,
         extract_model_size_b,
         load_model_defaults,
+        requires_trust_remote_code,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -470,6 +471,7 @@ except ImportError:
         detect_mtp_file,
         extract_model_size_b,
         load_model_defaults,
+        requires_trust_remote_code,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -1243,10 +1245,7 @@ async def load_model(
                 )
 
         model_defaults = load_model_defaults(request.model_path)
-        defaults_require_trust_remote_code = bool(
-            model_defaults.get("model", {}).get("trust_remote_code", False)
-            or model_defaults.get("inference", {}).get("trust_remote_code", False)
-        )
+        defaults_require_trust_remote_code = requires_trust_remote_code(model_defaults)
         if defaults_require_trust_remote_code and not request.trust_remote_code:
             display_name = (
                 model_defaults.get("model", {}).get("display_name")
@@ -1665,11 +1664,7 @@ async def validate_model(
         if not native_grant_backed:
             model_defaults = load_model_defaults(request.model_path)
             default_model_config = model_defaults.get("model", {})
-            default_inference_config = model_defaults.get("inference", {})
-            defaults_require_trust_remote_code = bool(
-                default_model_config.get("trust_remote_code", False)
-                or default_inference_config.get("trust_remote_code", False)
-            )
+            defaults_require_trust_remote_code = requires_trust_remote_code(model_defaults)
             if defaults_require_trust_remote_code and not request.trust_remote_code:
                 display_name = (
                     default_model_config.get("display_name")
@@ -7251,6 +7246,61 @@ _EXTRACT_MAX_PAGES_INLINE = 200
 _EXTRACT_TOKEN_BUDGET_DEFAULT = 8000
 _EXTRACT_TOKEN_BUDGET_MIN = 0
 
+# Caught together by the extract endpoint; dispatched to a status/detail below.
+_DOC_EXTRACTION_HTTP_ERRORS = (
+    _DocumentExtractionUnavailable,
+    _DocumentExtractionTimeout,
+    _DocumentExtractionBusy,
+    _DocumentExtractionCancelled,
+    _DocumentExtractionEncrypted,
+    ValueError,
+)
+
+
+def _doc_exc_to_status_detail(exc: BaseException) -> tuple[int, str]:
+    """Map an extraction failure to (HTTP status, detail). Shared by the JSON
+    and NDJSON paths so the two never drift."""
+    if isinstance(exc, _DocumentExtractionUnavailable):
+        return 501, str(exc)
+    if isinstance(exc, _DocumentExtractionTimeout):
+        return 504, "Document parsing timed out after 120s before image captioning"
+    if isinstance(exc, _DocumentExtractionBusy):
+        return 503, "Document extraction is busy"
+    if isinstance(exc, _DocumentExtractionCancelled):
+        return 499, "Client closed request"
+    if isinstance(exc, _DocumentExtractionEncrypted):
+        return 422, str(exc)
+    detail = str(exc)  # ValueError
+    return (415 if detail.lower().startswith("unsupported file type") else 400), detail
+
+
+def _ndjson_error(status_code: int, detail: str) -> str:
+    return json.dumps({"stage": "error", "status_code": status_code, "detail": detail}) + "\n"
+
+
+def _page_limit_detail(page_count: int) -> str:
+    return (
+        f"Document has {page_count} pages; inline extraction "
+        f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
+        f"documents or reduce the page range."
+    )
+
+
+async def _drain_cancelled_extraction(cancel_event, extraction_task) -> None:
+    """On disconnect, signal cancel, give the worker 10s to unwind, then
+    force-cancel and raise so the caller's handler emits the 499."""
+    cancel_event.set()
+    with suppress(
+        _DocumentExtractionCancelled,
+        asyncio.CancelledError,
+        asyncio.TimeoutError,
+    ):
+        await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
+    if not extraction_task.done():
+        extraction_task.cancel()
+    raise _DocumentExtractionCancelled("document extraction was cancelled")
+
+
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _HTML_MIME_TYPES = {"text/html"}
 _DATA_MIME_TYPES = {
@@ -7705,11 +7755,7 @@ async def extract_document_endpoint(
         if preflight_page_count is not None and preflight_page_count > _EXTRACT_MAX_PAGES_INLINE:
             raise HTTPException(
                 status_code = 413,
-                detail = (
-                    f"Document has {preflight_page_count} pages; inline extraction "
-                    f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
-                    f"documents or reduce the page range."
-                ),
+                detail = _page_limit_detail(preflight_page_count),
             )
 
         describe_images = _parse_bool_form(
@@ -7777,10 +7823,9 @@ async def extract_document_endpoint(
                 warnings = warnings_,
             )
 
-        if not wants_stream:
-            # ---- Legacy JSON path (no progress events) -----------------
-            cancel_event = threading.Event()
-            extraction_task = asyncio.create_task(
+        def _spawn_extraction(cancel_event, progress_cb = None) -> asyncio.Task:
+            extra = {"progress_cb": progress_cb} if progress_cb is not None else {}
+            return asyncio.create_task(
                 _extract_document(
                     file_bytes,
                     filename,
@@ -7793,8 +7838,14 @@ async def extract_document_endpoint(
                     self_base_url = self_base_url,
                     authorization_header = caption_authorization_header,
                     cancel_event = cancel_event,
+                    **extra,
                 )
             )
+
+        if not wants_stream:
+            # ---- Legacy JSON path (no progress events) -----------------
+            cancel_event = threading.Event()
+            extraction_task = _spawn_extraction(cancel_event)
             disconnect_task = asyncio.create_task(
                 _wait_for_document_request_disconnect(fastapi_request, cancel_event)
             )
@@ -7803,37 +7854,11 @@ async def extract_document_endpoint(
                     {extraction_task, disconnect_task},
                     return_when = asyncio.FIRST_COMPLETED,
                 )
-                if extraction_task in done:
-                    result = await extraction_task
-                elif disconnect_task in done and disconnect_task.result():
-                    cancel_event.set()
-                    with suppress(
-                        _DocumentExtractionCancelled,
-                        asyncio.CancelledError,
-                        asyncio.TimeoutError,
-                    ):
-                        await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
-                    if not extraction_task.done():
-                        extraction_task.cancel()
-                    raise _DocumentExtractionCancelled("document extraction was cancelled")
-                else:
-                    result = await extraction_task
-            except _DocumentExtractionUnavailable as exc:
-                raise HTTPException(status_code = 501, detail = str(exc))
-            except _DocumentExtractionTimeout:
-                raise HTTPException(
-                    status_code = 504,
-                    detail = "Document parsing timed out after 120s before image captioning",
-                )
-            except _DocumentExtractionBusy:
-                raise HTTPException(status_code = 503, detail = "Document extraction is busy")
-            except _DocumentExtractionCancelled:
-                raise HTTPException(status_code = 499, detail = "Client closed request")
-            except _DocumentExtractionEncrypted as exc:
-                raise HTTPException(status_code = 422, detail = str(exc))
-            except ValueError as exc:
-                detail = str(exc)
-                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
+                if extraction_task not in done and disconnect_task in done and disconnect_task.result():
+                    await _drain_cancelled_extraction(cancel_event, extraction_task)
+                result = await extraction_task
+            except _DOC_EXTRACTION_HTTP_ERRORS as exc:
+                status_code, detail = _doc_exc_to_status_detail(exc)
                 raise HTTPException(status_code = status_code, detail = detail)
             except Exception:
                 logger.exception("Document extraction failed for %s", filename)
@@ -7847,11 +7872,7 @@ async def extract_document_endpoint(
             if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
                 raise HTTPException(
                     status_code = 413,
-                    detail = (
-                        f"Document has {result.page_count} pages; inline extraction "
-                        f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
-                        f"documents or reduce the page range."
-                    ),
+                    detail = _page_limit_detail(result.page_count),
                 )
             return _build_response_payload(result)
 
@@ -7863,22 +7884,7 @@ async def extract_document_endpoint(
 
         async def _ndjson_stream():
             cancel_event = threading.Event()
-            extraction_task = asyncio.create_task(
-                _extract_document(
-                    file_bytes,
-                    filename,
-                    content_type = content_type,
-                    describe_images = describe_images,
-                    use_vlm_ocr = use_vlm_ocr,
-                    max_figures = max_figures,
-                    max_visual_payloads = max_visual_payloads,
-                    capability = capability,
-                    self_base_url = self_base_url,
-                    authorization_header = caption_authorization_header,
-                    cancel_event = cancel_event,
-                    progress_cb = _progress_cb,
-                )
-            )
+            extraction_task = _spawn_extraction(cancel_event, _progress_cb)
             # Drain the task's exception so a busy/cancel race doesn't log
             # "Future exception was never retrieved" on early exit.
             extraction_task.add_done_callback(_drain_doc_future_exception)
@@ -7904,16 +7910,7 @@ async def extract_document_endpoint(
                             await queue_get
 
                     if disconnect_task in done and disconnect_task.result():
-                        cancel_event.set()
-                        with suppress(
-                            _DocumentExtractionCancelled,
-                            asyncio.CancelledError,
-                            asyncio.TimeoutError,
-                        ):
-                            await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
-                        if not extraction_task.done():
-                            extraction_task.cancel()
-                        raise _DocumentExtractionCancelled("document extraction was cancelled")
+                        await _drain_cancelled_extraction(cancel_event, extraction_task)
 
                     # The shield wrapper can finish (cancelled) before the real
                     # task; .result() in that window raises InvalidStateError,
@@ -7935,20 +7932,7 @@ async def extract_document_endpoint(
                         extract_wait.add_done_callback(_drain_doc_future_exception)
 
                 if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
-                    yield (
-                        json.dumps(
-                            {
-                                "stage": "error",
-                                "status_code": 413,
-                                "detail": (
-                                    f"Document has {result.page_count} pages; inline extraction "
-                                    f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
-                                    f"documents or reduce the page range."
-                                ),
-                            }
-                        )
-                        + "\n"
-                    )
+                    yield _ndjson_error(413, _page_limit_detail(result.page_count))
                     return
 
                 response = _build_response_payload(result)
@@ -7961,86 +7945,12 @@ async def extract_document_endpoint(
                     )
                     + "\n"
                 )
-            except _DocumentExtractionUnavailable as exc:
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 501,
-                            "detail": str(exc),
-                        }
-                    )
-                    + "\n"
-                )
-            except _DocumentExtractionTimeout:
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 504,
-                            "detail": "Document parsing timed out after 120s before image captioning",
-                        }
-                    )
-                    + "\n"
-                )
-            except _DocumentExtractionBusy:
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 503,
-                            "detail": "Document extraction is busy",
-                        }
-                    )
-                    + "\n"
-                )
-            except _DocumentExtractionCancelled:
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 499,
-                            "detail": "Client closed request",
-                        }
-                    )
-                    + "\n"
-                )
-            except _DocumentExtractionEncrypted as exc:
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 422,
-                            "detail": str(exc),
-                        }
-                    )
-                    + "\n"
-                )
-            except ValueError as exc:
-                detail = str(exc)
-                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": status_code,
-                            "detail": detail,
-                        }
-                    )
-                    + "\n"
-                )
+            except _DOC_EXTRACTION_HTTP_ERRORS as exc:
+                status_code, detail = _doc_exc_to_status_detail(exc)
+                yield _ndjson_error(status_code, detail)
             except Exception:
                 logger.exception("Document extraction failed for %s", filename)
-                yield (
-                    json.dumps(
-                        {
-                            "stage": "error",
-                            "status_code": 500,
-                            "detail": "Extraction failed",
-                        }
-                    )
-                    + "\n"
-                )
+                yield _ndjson_error(500, "Extraction failed")
             finally:
                 cancel_event.set()
                 disconnect_task.cancel()

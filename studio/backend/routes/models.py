@@ -75,6 +75,7 @@ try:
         _pick_best_gguf,
         _extract_quant_label,
         is_audio_input_type,
+        requires_trust_remote_code,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -106,6 +107,7 @@ except ImportError:
         _pick_best_gguf,
         _extract_quant_label,
         is_audio_input_type,
+        requires_trust_remote_code,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -180,13 +182,8 @@ def derive_model_type(
 
 def _defaults_vision_flags(config_dict: dict) -> tuple[bool, bool]:
     model_config = config_dict.get("model", {}) if isinstance(config_dict, dict) else {}
-    inference_config = config_dict.get("inference", {}) if isinstance(config_dict, dict) else {}
     yaml_is_vision = bool(model_config.get("is_vision", False))
-    yaml_requires_trust_remote_code = bool(
-        model_config.get("trust_remote_code", False)
-        or inference_config.get("trust_remote_code", False)
-    )
-    return yaml_is_vision, yaml_requires_trust_remote_code
+    return yaml_is_vision, requires_trust_remote_code(config_dict)
 
 
 def _detect_vision_for_config_endpoint(

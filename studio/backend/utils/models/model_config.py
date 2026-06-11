@@ -2165,6 +2165,18 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         return {}
 
 
+def requires_trust_remote_code(defaults: dict) -> bool:
+    """True if the YAML model or inference block opts into trust_remote_code."""
+    if not isinstance(defaults, dict):
+        return False
+    model_cfg = defaults.get("model", {})
+    inference_cfg = defaults.get("inference", {})
+    return bool(
+        (isinstance(model_cfg, dict) and model_cfg.get("trust_remote_code", False))
+        or (isinstance(inference_cfg, dict) and inference_cfg.get("trust_remote_code", False))
+    )
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a model to load."""
@@ -2292,12 +2304,8 @@ class ModelConfig:
 
         model_defaults = load_model_defaults(identifier)
         default_model_config = model_defaults.get("model", {})
-        default_inference_config = model_defaults.get("inference", {})
         yaml_is_vision = bool(default_model_config.get("is_vision", False))
-        yaml_requires_trust_remote_code = bool(
-            default_model_config.get("trust_remote_code", False)
-            or default_inference_config.get("trust_remote_code", False)
-        )
+        yaml_requires_trust_remote_code = requires_trust_remote_code(model_defaults)
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
