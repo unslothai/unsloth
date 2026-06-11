@@ -54,6 +54,19 @@ def _calls_name(method, name):
     )
 
 
+def _contains_user_config_num_labels_fallback(method):
+    for node in ast.walk(method):
+        if not isinstance(node, ast.If):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        if {"_num_labels", "user_config"} - names:
+            continue
+        body_source = ast.unparse(node)
+        if "model_config" in body_source and "num_labels" in body_source:
+            return True
+    return False
+
+
 def _load_task_attr_helper():
     source = _source(UTILS_PATH)
     funcs = {
@@ -86,6 +99,13 @@ def test_fast_base_model_sets_task_attrs_on_nested_text_config():
     method = _class_method(tree, "FastBaseModel", "from_pretrained")
 
     assert _calls_name(method, "set_task_config_attr")
+
+
+def test_fast_model_uses_user_config_num_labels_for_task_model_selection():
+    tree = ast.parse(_source(LOADER_PATH))
+    method = _class_method(tree, "FastModel", "from_pretrained")
+
+    assert _contains_user_config_num_labels_fallback(method)
 
 
 def test_task_config_attr_updates_parent_and_text_config_objects():

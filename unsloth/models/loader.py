@@ -1456,6 +1456,11 @@ class FastModel(FastBaseModel):
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
         _num_labels = kwargs.get("num_labels", None)
+        if _num_labels is None and user_config is not None:
+            if isinstance(model_config, dict):
+                _num_labels = model_config.get("num_labels", None)
+            else:
+                _num_labels = getattr(model_config, "num_labels", None)
         if _num_labels is not None:
             set_task_config_attr(model_config, "num_labels", _num_labels)
         if auto_model is None:
