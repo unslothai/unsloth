@@ -480,7 +480,9 @@ def _create_shared_http_client() -> httpx.AsyncClient:
         exc_str = str(exc)
         if "Unknown scheme for proxy URL" not in exc_str and "socksio" not in exc_str:
             raise
-        logger.warning("Ignoring unsupported environment proxy for the shared HTTP client: %s", exc_str)
+        logger.warning(
+            "Ignoring unsupported environment proxy for the shared HTTP client: %s", exc_str
+        )
         return httpx.AsyncClient(trust_env = False)
 
 
