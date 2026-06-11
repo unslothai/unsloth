@@ -243,9 +243,8 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     # Offer only a STRICTLY newer build. Unknown installed version (version: 1 or
     # unparseable) stays "behind" so the involuntary source build still gets the
     # prebuilt, but a known build is never downgraded to an older walked-back release.
-    update_available = (
-        latest_build is not None
-        and (installed_build is None or installed_build < latest_build)
+    update_available = latest_build is not None and (
+        installed_build is None or installed_build < latest_build
     )
     with _job_lock:
         job = dict(_job)
