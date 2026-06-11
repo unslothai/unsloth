@@ -232,6 +232,9 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     public internet. Synchronous so output lands between the banner URLs and the
     stop hint. Bounded at ~15s; failures swallowed (verifier failing != Studio
     failing). Only meaningful for a wildcard bind."""
+    global _public_reachable
+    # Reset to "unknown" each run; set True/False only when the probe decides.
+    _public_reachable = None
     import ipaddress
     import json
     import time
@@ -324,12 +327,14 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
         print("", flush = True)
         if ok_nodes:
+            _public_reachable = True
             print(
                 f"{ok_c}  Reachability check: {url}/ is reachable from the "
                 f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
                 flush = True,
             )
         elif err_nodes:
+            _public_reachable = False
             print(
                 f"{err_c}  Reachability check: {url}/ is NOT reachable from "
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
@@ -422,7 +427,9 @@ def _print_cloudflare_line() -> None:
     """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
 
     Reads the module-level URL set by ``run_server``. Prints nothing when the
-    tunnel is disabled or failed -- failures are silently ignored.
+    tunnel is disabled or failed -- failures are silently ignored. When the public
+    reachability probe just failed (``_public_reachable is False``) but the tunnel
+    is up, reword to point the user at the Cloudflare link as the way in.
     """
     if not _cloudflare_url:
         return
@@ -430,7 +437,10 @@ def _print_cloudflare_line() -> None:
 
     accent = "\033[38;5;150;1m"
     reset = "\033[0m"
-    line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
+    if _public_reachable is False:
+        line = f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}"
+    else:
+        line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
     print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
 
 
@@ -621,6 +631,12 @@ _shutdown_event = None
 # trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
+
+# Public reachability from the last _verify_global_reachability run, read by the
+# Cloudflare banner line. True when the public ip:port probe confirmed reachable,
+# False when it confirmed NOT reachable, None when the probe did not run or could
+# not decide (timeout, blocked, private address).
+_public_reachable = None
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
