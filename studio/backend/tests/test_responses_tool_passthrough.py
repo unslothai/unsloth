@@ -533,6 +533,10 @@ class TestResponsesStreamAdapter:
                 is_vision = False,
                 context_length = 4096,
                 base_url = "http://llama.test",
+                # Non-reasoning template: the real backend returns None here.
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
             ),
         )
 
