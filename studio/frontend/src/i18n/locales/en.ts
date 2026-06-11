@@ -347,17 +347,15 @@ export const en = {
         installCommandUnix: "macOS/Linux install command",
         installCommandWindows: "Windows install command",
         localInstallDetected:
-          "Source or local install detected. To avoid replacing it with PyPI, update from the checkout or source you originally installed from.",
-        pullThenUpdate:
-          "Pull latest changes from your Unsloth repo checkout, then run the local installer:",
+          "Local install detected. Update from your original checkout to avoid replacing it with PyPI.",
+        pullThenUpdate: "Pull the latest changes, then run the local installer:",
         gitPullCommand: "git pull command",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
           "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",
         repoCheckoutFallback:
           "If you still have the Unsloth repo checkout, run the local installer from that checkout:",
-        restartAfterUpdate:
-          "Restart Unsloth after updating for changes to take effect.",
+        restartAfterUpdate: "Restart Unsloth after updating.",
         unknownInstall:
           "Unsloth could not detect how it was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:
@@ -365,8 +363,8 @@ export const en = {
         docs: "Install docs:",
         docsInstall: "Installation",
         docsUpdating: "Updating",
-        docsMac: "Mac guide",
-        docsWindows: "Windows guide",
+        docsMac: "Mac",
+        docsWindows: "Windows",
       },
     },
   },

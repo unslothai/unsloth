@@ -187,10 +187,10 @@ function ShellToggleButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+        "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
         active
-          ? "border-transparent bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
-          : "border-border text-muted-foreground hover:text-foreground",
+          ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {label}

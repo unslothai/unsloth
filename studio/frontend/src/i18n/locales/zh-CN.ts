@@ -302,16 +302,15 @@ export const zhCN = {
         installCommandUnix: "macOS/Linux 安装命令",
         installCommandWindows: "Windows 安装命令",
         localInstallDetected:
-          "检测到源码或本地安装。为避免替换为 PyPI 版本，请从最初安装时使用的 checkout 或源码位置更新。",
-        pullThenUpdate:
-          "从你的 Unsloth 仓库 checkout 拉取最新变更，然后运行本地安装器：",
+          "检测到本地安装。请从最初的 checkout 更新，以免被 PyPI 版本替换。",
+        pullThenUpdate: "拉取最新变更，然后运行本地安装器：",
         gitPullCommand: "git pull 命令",
         localInstallerCommand: "本地安装器命令",
         sourceInstallDetected:
           "这看起来是源码或 VCS 包安装。请从最初使用的本地路径或 Git URL 重新安装。",
         repoCheckoutFallback:
           "如果你仍保留 Unsloth 仓库 checkout，请从该 checkout 运行本地安装器：",
-        restartAfterUpdate: "更新后重启 Unsloth，使变更生效。",
+        restartAfterUpdate: "更新后请重启 Unsloth。",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",
         localCheckout:
@@ -319,8 +318,8 @@ export const zhCN = {
         docs: "安装文档：",
         docsInstall: "安装",
         docsUpdating: "更新",
-        docsMac: "Mac 指南",
-        docsWindows: "Windows 指南",
+        docsMac: "Mac",
+        docsWindows: "Windows",
       },
     },
   },
