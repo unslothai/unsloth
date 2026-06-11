@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "typer",
+    "rich",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
