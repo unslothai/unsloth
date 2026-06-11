@@ -11,16 +11,23 @@ fires. On modern transformers (rotary moved to `LlamaModel`) that rewrite no
 longer matches, the unscaled base class wins, and long-context inference
 (> ~32k tokens) collapses into repeated-pattern gibberish (issue #2405).
 
-Two layers, both CPU-only and deterministic:
+Three layers, deterministic:
 
   1. AST structural tripwire (no unsloth import): parse llama.py and assert the
-     config path of `LlamaRotaryEmbedding.__init__` references `rope_scaling`.
-  2. Behavioral checks: instantiate the real `LlamaRotaryEmbedding(config=...)`
-     and assert its `inv_freq` matches transformers'
-     `ROPE_INIT_FUNCTIONS[rope_type]` (scaled for llama3, vanilla for None).
+     config path of `LlamaRotaryEmbedding.__init__` references `rope_scaling`
+     and wires into `_compute_config_rope_inv_freq`.
+  2. CPU behavioral checks: call `_compute_config_rope_inv_freq` (the pure
+     function the constructor delegates to) and assert the result matches
+     transformers' `ROPE_INIT_FUNCTIONS[rope_type]`, for dict and object-style
+     rope_scaling. No rotary instantiation, so this runs on GPU-less CI.
+  3. CUDA behavioral checks (skipped without a real device, probed by actually
+     allocating a tensor so import-time CUDA spoofs cannot fool the gate):
+     instantiate the real class and verify inv_freq, the cos cache at long
+     positions and persistence across extend_rope_embedding. The constructor
+     builds per-device caches via torch.cuda, so it cannot run on CPU.
 
-The behavioral layer FAILS on current unfixed main (inv_freq is unscaled for a
-llama3 config). Pattern mirrors tests/utils/test_prepare_inputs_leftpad.py.
+Layers 2 and 3 FAIL on the unfixed code (inv_freq is unscaled for a llama3
+config). Pattern mirrors tests/utils/test_prepare_inputs_leftpad.py.
 """
 
 import ast
@@ -29,6 +36,21 @@ from pathlib import Path
 
 import pytest
 import torch
+
+
+def _has_real_cuda():
+    try:
+        torch.zeros(1).to("cuda")
+        return True
+    except Exception:
+        return False
+
+
+HAS_REAL_CUDA = _has_real_cuda()
+requires_cuda = pytest.mark.skipif(
+    not HAS_REAL_CUDA,
+    reason="LlamaRotaryEmbedding builds per-device CUDA caches in __init__",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LLAMA_PY = REPO_ROOT / "unsloth" / "models" / "llama.py"
@@ -108,73 +130,98 @@ def test_config_path_inspects_rope_scaling():
         "produce repeated-pattern gibberish (issue #2405)."
     )
 
+    called = {
+        sub.func.id
+        for stmt in branch.body
+        for sub in ast.walk(stmt)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_compute_config_rope_inv_freq" in called, (
+        f"{CLASS_NAME}.__init__ config path no longer calls "
+        "_compute_config_rope_inv_freq; the CPU behavioral tests below cover "
+        "that helper directly, so the constructor must stay wired to it or "
+        "scaled configs silently lose RoPE scaling again (issue #2405)."
+    )
+
 
 # --------------------------------------------------------------------------
-# Layer 2: behavioral guard (instantiates the real class, lazy unsloth import)
+# Layer 2: CPU behavioral guard (pure helper function, no instantiation)
 # --------------------------------------------------------------------------
 
 
 def _make_config(rope_scaling):
     from transformers import LlamaConfig
+
     return LlamaConfig(
-        hidden_size = 256,
-        num_attention_heads = 2,
-        num_key_value_heads = 2,
-        head_dim = HEAD_DIM,
-        rope_theta = ROPE_THETA,
-        max_position_embeddings = MAX_POS,
-        rope_scaling = rope_scaling,
+        hidden_size=256,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        head_dim=HEAD_DIM,
+        rope_theta=ROPE_THETA,
+        max_position_embeddings=MAX_POS,
+        rope_scaling=rope_scaling,
     )
 
 
 def _unsloth_rotary(config):
     from unsloth.models import llama as llama_mod
-    return llama_mod.LlamaRotaryEmbedding(config = config)
+
+    return llama_mod.LlamaRotaryEmbedding(config=config)
 
 
 def _reference_inv_freq(config, rope_type):
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
     inv_freq, _attention_factor = ROPE_INIT_FUNCTIONS[rope_type](config, "cpu")
     return inv_freq.float().cpu()
 
 
 def _vanilla_inv_freq():
     return 1.0 / (
-        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
+        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype=torch.int64).float() / HEAD_DIM)
     )
+
+
+def _compute_helper(config, rope_scaling):
+    from unsloth.models.llama import _compute_config_rope_inv_freq
+
+    return _compute_config_rope_inv_freq(config, rope_scaling)
 
 
 def test_llama3_scaling_applied_to_inv_freq():
     config = _make_config(LLAMA3_ROPE_SCALING)
-    rot = _unsloth_rotary(config)
-
-    got = rot.inv_freq.float().cpu()
+    got, attention_scaling = _compute_helper(config, config.rope_scaling)
     expected = _reference_inv_freq(config, "llama3")
     vanilla = _vanilla_inv_freq()
 
     # Sanity: the scaled reference really does differ from vanilla, else the
     # test would be vacuous.
-    assert not torch.allclose(
-        expected, vanilla, rtol = 1e-4
-    ), "test setup error: llama3-scaled inv_freq should differ from vanilla"
-    assert torch.allclose(got, expected, rtol = 1e-4, atol = 1e-6), (
-        "LlamaRotaryEmbedding built from a llama3 config produced inv_freq that "
-        "does not match transformers' llama3 RoPE scaling. The config path is "
-        "ignoring config.rope_scaling, so long-context inference degrades into "
-        "repeated-pattern gibberish (issue #2405).\n"
+    assert not torch.allclose(expected, vanilla, rtol=1e-4), (
+        "test setup error: llama3-scaled inv_freq should differ from vanilla"
+    )
+    assert got is not None, (
+        "_compute_config_rope_inv_freq returned None for a llama3 config; the "
+        "config path is dropping config.rope_scaling, so long-context inference "
+        "degrades into repeated-pattern gibberish (issue #2405)."
+    )
+    got = got.float().cpu()
+    assert torch.allclose(got, expected, rtol=1e-4, atol=1e-6), (
+        "inv_freq for a llama3 config does not match transformers' llama3 RoPE "
+        "scaling (issue #2405).\n"
         f"got[:6]={got[:6].tolist()}\nexpected[:6]={expected[:6].tolist()}"
     )
 
 
-def test_unscaled_config_uses_vanilla_inv_freq():
+def test_default_rope_type_matches_vanilla_inv_freq():
+    # 'default' must reproduce the vanilla (unscaled) frequencies, proving the
+    # helper does not distort unscaled models.
     config = _make_config(None)
-    rot = _unsloth_rotary(config)
-
-    got = rot.inv_freq.float().cpu()
+    got, attention_scaling = _compute_helper(config, {"rope_type": "default"})
+    assert got is not None
     vanilla = _vanilla_inv_freq()
-    assert torch.allclose(got, vanilla, rtol = 1e-4, atol = 1e-6), (
-        "LlamaRotaryEmbedding with no rope_scaling must use the vanilla "
-        f"inv_freq; got[:6]={got[:6].tolist()} vanilla[:6]={vanilla[:6].tolist()}"
+    assert torch.allclose(got.float().cpu(), vanilla, rtol=1e-4, atol=1e-6), (
+        "default rope_type must equal the vanilla inv_freq; "
+        f"got[:6]={got[:6].tolist()} vanilla[:6]={vanilla[:6].tolist()}"
     )
 
 
@@ -185,13 +232,41 @@ def _cos_at_position(rot, position):
     actually applies, but stays on CPU and independent of device caches.
     """
     inv_freq = rot.inv_freq.float().cpu()
-    t = torch.tensor([position], dtype = torch.float32)
+    t = torch.tensor([position], dtype=torch.float32)
     t = rot._apply_time_scaling(t.clone()) if hasattr(rot, "_apply_time_scaling") else t
     freqs = torch.outer(t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim = -1)
+    emb = torch.cat((freqs, freqs), dim=-1)
     return emb.cos().squeeze(0)
 
 
+# --------------------------------------------------------------------------
+# Layer 3: CUDA behavioral guard (real instantiation; constructor builds
+# per-device CUDA caches, so these need a real device)
+# --------------------------------------------------------------------------
+
+
+@requires_cuda
+def test_constructor_applies_llama3_scaling():
+    config = _make_config(LLAMA3_ROPE_SCALING)
+    rot = _unsloth_rotary(config)
+    got = rot.inv_freq.float().cpu()
+    expected = _reference_inv_freq(config, "llama3")
+    assert torch.allclose(got, expected, rtol=1e-4, atol=1e-6), (
+        "LlamaRotaryEmbedding built from a llama3 config produced unscaled inv_freq (issue #2405)."
+    )
+
+
+@requires_cuda
+def test_constructor_unscaled_config_uses_vanilla_inv_freq():
+    rot = _unsloth_rotary(_make_config(None))
+    got = rot.inv_freq.float().cpu()
+    vanilla = _vanilla_inv_freq()
+    assert torch.allclose(got, vanilla, rtol=1e-4, atol=1e-6), (
+        "LlamaRotaryEmbedding with no rope_scaling must use the vanilla inv_freq"
+    )
+
+
+@requires_cuda
 def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
     unscaled = _unsloth_rotary(_make_config(None))
@@ -199,7 +274,7 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     pos = 10000
     cos_scaled = _cos_at_position(scaled, pos)
     cos_unscaled = _cos_at_position(unscaled, pos)
-    assert not torch.allclose(cos_scaled, cos_unscaled, rtol = 1e-4, atol = 1e-5), (
+    assert not torch.allclose(cos_scaled, cos_unscaled, rtol=1e-4, atol=1e-5), (
         f"cos values at position {pos} are identical for a llama3-scaled and an "
         "unscaled rotary embedding, which means scaling was dropped (issue "
         "#2405). With correct llama3 scaling the low-frequency bands shrink by "
@@ -207,16 +282,17 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     )
 
 
+@requires_cuda
 def test_extended_cache_keeps_scaling_after_growth():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
     # Grow the rope cache past its initial size (mirrors long-context decode).
-    dummy = torch.zeros(1, dtype = torch.float32)
-    scaled.extend_rope_embedding(dummy, seq_len = 40960)
+    dummy = torch.zeros(1, dtype=torch.float32)
+    scaled.extend_rope_embedding(dummy, seq_len=40960)
 
     config = _make_config(LLAMA3_ROPE_SCALING)
     expected = _reference_inv_freq(config, "llama3")
     got = scaled.inv_freq.float().cpu()
-    assert torch.allclose(got, expected, rtol = 1e-4, atol = 1e-6), (
+    assert torch.allclose(got, expected, rtol=1e-4, atol=1e-6), (
         "growing the RoPE cache (extend_rope_embedding) must preserve llama3 "
         "scaling of inv_freq; long-context decode loses scaling otherwise "
         "(issue #2405)."
@@ -247,4 +323,33 @@ def test_object_style_rope_scaling_does_not_crash():
         "(issue #2405)."
     )
     expected = _reference_inv_freq(config, "llama3")
-    assert torch.allclose(inv_freq.float().cpu(), expected, rtol = 1e-4, atol = 1e-6)
+    assert torch.allclose(inv_freq.float().cpu(), expected, rtol=1e-4, atol=1e-6)
+
+
+def test_object_style_rope_scaling_on_config_delegates_correctly():
+    # When the object sits ON the config itself (not just the passed argument),
+    # delegation to ROPE_INIT_FUNCTIONS must retry with a normalized config
+    # copy. 'linear' has no inline fallback, so only that retry can save it.
+    from dataclasses import dataclass
+
+    from unsloth.models.llama import _compute_config_rope_inv_freq
+
+    @dataclass
+    class FakeLinearRopeScalingConfig:
+        rope_type: str = "linear"
+        factor: float = 4.0
+
+    dict_config = _make_config({"rope_type": "linear", "factor": 4.0})
+    expected = _reference_inv_freq(dict_config, "linear")
+
+    object_config = _make_config({"rope_type": "linear", "factor": 4.0})
+    object_config.rope_scaling = FakeLinearRopeScalingConfig()
+    inv_freq, attention_scaling = _compute_config_rope_inv_freq(
+        object_config, object_config.rope_scaling
+    )
+    assert inv_freq is not None, (
+        "linear rope_scaling exposed as a config object was silently dropped; "
+        "delegation must retry with a config copy carrying the normalized dict "
+        "(issue #2405)."
+    )
+    assert torch.allclose(inv_freq.float().cpu(), expected, rtol=1e-4, atol=1e-6)
