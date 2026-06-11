@@ -215,6 +215,9 @@ export function UpdateStudioInstructions({
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
+  // null means the desktop app: its bundled backend updates through the
+  // built-in updater, so terminal commands would target the wrong install.
+  const desktopManaged = installSource === null;
   const localInstallSource = isLocalInstallSource(installSource);
   const checkoutInstallSource =
     installSource === "editable" || installSource === "local_repo";
@@ -232,6 +235,22 @@ export function UpdateStudioInstructions({
   const fadeExit = prefersReducedMotion
     ? { opacity: 1 }
     : { opacity: 0, y: -2 };
+
+  if (desktopManaged) {
+    return (
+      <div className={cn("flex flex-col gap-3", className)}>
+        {showTitle ? (
+          <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
+            {t("settings.about.update.title")}
+          </p>
+        ) : null}
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {t("settings.about.update.desktopManaged")}
+        </p>
+        <UpdateDocsLinks />
+      </div>
+    );
+  }
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>

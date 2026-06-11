@@ -356,6 +356,8 @@ export const en = {
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
+        desktopManaged:
+          "The desktop app keeps its bundled backend updated and will prompt when a new version is available.",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:

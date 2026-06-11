@@ -106,6 +106,12 @@ export const zhCN = {
       chatDefaults: "聊天默认设置",
       autoTitleNewChats: "自动为新聊天命名",
       autoTitleNewChatsDescription: "根据第一条消息生成简短标题。",
+      notifications: {
+        sectionTitle: "通知",
+        showLlamaUpdates: "llama.cpp 更新通知",
+        showLlamaUpdatesDescription:
+          "有新的 llama.cpp 构建时提醒。如果只用于训练可以关闭。",
+      },
       gettingStarted: "入门",
       startOnboarding: "开始引导",
       startOnboardingDescription: "重新打开设置向导，不会更改你的账号。",
@@ -274,7 +280,7 @@ export const zhCN = {
       revoking: "撤销中...",
     },
     about: {
-      title: "帮助",
+      title: "关于",
       description: "文档、发布说明、反馈和 Unsloth 构建信息。",
       studioVersion: "Unsloth 版本",
       packageVersion: "包版本",
@@ -285,6 +291,15 @@ export const zhCN = {
       whatsNew: "最新内容",
       feedback: "反馈",
       reportIssue: "报告问题",
+      license: {
+        sectionTitle: "许可证",
+        studioLabel: "Unsloth Studio",
+        studioLicense: "AGPL-3.0",
+        studioDescription: "基于 GNU AGPL v3.0 开源。",
+        libraryLabel: "Unsloth Core",
+        libraryLicense: "Apache-2.0",
+        libraryDescription: "基于 Apache License 2.0 许可。",
+      },
       dangerZone: "危险区域",
       shutDownStudio: "关闭 Unsloth Studio",
       shutDownStudioDescription: "停止 Unsloth 服务进程并结束你的会话。",
@@ -311,6 +326,8 @@ export const zhCN = {
         repoCheckoutFallback:
           "如果你仍保留 Unsloth 仓库 checkout，请从该 checkout 运行本地安装器：",
         restartAfterUpdate: "更新后请重启 Unsloth。",
+        desktopManaged:
+          "桌面应用会自动更新其内置后端，有新版本时会提示。",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",
         localCheckout:
