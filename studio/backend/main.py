@@ -83,9 +83,9 @@ if sys.platform == "win32":
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
     # bitsandbytes derives the rocm<ver>.dll name from torch.version.hip, but the
     # wheel ships rocm72.dll, so the server crashes ("Configured ROCm binary not
-    # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
-    # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
-    # to avoid importing torch on every Windows host.
+    # found") without this. Detect the shipped DLL (mirrors worker.py); gate on
+    # the rocm bnb DLL rather than torch.version.hip to avoid importing torch on
+    # every Windows host.
     # Values seeded by the installer's sitecustomize.py are redetectable
     # defaults; explicit caller values remain authoritative.
     if (
@@ -95,7 +95,6 @@ if sys.platform == "win32":
         import glob as _glob
         import logging as _logging
 
-        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
         _bnb_rocm_ver = None
         _found_rocm_bnb = False
         try:
@@ -118,11 +117,13 @@ if sys.platform == "win32":
                     _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
-                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                "Windows ROCm: BNB DLL detection failed (%s); leaving BNB_ROCM_VERSION as is",
                 _e,
             )
-        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
-        if _found_rocm_bnb or _hip_env:
+        # Only when a ROCm bnb DLL actually exists: HIP_PATH/ROCM_PATH alone
+        # (HIP SDK on a CUDA/CPU box) must not force a ROCm backend onto a
+        # non-ROCm bitsandbytes, which raises at import. DLL unparsable -> "72".
+        if _found_rocm_bnb:
             _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
             os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
