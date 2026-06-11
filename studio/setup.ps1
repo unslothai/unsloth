@@ -299,7 +299,10 @@ function Get-CudaComputeCapability {
     if (-not $smiExe) { return $null }
 
     try {
-        $raw = & $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null
+        # Bounded: a wedged nvidia-smi must not hang setup after the initial
+        # -L probe succeeded (the helper merges stderr after stdout, so the
+        # first line is still the compute_cap value).
+        $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
         # nvidia-smi may return multiple GPUs; take the first one
@@ -363,10 +366,10 @@ function Get-PytorchCudaTag {
     if (-not $smiExe) { return "cu126" }
 
     try {
-        # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
-        # ErrorRecord objects leak into $output and break the -match.
-        $output = & $smiExe 2>&1 | Out-String
+        # Bounded: a wedged nvidia-smi must not hang setup. The helper merges
+        # stderr into the returned string, matching the old 2>&1 | Out-String
+        # shape (plain 2>$null leaks ErrorRecord objects in PS 5.1).
+        $output = Invoke-NvidiaSmiBounded $smiExe
         # Newer NVIDIA drivers (e.g. 610.x on Windows) print
         # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
         # Accept both spellings so we don't fall through to the cu126 default.
@@ -667,16 +670,58 @@ try {
 # ============================================
 # 1a. GPU detection
 # ============================================
+# ── Helper: run nvidia-smi under a timeout ──
+# A wedged NVIDIA driver can make nvidia-smi block during init or after a reset;
+# WaitForExit bounds it (mirrors Invoke-AmdSmiNoElevate below) so detection
+# cannot hang setup. No RunAsInvoker compat layer: nvidia-smi does not
+# auto-elevate. Returns combined stdout+stderr; "" on timeout/failure.
+function Invoke-NvidiaSmiBounded {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+        [int]$TimeoutSec = 10
+    )
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = ($SmiArgs -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            $global:LASTEXITCODE = 124
+            return ""
+        }
+        $global:LASTEXITCODE = $proc.ExitCode
+        return ($outTask.Result + "`n" + $errTask.Result)
+    } catch {
+        $global:LASTEXITCODE = 1
+        return ""
+    }
+}
+
+# ── Helper: nvidia-smi -L lists at least one real GPU ──
+# Exit code 0 alone is not enough: a stale/driverless nvidia-smi can exit 0
+# while listing no GPU, which would mark an AMD host NVIDIA and suppress ROCm
+# detection. Require a "GPU <n>:" data row.
+function Test-NvidiaSmiHasGpu {
+    param([Parameter(Mandatory = $true)][string]$Exe)
+    $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+    return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
+}
+
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
     $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if ($nvSmiCmd) {
-        & $nvSmiCmd.Source *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $HasNvidiaSmi = $true
-            $NvidiaSmiExe = $nvSmiCmd.Source
-        }
+    if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $nvSmiCmd.Source
     }
 } catch {}
 # Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
@@ -689,8 +734,7 @@ if (-not $HasNvidiaSmi) {
     foreach ($p in $nvSmiDefaults) {
         if (Test-Path $p) {
             try {
-                & $p *> $null
-                if ($LASTEXITCODE -eq 0) {
+                if (Test-NvidiaSmiHasGpu $p) {
                     $HasNvidiaSmi = $true
                     $NvidiaSmiExe = $p
                     Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
@@ -1151,7 +1195,16 @@ function Resolve-CudaToolkit {
 
 $DriverMaxCuda = $null
 try {
-    $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
+    # Bounded: source-build toolkit resolution must not hang on a wedged smi.
+    # test_resolve_cuda_toolkit.ps1 extracts this function alone into a child
+    # pwsh (no Invoke-NvidiaSmiBounded in scope) and stubs nvidia-smi with a
+    # .ps1 script, so fall back to direct invocation when the bounded runner
+    # is unavailable; production setup.ps1 always has it defined.
+    $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
+        Invoke-NvidiaSmiBounded $NvidiaSmiExe
+    } else {
+        & $NvidiaSmiExe 2>&1 | Out-String
+    }
     # Newer drivers report "CUDA UMD Version: X.Y" instead of "CUDA Version: X.Y"; accept both.
     if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
@@ -1499,10 +1552,48 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer the Studio venv that install.ps1
-# just created, then py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# Conda CPython ships modified DLL search paths that break torch's c10.dll
+# loading on Windows; a venv made from conda Python inherits its base_prefix,
+# so check the executable path AND sys.base_prefix.
+$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+function Test-IsConda {
+    param([string]$Exe)
+    if ($Exe -match $CondaSkipPattern) { return $true }
+    try {
+        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+        if ($basePrefix -match $CondaSkipPattern) { return $true }
+    } catch { }
+    return $false
+}
+
+# 1g. Python (>= 3.11 and < 3.14). Prefer the interpreter install.ps1 already
+# resolved and built the venv with (UNSLOTH_SETUP_PYTHON), or the existing
+# venv python, before re-probing a system where a 3.14 or a WindowsApps stub
+# ahead on PATH would trip the gate. setup.ps1 only updates packages in that
+# venv, so the handoff is safe to reuse once validated.
+function Resolve-ReusedSetupPython {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_SETUP_PYTHON) -and
+        (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
+        return $env:UNSLOTH_SETUP_PYTHON
+    }
+    # Standalone `unsloth studio setup/update` (install.ps1 did not run): derive
+    # the venv python from the studio root, mirroring the resolver below.
+    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+    if ($root -eq "~") {
+        # Join-Path with an empty child throws on Windows PowerShell 5.1.
+        $root = $env:USERPROFILE
+    } elseif ($root -like "~/*" -or $root -like "~\*") {
+        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
+    }
+    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) { return $venvPy }
+    return $null
+}
+$ReusedSetupPython = Resolve-ReusedSetupPython
+
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
 $DetectedPyVer = $null
 
@@ -1531,28 +1622,24 @@ function Add-PythonDirToProcessPath {
     } catch { }
 }
 
-$_prereqStudioHome = $null
-if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
-    $_prereqStudioHome = $env:UNSLOTH_STUDIO_HOME.Trim()
-} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
-    $_prereqStudioHome = $env:STUDIO_HOME.Trim()
-} else {
-    $_prereqStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-}
-if ($_prereqStudioHome -eq "~" -or $_prereqStudioHome -like "~/*" -or $_prereqStudioHome -like "~\*") {
-    $_prereqStudioHome = (Join-Path $env:USERPROFILE $_prereqStudioHome.Substring(1).TrimStart('/','\'))
-}
-$_prereqVenvPython = Join-Path $_prereqStudioHome "unsloth_studio\Scripts\python.exe"
-if (Test-Path -LiteralPath $_prereqVenvPython) {
-    $_venvPyVer = Get-CompatiblePythonVersion $_prereqVenvPython
-    if ($_venvPyVer) {
-        $DetectedPyVer = $_venvPyVer
-        Add-PythonDirToProcessPath $_prereqVenvPython
+# Reuse the install.ps1 / venv interpreter before any system probe.
+if ($ReusedSetupPython) {
+    $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
+    if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
+        $DetectedPyVer = $_reusedVer
+        Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
     }
 }
 
-if (-not $PythonOk -and $PyLauncher) {
+# Fall back to every py.exe on PATH (all-users and per-user launchers can both
+# register). -All is required: Windows PowerShell 5.1 returns only the first
+# launcher without it, and the PowerShell 7 multi-match array breaks the call
+# operator if used directly.
+$PyLaunchers = if ($PythonOk) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
+
+foreach ($PyLauncher in $PyLaunchers) {
+    if ($PyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1572,6 +1659,7 @@ if (-not $PythonOk -and $PyLauncher) {
             }
         } catch { }
     }
+    if ($PythonOk) { break }
 }
 
 if (-not $PythonOk -and $HasPython) {
@@ -1804,36 +1892,33 @@ if (Test-Path $OxcValidatorDir) {
 Write-Host ""
 substep "setting up Python environment..."
 
-# Find Python -- skip Anaconda/Miniconda distributions.
-# Conda-bundled CPython ships modified DLL search paths that break
-# torch's c10.dll loading on Windows. Standalone CPython (python.org,
-# winget, uv) does not have this issue.
-# Uses Get-Command -All to look past conda entries that shadow a valid
-# standalone Python further down PATH, and probes py.exe (the Python
-# Launcher) which reliably finds python.org installs.
-#
-# NOTE: A venv created from conda Python inherits conda's base_prefix
-# even though the venv path itself does not contain "conda". We check
-# both the executable path AND sys.base_prefix to catch this case.
-$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+# Find Python -- skip Anaconda/Miniconda distributions ($CondaSkipPattern and
+# Test-IsConda are defined above the 1g gate). Standalone CPython (python.org,
+# winget, uv) does not have conda's torch c10.dll loading issue.
 $PythonCmd = $null
 
-# Helper: check if a Python executable is conda-based by inspecting
-# both the path and sys.base_prefix (catches venvs created from conda).
-function Test-IsConda {
-    param([string]$Exe)
-    if ($Exe -match $CondaSkipPattern) { return $true }
+# 0. Reuse the interpreter install.ps1 already resolved and built the venv with
+#    (UNSLOTH_SETUP_PYTHON, or the existing venv python) before probing the
+#    system -- it is already validated as supported and non-conda.
+if ($ReusedSetupPython) {
     try {
-        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
-        if ($basePrefix -match $CondaSkipPattern) { return $true }
+        $out = & $ReusedSetupPython --version 2>&1 | Out-String
+        if ($out -match 'Python 3\.(\d+)') {
+            $pyMinor = [int]$Matches[1]
+            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+                $PythonCmd = $ReusedSetupPython
+            }
+        }
     } catch { }
-    return $false
 }
 
 # 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
-#    py.exe is installed by python.org and resolves to standalone CPython.
-$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+#    Enumerate every launcher with -All (Windows PowerShell 5.1 returns only
+#    the first match without it) and search each for a supported, non-conda
+#    interpreter.
+$PyLaunchersResolve = if ($PythonCmd) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
+foreach ($pyLauncher in $PyLaunchersResolve) {
+    if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1851,6 +1936,7 @@ if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
             }
         } catch { }
     }
+    if ($PythonCmd) { break }
 }
 
 # 2. Fall back to scanning python3.x / python3 / python on PATH.

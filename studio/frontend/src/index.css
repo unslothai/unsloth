@@ -899,8 +899,7 @@
 	/* Chat search box: borderless, soft Gemini-style elevation. */
 	.chat-search-surface {
 		border: none;
-		/* Pin to the dark --radius so the corners are the same (less round) in
-		   both themes; rounded-4xl here and on the inner Command follow this. */
+		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
 		--radius: 0.625rem;
 		/* Match the chat box: soft elevation. */
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
