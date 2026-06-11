@@ -11,10 +11,9 @@ type FireworksOpts = {
   zIndex?: number;
 };
 
-// CSP blocks canvas-confetti's default blob: worker, so reuse a single
-// overlay canvas via `confetti.create(..., { useWorker: false })`.
-// Caller-provided canvases ignore the per-fire `zIndex`; stacking is
-// driven by `_sharedCanvas.style.zIndex` instead (set in fireConfettiFireworks).
+// CSP blocks canvas-confetti's default blob: worker, so reuse a single overlay
+// canvas via `confetti.create(..., { useWorker: false })`. Caller canvases
+// ignore per-fire `zIndex`; stacking is driven by `_sharedCanvas.style.zIndex`.
 const DEFAULT_FIREWORKS_Z_INDEX = 99999;
 let _sharedCanvas: HTMLCanvasElement | null = null;
 let _sharedFire: ConfettiInstance | null = null;

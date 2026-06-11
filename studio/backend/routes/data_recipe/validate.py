@@ -21,7 +21,9 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+_GITHUB_VALIDATE_NOTE = (
+    "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+)
 _GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
 
 
@@ -44,23 +46,17 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     else:
         for repo in repos:
             if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
-                errors.append(
-                    ValidateError(message = "GitHub repos must be owner/name strings.")
-                )
+                errors.append(ValidateError(message = "GitHub repos must be owner/name strings."))
                 break
 
     item_types = source.get("item_types")
     if not isinstance(item_types, list) or not item_types:
-        errors.append(
-            ValidateError(message = "GitHub seed requires at least one item type.")
-        )
+        errors.append(ValidateError(message = "GitHub seed requires at least one item type."))
     else:
         invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
         if invalid_items:
             errors.append(
-                ValidateError(
-                    message = "GitHub item types must be issues, pulls, or commits."
-                )
+                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
             )
 
     try:
@@ -125,9 +121,8 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
 def _patch_local_providers(recipe: dict[str, Any]) -> None:
     """Strip is_local and fill a dummy endpoint so validation doesn't choke.
 
-    Uses a strict `is True` check to match _inject_local_providers in
-    jobs.py - malformed payloads with truthy but non-boolean is_local
-    values should not be treated as local.
+    Strict `is True` matches _inject_local_providers: truthy non-boolean values
+    aren't treated as local.
     """
     for provider in recipe.get("model_providers", []):
         if not isinstance(provider, dict):
@@ -155,19 +150,14 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep. Static validation
-            # already passed; live access + full config validation are
-            # deferred to run start (per _GITHUB_VALIDATE_NOTE), so a missing
-            # optional import at validate time should not block the recipe.
-            # Restrict the bypass to the data_designer module specifically so
-            # other ImportErrors (e.g. broken internal imports or missing
-            # transitive deps after a package upgrade) still surface as
-            # validation failures instead of being silently swallowed.
+            # data_designer is an optional runtime dep; static validation passed
+            # and full validation is deferred to run start, so a missing import
+            # shouldn't block the recipe. Restrict the bypass to data_designer so
+            # other ImportErrors still surface as failures.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(
-                "data_designer not installed; deferring full config "
-                "validation to run start",
+                "data_designer not installed; deferring full config validation to run start",
                 missing_module = exc.name,
             )
         except Exception as exc:

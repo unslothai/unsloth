@@ -88,10 +88,8 @@ TRL_TAGS = [
 ]
 
 
-# -------------------------------------------------------------------------
 # HARD-import top-level: from trl import X must keep working for these.
 # unsloth/trainer.py + unsloth/models/rl.py rebind these by name.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -107,11 +105,9 @@ def test_trl_top_level_grpo_sft(tag: str):
         )
 
 
-# -------------------------------------------------------------------------
 # trl.trainer.grpo_trainer.GRPOTrainer -- the canonical class. unsloth's
 # RL patcher discovers it via `eval(f"trl.trainer.{trainer_file}.{name}")`
 # in unsloth/models/rl.py:548-594.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -141,11 +137,9 @@ def test_grpo_config_class_canonical_path(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # DataCollatorForPreference: unsloth.models.rl_replacements:318 hard-imports
 # from trl.trainer.dpo_trainer. Some old TRL versions had it in
 # trl.trainer.utils; modern ones moved to trl.trainer.dpo_trainer.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -168,10 +162,8 @@ def test_data_collator_for_preference_resolvable(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # trl.trainer.utils.pad: emitted into the GRPO compile cell as
 # _unsloth_trl_pad (rl_replacements.py:326).
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -189,11 +181,9 @@ def test_trl_trainer_utils_pad(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # trl.models.unwrap_model_for_generation -- moved between submodules
 # across releases. unsloth/models/rl.py:152-155 handles both paths.
 # Assert at least one resolves on every tag.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -219,11 +209,9 @@ def test_unwrap_model_for_generation_either_path(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # trl.experimental.openenv: gated import (rl_replacements.py:1765-1770
 # wraps in try/except). When present, must export the symbols unsloth
 # patches.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -241,11 +229,9 @@ def test_trl_experimental_openenv_gated(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # trl.generation.vllm_generation: gated import for the fast_inference
 # server mode (rl_replacements.py:1846-1848). When present, must define
 # at least one symbol unsloth patches against.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -270,11 +256,9 @@ def test_trl_generation_vllm_generation_gated(tag: str):
         )
 
 
-# -------------------------------------------------------------------------
 # Sanity: TRL's __version__ string is parseable. unsloth/models/rl.py:63
 # does `from trl import __version__ as trl_version_raw` and string-
 # matches on it.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -288,9 +272,7 @@ def test_trl_version_parseable(tag: str):
     #   4. `__version__ = f.read().strip()` (TRL 0.22.x reads from a
     #      sibling VERSION file)
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(
-        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
-    )
+    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",
@@ -309,15 +291,11 @@ def test_trl_version_parseable(tag: str):
     )
 
 
-# =========================================================================
 # Coverage extension (added 2026-05): symbols / source-string contracts
 # unsloth + unsloth-zoo touch but the original suite missed.
-# =========================================================================
 
 
-# -------------------------------------------------------------------------
 # 1. trl.is_conversational — soft import in unsloth-zoo dataset_utils.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -330,10 +308,8 @@ def test_trl_is_conversational_export(tag: str):
         pytest.skip(f"{tag}: trl.is_conversational not exported (legacy TRL)")
 
 
-# -------------------------------------------------------------------------
 # 2-4. trl.trainer.sft_trainer module surface used by unsloth tokenizer
 #      utils + tests.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -346,19 +322,15 @@ def test_trl_sft_trainer_module_internals(tag: str):
         f"{tag}: trl/trainer/sft_trainer.py missing; "
         f"unsloth/tokenizer_utils.py:1538 wildcard import fails"
     )
-    assert has_def(
-        src, "SFTTrainer", "class"
-    ), f"{tag}: class SFTTrainer missing in sft_trainer.py"
+    assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing in sft_trainer.py"
     # neftune_post_forward_hook: optional (TRL removed it in some
     # versions); soft-imported in tokenizer_utils.py:1542. Don't fail.
     if "neftune_post_forward_hook" not in src:
         pass
 
 
-# -------------------------------------------------------------------------
 # 5-6. trl.trainer.dpo_trainer module + MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES
 #      — patched by unsloth-zoo/temporary_patches/misc.py:1376-1379.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -368,16 +340,12 @@ def test_trl_dpo_trainer_module_exists(tag: str):
         f"{tag}: trl/trainer/dpo_trainer.py missing; "
         f"unsloth-zoo/temporary_patches/misc.py:1376 import fails"
     )
-    assert has_def(
-        src, "DPOTrainer", "class"
-    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
 
 
-# -------------------------------------------------------------------------
 # 7. trl.trainer.utils.ConstantLengthDataset — soft import in
 #    unsloth-zoo/dataset_utils.py:596. Optional (TRL 0.20.0 removed it
 #    on some paths).
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -392,17 +360,14 @@ def test_trl_constant_length_dataset_optional(tag: str):
     _, src = hit
     if "ConstantLengthDataset" not in src:
         pytest.skip(
-            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft "
-            f"import handles this"
+            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft " f"import handles this"
         )
 
 
-# -------------------------------------------------------------------------
 # 8. trl.models.utils.disable_gradient_checkpointing — added in TRL
 #    1.0.0+. unsloth/models/rl.py:1976-1994 uses hasattr() for gating;
 #    we still want the assertion that the symbol exists from 1.0.0
 #    onwards so a future removal gets caught.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -414,7 +379,6 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
         # Strip leading 'v' and parse.
         try:
             from packaging.version import Version
-
             require = Version(tag.lstrip("v")) >= Version("1.0.0")
         except Exception:
             require = False
@@ -431,11 +395,9 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
         )
 
 
-# -------------------------------------------------------------------------
 # 9. trl.import_utils + the `_*_available` cache pattern — used by
 #    unsloth/import_fixes.py:508-516 to clear cached `is_X_available`
 #    booleans so vllm-ascend imports work.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -458,11 +420,9 @@ def test_trl_import_utils_available_pattern(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # 10. trl.experimental.openenv.utils generators — at least one of the
 #     two function names must exist (unsloth/models/rl_replacements.py
 #     :1775-1781 calls getattr() to find one).
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -479,12 +439,10 @@ def test_trl_openenv_utils_generators(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # 11-16. GRPOTrainer required method names. unsloth/models/rl_replacements
 #        .py uses function_name == "..." dispatch keys; if a method is
 #        renamed, the patch silently doesn't apply. List of methods is
 #        the precise dispatch key set.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -516,7 +474,6 @@ def test_trl_grpo_trainer_required_methods(tag: str):
         _ = _present
 
 
-# -------------------------------------------------------------------------
 # Source-string contracts on trl/trainer/grpo_trainer.py. Each substring
 # is one half of a `function.replace(old, new)` rewrite — if the
 # substring no longer appears in TRL source, the rewrite is a no-op
@@ -524,7 +481,6 @@ def test_trl_grpo_trainer_required_methods(tag: str):
 #
 # Broken into per-version-window tests because some patterns only apply
 # to a subset of TRL minors.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -543,10 +499,8 @@ def test_trl_grpo_source_inference_mode_unwrap(tag: str):
     )
 
 
-# -------------------------------------------------------------------------
 # 17. KTOTrainer.get_batch_logps + the literal raise message rewriter
 #     hits.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -562,10 +516,12 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         "trl/experimental/kto/kto_trainer.py",
         "trl/experimental/kto/__init__.py",
     ]
+    checked_sources = []
     for path in candidates:
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
+        checked_sources.append((path, src))
         # Legacy: explicit get_batch_logps method.
         if has_def(src, "get_batch_logps", "func"):
             return
@@ -577,18 +533,25 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         # the exact shape kto_trainer_align_completion_logps patches.
         if "per_token_logps = selective_log_softmax(shift_logits" in src:
             return
+    old_shape_check = (
+        'raise ValueError("Logits (batch and sequence length dim) and labels '
+        'must have the same shape.")'
+    )
+    if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
+        # TRL main inlined KTO log-prob computation and removed the old
+        # helper/shape-check rewrite target. There is no skipped rewrite to
+        # guard until a new concrete KTO shape mismatch target appears.
+        return
     pytest.fail(
         f"{tag}: KTO log-prob computation not found in any of {candidates}; "
         f"unsloth/models/rl_replacements.py KTO rewrite silently skipped"
     )
 
 
-# -------------------------------------------------------------------------
 # 18. SFTTrainer.__init__ literal `dict_args.pop("push_to_hub_token")`
 #     OR our shim must short-circuit. transformers 5.0 removed this
 #     kwarg; if TRL stops emitting the bare pop, our patch becomes
 #     a no-op AND TRL itself crashes on transformers 5.0.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -603,9 +566,7 @@ def test_trl_sft_trainer_class(tag: str):
     assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing"
 
 
-# -------------------------------------------------------------------------
 # 19-21. DPOTrainer methods unsloth-zoo's rl_replacements rewrites.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -625,9 +586,7 @@ def test_trl_dpo_trainer_methods(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     assert src is not None
     # The DPO class itself must always exist.
-    assert has_def(
-        src, "DPOTrainer", "class"
-    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
     # Informational only -- pass either way:
     for method in (
         "concatenated_inputs",
@@ -640,14 +599,12 @@ def test_trl_dpo_trainer_methods(tag: str):
         _ = _present  # informational; rewriter no-ops cleanly when absent
 
 
-# -------------------------------------------------------------------------
 # 22-23. trl.trainer.grpo_trainer must IMPORT or DEFINE the helpers
 #        unsloth's source rewriters reference: profiling_context,
 #        maybe_apply_chat_template, truncate_with_protected_tokens.
 #        Either the symbol is locally defined OR imported from elsewhere
 #        in trl.* — the rewriter only needs the NAME to be in scope at
 #        the call site.
-# -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)

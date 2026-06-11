@@ -4,10 +4,9 @@
 """
 Tests for GGUF routing in detect_gguf_model.
 
-Regression test for the bug where a .gguf file temporarily appears
-inaccessible on Windows during llama-server process teardown, causing
-is_file() to return False and the model to be routed to the transformers
-backend instead of llama-server.
+Regression test: on Windows a .gguf file can briefly appear inaccessible
+during llama-server teardown, making is_file() return False and routing
+the model to the transformers backend instead of llama-server.
 """
 
 import sys
@@ -16,7 +15,7 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
-# Stub structlog before importing backend modules (mirrors other tests in this suite)
+# Stub structlog before importing backend modules (as in other suite tests)
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -44,10 +43,9 @@ def test_detects_gguf_file_normally(tmp_path):
 
 def test_detects_gguf_when_stat_raises_oserror(tmp_path):
     """
-    Regression: on Windows, both is_file() and exists() call stat() internally.
-    During the brief lock window after llama-server is killed, stat() raises
-    OSError, causing both to return False. detect_gguf_model must still route
-    to llama-server based on the file extension alone.
+    Regression: on Windows is_file()/exists() call stat(), which raises OSError
+    in the brief lock window after llama-server is killed. detect_gguf_model must
+    still route to llama-server by file extension alone.
     """
     gguf = tmp_path / "gpt-oss-20b-MXFP4.gguf"
     gguf.write_bytes(b"")
