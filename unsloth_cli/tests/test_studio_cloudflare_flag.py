@@ -221,3 +221,72 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     CliRunner().invoke(app, _BASE + extras, catch_exceptions = True)
 
     assert captured.get("cloudflare") is expected, captured
+
+
+# ── parent-level --no-cloudflare with a subcommand is rejected ───────
+
+
+def test_studio_default_rejects_no_cloudflare_with_subcommand(monkeypatch):
+    # `unsloth studio --no-cloudflare run ...` would not reach the subcommand,
+    # so it must error (mirrors --parallel) rather than silently still tunnel.
+    import typer as _typer
+
+    studio_mod = _studio()
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name="studio")
+    result = CliRunner().invoke(app, ["studio", "--no-cloudflare", "run", "--model", "X"])
+    assert result.exit_code == 2, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--no-cloudflare" in combined, combined
+
+
+# ── run() tears the server + tunnel down if startup aborts ───────────
+
+
+def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
+    import types
+
+    studio_mod = _studio()
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    class _App:
+        class state:
+            server_port = 8888
+
+    shutdown_calls = []
+    backend = sys.modules.setdefault("studio.backend.run", types.ModuleType("studio.backend.run"))
+    backend.run_server = lambda **k: _App()
+    backend._resolve_external_ip = lambda: "1.2.3.4"
+    backend._server = object()
+    backend._shutdown_event = None
+    backend._graceful_shutdown = lambda server: shutdown_calls.append(server)
+
+    # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
+    state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
+    tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
+    tp_mod.set_tool_policy = lambda *a, **k: None
+    state_mod.tool_policy = tp_mod
+
+    # Force the health check to fail so startup aborts after run_server().
+    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: False)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions=True)
+
+    assert result.exit_code == 1, result.output
+    assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"

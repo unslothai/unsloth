@@ -273,19 +273,24 @@ def start_studio_tunnel(port: int, timeout: float = _URL_TIMEOUT) -> Optional[st
     if not binary:
         return None
     tunnel = CloudflareTunnel(port, binary)
-    try:
-        tunnel.start()
-    except Exception:
-        return None
-    url = tunnel.wait_for_url(timeout)
-    if not url:
-        tunnel.stop()
-        return None
+    # Register before start/wait so a shutdown during the URL wait can stop it.
     with _active_lock:
         prior, _active_tunnel = _active_tunnel, tunnel
     if prior is not None:
         prior.stop()
-    return url
+    try:
+        tunnel.start()
+        url = tunnel.wait_for_url(timeout)
+    except Exception:
+        url = None
+    if url:
+        return url
+    # No URL (or crash): drop it unless a concurrent shutdown already replaced it.
+    with _active_lock:
+        if _active_tunnel is tunnel:
+            _active_tunnel = None
+    tunnel.stop()
+    return None
 
 
 def stop_studio_tunnel() -> None:

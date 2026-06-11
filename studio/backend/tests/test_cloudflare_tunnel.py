@@ -304,6 +304,58 @@ def test_start_studio_tunnel_no_binary(monkeypatch):
     assert ct.start_studio_tunnel(8080) is None
 
 
+def test_start_studio_tunnel_registers_before_wait(monkeypatch):
+    # The tunnel must be visible to stop_studio_tunnel() during the URL wait,
+    # else a shutdown in that window orphans cloudflared.
+    seen = {}
+
+    class _Stub:
+        def __init__(self, port, binary):
+            self.url = None
+
+        def start(self):
+            pass
+
+        def wait_for_url(self, timeout):
+            seen["active_during_wait"] = ct._active_tunnel is self
+            self.url = "https://x.trycloudflare.com"
+            return self.url
+
+        def stop(self):
+            seen["stopped"] = True
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://x.trycloudflare.com"
+        assert seen["active_during_wait"] is True
+    finally:
+        ct.stop_studio_tunnel()
+
+
+def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
+    seen = {}
+
+    class _Stub:
+        def __init__(self, port, binary):
+            self.url = None
+
+        def start(self):
+            pass
+
+        def wait_for_url(self, timeout):
+            return None
+
+        def stop(self):
+            seen["stopped"] = True
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert seen.get("stopped") is True
+    assert ct._active_tunnel is None
+
+
 def test_start_studio_tunnel_returns_url(monkeypatch):
     class _StubTunnel:
         def __init__(self, port, binary):

@@ -619,6 +619,16 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        # Same for --no-cloudflare: it would not reach the subcommand.
+        if not cloudflare:
+            typer.echo(
+                f"Error: --no-cloudflare on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --no-cloudflare ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
 
     # Use the studio venv if it exists and we aren't already in it.
@@ -1032,32 +1042,40 @@ def run(
 
     set_tool_policy(enable_tools)
 
-    # 3. Wait for server health.
-    if not silent:
-        typer.echo("Starting Unsloth Studio...")
-    if not _wait_for_server(actual_port):
-        typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
-        raise typer.Exit(1)
-
-    # 4. Create API key in-process.
-    api_key = _create_api_key_inprocess(api_key_name)
-
-    # 5. Load model via HTTP.
-    if not silent:
-        typer.echo(f"Loading model: {model}...")
+    # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
+    # slow load); tear the server and its children (llama-server, cloudflared) down
+    # on any abort so they never orphan.
+    from studio.backend.run import _graceful_shutdown, _server
     try:
-        result = _load_model_via_http(
-            port = actual_port,
-            api_key = api_key,
-            model = model,
-            gguf_variant = gguf_variant,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            llama_extra_args = extra_llama_args,
-        )
-    except RuntimeError as exc:
-        typer.echo(f"Error: {exc}", err = True)
-        raise typer.Exit(1)
+        # 3. Wait for server health.
+        if not silent:
+            typer.echo("Starting Unsloth Studio...")
+        if not _wait_for_server(actual_port):
+            typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
+            raise typer.Exit(1)
+
+        # 4. Create API key in-process.
+        api_key = _create_api_key_inprocess(api_key_name)
+
+        # 5. Load model via HTTP.
+        if not silent:
+            typer.echo(f"Loading model: {model}...")
+        try:
+            result = _load_model_via_http(
+                port = actual_port,
+                api_key = api_key,
+                model = model,
+                gguf_variant = gguf_variant,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                llama_extra_args = extra_llama_args,
+            )
+        except RuntimeError as exc:
+            typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(1)
+    except BaseException:
+        _graceful_shutdown(_server)
+        raise
 
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
