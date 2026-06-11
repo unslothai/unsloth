@@ -14,9 +14,7 @@ denied call does not pollute duplicate detection.
 
 import pytest
 
-from core.inference import safetensors_agentic
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
-from core.inference.tool_call_parser import DUPLICATE_CALL_NUDGE
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
@@ -44,6 +42,7 @@ class _FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
     ):
         self.calls.append((name, arguments))
         return f"RESULT[{name}]"
@@ -135,29 +134,24 @@ def test_deny_skips_execution_and_feeds_rejection():
 
 
 def test_disabled_tool_is_not_prompted():
-    # python is not advertised -> short-circuited, no approval asked.
     events, calls = _drive(
         [_tool_call("python", '{"code": "print(1)"}'), "final answer"],
-        [],  # no decisions consumed
+        [],
         tools = [{"type": "function", "function": {"name": "web_search"}}],
     )
-    starts = _tool_starts(events)
-    assert starts[0]["awaiting_confirmation"] is False
-    assert starts[0]["approval_id"] == ""
+    assert _tool_starts(events) == []
+    assert _tool_ends(events) == []
     assert calls == []
-    assert "not enabled" in _tool_ends(events)[0]["result"]
 
 
 def test_duplicate_call_is_not_prompted():
     same = _tool_call("python", '{"code": "print(1)"}')
     events, calls = _drive([same, same, "final answer"], ["allow"])
     starts = _tool_starts(events)
-    assert len(starts) == 2
-    # First call gated + executed; second is a duplicate -> no prompt.
+    assert len(starts) == 1
     assert starts[0]["awaiting_confirmation"] is True
-    assert starts[1]["awaiting_confirmation"] is False
     assert calls == [("python", {"code": "print(1)"})]
-    assert _tool_ends(events)[1]["result"] == DUPLICATE_CALL_NUDGE
+    assert len(_tool_ends(events)) == 1
 
 
 def test_denied_call_can_be_reissued_and_approved():

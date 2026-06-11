@@ -14,31 +14,32 @@ parses tool calls from the cumulative text and dispatches via
 ``core.inference.tools``.
 """
 
-import json
 import re
 import threading
 from typing import Callable, Generator, Optional
-from urllib.parse import urlparse
 
 from loggers import get_logger
 
+from core.inference.tool_call_parser import (
+    _TOOL_ALL_PATS,
+    BUDGET_EXHAUSTED_NUDGE,
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
+    TOOL_XML_SIGNALS,
+    parse_tool_calls_from_text,
+    strip_tool_markup,
+)
+from core.inference.tool_loop_controller import (
+    ToolLoopController,
+    coerce_tool_arguments,
+    status_for_tool,
+    tool_event_provenance,
+)
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     begin_tool_decision,
     new_approval_id,
     wait_tool_decision,
-)
-
-from core.inference.tool_call_parser import (
-    BUDGET_EXHAUSTED_NUDGE,
-    DUPLICATE_CALL_NUDGE,
-    RENDER_HTML_REPEAT_NUDGE,
-    TOOL_ERROR_NUDGE,
-    TOOL_ERROR_PREFIXES,
-    TOOL_XML_SIGNALS,
-    has_tool_signal,
-    parse_tool_calls_from_text,
-    strip_tool_markup,
 )
 
 
@@ -49,34 +50,34 @@ logger = get_logger(__name__)
 _MAX_BUFFER_CHARS = 32
 
 
+def strip_tool_markup_streaming(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool = True,
+    tool_protocol_active: bool = False,
+) -> str:
+    """Strip open-ended tool XML from display text without trimming whitespace."""
+    if not (auto_heal_tool_calls or tool_protocol_active):
+        return text
+    for pat in _TOOL_ALL_PATS:
+        text = pat.sub("", text)
+    return text
+
+
+def _strip_tool_markup_final(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool,
+    tool_protocol_active: bool = False,
+) -> str:
+    if not (auto_heal_tool_calls or tool_protocol_active):
+        return text
+    return strip_tool_markup(text, final = True)
+
+
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
     """Return a human-readable status line matching the GGUF path."""
-    if tool_name == "web_search":
-        url = (arguments.get("url") or "").strip()
-        if url:
-            parsed = urlparse(url)
-            if parsed.scheme in ("http", "https") and parsed.hostname:
-                host = parsed.hostname
-                if host.startswith("www."):
-                    host = host[4:]
-                return f"Reading: {host}"
-            return "Reading page..."
-        query = arguments.get("query", "")
-        return f"Searching: {query}"
-    if tool_name == "python":
-        preview = (arguments.get("code") or "").strip().split("\n")[0][:60]
-        return f"Running Python: {preview}" if preview else "Running Python..."
-    if tool_name == "terminal":
-        preview = (arguments.get("command") or "")[:60]
-        return f"Running: {preview}" if preview else "Running command..."
-    return f"Calling: {tool_name}"
-
-
-_CANONICAL_HEAL_ARG = {
-    "python": "code",
-    "terminal": "command",
-    "render_html": "code",
-}
+    return status_for_tool(tool_name, arguments)
 
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
@@ -100,34 +101,43 @@ def _detect_render_html_tool_start(content: str) -> bool:
     return False
 
 
+def _coerce_arguments_with_provenance(
+    raw_args,
+    *,
+    heal: bool,
+    tool_name: str = "",
+):
+    """Normalise tool ``arguments`` and report whether healing was applied."""
+    coerced = coerce_tool_arguments(raw_args, heal = heal, tool_name = tool_name)
+    return coerced.arguments, coerced.healed
+
+
 def _coerce_arguments(
     raw_args,
     *,
     heal: bool,
     tool_name: str = "",
 ) -> dict:
-    """Normalise tool ``arguments`` to a dict.
+    arguments, _ = _coerce_arguments_with_provenance(
+        raw_args,
+        heal = heal,
+        tool_name = tool_name,
+    )
+    return arguments
 
-    Some templates emit a JSON string, others a bare query string. With
-    ``heal=True`` a bare string becomes ``{<canonical_key>: ...}`` so a
-    Hermes-style call without proper JSON still runs. Canonical key per
-    tool: ``code`` for python, ``command`` for terminal, ``query`` otherwise
-    (e.g. web_search).
-    """
-    if isinstance(raw_args, dict):
-        return raw_args
-    if isinstance(raw_args, str):
-        try:
-            parsed = json.loads(raw_args)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            pass
-        if heal:
-            key = _CANONICAL_HEAL_ARG.get(tool_name, "query")
-            return {key: raw_args}
-        return {"raw": raw_args}
-    return {}
+
+def _tool_event_provenance(**flags: object) -> dict[str, object]:
+    return tool_event_provenance(**flags)
+
+
+def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
+    """Call a single-turn generator with active tool schemas when supported."""
+    try:
+        return single_turn(conversation, active_tools = active_tools)
+    except TypeError as exc:
+        if "active_tools" not in str(exc):
+            raise
+        return single_turn(conversation)
 
 
 def run_safetensors_tool_loop(
@@ -141,6 +151,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
@@ -166,15 +177,32 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
-    tool_call_history: list[tuple[str, bool]] = []
-    render_html_succeeded = False
+
+    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
+    from core.inference.tools import build_rag_autoinject
+
+    _auto = build_rag_autoinject(conversation, rag_scope)
+    if _auto:
+        for _ev in _auto["events"]:
+            yield _ev
+        conversation.extend(_auto["messages"])
+
+    unrestricted_tools = not tools
+    tool_controller = ToolLoopController(
+        tools = None if unrestricted_tools else tools,
+        auto_heal_tool_calls = auto_heal_tool_calls,
+    )
+    # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
+    kb_search_count = 0
     final_attempt_done = False
-    allowed_tool_names = {
-        (tool.get("function") or {}).get("name")
-        for tool in (tools or [])
-        if (tool.get("function") or {}).get("name")
-    }
     next_call_id = 0
+
+    def _tool_succeeded(tool_name: str) -> bool:
+        key_prefix = f"{tool_name}:"
+        return any(
+            record.executed and not record.is_error and record.key.startswith(key_prefix)
+            for record in tool_controller.history
+        )
 
     if max_tool_iterations <= 0:
         # 0 = disabled (same contract as the GGUF loop).
@@ -189,6 +217,17 @@ def run_safetensors_tool_loop(
         if cancel_event is not None and cancel_event.is_set():
             return
 
+        if final_attempt_done:
+            active_tools: list[dict] = []
+        else:
+            active_tools = tool_controller.active_tools()
+            if not active_tools and not unrestricted_tools:
+                final_attempt_done = True
+                active_tools = []
+
+        tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
+        tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
+
         detect_state = _state_buffering
         content_buffer = ""
         content_accum = ""
@@ -197,7 +236,7 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_render_html_id = f"call_{next_call_id}"
 
-        gen = single_turn(conversation)
+        gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
 
         for cumulative in gen:
@@ -215,7 +254,11 @@ def run_safetensors_tool_loop(
 
             if detect_state == _state_draining:
                 if (
-                    not render_html_succeeded
+                    not _tool_succeeded("render_html")
+                    and any(
+                        ((tool.get("function") or {}).get("name") == "render_html")
+                        for tool in active_tools
+                    )
                     and not provisional_render_html_started
                     and _detect_render_html_tool_start(content_accum)
                 ):
@@ -225,26 +268,35 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
                 continue
 
             if detect_state == _state_streaming:
                 candidate = cumulative_display + delta
                 signal_pos = -1
-                for sig in TOOL_XML_SIGNALS:
+                for sig in tool_xml_signals:
                     p = candidate.find(sig)
                     if p >= 0 and (signal_pos < 0 or p < signal_pos):
                         signal_pos = p
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
-                    cleaned_before = strip_tool_markup(before_tool)
+                    cleaned_before = strip_tool_markup_streaming(
+                        before_tool,
+                        auto_heal_tool_calls = auto_heal_tool_calls,
+                        tool_protocol_active = tool_protocol_active,
+                    )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
                         yield {"type": "content", "text": cleaned_before}
                     cumulative_display = candidate
                     detect_state = _state_draining
                     if (
-                        not render_html_succeeded
+                        not _tool_succeeded("render_html")
+                        and any(
+                            ((tool.get("function") or {}).get("name") == "render_html")
+                            for tool in active_tools
+                        )
                         and not provisional_render_html_started
                         and _detect_render_html_tool_start(content_accum)
                     ):
@@ -254,10 +306,15 @@ def run_safetensors_tool_loop(
                             "tool_name": "render_html",
                             "tool_call_id": provisional_render_html_id,
                             "arguments": {},
+                            "provenance": _tool_event_provenance(provisional = True),
                         }
                     continue
                 cumulative_display = candidate
-                cleaned = strip_tool_markup(cumulative_display)
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
+                )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -271,7 +328,7 @@ def run_safetensors_tool_loop(
 
             is_match = False
             is_prefix = False
-            for sig in TOOL_XML_SIGNALS:
+            for sig in tool_xml_signals:
                 if stripped.startswith(sig):
                     is_match = True
                     break
@@ -280,9 +337,24 @@ def run_safetensors_tool_loop(
                     break
 
             if is_match:
+                # Tool signal -- flush any visible prefix before DRAINING
+                # so the route sends it before tool_start.
+                cumulative_display += content_buffer
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
+                )
+                if len(cleaned) > len(last_emitted):
+                    last_emitted = cleaned
+                    yield {"type": "content", "text": cleaned}
                 detect_state = _state_draining
                 if (
-                    not render_html_succeeded
+                    not _tool_succeeded("render_html")
+                    and any(
+                        ((tool.get("function") or {}).get("name") == "render_html")
+                        for tool in active_tools
+                    )
                     and not provisional_render_html_started
                     and _detect_render_html_tool_start(content_accum)
                 ):
@@ -292,13 +364,18 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
             elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
                 continue
             else:
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
-                cleaned = strip_tool_markup(cumulative_display)
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
+                )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -310,14 +387,22 @@ def run_safetensors_tool_loop(
         if detect_state == _state_buffering:
             # Buffer never resolved -- tool XML or plain content?
             stripped = content_buffer.lstrip()
-            if stripped and has_tool_signal(stripped):
+            if (
+                stripped
+                and tool_protocol_active
+                and any(sig in stripped for sig in tool_xml_signals)
+            ):
                 detect_state = _state_draining
             else:
                 if content_buffer:
                     cumulative_display += content_buffer
                     yield {
                         "type": "content",
-                        "text": strip_tool_markup(cumulative_display, final = True),
+                        "text": _strip_tool_markup_final(
+                            cumulative_display,
+                            auto_heal_tool_calls = auto_heal_tool_calls,
+                            tool_protocol_active = False,
+                        ),
                     }
                 yield {"type": "status", "text": ""}
                 return
@@ -325,19 +410,30 @@ def run_safetensors_tool_loop(
         if detect_state == _state_streaming:
             # No tool detected mid-stream -- check for late tool XML.
             safety_tc = None
-            if has_tool_signal(content_accum):
+            saw_tool_signal = tool_protocol_active and any(
+                sig in content_accum for sig in tool_xml_signals
+            )
+            if saw_tool_signal:
                 safety_tc = parse_tool_calls_from_text(
                     content_accum,
                     id_offset = next_call_id,
+                    allow_incomplete = auto_heal_tool_calls,
                 )
             if not safety_tc:
-                # Final answer: streaming already emitted content. Skip the
-                # final=True re-strip so literal "<tool_call>" in prose
-                # survives when no real tool call parsed.
+                # Final answer: if a literal tool marker in prose was stripped
+                # during streaming but did not parse as a real call, restore the
+                # raw cumulative text for core callers. Route-level cleanup can
+                # still apply the Auto-Heal display policy.
+                if saw_tool_signal and content_accum:
+                    yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = _strip_tool_markup_final(
+                content_accum,
+                auto_heal_tool_calls = auto_heal_tool_calls,
+                tool_protocol_active = True,
+            )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
                 len(tool_calls),
@@ -347,22 +443,39 @@ def run_safetensors_tool_loop(
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
+                allow_incomplete = auto_heal_tool_calls,
             )
-            if not tool_calls and auto_heal_tool_calls:
-                # Parser found nothing -- surface raw content so literal
-                # "<tool_call>" prose is preserved.
+            if not tool_calls:
+                # Parser found nothing. Auto-Heal-enabled display cleanup
+                # strips unparseable tool XML; disabled Auto-Heal preserves
+                # the raw text so literal/malformed markup stays visible.
                 if content_accum:
-                    yield {"type": "content", "text": content_accum}
+                    yield {
+                        "type": "content",
+                        "text": _strip_tool_markup_final(
+                            content_accum,
+                            auto_heal_tool_calls = auto_heal_tool_calls,
+                            tool_protocol_active = False,
+                        ),
+                    }
                 if provisional_render_html_started:
                     yield {
                         "type": "tool_end",
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: render_html tool call could not be parsed.",
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
                 yield {"type": "status", "text": ""}
                 return
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = _strip_tool_markup_final(
+                content_accum,
+                auto_heal_tool_calls = auto_heal_tool_calls,
+                tool_protocol_active = True,
+            )
+
+        if tool_calls:
+            next_call_id += len(tool_calls)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
@@ -372,130 +485,112 @@ def run_safetensors_tool_loop(
             return
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
-        if tool_calls:
-            assistant_msg["tool_calls"] = tool_calls
-            next_call_id += len(tool_calls)
-        conversation.append(assistant_msg)
+        assistant_appended = False
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
-            arguments = _coerce_arguments(
-                func.get("arguments", {}),
-                heal = auto_heal_tool_calls,
-                tool_name = tool_name,
+            provisional_match = (
+                provisional_render_html_started
+                and tool_name == "render_html"
+                and tc.get("id", "") == provisional_render_html_id
             )
+            decision = tool_controller.prepare_call(tc, provisional = provisional_match)
 
-            tc_key = tool_name + str(arguments)
-            is_disabled = bool(allowed_tool_names) and tool_name not in allowed_tool_names
-            already_ran_ok = any(k == tc_key and not err for k, err in tool_call_history)
-            repeat_render_html = tool_name == "render_html" and render_html_succeeded
-            # Only gate calls that would actually run: a disabled, duplicate,
-            # or repeat render_html call is short-circuited below and never
-            # executes, so asking the user to approve it would be noise.
-            # Registering the approval slot *before* tool_start closes the
-            # race where the confirmation could arrive before the waiter
-            # exists.
-            needs_confirm = (
-                confirm_tool_calls
-                and not is_disabled
-                and not already_ran_ok
-                and not repeat_render_html
-            )
+            if not decision.should_execute:
+                if content_text and not assistant_appended:
+                    conversation.append(assistant_msg)
+                    assistant_appended = True
+                completion = tool_controller.record_noop(decision)
+                conversation.append(completion.model_message())
+                logger.info(
+                    "Suppressed local safetensors tool call as internal no-op: "
+                    f"action={decision.action} tool={decision.tool_name}"
+                )
+                break
+
+            if not assistant_appended:
+                assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                conversation.append(assistant_msg)
+                assistant_appended = True
+            else:
+                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+
+            needs_confirm = bool(confirm_tool_calls)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            start_event = decision.tool_start_event()
+            start_event["approval_id"] = approval_id
+            start_event["awaiting_confirmation"] = needs_confirm
 
-            if not repeat_render_html:
-                yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
-                yield {
-                    "type": "tool_start",
-                    "tool_name": tool_name,
-                    "tool_call_id": tc.get("id", ""),
-                    "arguments": arguments,
-                    "approval_id": approval_id,
-                    "awaiting_confirmation": needs_confirm,
-                }
+            yield {"type": "status", "text": decision.status_text}
+            yield start_event
 
-            denied = False
-            if repeat_render_html:
-                result = RENDER_HTML_REPEAT_NUDGE
-            elif is_disabled:
-                result = (
-                    f"Error: tool '{tool_name}' is not enabled for this "
-                    "request. Use one of the enabled tools or provide a "
-                    "final answer."
+            if (
+                decision_slot is not None
+                and wait_tool_decision(
+                    decision_slot,
+                    approval_id,
+                    cancel_event = cancel_event,
                 )
-            elif already_ran_ok:
-                result = DUPLICATE_CALL_NUDGE
-            else:
-                denied = (
-                    decision_slot is not None
-                    and wait_tool_decision(decision_slot, approval_id, cancel_event = cancel_event)
-                    == "deny"
-                )
-                if denied:
-                    result = TOOL_REJECTED_MESSAGE
-                else:
-                    eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                    try:
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = eff_timeout,
-                            session_id = session_id,
-                        )
-                    except Exception as exc:
-                        logger.exception("Tool %s raised: %s", tool_name, exc)
-                        result = f"Error: tool raised an exception: {exc}"
-
-            if not repeat_render_html:
+                == "deny"
+            ):
                 yield {
                     "type": "tool_end",
-                    "tool_name": tool_name,
-                    "tool_call_id": tc.get("id", ""),
-                    "result": result,
+                    "tool_name": decision.tool_name,
+                    "tool_call_id": decision.tool_call_id,
+                    "result": TOOL_REJECTED_MESSAGE,
+                    "provenance": decision.provenance,
                 }
+                denied_message = {
+                    "role": "tool",
+                    "name": decision.tool_name,
+                    "content": TOOL_REJECTED_MESSAGE,
+                }
+                if decision.tool_call_id:
+                    denied_message["tool_call_id"] = decision.tool_call_id
+                conversation.append(denied_message)
+                continue
 
-            is_error = isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
-            # A user-denied call never executed, so it must not count toward
-            # duplicate detection (otherwise re-issuing and approving the same
-            # call would be wrongly rejected as a duplicate) nor mark
-            # render_html as succeeded.
-            if not denied:
-                if tool_name == "render_html" and not is_error:
-                    render_html_succeeded = True
-                tool_call_history.append((tc_key, is_error))
+            eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+            # RAG: cap paraphrased KB re-searches that slip past the dup guard.
+            if (
+                decision.tool_name == "search_knowledge_base"
+                and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+            ):
+                result = RAG_SEARCH_CAP_NUDGE
+            else:
+                try:
+                    result = execute_tool(
+                        decision.tool_name,
+                        decision.arguments,
+                        cancel_event = cancel_event,
+                        timeout = eff_timeout,
+                        session_id = session_id,
+                        rag_scope = rag_scope,
+                    )
+                except Exception as exc:
+                    logger.exception("Tool %s raised: %s", decision.tool_name, exc)
+                    result = f"Error: tool raised an exception: {exc}"
+                if decision.tool_name == "search_knowledge_base":
+                    kb_search_count += 1
 
-            # Strip frontend image sentinel from the model's view. Cut at the
-            # first occurrence so leading and consecutive sentinels both go.
-            result_for_model = result
-            if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
-                result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()
-            if is_error:
-                result_for_model = result_for_model + TOOL_ERROR_NUDGE
-
-            tool_msg: dict = {
-                "role": "tool",
-                "name": tool_name,
-                "content": result_for_model,
-            }
-            tool_call_id = tc.get("id")
-            if tool_call_id:
-                tool_msg["tool_call_id"] = tool_call_id
-            conversation.append(tool_msg)
+            completion = tool_controller.record_result(decision, result)
+            yield completion.tool_end_event()
+            conversation.append(completion.tool_message())
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
+        if tool_controller.force_final_answer:
+            final_attempt_done = True
+            continue
+        if not unrestricted_tools and not tool_controller.active_tools():
+            final_attempt_done = True
+            continue
         if iteration + 1 >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": BUDGET_EXHAUSTED_NUDGE,
-                }
-            )
+            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
     yield {"type": "status", "text": ""}

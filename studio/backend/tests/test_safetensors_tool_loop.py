@@ -20,8 +20,10 @@ from core.inference.safetensors_agentic import (
     _coerce_arguments,
     _detect_render_html_tool_start,
     run_safetensors_tool_loop,
+    strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
@@ -53,6 +55,11 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
 
+    def test_json_tool_call_unclosed_requires_healing(self):
+        text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)
@@ -67,6 +74,11 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "terminal"
         assert "ls -la" in result[0]["function"]["arguments"]
+
+    def test_xml_unclosed_requires_healing(self):
+        text = "<function=terminal><parameter=command>ls -la"
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "terminal"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_code_with_embedded_xml(self):
         # A code parameter with a literal </parameter> must not truncate: the
@@ -134,6 +146,23 @@ class TestParser:
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
 
+    def test_streaming_strip_respects_disabled_healing(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert strip_tool_markup_streaming(raw) == "before "
+
+    def test_streaming_strip_respects_disabled_healing_without_tool_protocol(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert (
+            strip_tool_markup_streaming(
+                raw,
+                auto_heal_tool_calls = False,
+                tool_protocol_active = True,
+            )
+            == "before "
+        )
+
 
 # ────────────────────────────────────────────────────────────────────
 # run_safetensors_tool_loop
@@ -177,6 +206,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
@@ -228,6 +258,41 @@ def _make_loop(
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
+
+
+def test_active_tools_are_passed_to_single_turn_after_render_html_success():
+    captured_tool_names: list[list[str]] = []
+    exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+
+    def fake_single_turn(_messages, *, active_tools = None):
+        captured_tool_names.append(
+            [
+                (tool.get("function") or {}).get("name")
+                for tool in (active_tools or [])
+                if (tool.get("function") or {}).get("name")
+            ]
+        )
+        if len(captured_tool_names) == 1:
+            yield '<tool_call>{"name":"render_html","arguments":{"code":"<html>one</html>"}}</tool_call>'
+        else:
+            yield "Done."
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [
+                {"type": "function", "function": {"name": "render_html"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
+    assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
 class TestLoopBasic:
@@ -409,23 +474,196 @@ class TestLoopBasic:
 
 
 class TestLoopBehaviour:
-    def test_duplicate_tool_call_synthetic_result(self):
-        # Two identical calls in a row: the second short-circuits with a "do not
-        # repeat" message; execute_tool runs once.
-        loop, exec_fn = _make_loop(
-            turns = [
+    def test_duplicate_tool_call_internal_noop(self):
+        captured_messages: list[list[dict]] = []
+        turns = iter(
+            [
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["final"],
-            ],
-            exec_results = ["search-result-1"],
+            ]
+        )
+
+        def fake_single_turn(messages):
+            captured_messages.append([dict(message) for message in messages])
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result-1"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 3,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["call_0"]
+        assert not [
+            e
+            for e in events
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+        ]
+        duplicate_nudges = [
+            message
+            for message in captured_messages[-1]
+            if message.get("role") == "user"
+            and "already completed successfully" in message.get("content", "")
+        ]
+        assert len(duplicate_nudges) == 1
+
+    def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
+        captured_messages: list[list[dict]] = []
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(message) for message in messages])
+            captured_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (active_tools or [])
+                    if tool.get("function", {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result-1", "python-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
+            "call_0",
+            "call_2",
+        ]
+        assert not [
+            e
+            for e in events
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+        ]
+        duplicate_nudges = [
+            message
+            for message in captured_messages[2]
+            if message.get("role") == "user"
+            and "already completed successfully" in message.get("content", "")
+        ]
+        assert len(duplicate_nudges) == 1
+        assert captured_tool_names[2] == ["web_search", "python"]
+
+    def test_repeated_duplicate_noop_transitions_to_final_attempt(self):
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["final from first result"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_tool_names.append(
+                [
+                    (tool.get("function") or {}).get("name")
+                    for tool in (active_tools or [])
+                    if (tool.get("function") or {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 10,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0"]
+        assert captured_tool_names[-1] == []
+        assert any(
+            event.get("type") == "content" and "final from first result" in event.get("text", "")
+            for event in events
+        )
+
+    def test_kb_search_capped_per_turn(self):
+        # Paraphrased KB searches differ by args (dup guard misses them); the
+        # per-turn cap stops the runaway re-search loop.
+        n = RAG_MAX_SEARCHES_PER_TURN
+        queries = [f"paraphrase {i}" for i in range(n + 1)]
+        turns = [
+            [
+                '<tool_call>{"name":"search_knowledge_base",'
+                f'"arguments":{{"query":"{q}"}}}}</tool_call>'
+            ]
+            for q in queries
+        ] + [["final answer"]]
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([f"chunk-{i}" for i in range(n)])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
         )
         events = _collect_events(loop)
-        # Only one real call.
-        assert len(exec_fn.calls) == 1
+        assert len(exec_fn.calls) == n
+        assert all(c[0] == "search_knowledge_base" for c in exec_fn.calls)
         tool_end_events = [e for e in events if e["type"] == "tool_end"]
-        assert len(tool_end_events) == 2
-        assert "do not repeat" in tool_end_events[1]["result"].lower()
+        assert len(tool_end_events) == n + 1
+        assert "do not search again" in tool_end_events[n]["result"].lower()
 
     def test_image_sentinel_stripped_from_model_feed(self):
         # The image sentinel is stripped before the next turn, but tool_end still
@@ -695,34 +933,62 @@ class TestChatTemplateHelper:
 
 class TestGuardrails:
     def test_disabled_tool_is_not_executed(self):
-        exec_fn = FakeExecuteTool([])
-        loop = run_safetensors_tool_loop(
-            single_turn = _fake_stream(
-                ['<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>']
-            ),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        tool_ends = [e for e in events if e["type"] == "tool_end"]
-        assert tool_ends and "not enabled" in tool_ends[0]["result"].lower()
+        captured_messages: list[list[dict]] = []
 
-    def test_empty_tools_list_does_not_enforce_allowlist(self):
-        exec_fn = FakeExecuteTool(["OK"])
-        loop = run_safetensors_tool_loop(
-            single_turn = _fake_stream(
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']
-            ),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
+        def fake_single_turn(messages):
+            captured_messages.append([dict(message) for message in messages])
+            if len(captured_messages) == 1:
+                yield '<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>'
+            else:
+                yield "final"
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
         )
-        _collect_events(loop)
+
+        assert exec_fn.calls == []
+        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+        disabled_nudges = [
+            message
+            for message in captured_messages[-1]
+            if message.get("role") == "user" and "not enabled" in message.get("content", "")
+        ]
+        assert len(disabled_nudges) == 1
+
+    def test_empty_tools_list_means_allow_all_in_core_loop(self):
+        turns = iter(
+            [
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["done"],
+            ]
+        )
+
+        def fake_single_turn(_messages, active_tools = None):
+            assert active_tools == []
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
+        )
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert any(event.get("type") == "tool_end" for event in events)
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
@@ -767,6 +1033,67 @@ class TestGuardrails:
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
+    def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'],
+            ]
+        )
+
+        def fake_single_turn(_messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "show literal"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 1,
+                auto_heal_tool_calls = False,
+            )
+        )
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_disabled_does_not_repair_unclosed_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}'],
+            ],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = False,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_enabled_strips_unparseable_xml_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [["<tool_call>{not valid json}</tool_call>"]],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = True,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert not any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(
             turns = [
@@ -780,8 +1107,39 @@ class TestGuardrails:
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "A"}), ("web_search", {"query": "B"})]
-        tool_ends = [e for e in events if e["type"] == "tool_end"]
-        assert "already made this exact call" in tool_ends[-1]["result"]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0", "call_1"]
+        assert not [
+            event
+            for event in events
+            if event.get("tool_call_id") == "call_2"
+            and event.get("type") in {"tool_start", "tool_end"}
+        ]
+
+    def test_same_turn_duplicate_is_short_circuited(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                ["final"],
+            ],
+            exec_results = ["res-A"],
+            max_tool_iterations = 2,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "A"})]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0"]
+        assert not [
+            event
+            for event in events
+            if event.get("tool_call_id") == "call_1"
+            and event.get("type") in {"tool_start", "tool_end"}
+        ]
 
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}

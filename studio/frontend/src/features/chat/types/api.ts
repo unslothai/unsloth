@@ -274,6 +274,19 @@ export interface OpenAIChatCompletionsRequest {
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
+  /** Local models + enable_tools only. */
+  mcp_enabled?: boolean;
+  /** Local models + enable_tools only. */
+  confirm_tool_calls?: boolean;
+  /** Exactly one of `kb_id` (a KB) or `thread_id` (thread docs). */
+  rag_scope?: {
+    kb_id?: string;
+    thread_id?: string;
+    default_top_k: number;
+    mode: "hybrid" | "lexical" | "dense";
+    autoinject?: boolean;
+    autoinject_min_score?: number;
+  };
   auto_heal_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
@@ -309,6 +322,13 @@ export interface OpenAIChatCompletionsRequest {
    * See https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fast_mode?: boolean | null;
+  /**
+   * Opt into the OpenAI-standard trailing usage chunk on streams
+   * (`choices: []` with `usage` + llama-server `timings` populated). The
+   * backend only emits it when `include_usage` is set; the local chat UI
+   * sends it so the context-usage bar and tok/s readout populate.
+   */
+  stream_options?: { include_usage?: boolean } | null;
 }
 
 export interface OpenAIChatDelta {

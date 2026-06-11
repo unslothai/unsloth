@@ -758,6 +758,7 @@ class InferenceBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        rag_scope: Optional[dict] = None,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -772,8 +773,11 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
-        def _single_turn(conv: list):
+        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
+            # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
+            # tools such as render_html can be removed from later same-response prompts.
+            turn_tools = active_tools if active_tools is not None else tools
             yield from self._generate_chat_response_inner(
                 messages = conv,
                 system_prompt = "",
@@ -784,7 +788,7 @@ class InferenceBackend:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
-                tools = tools,
+                tools = turn_tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
@@ -804,6 +808,7 @@ class InferenceBackend:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            rag_scope = rag_scope,
         )
 
     def generate_chat_response(

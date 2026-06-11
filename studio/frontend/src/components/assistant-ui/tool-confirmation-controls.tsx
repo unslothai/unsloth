@@ -6,7 +6,10 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ToolCallMessagePartStatus } from "@assistant-ui/react";
+import type {
+  ToolCallMessagePartComponent,
+  ToolCallMessagePartStatus,
+} from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
 
 /**
@@ -130,4 +133,21 @@ export function ToolConfirmationControls({
       ) : null}
     </div>
   );
+}
+
+export function withToolConfirmation(
+  Component: ToolCallMessagePartComponent,
+): ToolCallMessagePartComponent {
+  const WithToolConfirmation: ToolCallMessagePartComponent = (props) => (
+    <>
+      <Component {...props} />
+      <ToolConfirmationControls
+        toolCallId={props.toolCallId}
+        toolName={props.toolName}
+        result={props.result}
+        status={props.status}
+      />
+    </>
+  );
+  return WithToolConfirmation;
 }

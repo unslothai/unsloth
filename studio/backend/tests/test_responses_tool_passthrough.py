@@ -26,12 +26,15 @@ No running server or GPU required.
 
 import os
 import sys
+import asyncio
+from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 import json
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -52,8 +55,10 @@ from models.inference import (
     ResponsesUsage,
 )
 from routes.inference import (
+    _build_chat_request,
     _chat_tool_calls_to_responses_output,
     _normalise_responses_input,
+    _responses_stream,
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
 )
@@ -259,6 +264,26 @@ class TestToolChoiceTranslation:
         assert _translate_responses_tool_choice_to_chat(obj) == obj
 
 
+class TestBuildChatRequest:
+    def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            tools = [
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object"},
+                }
+            ],
+            parallel_tool_calls = False,
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+
+        assert chat_req.parallel_tool_calls is False
+
+
 # =====================================================================
 # _normalise_responses_input — multi-turn tool mapping
 # =====================================================================
@@ -422,6 +447,134 @@ class TestChatToolCallsToResponsesOutput:
             [{"id": "call_1", "type": "function", "function": {"name": "x"}}]
         )
         assert items[0]["arguments"] == ""
+
+
+# =====================================================================
+# Streaming Responses adapter
+# =====================================================================
+
+
+class TestResponsesStreamAdapter:
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    async def _collect(response):
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return chunks
+
+    @staticmethod
+    def _payloads(lines, event_name):
+        prefix = f"event: {event_name}\n"
+        return [
+            json.loads(line.split("data: ", 1)[1].strip())
+            for line in lines
+            if line.startswith(prefix)
+        ]
+
+    def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            chunks = [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_0",
+                                        "type": "function",
+                                        "function": {"name": "first", "arguments": "{}"},
+                                    },
+                                    {
+                                        "index": 1,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {"name": "second", "arguments": "{}"},
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+            ]
+            content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            content += "data: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(
+                transport = transport,
+                timeout = kwargs.get("timeout", 600),
+            )
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                # Non-reasoning template: the real backend returns None here.
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+
+        payload = ResponsesRequest(
+            input = "hi",
+            stream = True,
+            parallel_tool_calls = False,
+            tools = [
+                {
+                    "type": "function",
+                    "name": "first",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "second",
+                    "parameters": {"type": "object"},
+                },
+            ],
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+        joined = "".join(lines)
+        assert "call_0" in joined
+        assert "call_1" not in joined
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["usage"] == {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "total_tokens": 5,
+        }
 
 
 # =====================================================================

@@ -58,7 +58,8 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
-from datasets import Dataset, load_dataset
+from datasets import Dataset
+from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
 from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
