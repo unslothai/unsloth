@@ -995,6 +995,8 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
+    if bool(request.load_mmproj) != bool(llama_backend.load_mmproj):
+        return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
     ):
@@ -1191,6 +1193,7 @@ async def load_model(
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    load_mmproj = llama_backend.load_mmproj,
                 )
         else:
             if (
@@ -1349,6 +1352,7 @@ async def load_model(
                     hf_token = request.hf_token,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
+                    load_mmproj = request.load_mmproj,
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
@@ -1360,7 +1364,7 @@ async def load_model(
             else:
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed:
-                    if config.gguf_mmproj_file:
+                    if request.load_mmproj and config.gguf_mmproj_file:
                         _validate_native_gguf_companion(
                             config.gguf_mmproj_file, config.gguf_file, "vision companion"
                         )
@@ -1385,6 +1389,7 @@ async def load_model(
                     hf_variant = config.gguf_variant,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
+                    load_mmproj = request.load_mmproj,
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
@@ -1438,6 +1443,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                load_mmproj = llama_backend.load_mmproj,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1911,6 +1917,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                load_mmproj = llama_backend.load_mmproj,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,

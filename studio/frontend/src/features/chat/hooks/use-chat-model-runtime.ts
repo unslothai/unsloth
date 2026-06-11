@@ -372,6 +372,9 @@ export function useChatModelRuntime() {
         const currentSpecType = normalizeSpeculativeType(
           statusRes.speculative_type,
         );
+        const currentVisionProjector = statusRes.is_gguf
+          ? (statusRes.load_mmproj ?? true)
+          : true;
         // Refresh runs on F5 (needs hydration) and right after a load (store
         // already set). For user-configurable params, only hydrate when the
         // shadow `loaded*` field is null ("not yet hydrated"); otherwise we'd
@@ -421,6 +424,11 @@ export function useChatModelRuntime() {
             prevState.specDraftNMax === null && {
               specDraftNMax: statusRes.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: statusRes.spec_draft_n_max ?? null,
+            }),
+          ...(statusRes.is_gguf &&
+            prevState.loadedVisionProjectorEnabled === null && {
+              visionProjectorEnabled: currentVisionProjector,
+              loadedVisionProjectorEnabled: currentVisionProjector,
             }),
           ...(statusRes.cache_type_kv !== undefined &&
             prevState.loadedKvCacheDtype === null && {
@@ -610,6 +618,9 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousVisionProjectorEnabled =
+            stateBeforeUnload.loadedVisionProjectorEnabled ??
+            stateBeforeUnload.visionProjectorEnabled;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -651,6 +662,8 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: null,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                visionProjectorEnabled: true,
+                loadedVisionProjectorEnabled: null,
               });
             }
 
@@ -661,6 +674,7 @@ export function useChatModelRuntime() {
               ggufContextLength,
               speculativeType,
               specDraftNMax,
+              visionProjectorEnabled,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -689,6 +703,7 @@ export function useChatModelRuntime() {
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
+              load_mmproj: visionProjectorEnabled,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -776,6 +791,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              visionProjectorEnabled: loadResponse.load_mmproj ?? true,
+              loadedVisionProjectorEnabled: loadResponse.load_mmproj ?? true,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: effectiveChatTemplateOverride,
@@ -846,6 +863,7 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  load_mmproj: previousVisionProjectorEnabled,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

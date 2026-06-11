@@ -470,6 +470,9 @@ export function SharedComposer({
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.loadedVisionProjectorEnabled,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -553,6 +556,20 @@ export function SharedComposer({
   // snapshot), and models[] only syncs after ensureModelLoaded at send time.
   // Single mode uses the loaded model's runtime capability.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
+  useEffect(() => {
+    if (
+      isCompareMode ||
+      loadedVisionProjectorEnabled !== false ||
+      pendingImages.length === 0
+    ) {
+      return;
+    }
+    setPendingImages([]);
+    toast.error("Image attachment removed", {
+      description:
+        "Vision Projector is disabled on the loaded model. Enable it and apply settings to send images.",
+    });
+  }, [isCompareMode, loadedVisionProjectorEnabled, pendingImages.length]);
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&
@@ -942,6 +959,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          load_mmproj: currentStore.visionProjectorEnabled,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -957,6 +975,8 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          visionProjectorEnabled: resp.load_mmproj ?? true,
+          loadedVisionProjectorEnabled: resp.load_mmproj ?? true,
           loadedIsMultimodal: isMultimodalResponse(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
@@ -1277,7 +1297,15 @@ export function SharedComposer({
               className="unsloth-plus-menu w-[212px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
-              <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+              <DropdownMenuItem
+                onSelect={() => {
+                  if (attachUnavailableReason) {
+                    toast.error(attachUnavailableReason);
+                    return;
+                  }
+                  fileInputRef.current?.click();
+                }}
+              >
                 <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
                 Add photos &amp; files
               </DropdownMenuItem>

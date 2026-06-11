@@ -1242,6 +1242,8 @@ async function autoLoadSmallestModel(): Promise<{
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
+              visionProjectorEnabled: loadResp.load_mmproj ?? true,
+              loadedVisionProjectorEnabled: loadResp.load_mmproj ?? true,
               loadedIsMultimodal: isMultimodalResponse(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
@@ -1315,6 +1317,8 @@ async function autoLoadSmallestModel(): Promise<{
             store.setModels([...store.models, sfModel]);
           }
           useChatRuntimeStore.setState({
+            visionProjectorEnabled: sfLoadResp.load_mmproj ?? true,
+            loadedVisionProjectorEnabled: sfLoadResp.load_mmproj ?? true,
             loadedIsMultimodal: isMultimodalResponse(sfLoadResp),
           });
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
@@ -1402,6 +1406,8 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
+        visionProjectorEnabled: loadResp.load_mmproj ?? true,
+        loadedVisionProjectorEnabled: loadResp.load_mmproj ?? true,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
       });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });

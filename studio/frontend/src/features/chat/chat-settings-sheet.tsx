@@ -101,6 +101,36 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function getBillionScaleModelSize(modelId: string): number | null {
+  const match = modelId.match(
+    /(?:^|[^a-z0-9])(\d+(?:\.\d+)?)\s*b(?:[^a-z0-9]|$)/i,
+  );
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isLikelyMtpModel(modelId: string | null | undefined): boolean {
+  if (!modelId) return false;
+  if (!/(?:^|[^a-z0-9])mtp(?:[^a-z0-9]|$)/i.test(modelId)) return false;
+  const size = getBillionScaleModelSize(modelId);
+  return size == null || size >= 3;
+}
+
+function speculativeModeMayUseMtp(
+  mode: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  const normalized = mode?.trim().toLowerCase() || "auto";
+  if (normalized === "mtp" || normalized === "mtp+ngram") return true;
+  if (normalized === "draft-mtp") return true;
+  if (normalized.includes("draft-mtp")) return true;
+  return (
+    (normalized === "auto" || normalized === "default") &&
+    isLikelyMtpModel(modelId)
+  );
+}
+
 export function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>
@@ -492,6 +522,15 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
+  const visionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.visionProjectorEnabled,
+  );
+  const setVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.setVisionProjectorEnabled,
+  );
+  const loadedVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.loadedVisionProjectorEnabled,
+  );
   const modelRequiresTrustRemoteCode = useChatRuntimeStore(
     (s) => s.modelRequiresTrustRemoteCode,
   );
@@ -526,7 +565,30 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
+  const visionProjectorDirty =
+    loadedVisionProjectorEnabled !== null &&
+    visionProjectorEnabled !== loadedVisionProjectorEnabled;
+  const modelSettingsDirty =
+    kvDirty || ctxDirty || specDirty || specDraftDirty || visionProjectorDirty;
+  const warnIfMmprojMtpSelected = (
+    nextSpeculativeType: string | null | undefined = speculativeType,
+    nextVisionProjectorEnabled: boolean = visionProjectorEnabled,
+  ) => {
+    if (
+      !isGguf ||
+      !nextVisionProjectorEnabled ||
+      !speculativeModeMayUseMtp(nextSpeculativeType, currentCheckpoint)
+    ) {
+      return;
+    }
+    toast.warning("Vision Projector may not work well with MTP", {
+      description:
+        "If image input behaves poorly, set Speculative Decoding to Off or disable Vision Projector before applying.",
+    });
+  };
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
@@ -899,6 +961,7 @@ export function ChatSettingsPanel({
                       value={speculativeType ?? "auto"}
                       onValueChange={(v) => {
                         setSpeculativeType(v);
+                        warnIfMmprojMtpSelected(v);
                         if (v !== "mtp" && v !== "mtp+ngram") {
                           setSpecDraftNMax(null);
                         }
@@ -963,6 +1026,27 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Vision Projector
+                    </span>
+                    <InfoHint>
+                      Loads the GGUF mmproj file for image input. Disable to run
+                      vision-capable models as text-only and avoid the extra VRAM
+                      cost.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={visionProjectorEnabled}
+                    onCheckedChange={(checked) => {
+                      setVisionProjectorEnabled(checked);
+                      warnIfMmprojMtpSelected(speculativeType, checked);
+                    }}
+                    aria-label="Load vision projector"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -1002,7 +1086,10 @@ export function ChatSettingsPanel({
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Button
                   type="button"
-                  onClick={() => onReloadModel?.()}
+                  onClick={() => {
+                    warnIfMmprojMtpSelected();
+                    onReloadModel?.();
+                  }}
                   size="sm"
                   className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
                 >
@@ -1017,6 +1104,9 @@ export function ChatSettingsPanel({
                     setKvCacheDtype(loadedKvCacheDtype);
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
+                    setVisionProjectorEnabled(
+                      loadedVisionProjectorEnabled ?? true,
+                    );
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"

@@ -669,6 +669,7 @@ class LlamaCppBackend:
         self._mtp_draft_path: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        self._load_mmproj: bool = True
         self._healthy = False
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -772,6 +773,10 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def load_mmproj(self) -> bool:
+        return getattr(self, "_load_mmproj", True)
 
     @property
     def hf_variant(self) -> Optional[str]:
@@ -2788,6 +2793,7 @@ class LlamaCppBackend:
         # Common
         model_identifier: str,
         is_vision: bool = False,
+        load_mmproj: bool = True,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -2827,6 +2833,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                load_mmproj = load_mmproj,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -2901,8 +2908,9 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
+                    wants_mmproj = bool(is_vision and load_mmproj)
+                    # Auto-download mmproj for vision models when enabled.
+                    if wants_mmproj and not mmproj_path:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -2975,6 +2983,7 @@ class LlamaCppBackend:
                 effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
+                wants_mmproj = bool(is_vision and load_mmproj)
                 try:
                     model_size = self._get_gguf_size_bytes(model_path)
                     gpus = self._get_gpu_free_memory()
@@ -3166,15 +3175,20 @@ class LlamaCppBackend:
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
                     model_path = model_path,
-                    mmproj_path = mmproj_path,
+                    mmproj_path = mmproj_path if wants_mmproj else None,
                 )
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
+                effective_is_vision = bool(launch_mmproj_path) and wants_mmproj
+                if is_vision and load_mmproj and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
+                        "image input will be disabled for this session"
+                    )
+                elif is_vision and not load_mmproj:
+                    logger.info(
+                        "Vision projector disabled for this GGUF load; "
                         "image input will be disabled for this session"
                     )
 
@@ -3560,6 +3574,7 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._load_mmproj = bool(load_mmproj)
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -3979,6 +3994,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
         is_vision: bool,
+        load_mmproj: bool = True,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         mtp_draft_path: Optional[str] = None,
@@ -4004,6 +4020,8 @@ class LlamaCppBackend:
         elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
             return False
         if self._requested_n_ctx != int(n_ctx):
+            return False
+        if bool(getattr(self, "_load_mmproj", True)) != bool(load_mmproj):
             return False
 
         def _norm(value):
