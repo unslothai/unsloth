@@ -155,6 +155,10 @@ class GuidedProjection(nn.Module):
             nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # The projection keeps fp32 master weights while the encoder may emit
+        # bf16/fp16 pooled embeddings — cast like the Dense dtype patch does.
+        if x.dtype != self.proj.weight.dtype:
+            x = x.to(self.proj.weight.dtype)
         projected = self.proj(x)
         if self.use_residual:
             projected = projected + x
@@ -294,6 +298,28 @@ def attach_guided_projection(
     **kwargs,
 ):
     """Freeze encoder and attach a GuidedProjection after pooling."""
+    pooling_idx = None
+    pooling_mod = None
+    if hasattr(st_model, "_modules"):
+        for key, mod in st_model._modules.items():
+            if mod.__class__.__name__ == "Pooling":
+                pooling_idx = key
+                pooling_mod = mod
+                break
+
+    if dim is None and pooling_mod is not None:
+        # Prefer the pooled embedding width: Pooling can concatenate several
+        # modes (e.g. cls + mean), making sentence_embedding wider than
+        # config.hidden_size.
+        for _dim_attr in ("get_embedding_dimension", "get_sentence_embedding_dimension"):
+            _dim_fn = getattr(pooling_mod, _dim_attr, None)
+            if callable(_dim_fn):
+                try:
+                    dim = int(_dim_fn())
+                    break
+                except Exception:
+                    pass
+
     if dim is None:
         encoder = None
         for mod in st_model:
@@ -316,15 +342,13 @@ def attach_guided_projection(
         param.requires_grad = False
 
     projection = GuidedProjection(dim = dim, **kwargs)
-
-    pooling_idx = None
-    pooling_mod = None
-    if hasattr(st_model, "_modules"):
-        for key, mod in st_model._modules.items():
-            if mod.__class__.__name__ == "Pooling":
-                pooling_idx = key
-                pooling_mod = mod
-                break
+    # The SentenceTransformer is already on its target device; a fresh CPU
+    # projection would crash a direct forward with a device mismatch
+    # (encode()/Trainer re-place the model, a bare model(features) does not).
+    try:
+        projection.to(next(st_model.parameters()).device)
+    except StopIteration:
+        pass
 
     if pooling_mod is not None and pooling_idx is not None:
         wrapper = GuidedProjectionPooling(pooling_mod, projection)
@@ -823,9 +847,12 @@ def _patch_fused_pooling(st_model):
         # Native-varlen batches (sentence-transformers >= 5.x can pass
         # cu_seq_lens metadata with token_embeddings packed into one row) are
         # not the padded (B, S, H) layout the fused kernel assumes — fall back.
+        # Same for token_weights_sum (WordWeights pipelines): ST's mean pooling
+        # divides by the weighted denominator, the fused kernel by token count.
         if (
             "cu_seq_lens_q" in features
             or "cu_seqlens" in features
+            or "token_weights_sum" in features
             or token_embeddings.shape[:-1] != attention_mask.shape
         ):
             features["token_embeddings"] = stored_ln(token_embeddings)
