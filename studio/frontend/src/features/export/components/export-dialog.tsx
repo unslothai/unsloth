@@ -19,6 +19,11 @@ import {
 } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, FolderSearchIcon, Key01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
@@ -392,30 +397,44 @@ export function ExportDialog({
                   )}
                 </div>
                 <div className="flex items-stretch gap-2">
-                  <div className="flex min-w-0 flex-1 items-center rounded-lg border border-border/40 bg-muted/40 px-3 py-2">
-                    <code
-                      className="truncate font-mono text-[12px] text-foreground"
-                      title={saveDirectory}
-                    >
-                      {saveDirectory}
-                    </code>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setFolderBrowserOpen(true)}
+                  <Input
+                    className="min-w-0 flex-1 font-mono text-[12px]"
+                    value={saveDirectory}
+                    onChange={(e) => onSaveDirectoryChange(e.target.value)}
                     disabled={exporting}
-                  >
-                    <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
-                    Browse
-                  </Button>
+                    spellCheck={false}
+                    title={saveDirectory}
+                    placeholder={defaultSaveDirectory}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setFolderBrowserOpen(true)}
+                        disabled={exporting}
+                        aria-label="Browse save folder"
+                      >
+                        <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Browse
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
-                {saveDirectory !== defaultSaveDirectory && (
-                  <p className="text-[11px] text-muted-foreground/70">
-                    Default: {defaultSaveDirectory}
-                  </p>
-                )}
+                <p className="text-[11px] text-muted-foreground/70">
+                  {saveDirectory !== defaultSaveDirectory ? (
+                    <>
+                      Default: {defaultSaveDirectory}
+                    </>
+                  ) : (
+                    <>
+                      Paste an absolute path if the folder browser cannot reach the drive.
+                    </>
+                  )}
+                </p>
               </div>
             )}
 

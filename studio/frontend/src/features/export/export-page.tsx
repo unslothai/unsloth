@@ -384,8 +384,10 @@ export function ExportPage() {
       modelSource === "local" &&
       selectedSourceModel
     ) {
-      const localPath = localMetaById.get(selectedSourceModel)?.path ?? selectedSourceModel;
-      return siblingGgufDirectory(localPath) ?? relative;
+      const localModel = localMetaById.get(selectedSourceModel);
+      if (localModel && (localModel.source === "models_dir" || localModel.source === "custom")) {
+        return siblingGgufDirectory(localModel.path) ?? relative;
+      }
     }
     return relative;
   }, [
