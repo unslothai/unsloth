@@ -45,6 +45,7 @@ export function LlamaUpdateBanner({
 
   const show =
     visible && status != null && (status.update_available || applying);
+  const updateProgress = status?.job.progress ?? null;
 
   return (
     <AnimatePresence>
@@ -100,9 +101,25 @@ export function LlamaUpdateBanner({
                 className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
                 role="progressbar"
                 aria-label="Updating llama.cpp"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={
+                  updateProgress != null
+                    ? Math.round(updateProgress * 100)
+                    : undefined
+                }
                 data-testid="llama-update-progress"
               >
-                <div className="loading-bar-slide h-full w-1/3 rounded-full bg-primary" />
+                {updateProgress != null && updateProgress > 0 ? (
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-700 ease-out"
+                    style={{ width: `${Math.round(updateProgress * 100)}%` }}
+                  />
+                ) : (
+                  // No percent yet (resolving the release): sweep until the
+                  // first download progress arrives.
+                  <div className="loading-bar-slide h-full w-1/3 rounded-full bg-primary" />
+                )}
               </div>
             ) : (
               <div className="mt-3 flex items-center gap-2">

@@ -12,7 +12,7 @@ const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
 // "Remind me later" re-surfaces sooner than the hourly reminder.
 const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
 // While an update is applying, poll the job state at this cadence.
-const JOB_POLL_INTERVAL_MS = 3000;
+const JOB_POLL_INTERVAL_MS = 1500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
@@ -20,6 +20,8 @@ export interface LlamaUpdateJob {
   from_tag: string | null;
   to_tag: string | null;
   error: string | null;
+  // Download fraction (0..1) while running, 1 on success, null when unknown.
+  progress: number | null;
 }
 
 export interface LlamaUpdateStatus {
@@ -45,6 +47,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
       to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
       error: typeof job.error === "string" ? job.error : null,
+      progress: typeof job.progress === "number" ? job.progress : null,
     },
   };
 }

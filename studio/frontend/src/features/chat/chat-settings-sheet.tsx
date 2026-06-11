@@ -1346,7 +1346,7 @@ export function ChatSettingsPanel({
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
-              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle focus-within:ring-[1px] focus-within:ring-ring/40",
+              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
               systemPromptOverflows && "cursor-pointer",
             )}
           >

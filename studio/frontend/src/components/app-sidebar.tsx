@@ -856,7 +856,7 @@ export function AppSidebar() {
                     <HugeiconsIcon
                       icon={PlusSignIcon}
                       strokeWidth={1.75}
-                      className="size-icon"
+                      className="size-4"
                     />
                   </span>
                 </button>
