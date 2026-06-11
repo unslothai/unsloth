@@ -105,13 +105,11 @@ def _patch_torch_cuda_for_import() -> None:
     CPU like normal."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
-
         _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
     except Exception:
         pass
     try:
         import torch
-
         torch.cuda.get_device_capability = lambda *a, **k: (8, 0)
         torch.cuda.is_bf16_supported = lambda *a, **k: True
     except Exception:
@@ -142,14 +140,11 @@ if not _has_real_accelerator():
 
 
 # ---------------------------------------------------------------------------
-# Apply ALL upstream-drift fixes (vllm GuidedDecodingParams alias, triton
-# CompiledKernel attr wrap, peft transformers_weight_conversion stub, etc.)
-# by triggering ``import unsloth``. Fixes live on ``unsloth/import_fixes.py``
-# and apply at unsloth import time. The GPU-free harness above pre-spoofs
-# the device-type chain so ``import unsloth`` survives on a CPU-only runner.
-# Suites without unsloth installed (e.g. security-only) keep passing --
-# the ImportError is swallowed and the drift detectors will surface any
-# pathology the missing patches would have hidden.
+# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import
+# unsloth``; they live in ``unsloth/import_fixes.py`` and run at import time.
+# The GPU-free harness above lets ``import unsloth`` survive CPU-only runners.
+# Suites without unsloth keep passing -- the ImportError is swallowed and the
+# drift detectors surface anything the missing patches would have hidden.
 # ---------------------------------------------------------------------------
 
 

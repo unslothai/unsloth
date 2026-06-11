@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Utility for cleaning up the Unsloth compiled cache directory.
+"""Clean up the Unsloth compiled cache directory.
 
-The unsloth_compiled_cache is created by unsloth_zoo/compiler.py during
-FastModel.from_pretrained() and contains model-type-specific compiled Python
-files. It should be selectively cleared between model loads to avoid stale
-artefacts, while preserving model-agnostic components (like Trainers) needed
-by spawned subprocesses.
+unsloth_compiled_cache (created by unsloth_zoo/compiler.py during
+FastModel.from_pretrained) holds model-type-specific compiled files. Clear it
+selectively between model loads, preserving model-agnostic components (Trainers)
+that spawned subprocesses need.
 """
 
 import shutil
@@ -38,9 +36,8 @@ def get_existing_cache_dirs() -> List[Path]:
 def register_compiled_cache_on_path() -> None:
     """Add all existing compiled-cache directories to sys.path and PYTHONPATH.
 
-    This ensures spawned workers (on platforms using the 'spawn' start method,
-    i.e. Windows and macOS) can import dynamically compiled modules such as
-    UnslothSFTTrainer.
+    Ensures spawned workers (on 'spawn'-start platforms, i.e. Windows and macOS)
+    can import dynamically compiled modules such as UnslothSFTTrainer.
     """
     import os
     import sys
@@ -48,8 +45,8 @@ def register_compiled_cache_on_path() -> None:
     pypath = os.environ.get("PYTHONPATH", "")
     pypath_entries = [p for p in pypath.split(os.pathsep) if p]
 
-    # Iterate in reverse so that earlier _CACHE_DIRS entries (higher priority)
-    # are inserted last and therefore end up first in sys.path / PYTHONPATH.
+    # Iterate in reverse so earlier _CACHE_DIRS entries (higher priority) are
+    # inserted last and thus end up first in sys.path / PYTHONPATH.
     for cache_dir in reversed(get_existing_cache_dirs()):
         resolved = str(cache_dir.resolve())
         if resolved not in sys.path:
@@ -65,7 +62,7 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
     Remove compiled files from the cache directory (idempotent).
 
     Args:
-        preserve_patterns: A list of glob patterns for files to keep
+        preserve_patterns: glob patterns for files to keep
                            (e.g., ["Unsloth*Trainer.py"]). If None or empty,
                            the entire cache directory is deleted (legacy behavior).
     """
@@ -75,13 +72,11 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
 
         if preserve_patterns:
             logger.info(
-                f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): "
-                f"{cache_dir}"
+                f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): " f"{cache_dir}"
             )
 
             for item in cache_dir.iterdir():
                 if item.is_file():
-                    # Check if the file matches any of the patterns we want to keep
                     preserve = any(item.match(pattern) for pattern in preserve_patterns)
                     if not preserve:
                         try:
@@ -93,6 +88,6 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                     # Always clear __pycache__ and other subdirectories
                     shutil.rmtree(item, ignore_errors = True)
         else:
-            # Legacy behavior: nuke the entire directory
+            # Legacy: remove the entire directory
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
             shutil.rmtree(cache_dir, ignore_errors = True)

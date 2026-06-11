@@ -117,6 +117,13 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils", utils_pkg)
     monkeypatch.setitem(sys.modules, "utils.paths", utils_paths)
 
+    utils_utils = types.ModuleType("utils.utils")
+    utils_utils.log_and_http_error = lambda *args, **kwargs: (_ for _ in ()).throw(
+        _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
+    )
+    utils_utils.safe_error_detail = lambda value: str(value)
+    monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
+
     utils_models = types.ModuleType("utils.models")
     for name in (
         "scan_trained_models",

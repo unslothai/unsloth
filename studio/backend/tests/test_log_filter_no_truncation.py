@@ -4,9 +4,9 @@
 """
 Regression tests for loggers.handlers.filter_sensitive_data.
 
-Pins two properties: (1) long strings with commas/slashes pass through
-unchanged (the base64-truncation heuristic from PR #5246 was too aggressive),
-and (2) native-path lease redaction still fires for both inline and dict-key forms.
+Pins two properties: (1) long strings with commas/slashes pass through unchanged
+(the base64-truncation heuristic from PR #5246 was too aggressive), and
+(2) native-path lease redaction still fires for inline and dict-key forms.
 """
 
 from loggers.handlers import filter_sensitive_data
