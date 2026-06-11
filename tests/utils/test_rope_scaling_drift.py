@@ -221,3 +221,30 @@ def test_extended_cache_keeps_scaling_after_growth():
         "scaling of inv_freq; long-context decode loses scaling otherwise "
         "(issue #2405)."
     )
+
+
+def test_object_style_rope_scaling_does_not_crash():
+    # Newer transformers may expose config.rope_scaling as a config object
+    # (e.g. a RopeScalingConfig dataclass) instead of a raw dict. The scaling
+    # computation must normalize it instead of calling .get() on it directly.
+    from dataclasses import dataclass
+
+    from unsloth.models.llama import _compute_config_rope_inv_freq
+
+    @dataclass
+    class FakeRopeScalingConfig:
+        rope_type: str = "llama3"
+        factor: float = 8.0
+        low_freq_factor: float = 1.0
+        high_freq_factor: float = 4.0
+        original_max_position_embeddings: int = 8192
+
+    config = _make_config(LLAMA3_ROPE_SCALING)
+    inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, FakeRopeScalingConfig())
+    assert inv_freq is not None, (
+        "object-style (non-dict) config.rope_scaling must be normalized, not "
+        "dropped; otherwise scaled models silently lose RoPE scaling again "
+        "(issue #2405)."
+    )
+    expected = _reference_inv_freq(config, "llama3")
+    assert torch.allclose(inv_freq.float().cpu(), expected, rtol=1e-4, atol=1e-6)
