@@ -60,22 +60,76 @@ def _write_install(
 def _clean_state(monkeypatch):
     freshness.reset_caches()
     upd._reset_job_for_tests()
+    upd._resolve_memo.clear()
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     yield
     freshness.reset_caches()
     upd._reset_job_for_tests()
+    upd._resolve_memo.clear()
 
 
-def test_status_no_marker(monkeypatch, tmp_path):
+def _no_prebuilt(monkeypatch):
+    """Stub the host prebuilt probe to 'none available' (no source-build offer)."""
+    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None)
+
+
+def _prebuilt(monkeypatch, *, repo = "unslothai/llama.cpp", release_tag = "b9585", asset = None):
+    """Stub the host prebuilt probe to report an available prebuilt."""
+    payload = {
+        "prebuilt_available": True,
+        "repo": repo,
+        "release_tag": release_tag,
+        "llama_tag": release_tag,
+        "asset": asset or f"llama-{release_tag}-bin-macos-arm64.tar.gz",
+        "install_kind": "macos-arm64",
+    }
+    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: payload)
+
+
+def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
+    # No marker AND no prebuilt available for the host -> unsupported (the genuine
+    # source-build-with-nothing-to-offer case).
     binary = tmp_path / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")  # no marker file alongside
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _no_prebuilt(monkeypatch)
     st = upd.get_update_status()
     assert st["supported"] is False
     assert st["update_available"] is False
     assert st["installed_tag"] is None
+
+
+def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
+    # Markerless source build with a prebuilt now available for the host: surface
+    # the update. Unknown installed version (source build) is treated as behind.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9585")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is True
+    assert st["source_build"] is True
+    assert st["latest_tag"] == "b9585"
+    assert st["published_repo"] == "unslothai/llama.cpp"
+
+
+def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
+    # A source build already newer than the latest prebuilt is not nagged.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9518")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9600)
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is False
+    assert st["installed_tag"] == "b9600"
 
 
 def test_status_update_available(monkeypatch, tmp_path):
@@ -99,13 +153,57 @@ def test_status_up_to_date(monkeypatch, tmp_path):
     assert st["update_available"] is False
 
 
-def test_start_update_no_marker_refuses(monkeypatch, tmp_path):
+def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     binary = tmp_path / "llama-server"
     binary.write_text("stub")  # no marker
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    _no_prebuilt(monkeypatch)
     res = upd.start_update()
     assert res["started"] is False
-    assert res["reason"] == "no_prebuilt_marker"
+    assert res["reason"] == "no_prebuilt_available"
+
+
+def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
+    # Markerless install + available prebuilt: install in place into the resolved
+    # root, with the asset-derived ROCm forwarding and the resolved repo.
+    install_dir = tmp_path / "llama.cpp"
+    binary = install_dir / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # no marker
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    _prebuilt(monkeypatch, repo = "unslothai/llama.cpp",
+              asset = "app-b9585-linux-x64-rocm-gfx110X.tar.gz")
+
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = "installed"
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        _write_install(install_dir, "b9585")  # installer writes the marker
+        return _Proc()
+
+    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+
+    res = upd.start_update()
+    assert res["started"] is True, res
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    cmd = captured["cmd"]
+    assert "--install-dir" in cmd and str(install_dir) in cmd
+    assert "--published-repo" in cmd and "unslothai/llama.cpp" in cmd
+    assert "--llama-tag" in cmd and "latest" in cmd
+    assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
+    assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
 
 
 def test_start_update_happy_path(monkeypatch, tmp_path):
@@ -442,3 +540,72 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
+
+
+# --- markerless helper units ---
+
+
+def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    calls = {"n": 0}
+
+    class _Proc:
+        returncode = 0
+        # stderr noise plus the JSON line on stdout (installer logs to stderr).
+        stdout = '{"prebuilt_available": true, "repo": "unslothai/llama.cpp", "release_tag": "b9585"}'
+        stderr = "[llama-prebuilt] some log\n"
+
+    def _fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        assert "--resolve-prebuilt" in cmd
+        return _Proc()
+
+    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    res = upd._resolve_prebuilt_for_host()
+    assert res["prebuilt_available"] is True and res["release_tag"] == "b9585"
+    # Second call is memoized (no second subprocess).
+    upd._resolve_prebuilt_for_host()
+    assert calls["n"] == 1
+
+
+def test_resolve_prebuilt_fails_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+
+    def _boom(cmd, **kwargs):
+        raise OSError("subprocess failed")
+
+    monkeypatch.setattr(upd.subprocess, "run", _boom)
+    assert upd._resolve_prebuilt_for_host() is None
+    # Failures are not cached: a later success is observed.
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"prebuilt_available": false}'
+        stderr = ""
+
+    monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
+    assert upd._resolve_prebuilt_for_host() == {"prebuilt_available": False}
+
+
+def test_installed_build_number(monkeypatch):
+    def _ver(text):
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = text
+        monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
+        return upd._installed_build_number("/bin/llama-server")
+
+    assert _ver("version: 9585 (abc1234)\nbuilt with clang\n") == 9585
+    assert _ver("version: 1 (deadbee)\n") is None  # source build without tags
+    assert _ver("no version here") is None
+    assert upd._installed_build_number(None) is None
+
+
+def test_llama_install_root_finds_llama_cpp_ancestor(monkeypatch, tmp_path):
+    root = tmp_path / "llama.cpp"
+    binary = root / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    assert upd._llama_install_root(str(binary)) == root

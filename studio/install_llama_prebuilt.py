@@ -3045,6 +3045,17 @@ def _apply_host_overrides(
     return host
 
 
+def published_repo_for_host(host: HostInfo) -> str:
+    """The release repo setup.sh picks for this host (setup.sh ~940-956):
+    CPU-only Linux (x86_64 or arm64) -> ggml-org upstream; GPU Linux, all
+    Windows, all macOS -> the unsloth fork. A usable GPU is NVIDIA-usable or
+    ROCm. Pure (no I/O); mirrors the only place this mapping lived (shell)."""
+    has_gpu = host.has_usable_nvidia or host.has_rocm
+    if host.is_linux and not has_gpu:
+        return UPSTREAM_REPO
+    return DEFAULT_PUBLISHED_REPO
+
+
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
@@ -6690,6 +6701,16 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = ("Resolve the source-build fallback plan."),
     )
+    resolve_group.add_argument(
+        "--resolve-prebuilt",
+        nargs = "?",
+        const = "latest",
+        help = (
+            "Report whether an official prebuilt exists for this host without "
+            "downloading. Picks the host's published repo when --published-repo "
+            "is left at the default. Use --output-format json."
+        ),
+    )
     parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
@@ -6772,6 +6793,41 @@ def main() -> int:
             },
             output_format = args.output_format,
         )
+        return EXIT_SUCCESS
+
+    if args.resolve_prebuilt is not None:
+        # Host-aware "is a prebuilt available" probe, no download. A default repo
+        # means "pick the repo for this host"; PrebuiltFallback == source build.
+        host = _apply_host_overrides(
+            detect_host(),
+            override_has_rocm = args.has_rocm,
+            override_rocm_gfx = args.rocm_gfx,
+            force_cpu = args.cpu_fallback,
+        )
+        repo = (
+            published_repo_for_host(host)
+            if args.published_repo == DEFAULT_PUBLISHED_REPO
+            else args.published_repo
+        )
+        try:
+            _requested, plans = resolve_simple_install_release_plans(
+                args.resolve_prebuilt, host, repo, args.published_release_tag or ""
+            )
+            choice = plans[0].attempts[0] if plans and plans[0].attempts else None
+            if choice is None:
+                payload = {"prebuilt_available": False, "repo": repo}
+            else:
+                payload = {
+                    "prebuilt_available": True,
+                    "repo": repo,
+                    "release_tag": plans[0].release_tag,
+                    "llama_tag": plans[0].llama_tag,
+                    "asset": choice.name,
+                    "install_kind": choice.install_kind,
+                }
+        except PrebuiltFallback:
+            payload = {"prebuilt_available": False, "repo": repo}
+        emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 
     if not args.install_dir:

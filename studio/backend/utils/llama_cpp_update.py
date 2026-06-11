@@ -21,6 +21,7 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -108,6 +109,125 @@ def _installer_script() -> Optional[Path]:
     return None
 
 
+# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
+# ask the installer whether an official prebuilt now exists for this host. Memo
+# is 24h; only successful answers are cached so a network blip retries.
+_RESOLVE_TTL_SECONDS = 24 * 60 * 60
+_resolve_memo: dict = {}
+
+
+def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]:
+    """Run install_llama_prebuilt.py --resolve-prebuilt (no download) and return
+    {prebuilt_available, repo, release_tag, llama_tag, asset, install_kind} or
+    None. Fail-open: any error -> None so a source build never blocks the app."""
+    now = time.time()
+    if not force_refresh and _resolve_memo:
+        if now - _resolve_memo.get("at", 0.0) < _RESOLVE_TTL_SECONDS:
+            return _resolve_memo.get("value")
+    script = _installer_script()
+    if script is None:
+        return None
+    value: Optional[dict] = None
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--resolve-prebuilt", "latest",
+             "--output-format", "json"],
+            capture_output = True, text = True, timeout = 60,
+        )
+        out = (proc.stdout or "").strip()
+        if proc.returncode == 0 and out:
+            parsed = json.loads(out.splitlines()[-1])
+            if isinstance(parsed, dict):
+                value = parsed
+    except Exception as exc:  # pragma: no cover - subprocess/json defensive
+        logger.debug("llama update: resolve-prebuilt failed", error = str(exc))
+        value = None
+    if value is not None:  # cache real answers; let failures retry next poll
+        _resolve_memo.update(at = now, value = value)
+    return value
+
+
+def _installed_build_number(binary: Optional[str]) -> Optional[int]:
+    """Best-effort build number from ``llama-server --version`` (e.g.
+    'version: 9585 (abc)'). None when unparseable or <= 1: a source build with
+    no git tags reports 'version: 1', which we treat as unknown (offer update)."""
+    if not binary:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "--version"], capture_output = True, text = True, timeout = 20
+        )
+    except Exception:  # pragma: no cover - defensive
+        return None
+    m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n > 1 else None
+
+
+def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
+    """The llama.cpp install root with or without a marker: marker dir first,
+    then UNSLOTH_LLAMA_CPP_PATH, then the nearest 'llama.cpp' ancestor of the
+    binary, then studio_root()/llama.cpp (custom) or ~/.unsloth/llama.cpp
+    (legacy) -- mirroring _find_llama_server_binary's roots."""
+    marked = _install_dir_for(binary)
+    if marked is not None:
+        return marked
+    env = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+    if env:
+        return Path(env)
+    if binary:
+        for parent in Path(binary).parents:
+            if parent.name == "llama.cpp":
+                return parent
+    try:
+        from utils.paths.storage_roots import studio_root
+        sr = studio_root()
+        legacy = Path.home() / ".unsloth" / "studio"
+        try:
+            is_legacy = sr.resolve() == legacy.resolve()
+        except (OSError, ValueError):
+            is_legacy = sr == legacy
+        return (Path.home() / ".unsloth" / "llama.cpp") if is_legacy else sr / "llama.cpp"
+    except Exception:  # pragma: no cover - defensive
+        return Path.home() / ".unsloth" / "llama.cpp"
+
+
+def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
+    """Update status for a markerless (source-build) install: offer the official
+    prebuilt when one exists for this host and is newer than the installed
+    binary. None -> caller falls through to the no-marker default (unsupported)."""
+    res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
+    if not res or not res.get("prebuilt_available"):
+        return None
+    latest = res.get("release_tag")
+    if not latest:
+        return None
+    installed_build = _installed_build_number(binary)
+    m = re.search(r"(\d+)", latest)
+    latest_build = int(m.group(1)) if m else None
+    # Suppress only when the source build is reliably newer/equal; unknown
+    # version (the involuntary source-build case) is treated as behind.
+    update_available = (
+        installed_build is None or latest_build is None or installed_build < latest_build
+    )
+    with _job_lock:
+        job = dict(_job)
+    return {
+        "supported": True,
+        "update_available": update_available,
+        "stale": False,
+        "installed_tag": (f"b{installed_build}" if installed_build else None),
+        "latest_tag": latest,
+        "published_repo": res.get("repo"),
+        "installed_at_utc": None,
+        "age_days": None,
+        "source_build": True,
+        "job": job,
+    }
+
+
 def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether a newer prebuilt exists plus the current job state.
 
@@ -115,6 +235,14 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     """
     binary = _find_binary()
     marker = read_install_marker(binary)
+
+    # No marker = source build / custom path. Offer the official prebuilt if one
+    # now exists for this host (this is why macOS source builds showed no button).
+    if marker is None and binary is not None:
+        src = _source_build_status(binary, force_refresh = force_refresh)
+        if src is not None:
+            return src
+
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
 
     if force_refresh and repo:
@@ -143,6 +271,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         "published_repo": freshness.get("published_repo") or repo,
         "installed_at_utc": freshness.get("installed_at_utc"),
         "age_days": freshness.get("age_days"),
+        "source_build": False,
         "job": job,
     }
 
@@ -254,19 +383,7 @@ def start_update() -> dict:
     """Kick off a background update. Idempotent: a second call while one is
     running returns the in-flight job rather than starting another."""
     binary = _find_binary()
-    install_dir = _install_dir_for(binary)
     marker = read_install_marker(binary)
-    if install_dir is None or not marker:
-        return {
-            "started": False,
-            "reason": "no_prebuilt_marker",
-            "message": (
-                "This llama.cpp install was not provisioned from an Unsloth "
-                "prebuilt (source build or custom path); in-app update is "
-                "unavailable."
-            ),
-            "job": get_update_status()["job"],
-        }
     script = _installer_script()
     if script is None:
         return {
@@ -275,9 +392,38 @@ def start_update() -> dict:
             "message": "install_llama_prebuilt.py could not be located.",
             "job": get_update_status()["job"],
         }
-    repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
-    from_tag = marker.get("tag") or marker.get("release_tag")
-    asset = marker.get("asset")
+
+    if marker:
+        install_dir = _install_dir_for(binary)
+        repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
+        from_tag = marker.get("tag") or marker.get("release_tag")
+        asset = marker.get("asset")
+    else:
+        # Source build / custom path: install the official prebuilt in place if
+        # one exists for this host (asset carries the ROCm gfx for forwarding).
+        res = _resolve_prebuilt_for_host()
+        if not res or not res.get("prebuilt_available"):
+            return {
+                "started": False,
+                "reason": "no_prebuilt_available",
+                "message": (
+                    "No official llama.cpp prebuilt is available for this host, "
+                    "so the source build cannot be swapped automatically."
+                ),
+                "job": get_update_status()["job"],
+            }
+        install_dir = _llama_install_root(binary)
+        repo = res.get("repo") or DEFAULT_PUBLISHED_REPO
+        from_tag = None
+        asset = res.get("asset")
+
+    if install_dir is None:
+        return {
+            "started": False,
+            "reason": "no_install_dir",
+            "message": "Could not determine the llama.cpp install directory.",
+            "job": get_update_status()["job"],
+        }
 
     with _job_lock:
         if _job["state"] == _JOB_RUNNING:
