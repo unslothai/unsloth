@@ -84,7 +84,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           <Button
             type="button"
             variant="outline"
-            className="mt-1 border-none bg-background text-foreground shadow-[0_0_20px_0_rgba(0,0,0,0.07)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
+            className="mt-1 border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
             disabled={uploading || loading}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -107,7 +107,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               type="button"
               size="sm"
               variant="outline"
-              className="border-none bg-background text-foreground shadow-[0_0_20px_0_rgba(0,0,0,0.07)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
+              className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
               disabled={uploading}
               onClick={() => fileInputRef.current?.click()}
             >
