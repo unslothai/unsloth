@@ -117,3 +117,13 @@ def test_task_config_attr_updates_parent_and_text_config_dicts():
 
     assert config["label2id"] == {"negative": 0, "positive": 1}
     assert config["text_config"]["label2id"] == {"negative": 0, "positive": 1}
+
+
+def test_task_config_attr_ignores_primitive_text_config():
+    set_task_config_attr = _load_task_attr_helper()
+    config = {"text_config": "not-a-config"}
+
+    set_task_config_attr(config, "num_labels", 2)
+
+    assert config["num_labels"] == 2
+    assert config["text_config"] == "not-a-config"

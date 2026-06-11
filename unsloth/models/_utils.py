@@ -321,7 +321,11 @@ def set_task_config_attr(config, field_name, value):
                 text_config = None
         if text_config is None:
             text_config = getattr(config, "text_config", None)
-    if text_config is not None and text_config is not config:
+    if (
+        text_config is not None
+        and text_config is not config
+        and (isinstance(text_config, dict) or hasattr(text_config, "__dict__"))
+    ):
         _config_set(text_config, field_name, value)
 
 
