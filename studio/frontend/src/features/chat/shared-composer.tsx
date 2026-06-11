@@ -96,7 +96,6 @@ import {
 } from "react";
 import {
   getCachedDocumentSupport,
-  getDocumentSupport,
   loadModel,
   validateModel,
 } from "./api/chat-api";
@@ -119,14 +118,12 @@ import type {
 } from "./types";
 import {
   DOC_ACCEPT,
-  type DocumentVisualPolicy,
   MAX_DOC_SIZE,
-  TEXT_ONLY_DOCUMENT_VISUAL_POLICY,
   buildDocumentMessageParts,
   classifyDocumentExtractionError,
   documentParserUnavailableReason,
   documentVisualPayloads,
-  documentVisualPolicyFromSupport,
+  resolveCurrentDocumentVisualPolicy,
   isDocumentFile,
   markDocumentExtractionRetry,
   normalizeExtractedDocument,
@@ -167,14 +164,6 @@ function canRetryFailedDocument(doc: FailedDocument): boolean {
     doc.retryCount < MAX_DOCUMENT_RETRIES &&
     !NON_RETRYABLE_DOCUMENT_ERRORS.has(doc.code)
   );
-}
-
-async function resolveCurrentDocumentVisualPolicy(): Promise<DocumentVisualPolicy> {
-  try {
-    return documentVisualPolicyFromSupport(await getDocumentSupport());
-  } catch {
-    return TEXT_ONLY_DOCUMENT_VISUAL_POLICY;
-  }
 }
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.

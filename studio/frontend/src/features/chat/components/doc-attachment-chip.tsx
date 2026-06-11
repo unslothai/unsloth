@@ -8,7 +8,10 @@ import { FileText } from "lucide-react";
 import type { ReactElement } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { PendingDocumentAttachment } from "../types";
-import { documentVisualPayloads } from "../utils/document-extraction";
+import {
+  documentVisualPayloads,
+  formatDocumentTokens,
+} from "../utils/document-extraction";
 import {
   AttachmentChipBody,
   AttachmentChipButton,
@@ -22,13 +25,6 @@ import {
 
 const QUERY_FRAGMENT_RE = /[?#]/;
 const PATH_SEPARATOR_RE = /[\\/]/;
-
-export function formatDocumentTokens(tokens: number): string {
-  if (tokens < 1000) {
-    return `${tokens}`;
-  }
-  return `${(tokens / 1000).toFixed(1)}k`;
-}
 
 export function documentFileTypeLabel(filename: string): string {
   const cleanName = filename.split(QUERY_FRAGMENT_RE)[0] ?? filename;

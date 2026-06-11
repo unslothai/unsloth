@@ -10,7 +10,6 @@ const OCR_MODEL_LOCK_POLL_MS = 250;
 interface OcrModelLockState {
   active: boolean;
   ownerId: string;
-  startedAt: number;
   expiresAt: number;
 }
 
@@ -45,10 +44,6 @@ function readState(): OcrModelLockState | null {
     return {
       active: true,
       ownerId: parsed.ownerId || "legacy",
-      startedAt:
-        typeof parsed.startedAt === "number"
-          ? parsed.startedAt
-          : parsed.expiresAt - OCR_MODEL_LOCK_TTL_MS,
       expiresAt: parsed.expiresAt,
     };
   } catch {
@@ -80,7 +75,6 @@ function tryAcquire(ownerId: string): boolean {
     const state: OcrModelLockState = {
       active: true,
       ownerId,
-      startedAt: current?.startedAt ?? now(),
       expiresAt: now() + OCR_MODEL_LOCK_TTL_MS,
     };
     writeState(state);
@@ -170,7 +164,6 @@ export function setTemporaryOcrModelBusy(active: boolean): void {
       const state: OcrModelLockState = {
         active: true,
         ownerId: "legacy",
-        startedAt: now(),
         expiresAt: now() + OCR_MODEL_LOCK_TTL_MS,
       };
       writeState(state);

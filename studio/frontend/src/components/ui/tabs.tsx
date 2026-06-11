@@ -68,76 +68,16 @@ export const tabsListVariants = cva(
 export function TabsList({
   className,
   variant = "default",
-  children,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.List> &
   VariantProps<typeof tabsListVariants>): React.ReactElement {
-  const ctx = React.useContext(TabsContext);
-  const listRef = React.useRef<HTMLDivElement>(null);
-  const [pill, setPill] = React.useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    ready: boolean;
-  }>({ x: 0, y: 0, width: 0, height: 0, ready: false });
-
-  React.useLayoutEffect(() => {
-    const list = listRef.current;
-    if (!list) return;
-    const measure = (): void => {
-      const active = list.querySelector<HTMLElement>(
-        '[role="tab"][data-state="active"]',
-      );
-      if (!active) {
-        setPill((prev) => ({ ...prev, ready: false }));
-        return;
-      }
-      setPill({
-        x: active.offsetLeft,
-        y: active.offsetTop,
-        width: active.offsetWidth,
-        height: active.offsetHeight,
-        ready: true,
-      });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(list);
-    list
-      .querySelectorAll<HTMLElement>('[role="tab"]')
-      .forEach((tab) => observer.observe(tab));
-    return () => observer.disconnect();
-  }, [ctx.value, variant, children]);
-
   return (
     <TabsPrimitive.List
-      ref={listRef}
       data-slot="tabs-list"
       data-variant={variant}
-      className={cn(tabsListVariants({ variant }), "relative", className)}
+      className={cn(tabsListVariants({ variant }), className)}
       {...props}
-    >
-      {pill.ready ? (
-        <motion.span
-          aria-hidden="true"
-          className="pointer-events-none absolute top-0 left-0 rounded-xl bg-background dark:border dark:border-input dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0"
-          initial={false}
-          animate={{
-            x: pill.x,
-            y: pill.y,
-            width: pill.width,
-            height: pill.height,
-          }}
-          transition={{
-            type: "tween",
-            duration: 0.25,
-            ease: [0.4, 0, 0.2, 1],
-          }}
-        />
-      ) : null}
-      {children}
-    </TabsPrimitive.List>
+    />
   );
 }
 
@@ -147,6 +87,9 @@ export function TabsTrigger({
   children,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Trigger>): React.ReactElement {
+  const ctx = React.useContext(TabsContext);
+  const isActive = ctx.value === value;
+
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
@@ -162,6 +105,18 @@ export function TabsTrigger({
       )}
       {...props}
     >
+      {isActive && (
+        <motion.span
+          layoutId={`tab-bg-${ctx.id}`}
+          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0"
+          transition={{
+            type: "spring",
+            stiffness: 500,
+            damping: 35,
+            mass: 0.5,
+          }}
+        />
+      )}
       <span className="relative z-10">{children}</span>
     </TabsPrimitive.Trigger>
   );

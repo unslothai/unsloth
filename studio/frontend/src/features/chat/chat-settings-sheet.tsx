@@ -1903,8 +1903,8 @@ function DocumentExtractionSection() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const runProbe = useCallback(() => {
-    if (abortRef.current) abortRef.current.abort();
+  const probeSupport = useCallback(() => {
+    abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setProbing(true);
@@ -1918,29 +1918,18 @@ function DocumentExtractionSection() {
       .finally(() => {
         if (!ctrl.signal.aborted) setProbing(false);
       });
+    return ctrl;
   }, []);
 
+  const runProbe = useCallback(() => {
+    probeSupport();
+  }, [probeSupport]);
+
   useEffect(() => {
-    let cancelled = false;
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setProbing(true);
-    void getCachedDocumentSupport(ctrl.signal)
-      .then((result) => {
-        if (!cancelled) setSupport(result);
-      })
-      .catch(() => {
-        if (!cancelled) setSupport(null);
-      })
-      .finally(() => {
-        if (!cancelled) setProbing(false);
-      });
-    return () => {
-      cancelled = true;
-      ctrl.abort();
-    };
-  }, [checkpoint]);
+    const ctrl = probeSupport();
+    return () => ctrl.abort();
+  }, [checkpoint, probeSupport]);
 
   const extractorReady = support?.extraction_available ?? false;
   const unavailableFormatCount = Object.keys(

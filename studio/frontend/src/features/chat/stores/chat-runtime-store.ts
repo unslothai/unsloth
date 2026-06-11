@@ -25,9 +25,6 @@ import {
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
-const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
-const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
-const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 const DOC_EXTRACT_KEY = "unsloth_chat_doc_extract";
@@ -270,7 +267,6 @@ export type ReasoningEffort =
   | "max"
   | "xhigh";
 
-let hasShownInferencePersistenceWarning = false;
 let hasShownStoragePersistenceWarning = false;
 let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
@@ -408,28 +404,6 @@ function saveBool(key: string, value: boolean): boolean {
   }
 }
 
-function loadInt(key: string, fallback: number): number {
-  if (!canUseStorage()) return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isNaN(parsed) ? fallback : parsed;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveInt(key: string, value: number): boolean {
-  if (!canUseStorage()) return false;
-  try {
-    localStorage.setItem(key, String(value));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function loadString(key: string, fallback: string): string {
   if (!canUseStorage()) return fallback;
   try {
@@ -463,78 +437,6 @@ function asString(value: unknown, fallback: string): string {
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
-}
-
-function loadInferenceParams(): InferenceParams {
-  if (!canUseStorage()) return DEFAULT_INFERENCE_PARAMS;
-  try {
-    const raw = localStorage.getItem(INFERENCE_PARAMS_KEY);
-    if (!raw) return DEFAULT_INFERENCE_PARAMS;
-    const parsed = JSON.parse(raw) as Partial<InferenceParams>;
-    return {
-      temperature: asFiniteNumber(
-        parsed.temperature,
-        DEFAULT_INFERENCE_PARAMS.temperature,
-      ),
-      topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
-      topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
-      minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
-      repetitionPenalty: asFiniteNumber(
-        parsed.repetitionPenalty,
-        DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
-      ),
-      presencePenalty: asFiniteNumber(
-        parsed.presencePenalty,
-        DEFAULT_INFERENCE_PARAMS.presencePenalty,
-      ),
-      maxSeqLength: asFiniteNumber(
-        parsed.maxSeqLength,
-        DEFAULT_INFERENCE_PARAMS.maxSeqLength,
-      ),
-      maxTokens: asFiniteNumber(
-        parsed.maxTokens,
-        DEFAULT_INFERENCE_PARAMS.maxTokens,
-      ),
-      systemPrompt: asString(
-        parsed.systemPrompt,
-        DEFAULT_INFERENCE_PARAMS.systemPrompt,
-      ),
-      checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
-      trustRemoteCode: asBoolean(
-        parsed.trustRemoteCode,
-        DEFAULT_INFERENCE_PARAMS.trustRemoteCode ?? false,
-      ),
-    };
-  } catch {
-    return DEFAULT_INFERENCE_PARAMS;
-  }
-}
-
-function saveInferenceParams(params: InferenceParams): boolean {
-  if (!canUseStorage()) return false;
-  try {
-    const { checkpoint, ...rest } = params;
-    void checkpoint;
-    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function loadPresetSource(): ChatPresetSource {
-  const activePreset = loadString(CHAT_ACTIVE_PRESET_KEY, "Default");
-  if (canUseStorage()) {
-    try {
-      const raw = localStorage.getItem(CHAT_ACTIVE_PRESET_SOURCE_KEY);
-      if (raw === "modified") {
-        return "modified";
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return getPresetSource(activePreset);
 }
 
 function loadDocExtract(): DocExtractSettings {

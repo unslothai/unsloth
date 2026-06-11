@@ -65,4 +65,7 @@ export {
   type ExtractedDocument,
   type PendingDocumentAttachment,
 } from "./types";
-export { documentFigureImageDataUrl } from "./utils/document-extraction";
+export {
+  documentFigureImageDataUrl,
+  formatDocumentTokens,
+} from "./utils/document-extraction";

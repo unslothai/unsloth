@@ -25,14 +25,6 @@ function pump(): void {
   }
 }
 
-export function getExtractionQueueDepth(): number {
-  return waitQueue.length;
-}
-
-export function getExtractionActiveCount(): number {
-  return activeCount;
-}
-
 export function setExtractionBackendLimit(value: number | null | undefined): void {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     backendLimit = null;

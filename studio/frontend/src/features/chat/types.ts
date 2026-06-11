@@ -168,11 +168,6 @@ export interface DocumentPendingAttachment extends PendingAttachment {
   retryCount?: number;
 }
 
-/** A DocumentPendingAttachment with extraction complete, ready to send. */
-export type DocumentCompleteAttachment = DocumentPendingAttachment & {
-  status: { type: "complete" };
-};
-
 /** Narrows an assistant-ui attachment to DocumentPendingAttachment. */
 export function isDocumentAttachment(
   a: PendingAttachment | CompleteAttachment,

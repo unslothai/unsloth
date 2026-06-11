@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getDocumentSupport } from "../api/chat-api";
 import type {
   DocumentExtractionErrorCode,
   DocumentSupport,
@@ -286,6 +287,22 @@ export function documentVisualPolicyFromSupport(
   };
 }
 
+/** Current visual policy from the cached support probe; text-only on failure. */
+export async function resolveCurrentDocumentVisualPolicy(): Promise<DocumentVisualPolicy> {
+  try {
+    return documentVisualPolicyFromSupport(await getDocumentSupport());
+  } catch {
+    return TEXT_ONLY_DOCUMENT_VISUAL_POLICY;
+  }
+}
+
+/** Compact token count for chip/preview labels ("" when unknown). */
+export function formatDocumentTokens(tokens: number | undefined): string {
+  if (typeof tokens !== "number") return "";
+  if (tokens < 1000) return `${tokens}`;
+  return `${(tokens / 1000).toFixed(1)}k`;
+}
+
 export function documentVisualPayloads(
   document: Pick<
     ExtractedDocument,
@@ -311,21 +328,6 @@ export function documentVisualPayloads(
     if (payloads.length >= effectiveMaxInputs) break;
   }
   return payloads;
-}
-
-/**
- * Data URL of the first figure with an extracted image; for decorative UI
- * (thumbnails, previews). Use {@link documentVisualPayloads} for the images
- * actually attached to the next message.
- */
-export function firstDocumentImageDataUrl(
-  document: Pick<ExtractedDocument, "figures">,
-): string | null {
-  for (const figure of document.figures) {
-    const dataUrl = documentFigureImageDataUrl(figure);
-    if (dataUrl) return dataUrl;
-  }
-  return null;
 }
 
 export function formatDocumentImageReference(

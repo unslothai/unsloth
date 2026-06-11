@@ -268,7 +268,6 @@ function getStackCardLayout({
     : topReserve - depth * STACK_EDGE_OFFSET_Y_PX;
   const y =
     isFront || !isHoveredBackground ? baseY : baseY - HOVER_PREVIEW_LIFT_PX;
-  const scale = 1;
   const zIndex = isFront
     ? FRONT_CARD_Z_INDEX
     : BACKGROUND_CARD_Z_INDEX_BASE -
@@ -281,7 +280,7 @@ function getStackCardLayout({
     ? `calc(${CARD_WIDTH_CSS} - ${edgeInset * 2}px)`
     : CARD_WIDTH_CSS;
 
-  return { opacity, scale, width, x, y, zIndex };
+  return { opacity, width, x, y, zIndex };
 }
 
 function DocumentStackCardLayer({
@@ -322,7 +321,7 @@ function DocumentStackCardLayer({
   const { item, index, relativePosition, isFront } = card;
   const isHoveredBackground =
     safeHoveredDocumentIndex === index && !isFront && animationState === "idle";
-  const { opacity, scale, width, x, y, zIndex } = getStackCardLayout({
+  const { opacity, width, x, y, zIndex } = getStackCardLayout({
     isFront,
     depth: relativePosition,
     isHoveredBackground,
@@ -343,7 +342,7 @@ function DocumentStackCardLayer({
       <motion.div
         className="absolute top-0 left-0 rounded-md"
         initial={false}
-        animate={{ x, y, scale, opacity }}
+        animate={{ x, y, opacity }}
         transition={transition}
         style={{
           width,
@@ -374,7 +373,7 @@ function DocumentStackCardLayer({
           type="button"
           className="absolute top-0 left-0 cursor-pointer rounded-md bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           initial={false}
-          animate={{ x: hitLayout.x, y: hitLayout.y, scale: hitLayout.scale }}
+          animate={{ x: hitLayout.x, y: hitLayout.y }}
           transition={transition}
           style={{
             width: hitLayout.width,

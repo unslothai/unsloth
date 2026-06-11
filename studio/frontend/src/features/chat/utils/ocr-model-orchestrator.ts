@@ -28,7 +28,6 @@ import {
 } from "./ocr-model-presets";
 import {
   acquireTemporaryOcrModelLease,
-  setTemporaryOcrModelBusy,
   type TemporaryOcrModelLease,
   waitForTemporaryOcrModelIdle,
 } from "./ocr-model-lock";
@@ -118,16 +117,6 @@ export async function runWithTemporaryOcrModel<T>(
   } finally {
     pendingSwapRuns -= 1;
   }
-}
-
-/** Test helper. Resets the module-level queue and loading gate. */
-export function resetOcrModelQueueForTests(): void {
-  queue = Promise.resolve();
-  pendingSwapRuns = 0;
-  activePassThroughRuns = 0;
-  passThroughIdleWaiters = [];
-  setModelLoading(false);
-  setTemporaryOcrModelBusy(false);
 }
 
 let queue: Promise<void> = Promise.resolve();
@@ -611,6 +600,38 @@ async function runUnlocked<T>({
   }
 }
 
+async function loadSnapshotModel(snapshot: ChatModelSnapshot): Promise<void> {
+  const restored = await loadModel(buildRestorePayload(snapshot));
+  applyLoadedModelToStore(
+    snapshot.checkpoint,
+    snapshot.ggufVariant,
+    restored,
+    snapshot,
+  );
+}
+
+/** Sticky failure toast with a Reload action; clears on dismiss, retry, or nav. */
+function showRestoreFailedToast(
+  snapshot: ChatModelSnapshot,
+  err: unknown,
+): void {
+  toast.warning(`Could not restore ${snapshot.checkpoint || "chat model"}.`, {
+    description: errorMessage(err),
+    duration: Number.POSITIVE_INFINITY,
+    action: snapshot.checkpoint
+      ? {
+          label:
+            snapshot.checkpoint.length > 28
+              ? `Reload ${snapshot.checkpoint.slice(0, 25)}…`
+              : `Reload ${snapshot.checkpoint}`,
+          onClick: () => {
+            void enqueueRestoreRetry(snapshot);
+          },
+        }
+      : undefined,
+  });
+}
+
 async function restoreUnloadedSnapshot(
   snapshot: ChatModelSnapshot,
   attemptedOcrIdentity?: OcrIdentity,
@@ -655,29 +676,9 @@ async function restoreUnloadedSnapshot(
   }
 
   try {
-    const restored = await loadModel(buildRestorePayload(snapshot));
-    applyLoadedModelToStore(
-      snapshot.checkpoint,
-      snapshot.ggufVariant,
-      restored,
-      snapshot,
-    );
+    await loadSnapshotModel(snapshot);
   } catch (err) {
-    toast.warning(`Could not restore ${snapshot.checkpoint || "chat model"}.`, {
-      description: errorMessage(err),
-      duration: Number.POSITIVE_INFINITY,
-      action: snapshot.checkpoint
-        ? {
-            label:
-              snapshot.checkpoint.length > 28
-                ? `Reload ${snapshot.checkpoint.slice(0, 25)}…`
-                : `Reload ${snapshot.checkpoint}`,
-            onClick: () => {
-              void enqueueRestoreRetry(snapshot);
-            },
-          }
-        : undefined,
-    });
+    showRestoreFailedToast(snapshot, err);
     await reconcileStoreFromStatus();
   } finally {
     invalidateDocumentSupportCache();
@@ -720,38 +721,14 @@ async function restoreSnapshotOrReconcile(
 
   try {
     if (snapshot.checkpoint) {
-      const restored = await loadModel(buildRestorePayload(snapshot));
-      applyLoadedModelToStore(
-        snapshot.checkpoint,
-        snapshot.ggufVariant,
-        restored,
-        snapshot,
-      );
+      await loadSnapshotModel(snapshot);
     } else {
       // No prior chat model — drop the OCR model so we end in a clean state.
       await unloadModel({ model_path: ocrIdentity.checkpoint });
       useChatRuntimeStore.getState().clearCheckpoint();
     }
   } catch (err) {
-    const labelText = snapshot.checkpoint
-      ? snapshot.checkpoint.length > 28
-        ? `Reload ${snapshot.checkpoint.slice(0, 25)}…`
-        : `Reload ${snapshot.checkpoint}`
-      : null;
-    toast.warning(`Could not restore ${snapshot.checkpoint || "chat model"}.`, {
-      description: errorMessage(err),
-      // Sticky toast — clears on user dismiss, retry, or route navigation.
-      duration: Number.POSITIVE_INFINITY,
-      action:
-        snapshot.checkpoint && labelText
-          ? {
-              label: labelText,
-              onClick: () => {
-                void enqueueRestoreRetry(snapshot);
-              },
-            }
-          : undefined,
-    });
+    showRestoreFailedToast(snapshot, err);
     await reconcileStoreFromStatus();
   }
 }
@@ -832,13 +809,7 @@ async function retryRestoreSnapshot(
   try {
     setOcrPhase("restoring");
     setModelLoading(true);
-    const restored = await loadModel(buildRestorePayload(snapshot));
-    applyLoadedModelToStore(
-      snapshot.checkpoint,
-      snapshot.ggufVariant,
-      restored,
-      snapshot,
-    );
+    await loadSnapshotModel(snapshot);
     toast.success(`Reloaded ${snapshot.checkpoint}.`);
   } catch (retryErr) {
     toast.error(`Could not reload ${snapshot.checkpoint}.`, {

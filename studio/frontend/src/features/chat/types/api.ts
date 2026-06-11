@@ -221,9 +221,6 @@ export type OpenAIMessageContentPart =
 
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
-// Retained alias for callers that import the previous PR symbol.
-export type OpenAIChatContentPart = OpenAIMessageContentPart;
-
 /**
  * OpenAI Chat Completions tool_call shape. Assistant turns echo function calls
  * as `tool_calls`; the matching result rides on a separate `role="tool"`

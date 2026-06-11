@@ -112,7 +112,3 @@ export function resolveOcrModelTarget(
     defaultMaxSeqLength: preset.defaultMaxSeqLength,
   };
 }
-
-export function hasSelectedOcrModel(settings: DocExtractSettings): boolean {
-  return resolveOcrModelTarget(settings) !== null;
-}

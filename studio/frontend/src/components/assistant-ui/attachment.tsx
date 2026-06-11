@@ -26,6 +26,7 @@ import {
   DocumentStack,
   attachmentChipTokens,
   documentFigureImageDataUrl,
+  formatDocumentTokens,
   isDocumentAttachment,
   type DocumentPendingAttachment,
   type ExtractedDocument,
@@ -208,11 +209,6 @@ function fileExtension(filename: string): string {
   return filename.slice(idx + 1).toUpperCase();
 }
 
-function formatTokens(tokens: number): string {
-  if (tokens < 1000) return `${tokens}`;
-  return `${(tokens / 1000).toFixed(1)}k`;
-}
-
 function buildDocSubtitle(
   doc: ExtractedDocument,
   visualPayloadCount: number,
@@ -220,7 +216,7 @@ function buildDocSubtitle(
   const imageCount = doc.figures.length;
   return [
     `${doc.page_count} page${doc.page_count === 1 ? "" : "s"}`,
-    `${formatTokens(doc.tokens_est)} tokens`,
+    `${formatDocumentTokens(doc.tokens_est)} tokens`,
     imageCount > 0 ? `${imageCount} ref${imageCount === 1 ? "" : "s"}` : null,
     visualPayloadCount > 0
       ? `${visualPayloadCount} image${visualPayloadCount === 1 ? "" : "s"}`

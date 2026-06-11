@@ -36,7 +36,7 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { getCachedDocumentSupport, getDocumentSupport } from "./api/chat-api";
+import { getCachedDocumentSupport } from "./api/chat-api";
 import { db } from "./db";
 import {
   loadConnectionsEnabled,
@@ -88,9 +88,8 @@ import {
   documentExtractionRetryCount,
   documentParserUnavailableReason,
   documentVisualPayloads,
-  documentVisualPolicyFromSupport,
   normalizeExtractedDocument,
-  type DocumentVisualPolicy,
+  resolveCurrentDocumentVisualPolicy,
 } from "./utils/document-extraction";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
@@ -126,14 +125,6 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "Draw an SVG of a cute sloth & show the code",
   },
 ];
-
-async function resolveCurrentDocumentVisualPolicy(): Promise<DocumentVisualPolicy> {
-  try {
-    return documentVisualPolicyFromSupport(await getDocumentSupport());
-  } catch {
-    return TEXT_ONLY_DOCUMENT_VISUAL_POLICY;
-  }
-}
 
 type TitleResponse = {
   choices?: Array<{

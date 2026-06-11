@@ -41,6 +41,7 @@ import type { ExtractedDocument, ExtractedFigure } from "../types";
 import {
   documentFigureImageDataUrl,
   documentImageReferenceLabel,
+  formatDocumentTokens,
 } from "../utils/document-extraction";
 
 const FIGURE_ROW_HEIGHT = 104;
@@ -74,12 +75,6 @@ export type DocumentSheetNavigation = {
   totalCount: number;
   onNavigate: (direction: -1 | 1) => void;
 };
-
-function formatTokens(tokens: number | undefined): string {
-  if (typeof tokens !== "number") return "";
-  if (tokens < 1000) return `${tokens}`;
-  return `${(tokens / 1000).toFixed(1)}k`;
-}
 
 function formatBytes(bytes: number | undefined): string {
   if (typeof bytes !== "number") return "";
@@ -455,7 +450,7 @@ export function DocumentPreviewPanel({
             />
             <ProvenanceField
               label="Tokens"
-              value={formatTokens(extractedDocument.tokens_est)}
+              value={formatDocumentTokens(extractedDocument.tokens_est)}
             />
             <ProvenanceField
               label="Figures"
@@ -712,7 +707,7 @@ export function DocumentPreviewSheet({
           <SheetDescription>
             {extractedDocument.page_count} page
             {extractedDocument.page_count === 1 ? "" : "s"} -{" "}
-            {formatTokens(extractedDocument.tokens_est)} tokens -{" "}
+            {formatDocumentTokens(extractedDocument.tokens_est)} tokens -{" "}
             {extractedDocument.figures.length} figure
             {extractedDocument.figures.length === 1 ? "" : "s"}
           </SheetDescription>
