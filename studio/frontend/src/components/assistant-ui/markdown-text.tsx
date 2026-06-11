@@ -284,9 +284,22 @@ function CodeBlockActions({
   );
 }
 
+// DiffusionGemma streams its denoising visualization as a self-contained html
+// canvas player; auto-render it as a sandboxed-iframe artifact (no manual toggle)
+// for the diffusion model only. Matches the native-served flag (loadedIsDiffusion)
+// and the external-connection model id (the "diffusiongemma" substring survives the
+// external:: id encoding). Other models are unaffected.
+function isDiffusionCheckpoint(checkpoint: string | null | undefined): boolean {
+  return !!checkpoint && checkpoint.toLowerCase().includes("diffusiongemma");
+}
+
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      state.artifactsEnabled ||
+      state.collapseHtmlArtifacts ||
+      state.loadedIsDiffusion ||
+      isDiffusionCheckpoint(state.params.checkpoint),
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),

@@ -4514,6 +4514,60 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         shutil.copy2(canonical, legacy)
 
 
+def ensure_diffusion_visual_server(install_dir: Path, host: HostInfo, release_tag: str | None) -> None:
+    """Best-effort placement of the DiffusionGemma visual-server binary next to
+    llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
+    without any DG_* env. This is an Unsloth artifact (not a ggml-org one), so it
+    is optional: if it is already present we just make it executable, otherwise we
+    try the published release and quietly skip on absence. A source build
+    (setup.sh / setup.ps1) copies it from build/bin directly. Users can always
+    build it from llama.cpp PR #24423 and point DG_VISUAL_BIN at it.
+    """
+    name = "llama-diffusion-gemma-visual-server" + (".exe" if host.is_windows else "")
+    bin_dir = install_dir / "build" / ("bin/Release" if host.is_windows else "bin")
+    target = bin_dir / name
+
+    if target.exists():
+        if not host.is_windows:
+            try:
+                target.chmod(0o755)
+            except OSError:
+                pass
+        return
+
+    if not release_tag:
+        log("diffusion visual server not bundled (no release tag); build it from llama.cpp "
+            "PR #24423 and set DG_VISUAL_BIN if you want native DiffusionGemma serving")
+        return
+
+    try:
+        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
+        match = None
+        for asset_name, url in assets.items():
+            low = asset_name.lower()
+            if "llama-diffusion-gemma-visual-server" not in low:
+                continue
+            if host.is_windows and not low.endswith(".exe"):
+                continue
+            if (not host.is_windows) and low.endswith(".exe"):
+                continue
+            match = (asset_name, url)
+            break
+        if match is None:
+            log("diffusion visual server not found in the published release; native "
+                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build")
+            return
+        bin_dir.mkdir(parents = True, exist_ok = True)
+        download_file(match[1], target)
+        if not host.is_windows:
+            target.chmod(0o755)
+        log(f"installed diffusion visual server: {match[0]}")
+    except Exception as exc:
+        log("diffusion visual server fetch skipped "
+            f"({textwrap.shorten(str(exc), width = 160, placeholder = '...')}); "
+            "set DG_VISUAL_BIN or build from llama.cpp PR #24423 for native serving")
+
+
 def extracted_archive_root(extract_dir: Path) -> Path:
     children = [path for path in extract_dir.iterdir()]
     if len(children) == 1 and children[0].is_dir():
@@ -6719,6 +6773,13 @@ def install_prebuilt(
                     except Exception as exc:
                         log(
                             "converter script fetch failed after activation; install remains valid "
+                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                        )
+                    try:
+                        ensure_diffusion_visual_server(install_dir, host, plan.release_tag)
+                    except Exception as exc:
+                        log(
+                            "diffusion visual server step skipped; install remains valid "
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     return

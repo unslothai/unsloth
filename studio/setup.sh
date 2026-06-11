@@ -1603,6 +1603,9 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Best-effort: the DiffusionGemma visual server (an example target, present
+            # on llama.cpp PR #24423). No-op when the diffusion example is not configured.
+            run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
         # Swap only after build succeeds -- preserves existing install on failure
@@ -1615,6 +1618,11 @@ else
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+            # DiffusionGemma visual server, if it was built (PR #24423): link next to
+            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
+                ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
         else
             rm -rf "$_BUILD_TMP"

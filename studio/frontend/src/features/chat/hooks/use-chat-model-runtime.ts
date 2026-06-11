@@ -413,6 +413,7 @@ export function useChatModelRuntime() {
           defaultChatTemplate: nextDefaultChatTemplate,
           loadedIsMultimodal: isMultimodalResponse(statusRes),
           specFallbackReason: statusRes.spec_fallback_reason ?? null,
+          loadedIsDiffusion: statusRes.is_diffusion ?? false,
           ...(prevState.loadedSpeculativeType === null && {
             speculativeType: currentSpecType,
             loadedSpeculativeType: currentSpecType,
@@ -459,6 +460,7 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
+          loadedIsDiffusion: false,
         });
       }
     } catch (error) {
@@ -782,6 +784,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeNativePathToken: nativePathToken ?? null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.

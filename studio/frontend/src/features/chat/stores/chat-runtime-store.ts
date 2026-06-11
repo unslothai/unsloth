@@ -425,6 +425,9 @@ type ChatRuntimeStore = {
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
   loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -774,6 +777,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -987,6 +991,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
