@@ -597,6 +597,11 @@ def studio_default(
             f"defaults to {_PARALLEL_DEFAULT_RUN}."
         ),
     ),
+    cloudflare: bool = typer.Option(
+        True,
+        "--cloudflare/--no-cloudflare",
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Runs before every subcommand (run/setup/update/...).
@@ -611,6 +616,16 @@ def studio_default(
                 f"{ctx.invoked_subcommand}`, put the flag after the "
                 f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
                 f"--parallel {parallel} ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --no-cloudflare: it would not reach the subcommand.
+        if not cloudflare:
+            typer.echo(
+                f"Error: --no-cloudflare on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --no-cloudflare ...`",
                 err = True,
             )
             raise typer.Exit(2)
@@ -648,6 +663,8 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
+            # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
+            args.append("--cloudflare" if cloudflare else "--no-cloudflare")
             # On Windows os.execvp keeps the parent alive, so Ctrl+C
             # would orphan the child; use Popen+wait instead.
             if sys.platform == "win32":
@@ -689,6 +706,7 @@ def studio_default(
         silent = silent,
         api_only = api_only,
         llama_parallel_slots = parallel,
+        cloudflare = cloudflare,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
@@ -861,6 +879,11 @@ def run(
             f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
         ),
     ),
+    cloudflare: bool = typer.Option(
+        True,
+        "--cloudflare/--no-cloudflare",
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
+    ),
 ):
     """Start Studio, load a model, print an API key -- one-liner server.
 
@@ -980,6 +1003,8 @@ def run(
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
         args.extend(["--parallel", str(parallel)])
+        # Forward the explicit polarity (same rationale as --load-in-4bit above).
+        args.append("--cloudflare" if cloudflare else "--no-cloudflare")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
@@ -997,7 +1022,13 @@ def run(
     # ── 2. Start server (always suppress built-in banner) ─────────────
     from studio.backend.run import run_server, _resolve_external_ip
 
-    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = parallel)
+    run_kwargs = dict(
+        host = host,
+        port = port,
+        silent = True,
+        llama_parallel_slots = parallel,
+        cloudflare = cloudflare,
+    )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
@@ -1011,32 +1042,41 @@ def run(
 
     set_tool_policy(enable_tools)
 
-    # 3. Wait for server health.
-    if not silent:
-        typer.echo("Starting Unsloth Studio...")
-    if not _wait_for_server(actual_port):
-        typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
-        raise typer.Exit(1)
+    # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
+    # slow load); tear the server and its children (llama-server, cloudflared) down
+    # on any abort so they never orphan.
+    from studio.backend.run import _graceful_shutdown, _server
 
-    # 4. Create API key in-process.
-    api_key = _create_api_key_inprocess(api_key_name)
-
-    # 5. Load model via HTTP.
-    if not silent:
-        typer.echo(f"Loading model: {model}...")
     try:
-        result = _load_model_via_http(
-            port = actual_port,
-            api_key = api_key,
-            model = model,
-            gguf_variant = gguf_variant,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            llama_extra_args = extra_llama_args,
-        )
-    except RuntimeError as exc:
-        typer.echo(f"Error: {exc}", err = True)
-        raise typer.Exit(1)
+        # 3. Wait for server health.
+        if not silent:
+            typer.echo("Starting Unsloth Studio...")
+        if not _wait_for_server(actual_port):
+            typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
+            raise typer.Exit(1)
+
+        # 4. Create API key in-process.
+        api_key = _create_api_key_inprocess(api_key_name)
+
+        # 5. Load model via HTTP.
+        if not silent:
+            typer.echo(f"Loading model: {model}...")
+        try:
+            result = _load_model_via_http(
+                port = actual_port,
+                api_key = api_key,
+                model = model,
+                gguf_variant = gguf_variant,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                llama_extra_args = extra_llama_args,
+            )
+        except RuntimeError as exc:
+            typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(1)
+    except BaseException:
+        _graceful_shutdown(_server)
+        raise
 
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
@@ -1045,6 +1085,8 @@ def run(
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
+    # run_server started the tunnel during the silent run above (0.0.0.0 only).
+    _cf_url = getattr(app.state, "cloudflare_url", None)
 
     # Orange so the tool-policy notice stands out; printed under
     # --silent / --yes too so the policy is never invisible.
@@ -1074,6 +1116,8 @@ def run(
         typer.echo("")
         typer.echo("=" * 56)
         typer.echo(f"  Unsloth Studio running at {base_url}")
+        if _cf_url:
+            typer.echo(f"  Secure link access via Cloudflare: {_cf_url}")
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         typer.echo(f"  API Key:      {api_key}")
         typer.echo("")
@@ -1107,6 +1151,8 @@ def run(
     else:
         # Silent still prints URL + API key + tool-status policy.
         typer.echo(f"URL:     {base_url}")
+        if _cf_url:
+            typer.echo(f"Secure link access via Cloudflare: {_cf_url}")
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
