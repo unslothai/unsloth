@@ -979,7 +979,8 @@ shell.Run cmd, 0, False
 
     # ── Check for Windows App Execution Aliases that may block Python ──
     # WindowsApps python.exe/python3.exe stubs redirect to the Microsoft Store
-    # and can shadow a real Python on PATH.
+    # and can shadow a real Python on PATH. Each command is checked separately:
+    # a healthy python3 must not hide a stub-blocked python, or vice versa.
     # Returns @{ Blocking = $true/$false; Aliases = @("python.exe", ...) }
     function Test-AppExecutionAliasesBlocking {
         # LOCALAPPDATA may be unset in service/CI environments
@@ -988,23 +989,19 @@ shell.Run cmd, 0, False
         $windowsAppsPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
         $blockingAliases = @()
 
-        foreach ($exe in @("python.exe", "python3.exe")) {
-            $fileInfo = Get-Item (Join-Path $windowsAppsPath $exe) -ErrorAction SilentlyContinue
-            # Alias stubs are tiny reparse points; a real python.exe is far larger
-            if ($fileInfo -and ($fileInfo.Length -lt 10240 -or ($fileInfo.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
-                $blockingAliases += $exe
-            }
-        }
-        if ($blockingAliases.Count -eq 0) { return @{ Blocking = $false; Aliases = @() } }
-
-        # If python/python3 resolves outside WindowsApps, the stubs are not in the way
         foreach ($name in @("python", "python3")) {
+            $fileInfo = Get-Item (Join-Path $windowsAppsPath "$name.exe") -ErrorAction SilentlyContinue
+            if (-not $fileInfo) { continue }
+            # Alias stubs are tiny reparse points; a real python.exe is far larger
+            if (-not ($fileInfo.Length -lt 10240 -or ($fileInfo.Attributes -band [IO.FileAttributes]::ReparsePoint))) { continue }
+            # The stub only matters if it wins resolution for this command
+            # (or the command resolves nowhere at all)
             $cmd = Get-Command $name -ErrorAction SilentlyContinue
-            if ($cmd -and $cmd.Source -and $cmd.Source -notlike "*\WindowsApps\*") {
-                return @{ Blocking = $false; Aliases = $blockingAliases }
+            if (-not $cmd -or -not $cmd.Source -or $cmd.Source -like "*\WindowsApps\*") {
+                $blockingAliases += "$name.exe"
             }
         }
-        return @{ Blocking = $true; Aliases = $blockingAliases }
+        return @{ Blocking = ($blockingAliases.Count -gt 0); Aliases = $blockingAliases }
     }
 
     function Show-AppAliasWarning {
