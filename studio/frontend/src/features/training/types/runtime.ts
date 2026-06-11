@@ -90,7 +90,8 @@ export interface TrainingRuntimeState {
   currentStep: number;
   totalSteps: number;
   currentEpoch: number;
-  currentLoss: number;
+  // null while the latest reported loss is non-finite
+  currentLoss: number | null;
   currentLearningRate: number;
   progressPercent: number;
   elapsedSeconds: number | null;
