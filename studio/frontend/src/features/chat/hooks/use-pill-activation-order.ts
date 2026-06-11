@@ -3,9 +3,8 @@
 
 import { useEffect, useState } from "react";
 
-// Tracks which of the given keys are active and the order in which each became
-// active, so opt-in composer pills (Canvas, MCP) render in the order they were
-// toggled on rather than a fixed order.
+// Tracks which keys are active and their activation order, so opt-in
+// composer pills (Canvas, MCP) render in toggle-on order, not a fixed one.
 export function usePillActivationOrder(states: Record<string, boolean>): string[] {
   const [order, setOrder] = useState<string[]>(() =>
     Object.keys(states).filter((key) => states[key]),

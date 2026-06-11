@@ -56,7 +56,7 @@ export function NewProjectDialog({
         onOpenChange(next);
       }}
     >
-      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
         </DialogHeader>
