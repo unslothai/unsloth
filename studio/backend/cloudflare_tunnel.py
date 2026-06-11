@@ -99,7 +99,9 @@ def _download(url: str, dest: Path) -> bool:
             prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
         ) as handle:
             tmp_path = Path(handle.name)
-            with urllib.request.urlopen(url, timeout = _DOWNLOAD_TIMEOUT) as response:
+            # GitHub's CDN 403s the default Python-urllib User-Agent.
+            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
                 shutil.copyfileobj(response, handle)
         if tmp_path.stat().st_size == 0:
             raise RuntimeError("empty download")

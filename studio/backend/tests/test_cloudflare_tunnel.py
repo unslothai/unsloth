@@ -133,6 +133,37 @@ def test_ensure_returns_none_for_unsupported_arch(monkeypatch, tmp_path):
     assert ct.ensure_cloudflared() is None
 
 
+def test_download_sets_user_agent(monkeypatch, tmp_path):
+    import urllib.request
+
+    captured = {}
+
+    class _Resp:
+        _sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            if self._sent:
+                return b""
+            self._sent = True
+            return b"payload"
+
+    def fake_urlopen(req, timeout=None):
+        captured["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "cloudflared"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert captured["ua"] == "unsloth-studio"  # GitHub CDN 403s the default UA
+    assert dest.read_bytes() == b"payload"
+
+
 # ── cross-platform: Windows (.exe), macOS (.tgz) ─────────────────────
 
 
