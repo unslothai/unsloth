@@ -1,11 +1,7 @@
-"""
+"""Test model registration methods.
 
-Test model registration methods
-Checks that model registration methods work for respective models as well as all models
-The check is performed
-- by registering the models
-- checking that the instantiated models can be found on huggingface hub by querying for the model id
-
+Registers each model set and checks the registered model ids exist on the
+Hugging Face Hub.
 """
 
 from dataclasses import dataclass
@@ -58,8 +54,7 @@ def _test_model_uploaded(model_ids: list[str]):
 
 
 TestParams = [
-    ModelTestParam(name, models)
-    for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
+    ModelTestParam(name, models) for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
 ]
 
 
@@ -71,9 +66,7 @@ def test_model_registration(model_test_param: ModelTestParam):
     registration_method()
     registered_models = MODEL_REGISTRY.keys()
     missing_models = _test_model_uploaded(registered_models)
-    assert (
-        not missing_models
-    ), f"{model_test_param.name} missing following models: {missing_models}"
+    assert not missing_models, f"{model_test_param.name} missing following models: {missing_models}"
 
 
 def test_all_model_registration():

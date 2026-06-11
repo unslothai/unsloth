@@ -32,9 +32,8 @@ export function ApiKeysTab() {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // API helpers in ../api/api-keys.ts throw generic English Error messages
-  // ("Failed to load API access", etc.). Always use the translated message
-  // so zh-CN users do not see those English strings bleed through.
+  // ../api/api-keys.ts throws generic English errors; use the translated
+  // message so zh-CN users don't see English strings bleed through.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);

@@ -9,17 +9,19 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   CheckIcon,
   CopyIcon,
-  DownloadIcon,
   EyeIcon,
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
   useEffect,
@@ -45,10 +47,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed artifact iframes are intentionally excluded from the overlay focus
-// trap. Granting same-origin sandbox privileges would weaken isolation, so
-// keyboard users can reach Studio controls here while fully interactive artifact
-// content remains a known sandbox limitation.
+// Sandboxed artifact iframes are deliberately outside the overlay focus trap:
+// granting same-origin sandbox privileges would weaken isolation, so reaching
+// interactive artifact content via keyboard is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -78,9 +79,8 @@ function ArtifactGeneratingPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center bg-muted/10 px-6 text-center">
       <div className="max-w-[30ch] space-y-1.5">
-        <img
-          src="/Sloth%20emojis/sloth%20w%20pc%20transparent.png"
-          alt=""
+        <MascotImg
+          src="Sloth emojis/sloth w pc transparent.png"
           aria-hidden={true}
           className="mx-auto mb-3 size-20 object-contain"
         />
@@ -266,7 +266,7 @@ export function ArtifactSurface({
             onClick={() => downloadTextFile(filename, artifact.code)}
             aria-label="Download artifact HTML"
           >
-            <DownloadIcon className="size-4" />
+            <HugeiconsIcon icon={Download01Icon} className="size-4" />
           </Button>
           <Button
             type="button"

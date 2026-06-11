@@ -52,13 +52,9 @@ def calculate_topk(
 
     def _activation(gating_output: torch.Tensor):
         if use_sigmoid:
-            scores = torch.sigmoid(gating_output.to(torch.float32)).to(
-                gating_output.dtype
-            )
+            scores = torch.sigmoid(gating_output.to(torch.float32)).to(gating_output.dtype)
         else:
-            scores = F.softmax(gating_output.to(torch.float32), dim = 1).to(
-                gating_output.dtype
-            )
+            scores = F.softmax(gating_output.to(torch.float32), dim = 1).to(gating_output.dtype)
 
         return scores
 
@@ -73,16 +69,16 @@ def calculate_topk(
         topk_weights = _activation(topk_weights)
 
     if renormalize:
-        topk_weights /= torch.sum(topk_weights, dim = -1, keepdim = True).to(
-            gating_output.dtype
-        )
+        topk_weights /= torch.sum(topk_weights, dim = -1, keepdim = True).to(gating_output.dtype)
 
     return topk_weights, topk_ids
 
 
 @torch.no_grad()
 def get_routing_indices(
-    selected_experts, num_experts, return_scatter_indices: bool = False
+    selected_experts,
+    num_experts,
+    return_scatter_indices: bool = False,
 ):
     """
     Returns:
@@ -107,7 +103,12 @@ def get_routing_indices(
         return token_counts_by_expert, gather_indices
 
 
-def torch_grouped_gemm(X, W, m_sizes, transpose = True):
+def torch_grouped_gemm(
+    X,
+    W,
+    m_sizes,
+    transpose = True,
+):
     """
     X: [M, K] if forward, else [M, N]
     W: [E, N, K]

@@ -77,9 +77,7 @@ def _enc_kv_string(key: str, value: str) -> bytes:
 
 
 def _enc_kv_uint32(key: str, value: int) -> bytes:
-    return (
-        _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
-    )
+    return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
 
 
 def _write_minimal_gguf(
@@ -189,9 +187,9 @@ def _mtp_backend(**overrides):
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
     backend._speculative_type = "draft-mtp"
-    # Default fixture simulates Auto having auto-promoted to draft-mtp.
-    # Individual tests override _requested_spec_mode when they want a
-    # forced mode or the user---spec-type-extra-args path.
+    # Fixture simulates Auto having auto-promoted to draft-mtp. Tests
+    # override _requested_spec_mode for a forced mode or the
+    # user---spec-type-extra-args path.
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
@@ -241,11 +239,10 @@ def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model
 
 
 def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_model():
-    # Under the requested-mode round-trip model, Auto requested against an
-    # Auto-recorded backend matches regardless of model name. The underlying
-    # resolved emission (--spec-default vs draft-mtp) is handled by the
-    # backend's own load path and reflected in _speculative_type; the
-    # short-circuit comparison only cares whether the *intent* changed.
+    # In the requested-mode round-trip model, Auto-vs-Auto matches regardless
+    # of model name. The resolved emission (--spec-default vs draft-mtp) is
+    # handled by the load path and reflected in _speculative_type; the
+    # short-circuit only cares whether the *intent* changed.
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.6-27B-GGUF",
         _speculative_type = "default",
@@ -405,11 +402,9 @@ def test_already_in_target_state_vision_mtp_default_matches():
 
 
 def test_already_in_target_state_vision_off_matches_vision_backend():
-    # Vision loads silently drop speculative decoding at the route level
-    # (_request_matches_loaded_settings overrides req to "off"). At the
-    # llama_cpp.py level, _already_in_target_state compares canonical
-    # requested modes; a vision backend recorded with _requested_spec_mode
-    # = "off" matches a req of "off" or None+vision.
+    # Vision loads drop speculative decoding at the route level (req -> "off").
+    # _already_in_target_state compares canonical requested modes; a vision
+    # backend with _requested_spec_mode="off" matches req "off" or None+vision.
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
         _is_vision = True,
@@ -497,7 +492,7 @@ def test_unload_resets_nextn_predict_layers():
 
 def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     """Bash stub that prints `help_text` on --help."""
-    path.write_text("#!/usr/bin/env bash\n" f"cat <<'EOF'\n{help_text}\nEOF\n")
+    path.write_text(f"#!/usr/bin/env bash\ncat <<'EOF'\n{help_text}\nEOF\n")
     path.chmod(0o755)
     return path
 
@@ -532,8 +527,7 @@ def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
     # Renamed upstream: draft-mtp -> mtp.
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
-        "--spec-type [none|mtp|ngram-cache|ngram-simple|ngram-map-k|"
-        "ngram-map-k4v|ngram-mod]",
+        "--spec-type [none|mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
     )
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
@@ -619,9 +613,8 @@ def test_probe_detects_legacy_ngram_mod_flavor(tmp_path):
 
 @_NEEDS_BASH
 def test_probe_ignores_removal_stub_descriptions(tmp_path):
-    # Post-rename binary: legacy flags are present but with
-    # "argument has been removed" descriptions; must not be detected
-    # as legacy.
+    # Post-rename binary: legacy flags present but with "argument has been
+    # removed" descriptions; must not be detected as legacy.
     fake = _make_fake_llama_server(tmp_path / "llama-server", _POST_RENAME_HELP)
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
@@ -655,14 +648,7 @@ def test_build_ngram_mod_flags_new():
 
 def test_build_ngram_mod_flags_legacy():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"})
-    assert flags == [
-        "--spec-ngram-size-n",
-        "24",
-        "--draft-min",
-        "48",
-        "--draft-max",
-        "64",
-    ]
+    assert flags == ["--spec-ngram-size-n", "24", "--draft-min", "48", "--draft-max", "64"]
 
 
 def test_build_ngram_mod_flags_empty_when_unsupported():
@@ -672,9 +658,7 @@ def test_build_ngram_mod_flags_empty_when_unsupported():
 
 
 def test_build_ngram_mod_flags_respects_custom_values():
-    flags = _build_ngram_mod_flags(
-        {"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32
-    )
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32)
     assert flags == [
         "--spec-ngram-mod-n-match",
         "16",
@@ -796,16 +780,15 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     )
 
 
-# Sub-3B MTP gate -- tiny dense models regress with the MTP draft
-# head, so load_model falls back to ngram-mod (when the binary supports
-# it) instead of draft-mtp. The reload-skip mirror must follow the
-# same fallback so a sub-3B reload-with-default does not bounce a
-# correctly-configured ngram-mod / off backend.
+# Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
+# load_model falls back to ngram-mod (when the binary supports it) instead of
+# draft-mtp. The reload-skip mirror must follow the same fallback so a sub-3B
+# reload-with-default doesn't bounce a correctly-configured ngram-mod/off backend.
 
 
 def _patch_probe(monkeypatch, ngram_supported):
-    """Force probe_server_capabilities to a deterministic result so
-    tests don't depend on whatever llama-server happens to be on PATH."""
+    """Force probe_server_capabilities to a deterministic result so tests
+    don't depend on whatever llama-server is on PATH."""
     fake = {
         "found": True,
         "mtp_token": "draft-mtp",
@@ -826,11 +809,9 @@ def _patch_probe(monkeypatch, ngram_supported):
     )
 
 
-def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
-    monkeypatch,
-):
-    # 0.8B MTP request -- load_model would have promoted to ngram-mod
-    # (no MTP head); reload check must match a ngram-mod backend.
+def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(monkeypatch):
+    # 0.8B MTP request -- load_model would have promoted to ngram-mod (no MTP
+    # head); reload check must match a ngram-mod backend.
     _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
@@ -902,8 +883,8 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
 
 
 def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
-    # 2.0B is below the 3B threshold -> ngram-mod fallback, not
-    # draft-mtp. Clean-bench shows 2B regresses with draft-mtp.
+    # 2.0B is below the 3B threshold -> ngram-mod fallback, not draft-mtp.
+    # Clean-bench shows 2B regresses with draft-mtp.
     _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
@@ -1011,7 +992,12 @@ def test_canonicalize_spec_mode(value, expected):
 # ── _build_speculative_flags resolver matrix ──────────────────────
 
 
-def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft-mtp"):
+def _resolver_backend(
+    monkeypatch,
+    *,
+    ngram_supported = True,
+    mtp_token = "draft-mtp",
+):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
@@ -1032,9 +1018,9 @@ def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft
 
 
 def _flags_dict(flags):
-    """Parse the spec-flag list into a small {flag: value} dict; collapses
-    repeated flags by keeping the last (only --spec-type can repeat and
-    never does in our resolver)."""
+    """Parse the spec-flag list into a {flag: value} dict; collapses repeated
+    flags by keeping the last (only --spec-type can repeat, and never does
+    in our resolver)."""
     out = {}
     i = 0
     while i < len(flags):
@@ -1070,8 +1056,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp", False, _MTP_MODEL, "draft-mtp", "3", False),
         # ── mtp forced on sub-3B: engage anyway ──
         ("mtp", True, _SUB_3B_MTP_MODEL, "draft-mtp", "2", False),
-        # ── mtp forced on non-MTP: engage anyway ──
-        ("mtp", True, _NON_MTP_MODEL, "draft-mtp", "2", False),
+        # ── mtp forced on non-MTP: default back (no head/drafter) ──
+        ("mtp", True, _NON_MTP_MODEL, None, None, False),
         # ── ngram forced: ngram-mod alone on BOTH platforms ──
         ("ngram", True, _MTP_MODEL, "ngram-mod", None, True),
         ("ngram", False, _MTP_MODEL, "ngram-mod", None, True),
@@ -1080,6 +1066,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp+ngram", True, _MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
         ("mtp+ngram", False, _MTP_MODEL, "ngram-mod,draft-mtp", "3", True),
         ("mtp+ngram", True, _SUB_3B_MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
+        # ── mtp+ngram forced on non-MTP: keep ngram, drop draft-mtp ──
+        ("mtp+ngram", True, _NON_MTP_MODEL, "ngram-mod", None, True),
         # ── off: nothing emitted ──
         ("off", True, _MTP_MODEL, None, None, False),
         ("off", False, _MTP_MODEL, None, None, False),
@@ -1093,13 +1081,7 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
     ],
 )
 def test_build_speculative_flags_matrix(
-    monkeypatch,
-    requested,
-    gpus,
-    model,
-    expect_spec_type,
-    expect_n_max,
-    expect_ngram_knobs,
+    monkeypatch, requested, gpus, model, expect_spec_type, expect_n_max, expect_ngram_knobs
 ):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
@@ -1140,8 +1122,8 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
         gpus = True,
         binary = "/fake/llama-server",
     )
-    # No flags emitted by the resolver -- the user's extra_args carries
-    # the --spec-type, and the resolver records requested_spec_mode = None.
+    # Resolver emits nothing -- the user's extra_args carries the --spec-type,
+    # and the resolver records requested_spec_mode = None.
     assert flags == []
     assert backend.requested_spec_mode is None
     assert backend.speculative_type is None
@@ -1194,7 +1176,46 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert "--spec-type" not in flags
-    # _speculative_type stays None (resolved emission was none), but
-    # _requested_spec_mode still reflects the user's choice.
+    # _speculative_type stays None (resolved emission was none); the user's
+    # choice is still reflected in _requested_spec_mode.
     assert backend.requested_spec_mode == "mtp"
     assert backend.speculative_type is None
+
+
+def test_forced_mtp_on_non_mtp_model_defaults_back(monkeypatch):
+    # Forcing MTP on a model with no head/drafter must NOT emit draft-mtp:
+    # llama-server aborts on it ("failed to measure MTP context memory")
+    # rather than no-op'ing. Default back to --spec-default instead.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert "--spec-default" in flags
+    assert backend.speculative_type == "default"
+    assert backend.requested_spec_mode == "mtp"
+
+
+def test_forced_mtp_ngram_on_non_mtp_model_keeps_ngram(monkeypatch):
+    # mtp+ngram on a non-MTP model drops the doomed draft-mtp chain but keeps
+    # the ngram half, which needs no head.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.requested_spec_mode == "mtp+ngram"
