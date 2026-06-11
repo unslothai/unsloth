@@ -697,11 +697,18 @@ async def stream_training_progress(
 
         while backend.is_training_active():
             try:
-                if backend.step_history:
-                    current_step = backend.step_history[-1]
+                tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
+                if backend.step_history or live_step > 0:
+                    current_step = backend.step_history[-1] if backend.step_history else 0
                     current_loss = backend.loss_history[-1] if backend.loss_history else None
                     current_lr = backend.lr_history[-1] if backend.lr_history else None
-                    tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                    # Histories skip non-finite steps; follow the live progress
+                    # step and report its loss (None until it recovers).
+                    if live_step > current_step:
+                        current_step = live_step
+                        current_loss = getattr(tp_inner, "loss", None)
+                        current_lr = getattr(tp_inner, "learning_rate", current_lr)
                     current_total_steps = (
                         getattr(tp_inner, "total_steps", current_step) if tp_inner else current_step
                     )
@@ -798,6 +805,13 @@ async def stream_training_progress(
         final_loss = backend.loss_history[-1] if backend.loss_history else None
         final_lr = backend.lr_history[-1] if backend.lr_history else None
         final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
+        # If the run ended on a non-finite stretch, report the live step with
+        # loss=None instead of rolling back to the last finite pair.
+        _final_live_step = (getattr(final_tp, "step", 0) or 0) if final_tp else 0
+        if _final_live_step > (final_step if final_step is not None else -1):
+            final_step = _final_live_step
+            final_loss = getattr(final_tp, "loss", None)
+            final_lr = getattr(final_tp, "learning_rate", final_lr)
         final_total_steps = getattr(final_tp, "total_steps", final_step) if final_tp else final_step
         final_epoch = getattr(final_tp, "epoch", None) if final_tp else None
         final_payload = build_progress(
