@@ -2672,6 +2672,12 @@ class EmptyLogits:
         # Stateless pickling so gather_object works on the sentinel
         return (type(self), ())
 
+    def __eq__(self, other):
+        # Gathered copies must compare equal in accelerate debug mode
+        return type(other).__name__ == "EmptyLogits"
+
+    __hash__ = object.__hash__
+
 
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
