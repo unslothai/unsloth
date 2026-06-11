@@ -133,6 +133,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -179,6 +180,7 @@ jobs:
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update.log
@@ -197,6 +199,7 @@ jobs:
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update2.log
