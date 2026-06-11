@@ -714,17 +714,19 @@ def get_gpu_utilization() -> Dict[str, Any]:
         except Exception:
             pass
 
+        from . import apple
+
         return {
             "available": True,
             "backend": device.value,
             "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
-            "temperature_c": None,
+            "temperature_c": apple.read_gpu_temperature_c(),
             "vram_used_gb": round(vram_used_gb, 2),
             "vram_total_gb": round(total_gb, 2),
             "vram_utilization_pct": (
                 round((vram_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
             ),
-            "power_draw_w": None,
+            "power_draw_w": apple.read_gpu_power_w(),
             "power_limit_w": None,
             "power_utilization_pct": None,
         }
