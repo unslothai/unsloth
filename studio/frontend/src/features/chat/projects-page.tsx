@@ -249,7 +249,7 @@ export function ProjectsPage() {
         }}
       />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+        <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
           Projects
         </h1>
         <div className="flex items-center gap-3">
@@ -261,7 +261,7 @@ export function ProjectsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search projects"
-              className="h-9 w-44 rounded-full border-none bg-muted pl-10 pr-4 shadow-none transition-[width] focus-visible:w-60 dark:bg-card sm:w-56"
+              className="h-9 w-52 rounded-full border-none bg-background pl-10 pr-4 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none sm:w-64"
               aria-label="Search projects"
             />
           </div>
@@ -271,7 +271,7 @@ export function ProjectsPage() {
               value={sortMode}
               onValueChange={(v) => setSortMode(v as SortMode)}
             >
-              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
+              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -286,7 +286,7 @@ export function ProjectsPage() {
                 variant="outline"
                 size="icon"
                 title="Import / Export projects"
-                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+                className="rounded-full border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>

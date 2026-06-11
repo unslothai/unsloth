@@ -77,8 +77,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Upload PDFs, documents, or other text. The model can reference
-              them in every chat in this project.
+              Upload PDFs, docs, or text. Every chat in this project can use
+              them.
             </p>
           </div>
           <Button
@@ -90,9 +90,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           >
             Add sources
           </Button>
-          <p className="text-[11px] text-muted-foreground">
-            Or drop files here ({RAG_UPLOAD_ACCEPT.replaceAll(",", ", ")})
-          </p>
+          <p className="text-[11px] text-muted-foreground">Or drop files here</p>
         </div>
       ) : (
         <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
@@ -100,8 +98,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
             <p className="text-sm text-muted-foreground">
               {documents.length === 1
                 ? "1 source"
-                : `${documents.length} sources`}{" "}
-              · referenced in every chat in this project
+                : `${documents.length} sources`}
             </p>
             <Button
               type="button"
