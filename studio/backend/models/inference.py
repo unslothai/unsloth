@@ -346,6 +346,17 @@ class InferenceStatusResponse(BaseModel):
             "False -> recommend `unsloth studio update`."
         ),
     )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it. None when MTP engaged or was not "
+            "requested."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (
