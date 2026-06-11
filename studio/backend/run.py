@@ -582,7 +582,6 @@ def _graceful_shutdown(server = None):
     # fresh backend during shutdown when none was ever loaded.
     try:
         from core.inference import llama_cpp as _llama_cpp_mod
-
         backend = getattr(_llama_cpp_mod, "_llama_cpp_backend", None)
         if backend is not None:
             backend._kill_process()

@@ -55,9 +55,7 @@ def test_reject_oversized_content_length_allows_missing_header() -> None:
 
 
 def test_reject_oversized_content_length_rejects_large_request() -> None:
-    max_request_bytes = (
-        route._EXTRACT_MAX_BYTES + route._EXTRACT_MULTIPART_OVERHEAD_BYTES + 1
-    )
+    max_request_bytes = route._EXTRACT_MAX_BYTES + route._EXTRACT_MULTIPART_OVERHEAD_BYTES + 1
     with pytest.raises(HTTPException) as exc_info:
         route._reject_oversized_content_length(
             _FakeRequest({"content-length": str(max_request_bytes)})
@@ -134,9 +132,7 @@ def test_chat_body_limit_covers_document_visual_payload_budget() -> None:
         1,
         min(
             route._OPENAI_CHAT_MAX_IMAGES,
-            route._MAX_DOCUMENT_VISUAL_PAYLOADS
-            or route._DEFAULT_DOCUMENT_VISUAL_PAYLOADS
-            or 1,
+            route._MAX_DOCUMENT_VISUAL_PAYLOADS or route._DEFAULT_DOCUMENT_VISUAL_PAYLOADS or 1,
         ),
     )
     assert route._OPENAI_CHAT_BODY_IMAGE_SLOTS == expected_image_slots
@@ -295,9 +291,7 @@ def test_extract_content_parts_preserves_multiple_image_parts() -> None:
     system_prompt, chat_messages, image_b64s = route._extract_content_parts([message])
 
     assert system_prompt == ""
-    assert chat_messages == [
-        {"role": "user", "content": "Explain these.\nSecond:"},
-    ]
+    assert chat_messages == [{"role": "user", "content": "Explain these.\nSecond:"}]
     assert image_b64s == ["one", "two"]
 
 
@@ -312,19 +306,10 @@ def test_preflight_pdf_page_count_uses_pypdf(monkeypatch: pytest.MonkeyPatch) ->
     fake_pypdf.PdfReader = FakePdfReader
     monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
 
-    assert (
-        route._preflight_pdf_page_count(
-            b"%PDF",
-            "paper.pdf",
-            "application/pdf",
-        )
-        == 3
-    )
+    assert route._preflight_pdf_page_count(b"%PDF", "paper.pdf", "application/pdf") == 3
 
 
-def test_preflight_pdf_page_count_falls_back_to_pymupdf(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_preflight_pdf_page_count_falls_back_to_pymupdf(monkeypatch: pytest.MonkeyPatch) -> None:
     class BrokenPdfReader:
         def __init__(self, _stream, *, strict: bool) -> None:
             raise ValueError("xref is odd")
@@ -346,14 +331,7 @@ def test_preflight_pdf_page_count_falls_back_to_pymupdf(
     fake_pymupdf.open = lambda *, stream, filetype: FakeDocument()
     monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
 
-    assert (
-        route._preflight_pdf_page_count(
-            b"%PDF",
-            "paper.pdf",
-            "application/pdf",
-        )
-        == 4
-    )
+    assert route._preflight_pdf_page_count(b"%PDF", "paper.pdf", "application/pdf") == 4
 
 
 def test_preflight_pdf_page_count_skips_non_pdf() -> None:
@@ -408,9 +386,7 @@ def test_legacy_generate_stream_registers_client_cancel_keys(
             cancel_event = kwargs["cancel_event"]
             with route._CANCEL_LOCK:
                 seen["keys"] = {
-                    key
-                    for key, bucket in route._CANCEL_REGISTRY.items()
-                    if cancel_event in bucket
+                    key for key, bucket in route._CANCEL_REGISTRY.items() if cancel_event in bucket
                 }
             yield "hello"
 
@@ -526,9 +502,7 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
     assert events[-1]["data"]["page_count"] == 3
 
 
-def test_extract_document_endpoint_accepts_multipart_smoke(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_extract_document_endpoint_accepts_multipart_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
@@ -661,9 +635,7 @@ def test_extract_document_endpoint_uses_llama_api_key_for_gguf_captions(
     assert captured["authorization_header"] == "Bearer llama-secret"
 
 
-def test_extract_document_endpoint_maps_busy_worker_to_503(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_extract_document_endpoint_maps_busy_worker_to_503(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
@@ -693,9 +665,7 @@ def test_extract_document_endpoint_maps_busy_worker_to_503(
     assert response.status_code == 503
 
 
-def test_extract_document_endpoint_maps_value_error_to_415(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_extract_document_endpoint_maps_value_error_to_415(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
@@ -742,9 +712,7 @@ def test_extract_document_endpoint_maps_parse_value_error_to_400(
     assert "Could not parse document" in response.json()["detail"]
 
 
-def test_extract_document_endpoint_reports_truncated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_extract_document_endpoint_reports_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_extract_document(*_args, **_kwargs):
         return SimpleNamespace(
             markdown = "word " * 2000,
@@ -864,9 +832,7 @@ def test_document_support_reports_format_parser_availability(
     assert "pymupdf" in body["unavailable_formats"]["pdf"]
 
 
-def test_document_support_maps_vlm_probe_bug_to_no_vlm(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_document_support_maps_vlm_probe_bug_to_no_vlm(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_app(monkeypatch)
     monkeypatch.setattr(
         route,
@@ -906,9 +872,7 @@ def test_endpoint_rejects_unavailable_pdf_parser_before_extraction(
     assert "pymupdf" in response.json()["detail"]
 
 
-def test_413_message_does_not_mention_roadmap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_413_message_does_not_mention_roadmap(monkeypatch: pytest.MonkeyPatch) -> None:
     """The 413 detail must not promise background job support."""
     monkeypatch.setattr(route, "_EXTRACT_MAX_PAGES_INLINE", 1)
 
@@ -933,9 +897,7 @@ def test_413_message_does_not_mention_roadmap(
     assert "split" in detail.lower() or "smaller" in detail.lower()
 
 
-def test_figures_are_serialized_via_pydantic_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_figures_are_serialized_via_pydantic_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """ExtractedFigureModel(**asdict(fig)) must be used so a field-name
     mismatch in the dataclass surfaces as a validation error, not a
     silently-wrong response."""
@@ -979,9 +941,7 @@ def test_figures_are_serialized_via_pydantic_model(
     assert figs[0]["caption"] == "A chart"
 
 
-def test_extraction_timeout_returns_504(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_extraction_timeout_returns_504(monkeypatch: pytest.MonkeyPatch) -> None:
     from core.chat.document_extractor import DocumentExtractionTimeout
 
     async def fake_extract(*_args, **_kwargs):
@@ -1003,9 +963,7 @@ def test_extraction_timeout_returns_504(
     assert "120" in response.json()["detail"]
 
 
-def test_encrypted_extraction_returns_422(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_encrypted_extraction_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_extract(*_args, **_kwargs):
         raise route._DocumentExtractionEncrypted("Encrypted PDF")
 
@@ -1020,9 +978,7 @@ def test_encrypted_extraction_returns_422(
     assert "Encrypted PDF" in response.json()["detail"]
 
 
-def test_real_encrypted_pdf_preflight_returns_422(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_real_encrypted_pdf_preflight_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
     pypdf = pytest.importorskip("pypdf")
     writer = pypdf.PdfWriter()
     writer.add_blank_page(width = 72, height = 72)
@@ -1046,9 +1002,7 @@ def test_real_encrypted_pdf_preflight_returns_422(
     assert "Encrypted PDF" in response.json()["detail"]
 
 
-def test_cancelled_extraction_returns_499(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cancelled_extraction_returns_499(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_extract(*_args, **_kwargs):
         raise route._DocumentExtractionCancelled("cancelled")
 
@@ -1063,9 +1017,7 @@ def test_cancelled_extraction_returns_499(
     assert response.json()["detail"] == "Client closed request"
 
 
-def test_endpoint_returns_415_for_unsupported_mime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_endpoint_returns_415_for_unsupported_mime(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_app(monkeypatch)
     response = client.post(
         "/api/inference/chat/extract-document",
@@ -1074,9 +1026,7 @@ def test_endpoint_returns_415_for_unsupported_mime(
     assert response.status_code == 415
 
 
-def test_endpoint_returns_400_for_empty_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_endpoint_returns_400_for_empty_file(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_app(monkeypatch)
     response = client.post(
         "/api/inference/chat/extract-document",
@@ -1085,9 +1035,7 @@ def test_endpoint_returns_400_for_empty_file(
     assert response.status_code == 400
 
 
-def test_endpoint_returns_501_when_extraction_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_endpoint_returns_501_when_extraction_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     from core.chat.document_extractor import DocumentExtractionUnavailable
 
     async def fake_extract(*_args, **_kwargs):

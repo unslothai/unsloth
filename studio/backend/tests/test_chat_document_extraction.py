@@ -95,7 +95,6 @@ def _patch_probes(
     inference: Optional[_FakeInferenceBackend],
 ) -> None:
     from core.chat import vlm_capability as vc
-
     if llama is None:
         monkeypatch.setattr(vc, "_probe_gguf", lambda _llama = None: None)
     else:
@@ -145,18 +144,14 @@ def _patch_probes(
         monkeypatch.setattr(vc, "_probe_transformers", probe_tf)
 
 
-def test_detect_returns_none_when_no_model_loaded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_returns_none_when_no_model_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_probes(monkeypatch, llama = None, inference = None)
     cap = detect_loaded_vlm()
     assert cap.source == "none"
     assert cap.is_vlm is False
 
 
-def test_detect_gguf_vision_returns_llama_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_gguf_vision_returns_llama_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     llama = _FakeLlama(loaded = True, vision = True, base_url = "http://127.0.0.1:9999")
     _patch_probes(monkeypatch, llama = llama, inference = None)
     cap = detect_loaded_vlm("http://studio.local")
@@ -166,9 +161,7 @@ def test_detect_gguf_vision_returns_llama_endpoint(
     assert cap.reason is None
 
 
-def test_detect_gguf_vision_accepts_injected_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_gguf_vision_accepts_injected_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     from core.chat import vlm_capability as vc
 
     llama = _FakeLlama(loaded = True, vision = True, base_url = "http://127.0.0.1:9999")
@@ -184,9 +177,7 @@ def test_detect_gguf_vision_accepts_injected_backend(
     assert cap.endpoint_url == "http://127.0.0.1:9999"
 
 
-def test_detect_gguf_vision_uses_core_llama_accessor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_gguf_vision_uses_core_llama_accessor(monkeypatch: pytest.MonkeyPatch) -> None:
     """The implicit GGUF fallback must use the core-owned singleton path."""
     from core.chat import vlm_capability as vc
     from core.inference import llama_cpp
@@ -203,9 +194,7 @@ def test_detect_gguf_vision_uses_core_llama_accessor(
     assert cap.endpoint_url == "http://127.0.0.1:9999"
 
 
-def test_detect_gguf_non_vision_surfaces_reason(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_gguf_non_vision_surfaces_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     llama = _FakeLlama(loaded = True, vision = False)
     _patch_probes(monkeypatch, llama = llama, inference = None)
     cap = detect_loaded_vlm()
@@ -214,9 +203,7 @@ def test_detect_gguf_non_vision_surfaces_reason(
     assert cap.reason and "vision" in cap.reason.lower()
 
 
-def test_detect_transformers_vision_uses_self_loopback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_transformers_vision_uses_self_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
     ib = _FakeInferenceBackend(
         active = "Qwen2-VL-7B",
         info = {"is_vision": True, "is_lora": False},
@@ -229,9 +216,7 @@ def test_detect_transformers_vision_uses_self_loopback(
     assert cap.model_name == "Qwen2-VL-7B"
 
 
-def test_detect_unsloth_lora_vision_reports_unsloth_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_detect_unsloth_lora_vision_reports_unsloth_source(monkeypatch: pytest.MonkeyPatch) -> None:
     ib = _FakeInferenceBackend(
         active = "my-qwen-vl-lora",
         info = {"is_vision": True, "is_lora": True},
@@ -327,10 +312,7 @@ class _FakeRequest:
 
 
 def test_extract_self_base_url_strips_trailing_slash() -> None:
-    assert (
-        extract_self_base_url(_FakeRequest("http://127.0.0.1:8000/"))
-        == "http://127.0.0.1:8000"
-    )
+    assert extract_self_base_url(_FakeRequest("http://127.0.0.1:8000/")) == "http://127.0.0.1:8000"
 
 
 def test_extract_self_base_url_prefers_trusted_server_port() -> None:
@@ -357,12 +339,10 @@ def test_extract_self_base_url_prefers_trusted_server_port() -> None:
 
 def test_extract_self_base_url_ignores_host_header() -> None:
     assert (
-        extract_self_base_url(_FakeRequest("http://studio.local:8000/"))
-        == "http://127.0.0.1:8000"
+        extract_self_base_url(_FakeRequest("http://studio.local:8000/")) == "http://127.0.0.1:8000"
     )
     assert (
-        extract_self_base_url(_FakeRequest("https://example.com:9443/"))
-        == "http://127.0.0.1:9443"
+        extract_self_base_url(_FakeRequest("https://example.com:9443/")) == "http://127.0.0.1:9443"
     )
 
 
@@ -387,7 +367,12 @@ async def test_max_figures_zero_sets_describe_skipped_reason(
     when a VLM is available."""
     from core.chat import document_extractor as de
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         return "# Smoke\n", [], 1, 0, 0
 
     monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)
@@ -414,9 +399,7 @@ async def test_max_figures_zero_sets_describe_skipped_reason(
 
 
 @pytest.mark.asyncio
-async def test_run_extract_sync_seam_receives_content_type(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_run_extract_sync_seam_receives_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """The test seam path (monkeypatched _run_extract_sync) must be invoked
     with the content_type so dispatch-by-content-type can be exercised in
     tests, not only by filename suffix."""
@@ -424,7 +407,12 @@ async def test_run_extract_sync_seam_receives_content_type(
 
     received: dict[str, str] = {}
 
-    def fake_extract(_fb, _fn, _opts, ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        ct = "",
+    ):
         received["content_type"] = ct
         return "ok", [], 0, 0, 0
 
@@ -562,7 +550,12 @@ async def test_multi_figure_extraction_encoded_visuals_capped_at_3(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import ExtractedFigure
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         figs = [
             ExtractedFigure(
                 id = f"fig-{i}",
@@ -603,7 +596,12 @@ async def test_multi_figure_extraction_respects_configured_visual_cap(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import ExtractedFigure
 
-    def fake_extract(_fb, _fn, opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        opts,
+        _ct = "",
+    ):
         max_visuals = opts["max_visual_payloads"]
         figs = [
             ExtractedFigure(
@@ -646,7 +644,12 @@ async def test_partial_vlm_failure_records_per_figure_error(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import ExtractedFigure
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         figs = [
             ExtractedFigure(
                 id = f"fig-{i}",
@@ -665,13 +668,7 @@ async def test_partial_vlm_failure_records_per_figure_error(
     call_idx: Dict[str, int] = {"n": 0}
 
     async def fake_describe(
-        *,
-        image_base64,
-        image_mime,
-        endpoint_url,
-        model_name,
-        authorization_header,
-        timeout_seconds,
+        *, image_base64, image_mime, endpoint_url, model_name, authorization_header, timeout_seconds
     ):
         idx = call_idx["n"]
         call_idx["n"] += 1
@@ -710,15 +707,18 @@ async def test_partial_vlm_failure_records_per_figure_error(
 
 
 @pytest.mark.asyncio
-async def test_local_vlm_captioning_serializes_requests(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_local_vlm_captioning_serializes_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
     from core.chat import document_extractor as de
     from core.chat.document_extractor import ExtractedFigure
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         figs = [
             ExtractedFigure(
                 id = f"fig-{i}",
@@ -774,7 +774,12 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import ExtractedFigure
 
-    def fake_extract(_fb, _fn, opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        opts,
+        _ct = "",
+    ):
         max_visuals = opts["max_visual_payloads"]
         figs = []
         for i in range(5):
@@ -830,7 +835,12 @@ async def test_extraction_timeout_raises_document_extraction_timeout(
     from core.chat import document_extractor as de
     from core.chat.document_extractor import DocumentExtractionTimeout
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         return "# Doc\n", [], 0, 0, 0
 
     async def fake_wait_for(coro, timeout):
@@ -859,13 +869,16 @@ async def test_extraction_timeout_raises_document_extraction_timeout(
 
 
 @pytest.mark.asyncio
-async def test_docx_path_uses_mammoth_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_docx_path_uses_mammoth_output(monkeypatch: pytest.MonkeyPatch) -> None:
     """DOCX route must return whatever mammoth produces, with no figures."""
     from core.chat import document_extractor as de
 
-    def fake_extract(_fb, filename, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        filename,
+        _opts,
+        _ct = "",
+    ):
         assert filename.endswith(".docx")
         return "**bold** text", [], 0, 0, 0
 
@@ -883,14 +896,17 @@ async def test_docx_path_uses_mammoth_output(
 
 
 @pytest.mark.asyncio
-async def test_use_vlm_ocr_emits_warning_when_requested(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_use_vlm_ocr_emits_warning_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
     """use_vlm_ocr=True is accepted for API compatibility but this build
     ships no OCR engine — the extractor must surface a warning."""
     from core.chat import document_extractor as de
 
-    def fake_extract(_fb, _fn, _opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        _opts,
+        _ct = "",
+    ):
         return "# Doc\n", [], 1, 0, 0
 
     monkeypatch.setattr(de, "DOCUMENT_EXTRACTION_AVAILABLE", True)

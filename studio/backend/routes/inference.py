@@ -2220,9 +2220,7 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 _OPENAI_CHAT_MAX_IMAGES = 256
 _OPENAI_CHAT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _OPENAI_CHAT_MAX_IMAGE_PIXELS = 40_000_000
-_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS = (
-    (_OPENAI_CHAT_MAX_IMAGE_BYTES + 2) // 3
-) * 4 + 1024
+_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS = ((_OPENAI_CHAT_MAX_IMAGE_BYTES + 2) // 3) * 4 + 1024
 
 
 def _convert_openai_image_b64_to_png_b64(image_b64: str) -> str:
@@ -2263,9 +2261,7 @@ def _convert_openai_image_b64_to_png_b64(image_b64: str) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code = 400, detail = f"Failed to process image: {e}"
-        ) from e
+        raise HTTPException(status_code = 400, detail = f"Failed to process image: {e}") from e
 
 
 def _data_url_base64_payload(url: str) -> str:
@@ -2276,17 +2272,12 @@ def _data_url_base64_payload(url: str) -> str:
             status_code = 400, detail = "Image data URL is missing base64 payload."
         ) from exc
     if ";base64" not in header.lower():
-        raise HTTPException(
-            status_code = 400, detail = "Image data URL must be base64 encoded."
-        )
+        raise HTTPException(status_code = 400, detail = "Image data URL must be base64 encoded.")
     return b64data
 
 
 def _normalize_openai_message_images(
-    openai_messages: list[dict],
-    *,
-    is_vision: bool,
-    not_vision_detail: str,
+    openai_messages: list[dict], *, is_vision: bool, not_vision_detail: str
 ) -> bool:
     """Apply image count/size/pixel guards and normalize data URLs to PNG."""
     has_image = False
@@ -2312,9 +2303,7 @@ def _normalize_openai_message_images(
 
             image_url = part.get("image_url") or {}
             if not isinstance(image_url, dict):
-                raise HTTPException(
-                    status_code = 400, detail = "Invalid image_url content part."
-                )
+                raise HTTPException(status_code = 400, detail = "Invalid image_url content part.")
             url = image_url.get("url", "")
             if not isinstance(url, str):
                 raise HTTPException(status_code = 400, detail = "Invalid image_url URL.")
@@ -2497,9 +2486,7 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
-def _extract_content_parts(
-    messages: list,
-) -> tuple[str, list[dict], list[str]]:
+def _extract_content_parts(messages: list) -> tuple[str, list[dict], list[str]]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
 
@@ -3191,8 +3178,7 @@ async def delete_openai_container(
 
 @router.post("/chat/completions")
 async def openai_chat_completions(
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ):
     body = await _read_json_body_limited(
         request,
@@ -3205,10 +3191,7 @@ async def openai_chat_completions(
     return await _openai_chat_completions_impl(payload, request)
 
 
-async def _openai_chat_completions_impl(
-    payload: ChatCompletionRequest,
-    request: Request,
-):
+async def _openai_chat_completions_impl(payload: ChatCompletionRequest, request: Request):
     """
     OpenAI-compatible chat completions endpoint.
 
@@ -3517,9 +3500,7 @@ async def _openai_chat_completions_impl(
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
-    system_prompt, chat_messages, extracted_image_b64s = _extract_content_parts(
-        payload.messages
-    )
+    system_prompt, chat_messages, extracted_image_b64s = _extract_content_parts(payload.messages)
 
     if not chat_messages:
         raise HTTPException(
@@ -4043,9 +4024,7 @@ async def _openai_chat_completions_impl(
     # ── Standard Unsloth path ─────────────────────────────────
 
     # Decode image (from content parts OR legacy field)
-    image_b64 = (
-        extracted_image_b64s[0] if extracted_image_b64s else payload.image_base64
-    )
+    image_b64 = extracted_image_b64s[0] if extracted_image_b64s else payload.image_base64
     image = None
 
     if image_b64:
@@ -4767,9 +4746,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await _read_json_body_limited(
-        request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES
-    )
+    body = await _read_json_body_limited(request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES)
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
 
@@ -4864,9 +4841,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await _read_json_body_limited(
-        request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES
-    )
+    body = await _read_json_body_limited(request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
@@ -7344,8 +7319,7 @@ _CODE_SUFFIXES = {
 
 
 async def _wait_for_document_request_disconnect(
-    fastapi_request: Request,
-    cancel_event: threading.Event,
+    fastapi_request: Request, cancel_event: threading.Event
 ) -> bool:
     while not cancel_event.is_set():
         if await fastapi_request.is_disconnected():
@@ -7383,10 +7357,7 @@ def _document_upload_format(filename: str, content_type: str) -> Optional[str]:
     return None
 
 
-def _raise_if_document_parser_unavailable(
-    filename: str,
-    content_type: str,
-) -> None:
+def _raise_if_document_parser_unavailable(filename: str, content_type: str) -> None:
     format_key = _document_upload_format(filename, content_type)
     if format_key is None:
         return
@@ -7401,15 +7372,11 @@ def _raise_if_document_parser_unavailable(
 
 
 def _document_caption_authorization_header(
-    capability: Any,
-    llama_backend: Any,
-    studio_authorization_header: Optional[str],
+    capability: Any, llama_backend: Any, studio_authorization_header: Optional[str]
 ) -> Optional[str]:
     if getattr(capability, "source", None) != "gguf":
         return studio_authorization_header
-    api_key = getattr(llama_backend, "api_key", None) or getattr(
-        llama_backend, "_api_key", None
-    )
+    api_key = getattr(llama_backend, "api_key", None) or getattr(llama_backend, "_api_key", None)
     return f"Bearer {api_key}" if api_key else None
 
 
@@ -7417,7 +7384,12 @@ _FORM_TRUE = {"1", "true", "yes", "on"}
 _FORM_FALSE = {"0", "false", "no", "off"}
 
 
-def _parse_bool_form(value: Any, *, default: bool, field: str = "value") -> bool:
+def _parse_bool_form(
+    value: Any,
+    *,
+    default: bool,
+    field: str = "value",
+) -> bool:
     if value is None:
         return default
     norm = str(value).strip().lower()
@@ -7463,10 +7435,7 @@ def _reject_oversized_content_length(request: Request) -> None:
     if total > max_request_bytes:
         raise HTTPException(
             status_code = 413,
-            detail = (
-                f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB "
-                "file limit"
-            ),
+            detail = (f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"),
         )
 
 
@@ -7480,8 +7449,7 @@ async def _iter_request_body_limited(request: Request, *, max_bytes: int):
             raise HTTPException(
                 status_code = 413,
                 detail = (
-                    f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB "
-                    "file limit"
+                    f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"
                 ),
             )
         yield chunk
@@ -7489,7 +7457,6 @@ async def _iter_request_body_limited(request: Request, *, max_bytes: int):
 
 async def _read_multipart_form_limited(request: Request, *, max_bytes: int):
     from starlette.formparsers import MultiPartException, MultiPartParser
-
     try:
         parser = MultiPartParser(
             request.headers,
@@ -7520,8 +7487,7 @@ _OPENAI_CHAT_BODY_IMAGE_SLOTS = max(
 )
 _OPENAI_CHAT_BODY_MAX_BYTES = max(
     32 * 1024 * 1024,
-    (_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS * _OPENAI_CHAT_BODY_IMAGE_SLOTS)
-    + (2 * 1024 * 1024),
+    (_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS * _OPENAI_CHAT_BODY_IMAGE_SLOTS) + (2 * 1024 * 1024),
 )
 
 
@@ -7571,11 +7537,7 @@ def _is_pdf_upload(filename: str, content_type: str) -> bool:
     return mime == "application/pdf" or _extract_ext(filename) == ".pdf"
 
 
-def _preflight_pdf_page_count(
-    file_bytes: bytes,
-    filename: str,
-    content_type: str,
-) -> Optional[int]:
+def _preflight_pdf_page_count(file_bytes: bytes, filename: str, content_type: str) -> Optional[int]:
     if not _is_pdf_upload(filename, content_type):
         return None
 
@@ -7615,7 +7577,6 @@ def _preflight_pdf_page_count(
 
     try:
         import pymupdf as _pymupdf  # type: ignore
-
         doc = _pymupdf.open(stream = file_bytes, filetype = "pdf")
         try:
             # PyMuPDF's ``needs_pass`` is True only when an actual password
@@ -7649,19 +7610,14 @@ def _preflight_pdf_page_count(
 
 
 def _truncate_markdown_to_token_budget(
-    markdown: str,
-    *,
-    token_budget: int,
-    original_tokens_est: int,
+    markdown: str, *, token_budget: int, original_tokens_est: int
 ) -> tuple[str, int, Optional[str]]:
     char_budget = max(_EXTRACT_TOKEN_BUDGET_MIN, token_budget) * 4
     if len(markdown) <= char_budget:
         return markdown, original_tokens_est, None
 
     clipped = markdown[:char_budget]
-    clipped = (
-        _re.sub(r"\s+\S*$", "", clipped).rstrip() or markdown[:char_budget].rstrip()
-    )
+    clipped = _re.sub(r"\s+\S*$", "", clipped).rstrip() or markdown[:char_budget].rstrip()
     clipped += f"\n\n[... truncated; original was ~{original_tokens_est} tokens ...]"
     warning = (
         f"Extracted markdown was truncated to {token_budget} tokens "
@@ -7672,8 +7628,7 @@ def _truncate_markdown_to_token_budget(
 
 @studio_router.get("/chat/document-support", response_model = DocumentSupportResponse)
 async def document_support_endpoint(
-    fastapi_request: Request,
-    current_subject: str = Depends(get_current_subject),
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
 ):
     """Whether document extraction + per-figure captions are available.
 
@@ -7698,9 +7653,7 @@ async def document_support_endpoint(
             },
         )
 
-    self_base_url = (
-        _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
-    )
+    self_base_url = _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
     try:
         cap = _detect_loaded_vlm(
             self_base_url,
@@ -7709,9 +7662,7 @@ async def document_support_endpoint(
     except Exception as exc:
         logger.exception("Document support VLM probe failed")
         if _VlmCapability is not None:
-            cap = _VlmCapability.none(
-                f"document support probe failed: {type(exc).__name__}"
-            )
+            cap = _VlmCapability.none(f"document support probe failed: {type(exc).__name__}")
         else:  # pragma: no cover - only when core.chat import fallback is active
             cap = None
     return DocumentSupportResponse(
@@ -7734,8 +7685,7 @@ async def document_support_endpoint(
 
 @studio_router.post("/chat/extract-document")
 async def extract_document_endpoint(
-    fastapi_request: Request,
-    current_subject: str = Depends(get_current_subject),
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
 ):
     """Upload a PDF / DOCX / HTML / MD / text file and stream
     progress events plus a final layout-aware Markdown payload.
@@ -7786,13 +7736,8 @@ async def extract_document_endpoint(
         if not file_bytes:
             raise HTTPException(status_code = 400, detail = "Uploaded file is empty")
 
-        preflight_page_count = _preflight_pdf_page_count(
-            file_bytes, filename, content_type
-        )
-        if (
-            preflight_page_count is not None
-            and preflight_page_count > _EXTRACT_MAX_PAGES_INLINE
-        ):
+        preflight_page_count = _preflight_pdf_page_count(file_bytes, filename, content_type)
+        if preflight_page_count is not None and preflight_page_count > _EXTRACT_MAX_PAGES_INLINE:
             raise HTTPException(
                 status_code = 413,
                 detail = (
@@ -7805,9 +7750,7 @@ async def extract_document_endpoint(
         describe_images = _parse_bool_form(
             form.get("describe_images"), default = False, field = "describe_images"
         )
-        use_vlm_ocr = _parse_bool_form(
-            form.get("use_vlm_ocr"), default = False, field = "use_vlm_ocr"
-        )
+        use_vlm_ocr = _parse_bool_form(form.get("use_vlm_ocr"), default = False, field = "use_vlm_ocr")
         max_figures = _parse_int_form(
             form.get("max_figures"),
             default = 40,
@@ -7824,9 +7767,7 @@ async def extract_document_endpoint(
             lo = 0,
         )
 
-        self_base_url = (
-            _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
-        )
+        self_base_url = _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
         llama_backend = get_llama_cpp_backend()
         capability = (
             _detect_loaded_vlm(
@@ -7849,12 +7790,10 @@ async def extract_document_endpoint(
         wants_stream = "application/x-ndjson" in accept_header
 
         def _build_response_payload(result: Any) -> ExtractDocumentResponse:
-            markdown_, tokens_est_, truncate_warning_ = (
-                _truncate_markdown_to_token_budget(
-                    result.markdown,
-                    token_budget = token_budget,
-                    original_tokens_est = result.tokens_est,
-                )
+            markdown_, tokens_est_, truncate_warning_ = _truncate_markdown_to_token_budget(
+                result.markdown,
+                token_budget = token_budget,
+                original_tokens_est = result.tokens_est,
             )
             warnings_ = list(result.warnings)
             if truncate_warning_:
@@ -7908,14 +7847,10 @@ async def extract_document_endpoint(
                         asyncio.CancelledError,
                         asyncio.TimeoutError,
                     ):
-                        await asyncio.wait_for(
-                            asyncio.shield(extraction_task), timeout = 10
-                        )
+                        await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
                     if not extraction_task.done():
                         extraction_task.cancel()
-                    raise _DocumentExtractionCancelled(
-                        "document extraction was cancelled"
-                    )
+                    raise _DocumentExtractionCancelled("document extraction was cancelled")
                 else:
                     result = await extraction_task
             except _DocumentExtractionUnavailable as exc:
@@ -7926,18 +7861,14 @@ async def extract_document_endpoint(
                     detail = "Document parsing timed out after 120s before image captioning",
                 )
             except _DocumentExtractionBusy:
-                raise HTTPException(
-                    status_code = 503, detail = "Document extraction is busy"
-                )
+                raise HTTPException(status_code = 503, detail = "Document extraction is busy")
             except _DocumentExtractionCancelled:
                 raise HTTPException(status_code = 499, detail = "Client closed request")
             except _DocumentExtractionEncrypted as exc:
                 raise HTTPException(status_code = 422, detail = str(exc))
             except ValueError as exc:
                 detail = str(exc)
-                status_code = (
-                    415 if detail.lower().startswith("unsupported file type") else 400
-                )
+                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
                 raise HTTPException(status_code = status_code, detail = detail)
             except Exception:
                 logger.exception("Document extraction failed for %s", filename)
@@ -8015,14 +7946,10 @@ async def extract_document_endpoint(
                             asyncio.CancelledError,
                             asyncio.TimeoutError,
                         ):
-                            await asyncio.wait_for(
-                                asyncio.shield(extraction_task), timeout = 10
-                            )
+                            await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
                         if not extraction_task.done():
                             extraction_task.cancel()
-                        raise _DocumentExtractionCancelled(
-                            "document extraction was cancelled"
-                        )
+                        raise _DocumentExtractionCancelled("document extraction was cancelled")
 
                     # The shield-wrapper may complete (cancelled) before
                     # the underlying extraction_task is done; calling
@@ -8043,9 +7970,7 @@ async def extract_document_endpoint(
                         # Shield-wrapper finished but the real task is
                         # still running. Re-arm the wait on a fresh
                         # shielded future and loop.
-                        extract_wait = asyncio.ensure_future(
-                            asyncio.shield(extraction_task)
-                        )
+                        extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
                         extract_wait.add_done_callback(_drain_doc_future_exception)
 
                 if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
@@ -8132,9 +8057,7 @@ async def extract_document_endpoint(
                 )
             except ValueError as exc:
                 detail = str(exc)
-                status_code = (
-                    415 if detail.lower().startswith("unsupported file type") else 400
-                )
+                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
                 yield (
                     json.dumps(
                         {

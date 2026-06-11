@@ -149,9 +149,7 @@ logger = get_logger(__name__)
 
 class ModelProbeRequest(BaseModel):
     model_name: str = Field(..., description = "Model identifier or local path")
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated/private models"
-    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated/private models")
     trust_remote_code: bool = Field(
         False, description = "Allow probes that require custom model code"
     )
@@ -182,9 +180,7 @@ def derive_model_type(
 
 def _defaults_vision_flags(config_dict: dict) -> tuple[bool, bool]:
     model_config = config_dict.get("model", {}) if isinstance(config_dict, dict) else {}
-    inference_config = (
-        config_dict.get("inference", {}) if isinstance(config_dict, dict) else {}
-    )
+    inference_config = config_dict.get("inference", {}) if isinstance(config_dict, dict) else {}
     yaml_is_vision = bool(model_config.get("is_vision", False))
     yaml_requires_trust_remote_code = bool(
         model_config.get("trust_remote_code", False)
@@ -200,9 +196,7 @@ def _detect_vision_for_config_endpoint(
     trust_remote_code: bool = False,
     config_dict: Optional[dict] = None,
 ) -> bool:
-    defaults = (
-        config_dict if config_dict is not None else load_model_defaults(model_name)
-    )
+    defaults = config_dict if config_dict is not None else load_model_defaults(model_name)
     yaml_is_vision, yaml_requires_trust_remote_code = _defaults_vision_flags(defaults)
     if yaml_is_vision and yaml_requires_trust_remote_code:
         return True
@@ -1539,8 +1533,7 @@ async def get_model_config(
 
 @router.post("/config")
 async def post_model_config(
-    request: ModelProbeRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ModelProbeRequest, current_subject: str = Depends(get_current_subject)
 ):
     return await _build_model_config_response(
         request.model_name,
@@ -2070,8 +2063,7 @@ async def check_vision_model(
 
 @router.post("/check-vision", response_model = VisionCheckResponse)
 async def post_check_vision_model(
-    request: ModelProbeRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ModelProbeRequest, current_subject: str = Depends(get_current_subject)
 ):
     return await _check_vision_model_response(
         request.model_name,
@@ -2605,8 +2597,6 @@ async def delete_cached_model(
     # Refuse if the model is currently loaded.
     try:
         from core.inference.llama_cpp import get_llama_cpp_backend
-
-
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_id = llama_backend.model_identifier.lower()

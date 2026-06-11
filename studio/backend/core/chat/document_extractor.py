@@ -132,9 +132,7 @@ _EXTRACT_TIMEOUT_SECONDS = 120
 _VLM_CAPTION_TOTAL_TIMEOUT_SECONDS = 180
 _LOCAL_VLM_CAPTION_CONCURRENCY = 1
 _DEFAULT_VLM_CAPTION_CONCURRENCY = 3
-_EXTRACT_CONCURRENCY = max(
-    1, int(os.environ.get("UNSLOTH_STUDIO_EXTRACT_CONCURRENCY", "2"))
-)
+_EXTRACT_CONCURRENCY = max(1, int(os.environ.get("UNSLOTH_STUDIO_EXTRACT_CONCURRENCY", "2")))
 _EXTRACT_SEMAPHORE = threading.BoundedSemaphore(_EXTRACT_CONCURRENCY)
 # Bounded queue wait: callers park here for a slot instead of failing fast
 # with 503 when the worker pool is saturated. Tuned so a fast burst (e.g.
@@ -376,9 +374,7 @@ async def _describe_image_via_vlm(
                 json = payload,
             )
         if response.status_code >= 400:
-            return None, (
-                f"VLM caption request failed with HTTP " f"{response.status_code}"
-            )
+            return None, (f"VLM caption request failed with HTTP " f"{response.status_code}")
         body = response.json()
         choice = (body.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -427,10 +423,7 @@ async def _describe_image_via_vlm(
 
 
 def _build_extract_options(
-    *,
-    extract_images: bool,
-    use_vlm_ocr: bool,
-    max_visual_payloads: int,
+    *, extract_images: bool, use_vlm_ocr: bool, max_visual_payloads: int
 ) -> tuple[dict, list[str]]:
     """Return ``(options, build_warnings)``.
 
@@ -468,9 +461,7 @@ def _pymupdf4llm_markdown_kwargs() -> dict[str, Any]:
         signature = inspect.signature(pymupdf4llm.to_markdown)
     except (TypeError, ValueError):
         return {
-            key: value
-            for key, value in preferred.items()
-            if key not in {"use_ocr", "force_ocr"}
+            key: value for key, value in preferred.items() if key not in {"use_ocr", "force_ocr"}
         }
     params = signature.parameters
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
@@ -518,9 +509,7 @@ def _append_page_image_figure(
         pix = _safe_page_pixmap(doc[page_index])
         png_bytes = pix.tobytes("png")
         page_image = PILImage.open(io.BytesIO(png_bytes))
-        image_base64, image_width, image_height, image_mime = (
-            _encode_pil_image_for_chat(page_image)
-        )
+        image_base64, image_width, image_height, image_mime = _encode_pil_image_for_chat(page_image)
         if not image_base64:
             return False
         figures_out.append(
@@ -554,10 +543,7 @@ def _append_page_image_figure(
 
 
 def _extract_pdf(
-    file_bytes: bytes,
-    max_figures: int,
-    use_vlm_ocr: bool,
-    max_visual_payloads: int,
+    file_bytes: bytes, max_figures: int, use_vlm_ocr: bool, max_visual_payloads: int
 ) -> tuple[str, list[ExtractedFigure], int, int, int]:
     """Extract Markdown + figures from a PDF via PyMuPDF4LLM.
 
@@ -614,7 +600,6 @@ def _extract_pdf(
             if not use_vlm_ocr:
                 try:
                     from PIL import Image as PILImage
-
                     for page_index in range(page_count):
                         page = doc[page_index]
                         try:
@@ -700,9 +685,7 @@ def _extract_pdf(
             logger.debug("pymupdf doc.close() raised", exc_info = True)
 
 
-def _extract_docx(
-    file_bytes: bytes,
-) -> tuple[str, list[ExtractedFigure], int, int, int]:
+def _extract_docx(file_bytes: bytes) -> tuple[str, list[ExtractedFigure], int, int, int]:
     _ensure_docx_backend()
     assert mammoth is not None  # for type-checkers
     stream = io.BytesIO(file_bytes)
@@ -711,16 +694,12 @@ def _extract_docx(
     return markdown, [], 0, 0, 0
 
 
-def _extract_plaintext(
-    file_bytes: bytes,
-) -> tuple[str, list[ExtractedFigure], int, int, int]:
+def _extract_plaintext(file_bytes: bytes) -> tuple[str, list[ExtractedFigure], int, int, int]:
     text = file_bytes.decode("utf-8", errors = "replace")
     return text, [], 0, 0, 0
 
 
-def _extract_html(
-    file_bytes: bytes,
-) -> tuple[str, list[ExtractedFigure], int, int, int]:
+def _extract_html(file_bytes: bytes) -> tuple[str, list[ExtractedFigure], int, int, int]:
     html = file_bytes.decode("utf-8", errors = "replace")
     try:
         from core.inference._html_to_md import html_to_markdown
@@ -747,9 +726,7 @@ def _run_extract_sync(
     extract_images = bool(options.get("extract_images"))
     use_vlm_ocr = bool(options.get("use_vlm_ocr"))
     max_figures = int(options.get("max_figures", 0)) if extract_images else 0
-    max_visual_payloads = int(
-        options.get("max_visual_payloads", DEFAULT_DOCUMENT_VISUAL_PAYLOADS)
-    )
+    max_visual_payloads = int(options.get("max_visual_payloads", DEFAULT_DOCUMENT_VISUAL_PAYLOADS))
 
     if suffix == ".pdf":
         return _extract_pdf(file_bytes, max_figures, use_vlm_ocr, max_visual_payloads)
@@ -766,16 +743,10 @@ _RUN_EXTRACT_SYNC_ORIGINAL = _run_extract_sync
 
 
 def _run_extract_worker(
-    result_queue: Any,
-    file_bytes: bytes,
-    filename: str,
-    options: dict,
-    content_type: str,
+    result_queue: Any, file_bytes: bytes, filename: str, options: dict, content_type: str
 ) -> None:
     try:
-        result_queue.put(
-            ("ok", _run_extract_sync(file_bytes, filename, options, content_type))
-        )
+        result_queue.put(("ok", _run_extract_sync(file_bytes, filename, options, content_type)))
     except DocumentExtractionUnavailable as exc:
         result_queue.put(("extraction_unavailable", str(exc)))
     except DocumentExtractionEncrypted as exc:
@@ -883,9 +854,7 @@ def _run_extract_process_sync(
             except queue.Empty:
                 if cancel_event is not None and cancel_event.is_set():
                     _terminate_extract_process(proc)
-                    raise DocumentExtractionCancelled(
-                        "document extraction was cancelled"
-                    )
+                    raise DocumentExtractionCancelled("document extraction was cancelled")
                 if not proc.is_alive():
                     # The worker may have put its result and exited
                     # between the queue.get timeout and this is_alive
@@ -916,8 +885,7 @@ def _run_extract_process_sync(
                 pass
         if message is None:
             raise RuntimeError(
-                f"document extraction worker exited without a result "
-                f"(exitcode={proc.exitcode})"
+                f"document extraction worker exited without a result " f"(exitcode={proc.exitcode})"
             )
 
         kind = message[0]
@@ -988,9 +956,7 @@ async def extract_document(
     describe_available = bool(
         describe_images and cap.is_vlm and cap.endpoint_url and cap.model_name
     )
-    effective_describe = (
-        describe_available and max_figures > 0 and max_visual_payloads > 0
-    )
+    effective_describe = describe_available and max_figures > 0 and max_visual_payloads > 0
     extract_images = max_figures > 0
 
     skipped_reason: Optional[str] = None
@@ -998,9 +964,7 @@ async def extract_document(
         if describe_available and max_figures <= 0:
             skipped_reason = "figure description disabled because max_figures is 0"
         elif describe_available and max_visual_payloads <= 0:
-            skipped_reason = (
-                "figure description disabled because max_visual_payloads is 0"
-            )
+            skipped_reason = "figure description disabled because max_visual_payloads is 0"
         else:
             skipped_reason = cap.reason or "no_vlm"
 
@@ -1060,9 +1024,7 @@ async def extract_document(
                 timeout = _EXTRACT_TIMEOUT_SECONDS,
             )
     except asyncio.TimeoutError:
-        raise DocumentExtractionTimeout(
-            "document parsing exceeded the 120-second worker limit"
-        )
+        raise DocumentExtractionTimeout("document parsing exceeded the 120-second worker limit")
     except DocumentExtractionTimeout:
         raise
     except DocumentExtractionBusy:
@@ -1090,9 +1052,7 @@ async def extract_document(
         sem = asyncio.Semaphore(caption_concurrency)
 
         captionable_total = sum(
-            1
-            for fig in figures_out[:max_figures]
-            if fig.image_base64 and fig.image_mime
+            1 for fig in figures_out[:max_figures] if fig.image_base64 and fig.image_mime
         )
         captioned_completed = 0
         await _emit(
@@ -1111,9 +1071,7 @@ async def extract_document(
                 raise DocumentExtractionCancelled("document extraction was cancelled")
             async with sem:
                 if cancel_event is not None and cancel_event.is_set():
-                    raise DocumentExtractionCancelled(
-                        "document extraction was cancelled"
-                    )
+                    raise DocumentExtractionCancelled("document extraction was cancelled")
                 try:
                     caption, error = await _describe_image_via_vlm(
                         image_base64 = figure.image_base64,
@@ -1129,17 +1087,13 @@ async def extract_document(
                         error = error,
                     )
                 except asyncio.TimeoutError as exc:
-                    logger.warning(
-                        "VLM describe timed out for figure %s", figure.id, exc_info = exc
-                    )
+                    logger.warning("VLM describe timed out for figure %s", figure.id, exc_info = exc)
                     figures_out[index] = replace(
                         figure,
                         error = f"VLM describe timed out: {type(exc).__name__}",
                     )
                 except Exception as exc:
-                    logger.warning(
-                        "VLM describe failed for figure %s", figure.id, exc_info = exc
-                    )
+                    logger.warning("VLM describe failed for figure %s", figure.id, exc_info = exc)
                     figures_out[index] = replace(
                         figure,
                         error = f"VLM describe failed: {type(exc).__name__}",
@@ -1193,19 +1147,12 @@ async def extract_document(
             f"({truncated_count} truncated)."
         )
     visual_payload_count = sum(1 for figure in figures_out if figure.image_base64)
-    if (
-        visual_payload_count >= max_visual_payloads
-        and len(figures_out) > visual_payload_count
-    ):
+    if visual_payload_count >= max_visual_payloads and len(figures_out) > visual_payload_count:
         warnings.append(
             f"Only the first {max_visual_payloads} visual payloads "
             "were attached; remaining figure references are text-only."
         )
-    if (
-        effective_describe
-        and figures_out
-        and all(f.caption is None for f in figures_out)
-    ):
+    if effective_describe and figures_out and all(f.caption is None for f in figures_out):
         error_samples: list[str] = []
         seen_errors: set[str] = set()
         for figure in figures_out:
@@ -1215,9 +1162,7 @@ async def extract_document(
             error_samples.append(f"{figure.id}: {figure.error}")
             if len(error_samples) >= 3:
                 break
-        sample_suffix = (
-            " Examples: " + "; ".join(error_samples) + "." if error_samples else ""
-        )
+        sample_suffix = " Examples: " + "; ".join(error_samples) + "." if error_samples else ""
         warnings.append(
             "Figure descriptions were requested but none were produced — "
             "check that the loaded model accepts image inputs via /v1."
@@ -1225,8 +1170,7 @@ async def extract_document(
         )
     if caption_deadline_hit:
         warnings.append(
-            "Figure captioning reached the inline timeout; some image "
-            "descriptions were skipped."
+            "Figure captioning reached the inline timeout; some image descriptions were skipped."
         )
 
     await _emit(stage = "done")

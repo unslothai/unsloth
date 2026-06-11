@@ -51,7 +51,6 @@ def extractor():
     test and assert restoration after; no reload required.
     """
     from core.chat import document_extractor as mod
-
     yield mod
 
 
@@ -83,9 +82,7 @@ def _force_failure(mod, monkeypatch, where: str) -> None:
             def Process(self, *_a, **_kw):  # pragma: no cover - never reached
                 return None
 
-        monkeypatch.setattr(
-            mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx()
-        )
+        monkeypatch.setattr(mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx())
     elif where == "process":
 
         class _Q:
@@ -102,9 +99,7 @@ def _force_failure(mod, monkeypatch, where: str) -> None:
             def Process(self, *_a, **_kw):
                 raise OSError("simulated Process construction failure")
 
-        monkeypatch.setattr(
-            mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx()
-        )
+        monkeypatch.setattr(mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx())
     else:  # pragma: no cover
         raise ValueError(where)
 

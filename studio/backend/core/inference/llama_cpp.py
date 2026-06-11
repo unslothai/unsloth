@@ -4451,9 +4451,7 @@ class LlamaCppBackend:
     ) -> list[dict]:
         """Build OpenAI-format messages, optionally injecting image_url parts
         into the last user message for vision models. As-is if no image."""
-        images = (
-            image_b64s if image_b64s is not None else ([image_b64] if image_b64 else [])
-        )
+        images = image_b64s if image_b64s is not None else ([image_b64] if image_b64 else [])
         images = [image for image in images if image]
         if not images:
             return messages

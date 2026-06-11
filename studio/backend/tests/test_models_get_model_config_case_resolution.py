@@ -43,7 +43,11 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         calls["load_model_defaults"] = model_name
         return {}
 
-    def _record_vision(model_name, hf_token = None, trust_remote_code = False):
+    def _record_vision(
+        model_name,
+        hf_token = None,
+        trust_remote_code = False,
+    ):
         calls["is_vision_model"] = model_name
         calls["trust_remote_code"] = str(trust_remote_code)
         return False
@@ -100,9 +104,7 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
         raise AssertionError("YAML-known TRC VLM should not probe before opt-in")
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(
-        models_route, "resolve_cached_repo_id_case", lambda value: value
-    )
+    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
     monkeypatch.setattr(
         models_route,
         "load_model_defaults",
@@ -113,9 +115,7 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
     )
     monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", lambda *_args, **_kw: False)
-    monkeypatch.setattr(
-        model_config_module, "detect_audio_type", lambda *_args, **_kw: None
-    )
+    monkeypatch.setattr(model_config_module, "detect_audio_type", lambda *_args, **_kw: None)
     monkeypatch.setattr(
         models_route.ModelConfig,
         "from_identifier",
@@ -217,9 +217,7 @@ def test_check_vision_rejects_hf_token_query() -> None:
 
 
 def test_ocr_defaults_mapping_is_case_insensitive():
-    deepseek_defaults = model_config_module.load_model_defaults(
-        "deepseek-ai/deepseek-ocr"
-    )
+    deepseek_defaults = model_config_module.load_model_defaults("deepseek-ai/deepseek-ocr")
     glm_defaults = model_config_module.load_model_defaults("zai-org/glm-ocr")
 
     assert deepseek_defaults["model"]["is_ocr"] is True

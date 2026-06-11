@@ -47,7 +47,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-_HEADER = "import sys, importlib\n" f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+_HEADER = f"import sys, importlib\nsys.path.insert(0, {str(_BACKEND)!r})\n"
 
 
 def _run_subprocess(body: str) -> subprocess.CompletedProcess:

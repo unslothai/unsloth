@@ -78,9 +78,7 @@ def _probe_gguf(llama: Any = None) -> Optional[VlmCapability]:
         # Half-initialised llama-server state — fall through to the
         # transformers probe instead of returning a misleading
         # non-vision GGUF result that suppresses the fallback chain.
-        logger.debug(
-            "llama-server reports is_loaded=True but base_url / model id missing"
-        )
+        logger.debug("llama-server reports is_loaded=True but base_url / model id missing")
         return None
 
     return VlmCapability(
@@ -88,9 +86,7 @@ def _probe_gguf(llama: Any = None) -> Optional[VlmCapability]:
         endpoint_url = base_url,
         model_name = model_id,
         source = "gguf",
-        reason = None
-        if is_vision
-        else "gguf: model loaded, is_vision=False (no mmproj clip)",
+        reason = None if is_vision else "gguf: model loaded, is_vision=False (no mmproj clip)",
     )
 
 
@@ -98,9 +94,7 @@ def _probe_transformers(self_base_url: Optional[str]) -> Optional[VlmCapability]
     try:
         from core.inference import get_inference_backend
     except ModuleNotFoundError as exc:
-        if exc.name == "core.inference" or (
-            exc.name and exc.name.startswith("core.inference.")
-        ):
+        if exc.name == "core.inference" or (exc.name and exc.name.startswith("core.inference.")):
             return None
         logger.exception("Failed to import transformers inference backend")
         return None
@@ -146,9 +140,7 @@ def _probe_transformers(self_base_url: Optional[str]) -> Optional[VlmCapability]
 
 
 def detect_loaded_vlm(
-    self_base_url: Optional[str] = None,
-    *,
-    llama_backend: Any = None,
+    self_base_url: Optional[str] = None, *, llama_backend: Any = None
 ) -> VlmCapability:
     """Identify the active model and whether it can describe images.
 

@@ -1554,9 +1554,7 @@ class ExtractedFigureModel(BaseModel):
     caption: Optional[str] = Field(
         None, description = "Short VLM-generated caption, or null if skipped/failed"
     )
-    error: Optional[str] = Field(
-        None, description = "Reason the describe call failed, if any"
-    )
+    error: Optional[str] = Field(None, description = "Reason the describe call failed, if any")
     kind: Literal["figure", "page"] = Field(
         "figure",
         description = "Whether this reference is a detected figure or page image",
@@ -1571,9 +1569,7 @@ class ExtractedFigureModel(BaseModel):
             "reference is sent to vision-capable chat models as [Image #1]."
         ),
     )
-    image_width: Optional[int] = Field(
-        None, ge = 1, description = "Width of image_base64 after resize"
-    )
+    image_width: Optional[int] = Field(None, ge = 1, description = "Width of image_base64 after resize")
     image_height: Optional[int] = Field(
         None, ge = 1, description = "Height of image_base64 after resize"
     )
@@ -1585,17 +1581,11 @@ class ExtractDocumentResponse(BaseModel):
     small docs, or as the final SSE event for larger ones.
     """
 
-    schema_version: int = Field(
-        1, description = "Document extraction payload schema version"
-    )
+    schema_version: int = Field(1, description = "Document extraction payload schema version")
     filename: str = Field(..., description = "Original filename uploaded")
-    markdown: str = Field(
-        ..., description = "Layout-aware Markdown extracted from the document"
-    )
+    markdown: str = Field(..., description = "Layout-aware Markdown extracted from the document")
     page_count: int = Field(0, ge = 0, description = "Number of pages in the source")
-    tokens_est: int = Field(
-        0, ge = 0, description = "Rough char/4 token estimate for the markdown"
-    )
+    tokens_est: int = Field(0, ge = 0, description = "Rough char/4 token estimate for the markdown")
     truncated: bool = Field(
         False,
         description = "Whether markdown was clipped to the requested token budget",
@@ -1639,9 +1629,7 @@ class ExtractDocumentResponse(BaseModel):
 class VlmCapabilityModel(BaseModel):
     """Runtime probe result for the currently-loaded model."""
 
-    is_vlm: bool = Field(
-        ..., description = "Whether the active model accepts image inputs"
-    )
+    is_vlm: bool = Field(..., description = "Whether the active model accepts image inputs")
     endpoint_url: Optional[str] = Field(
         None,
         description = "Root URL serving /v1/chat/completions for the active model",
@@ -1665,14 +1653,11 @@ class DocumentSupportResponse(BaseModel):
     for older clients as an informational hint, not a hard request cap.
     """
 
-    schema_version: int = Field(
-        1, description = "Document support payload schema version"
-    )
+    schema_version: int = Field(1, description = "Document support payload schema version")
     extraction_available: bool = Field(
         ...,
         description = (
-            "Whether the document extraction backend successfully imported "
-            "on the server"
+            "Whether the document extraction backend successfully imported on the server"
         ),
     )
     max_visual_payloads: int = Field(

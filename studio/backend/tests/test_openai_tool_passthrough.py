@@ -1222,9 +1222,7 @@ class TestGgufVisionToolRouting:
             ],
         )
 
-        response = self._drive(
-            _openai_chat_completions_impl(payload, self._Request())
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         self._consume_response(response)
 
         assert "kwargs" in captured
@@ -1265,9 +1263,7 @@ class TestGgufVisionToolRouting:
             messages = [{"role": "user", "content": "search once"}],
         )
 
-        response = self._drive(
-            _openai_chat_completions_impl(payload, self._Request())
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
@@ -1304,9 +1300,7 @@ class TestGgufVisionToolRouting:
             ],
         )
 
-        self._drive(
-            _openai_chat_completions_impl(payload, self._Request())
-        )
+        self._drive(_openai_chat_completions_impl(payload, self._Request()))
 
         assert captured["messages"] == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
@@ -1354,9 +1348,7 @@ class TestGgufVisionToolRouting:
             seed = seed,
         )
 
-        response = self._drive(
-            _openai_chat_completions_impl(payload, self._Request())
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         body = json.loads(response.body)
 
         assert seen_seeds == expected
