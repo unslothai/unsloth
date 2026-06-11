@@ -261,7 +261,7 @@ export function ProjectsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search projects"
-              className="h-9 w-52 rounded-full border-none bg-background pl-10 pr-4 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none sm:w-64"
+              className="h-9 w-52 rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card sm:w-64"
               aria-label="Search projects"
             />
           </div>
@@ -271,7 +271,7 @@ export function ProjectsPage() {
               value={sortMode}
               onValueChange={(v) => setSortMode(v as SortMode)}
             >
-              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none">
+              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -286,7 +286,7 @@ export function ProjectsPage() {
                 variant="outline"
                 size="icon"
                 title="Import / Export projects"
-                className="rounded-full border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
+                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>
