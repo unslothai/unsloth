@@ -1,5 +1,7 @@
 # Model defaults for unsloth/Qwen3.5-4B
-# Also applies to: unsloth/Qwen3.5-4B-bnb-4bit, Qwen/Qwen3.5-4B
+# Qwen3.5 is a vision-language family with hybrid linear attention
+# (GatedDeltaNet); all-linear covers the linear-attention projections too.
+# Also applies to: Qwen/Qwen3.5-4B
 
 training:
   trust_remote_code: false
@@ -24,15 +26,13 @@ lora:
   lora_alpha: 16
   lora_dropout: 0.0
   target_modules:
-    - "q_proj"
-    - "k_proj"
-    - "v_proj"
-    - "o_proj"
-    - "gate_proj"
-    - "up_proj"
-    - "down_proj"
+    - "all-linear"
   use_rslora: false
   use_loftq: false
+  finetune_vision_layers: true
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
 
 logging:
   enable_wandb: false

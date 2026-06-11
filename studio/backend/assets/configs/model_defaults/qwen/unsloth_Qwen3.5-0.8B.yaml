@@ -1,7 +1,7 @@
-# Model defaults for unsloth/Qwen3.5-2B
+# Model defaults for unsloth/Qwen3.5-0.8B
 # Qwen3.5 is a vision-language family with hybrid linear attention
 # (GatedDeltaNet); all-linear covers the linear-attention projections too.
-# Also applies to: Qwen/Qwen3.5-2B
+# Also applies to: Qwen/Qwen3.5-0.8B
 
 training:
   trust_remote_code: false
