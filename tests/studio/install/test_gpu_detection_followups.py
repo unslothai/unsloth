@@ -414,9 +414,7 @@ class TestHiddenCvdNotUsable:
         with (
             patch.object(stack_mod.shutil, "which", side_effect = which_map.get),
             patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
-            patch.dict(
-                stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False
-            ),
+            patch.dict(stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False),
         ):
             assert stack_mod._has_rocm_gpu() is True
 
@@ -460,7 +458,8 @@ class TestHiddenCvdNotUsable:
     def test_install_sh_helper_cvd(self, tmp_path, cvd, expected):
         src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         out = self._run_sh_helper(
-            tmp_path, src,
+            tmp_path,
+            src,
             ["_run_bounded", "_cvd_hides_nvidia", "_has_usable_nvidia_gpu"],
             cvd,
         )
@@ -473,7 +472,8 @@ class TestHiddenCvdNotUsable:
     def test_setup_sh_helper_cvd(self, tmp_path, cvd, expected):
         src = SETUP_SH.read_text(encoding = "utf-8")
         out = self._run_sh_helper(
-            tmp_path, src,
+            tmp_path,
+            src,
             ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
             cvd,
         )
