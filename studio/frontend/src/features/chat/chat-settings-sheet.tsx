@@ -749,7 +749,10 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
-      el != null && el.scrollHeight > el.clientHeight + 1,
+      params.systemPrompt.length > 0 &&
+        el != null &&
+        el.clientHeight > 0 &&
+        el.scrollHeight > el.clientHeight + 1,
     );
   }, [params.systemPrompt, open]);
 

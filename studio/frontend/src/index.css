@@ -552,6 +552,7 @@
 	.sidebar-nav-btn[data-state="open"],
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
@@ -562,6 +563,7 @@
 	.dark .sidebar-nav-btn[data-state="open"],
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
