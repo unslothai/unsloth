@@ -417,7 +417,6 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
-        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -431,7 +430,6 @@ try:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         detect_mtp_file,
-        extract_model_size_b,
         load_model_defaults,
     )
     from utils.native_path_leases import (
@@ -450,7 +448,6 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
-        _auto_mode_drops_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -464,7 +461,6 @@ except ImportError:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         detect_mtp_file,
-        extract_model_size_b,
         load_model_defaults,
     )
     from utils.native_path_leases import (
@@ -1025,36 +1021,33 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
-    # A drafter that appeared next to the loaded weights since the last load
-    # changes the launch command (--model-draft) when the mode can use it;
-    # without this, a duplicate /load is deduped and MTP can't engage short
-    # of an unload. Runs last: it stats the filesystem (two dir scans against
-    # the resolved weight path -- covers local dirs and HF cache snapshots
-    # alike), so every pure-memory comparison above short-circuits first.
-    # Skipped when the user owns --spec-type, or when auto drops MTP anyway
-    # (sub-3B with an embedded head and no separate drafter). Resolve both
-    # sides: the stored launch path may be a snapshot symlink while
-    # detect_mtp_file returns the resolved blob.
+    # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
+    # next to the loaded weights changes the launch command (--model-draft),
+    # so a duplicate /load must reload rather than dedupe. Always compare the
+    # detected vs stored drafter when the mode can use one and the user does
+    # not own --spec-type: the resolved-path compare is cheap and handles all
+    # four cases (both None -> match; one None -> reload; equal -> match;
+    # different -> reload), including a drafter deleted out from under a
+    # running server. Runs last: it stats the filesystem, so every pure-memory
+    # comparison above short-circuits first. Resolve both sides since the
+    # stored launch path may be a snapshot symlink while detect_mtp_file
+    # returns the resolved blob.
     if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
         effective_extras = (
             request.llama_extra_args
             if request.llama_extra_args is not None
             else llama_backend.extra_args
         )
-        size_b = extract_model_size_b(llama_backend.model_identifier or "")
         if not _extra_args_set_spec_type(effective_extras):
-            # Detect the drafter first: a separate drafter (Gemma) exempts the
-            # sub-3B drop, so the appeared/disappeared check must run for it too.
             detected = detect_mtp_file(llama_backend.gguf_path)
-            if not _auto_mode_drops_mtp(req_mode, size_b, has_separate_drafter = bool(detected)):
-                stored = llama_backend.mtp_draft_path
-                try:
-                    detected_resolved = Path(detected).resolve() if detected else None
-                    stored_resolved = Path(stored).resolve() if stored else None
-                except OSError:
-                    return False
-                if detected_resolved != stored_resolved:
-                    return False
+            stored = llama_backend.mtp_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
     return True
 
 
