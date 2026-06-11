@@ -109,9 +109,7 @@ def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
     backend = _FakeBackend(active_polls = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    response = asyncio.run(
-        rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
-    )
+    response = asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester"))
     payloads = _progress_payloads(_collect_events(response))
     final = payloads[-1]
     assert final["step"] == 5
