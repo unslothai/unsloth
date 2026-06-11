@@ -472,17 +472,15 @@ def _apply_mistral_reasoning_controls(
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
 def _create_shared_http_client() -> httpx.AsyncClient:
+    # Unsupported env proxy schemes (socks:// etc) raise at construction and
+    # would crash Studio startup (#6090); retry ignoring env proxies instead.
     try:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
         exc_str = str(exc)
-        unsupported_proxy = "Unknown scheme for proxy URL" in exc_str or "socksio" in exc_str
-        if not unsupported_proxy:
+        if "Unknown scheme for proxy URL" not in exc_str and "socksio" not in exc_str:
             raise
-        logger.warning(
-            "external_provider_unsupported_env_proxy",
-            error = exc_str,
-        )
+        logger.warning("Ignoring unsupported environment proxy for the shared HTTP client: %s", exc_str)
         return httpx.AsyncClient(trust_env = False)
 
 
