@@ -27,7 +27,9 @@ def _assigns_from_kwargs_pop(method, target_name, key_name):
     for node in ast.walk(method):
         if not isinstance(node, ast.Assign):
             continue
-        if not any(isinstance(target, ast.Name) and target.id == target_name for target in node.targets):
+        if not any(
+            isinstance(target, ast.Name) and target.id == target_name for target in node.targets
+        ):
             continue
         value = node.value
         if not (
@@ -47,9 +49,7 @@ def _assigns_from_kwargs_pop(method, target_name, key_name):
 
 def _calls_name(method, name):
     return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
         for node in ast.walk(method)
     )
 
