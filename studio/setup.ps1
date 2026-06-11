@@ -1196,7 +1196,15 @@ function Resolve-CudaToolkit {
 $DriverMaxCuda = $null
 try {
     # Bounded: source-build toolkit resolution must not hang on a wedged smi.
-    $smiOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+    # test_resolve_cuda_toolkit.ps1 extracts this function alone into a child
+    # pwsh (no Invoke-NvidiaSmiBounded in scope) and stubs nvidia-smi with a
+    # .ps1 script, so fall back to direct invocation when the bounded runner
+    # is unavailable; production setup.ps1 always has it defined.
+    $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
+        Invoke-NvidiaSmiBounded $NvidiaSmiExe
+    } else {
+        & $NvidiaSmiExe 2>&1 | Out-String
+    }
     # Newer drivers report "CUDA UMD Version: X.Y" instead of "CUDA Version: X.Y"; accept both.
     if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
