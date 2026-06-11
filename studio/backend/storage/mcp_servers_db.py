@@ -28,14 +28,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # use_oauth was added after the first release; backfill for pre-existing DBs.
-    cols = {
-        r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()
-    }
+    # Backfill use_oauth for pre-existing DBs.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
-        conn.execute(
-            "ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0"
-        )
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
 
 
 def get_connection() -> sqlite3.Connection:

@@ -6,7 +6,9 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
+import { ImageIcon, PencilIcon } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -19,26 +21,14 @@ import {
 
 /**
  * Renders the synthetic `_toolEvent` chunks emitted by
- * `_stream_openai_responses` when OpenAI's Responses-API
- * `image_generation` tool fires. The backend stashes the base64
- * PNG/WebP/JPEG (the gpt-image backbone output) on an `image_b64`
- * field of the tool_end event so the JSON result stays small, and the
- * adapter repackages it into a structured `result` shape:
- *
- *   {
- *     image_b64: string,
- *     image_mime: string,        // e.g. "image/png"
- *     size?: string,             // "1024x1024" etc
- *     quality?: string,
- *     background?: string,
- *   }
- *
- * The corresponding `tool_start` carries the prompt as
- * `args.prompt` (after gpt-image's revision pass) plus `args.kind:
- * "image"`. Without this component the generic ToolFallback would
- * print the prompt as JSON args text with an empty Result block --
- * which is exactly the "no image" symptom users hit before this UI
- * landed.
+ * `_stream_openai_responses` when OpenAI's Responses-API `image_generation`
+ * tool fires. The backend stashes the base64 image on `image_b64` of the
+ * tool_end event (keeping the JSON small); the adapter repackages it into a
+ * structured `result` (image_b64, image_mime e.g. "image/png", size? e.g.
+ * "1024x1024", quality?, background?).
+ * The `tool_start` carries the revised prompt as `args.prompt` plus
+ * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
+ * JSON with an empty Result block (the "no image" symptom).
  */
 interface ImageGenerationArgs {
   prompt?: string;
@@ -374,7 +364,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   onClick={handleDownload}
                   aria-label="Download generated image"
                 >
-                  <DownloadIcon className="size-4" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-4" />
                 </Button>
               </div>
             </div>

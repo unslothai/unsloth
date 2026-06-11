@@ -34,6 +34,7 @@ export const en = {
       newChat: "New Chat",
       compare: "Compare",
       search: "Search",
+      hub: "Hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -107,6 +108,16 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a short title from the first message.",
+      helperLlm: {
+        sectionTitle: "Helper LLM",
+        preloadOnStartup: "Pre-cache Helper LLM on startup",
+        preloadOnStartupDescription:
+          "Download and cache the AI Assist helper model in the background when Studio starts. Off by default; AI Assist can still download it on demand when clicked.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
+        loadError: "Failed to load Helper LLM settings.",
+        saveError: "Failed to save Helper LLM settings.",
+      },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:
@@ -187,6 +198,22 @@ export const en = {
         "Download all chats and messages as a JSON file.",
       exportAction: "Export",
       exportingAction: "Exporting...",
+      exportConversations: "Export Recents and Projects",
+      exportConversationsDescription:
+        "Download Recents only, or Recents plus project chats, as Raw JSONL, CSV, or ShareGPT JSONL, combined or one file per chat.",
+      exportConversationsAction: "Export",
+      exportScopeRecents: "Recents",
+      exportScopeAll: "Recents + Projects",
+      exportCombinedSuffix: "(combined)",
+      exportPerChatSuffix: "(per chat)",
+      importChats: "Import chats",
+      importChatsDescription:
+        "Add conversations from a JSONL, NDJSON, or CSV export to Recents.",
+      importChatsAction: "Import",
+      importNoConversations: "No conversations found in file.",
+      importedOneChat: "Imported 1 conversation to Recents.",
+      importedChatCount: "Imported {count} conversations to Recents.",
+      importFailed: "Import failed.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete local chat history from this device.",
       clearAction: "Clear",
@@ -286,8 +313,6 @@ export const en = {
       whatsNew: "What's new",
       feedback: "Feedback",
       reportIssue: "Report an issue",
-      downloadDocs: "Download",
-      downloadDocsTooltip: "Download documentation for offline use or RAG",
       dangerZone: "Danger zone",
       shutDownStudio: "Shut down Unsloth Studio",
       shutDownStudioDescription:

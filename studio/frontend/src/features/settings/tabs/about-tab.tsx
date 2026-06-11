@@ -4,7 +4,7 @@
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
-import { authFetch, getAuthToken } from "@/features/auth";
+import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -12,7 +12,6 @@ import {
   ArrowUpRight01Icon,
   Book03Icon,
   Cancel01Icon,
-  Download01Icon,
   MessageNotification01Icon,
   NewReleasesIcon,
 } from "@hugeicons/core-free-icons";
@@ -95,26 +94,6 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
-async function downloadDocs(): Promise<void> {
-  try {
-    const res = await authFetch("/api/settings/docs/download");
-    if (!res.ok) {
-      throw new Error("Failed to download documentation");
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "unsloth-docs.md";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    console.error("Failed to download docs:", error);
-  }
-}
-
 export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -188,27 +167,16 @@ export function AboutTab() {
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>
-          <div className="flex items-center gap-3">
-            <a
-              href="https://unsloth.ai/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-            >
-              <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
-              unsloth.ai/docs
-              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-            </a>
-            <button
-              type="button"
-              onClick={() => void downloadDocs()}
-              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              title={t("settings.about.downloadDocsTooltip")}
-            >
-              <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-              {t("settings.about.downloadDocs")}
-            </button>
-          </div>
+          <a
+            href="https://unsloth.ai/docs"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
+            unsloth.ai/docs
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
         </SettingsRow>
         <SettingsRow label={t("settings.about.releaseNotes")}>
           <a
