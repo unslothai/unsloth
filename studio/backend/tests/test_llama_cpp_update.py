@@ -114,7 +114,7 @@ def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
 def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
     # Markerless source build with a prebuilt now available for the host: surface
     # the update. Unknown installed version (source build) is treated as behind.
-    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
@@ -131,7 +131,7 @@ def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
 def test_status_source_build_compares_llama_tag(monkeypatch, tmp_path):
     # release_tag may be a fork wrapper (v1.0); compare/display the upstream
     # llama_tag (b9457) so a source build is not wrongly judged newer.
-    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
@@ -166,7 +166,7 @@ def test_llama_install_root_pinned_returns_none(monkeypatch, tmp_path):
 
 def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
     # A source build already newer than the latest prebuilt is not nagged.
-    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
@@ -659,3 +659,39 @@ def test_llama_install_root_finds_llama_cpp_ancestor(monkeypatch, tmp_path):
     binary.write_text("stub")
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     assert upd._llama_install_root(str(binary)) == root
+
+
+def test_llama_install_root_unmanaged_path_returns_none(monkeypatch, tmp_path):
+    # A binary on PATH (no marker, no env pin, no llama.cpp ancestor) is foreign:
+    # installing elsewhere would not replace it, so report no manageable root.
+    binary = tmp_path / "usr" / "local" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    assert upd._llama_install_root(str(binary)) is None
+
+
+def test_llama_install_root_unsloth_env_dir(monkeypatch, tmp_path):
+    # UNSLOTH_LLAMA_CPP_PATH dir holding the active binary is the managed root.
+    root = tmp_path / "vendor" / "llama"
+    binary = root / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+    assert upd._llama_install_root(str(binary)) == root
+
+
+def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
+    # A direct POST on a source build already newer than the prebuilt must not
+    # downgrade it; start_update mirrors the detection suppression.
+    install_dir = tmp_path / "llama.cpp"
+    binary = install_dir / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # no marker
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    _prebuilt(monkeypatch, release_tag = "b9518")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9600)
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "up_to_date"

@@ -172,37 +172,38 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     return n if n > 1 else None
 
 
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        p, r = path.resolve(), root.resolve()
+    except (OSError, ValueError):
+        p, r = path, root
+    return p == r or r in p.parents
+
+
 def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
-    """The llama.cpp install root with or without a marker: marker dir first,
-    then UNSLOTH_LLAMA_CPP_PATH, then the nearest 'llama.cpp' ancestor of the
-    binary, then studio_root()/llama.cpp (custom) or ~/.unsloth/llama.cpp
-    (legacy) -- mirroring _find_llama_server_binary's roots."""
+    """The Studio-managed llama.cpp root the active binary lives under, or None
+    when the binary is unmanaged. Installing anywhere the active binary is not
+    would not replace what _find_llama_server_binary runs (which prefers a pinned
+    LLAMA_SERVER_PATH, then UNSLOTH_LLAMA_CPP_PATH, then a llama.cpp tree), so we
+    refuse rather than silently install into an inactive or foreign tree."""
     marked = _install_dir_for(binary)
     if marked is not None:
         return marked
-    env = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-    if env:
-        return Path(env)
-    if binary:
-        for parent in Path(binary).parents:
-            if parent.name == "llama.cpp":
-                return parent
-    # A pinned LLAMA_SERVER_PATH always wins in _find_llama_server_binary, so a
-    # prebuilt installed into the default root would be ignored: don't manage it.
+    if not binary:
+        return None
+    # LLAMA_SERVER_PATH is an explicit user pin that always wins in discovery;
+    # never auto-replace its tree (even a user's own llama.cpp checkout).
     if os.environ.get("LLAMA_SERVER_PATH"):
         return None
-    try:
-        from utils.paths.storage_roots import studio_root
-
-        sr = studio_root()
-        legacy = Path.home() / ".unsloth" / "studio"
-        try:
-            is_legacy = sr.resolve() == legacy.resolve()
-        except (OSError, ValueError):
-            is_legacy = sr == legacy
-        return (Path.home() / ".unsloth" / "llama.cpp") if is_legacy else sr / "llama.cpp"
-    except Exception:  # pragma: no cover - defensive
-        return Path.home() / ".unsloth" / "llama.cpp"
+    p = Path(binary)
+    env = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+    if env and _is_under(p, Path(env)):
+        return Path(env)
+    for parent in p.parents:
+        if parent.name == "llama.cpp":
+            return parent
+    # PATH / system / custom install: not a managed tree, so do not offer.
+    return None
 
 
 def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
@@ -416,10 +417,11 @@ def start_update() -> dict:
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
     else:
-        # Source build / custom path: install the official prebuilt in place if
-        # one exists for this host (asset carries the ROCm gfx for forwarding).
-        res = _resolve_prebuilt_for_host()
-        if not res or not res.get("prebuilt_available"):
+        # Source build / custom path: only proceed when the same detection logic
+        # would offer the update (prebuilt exists, install is behind, root is
+        # manageable), so a direct POST cannot downgrade a newer source build.
+        src = _source_build_status(binary, force_refresh = True) if binary else None
+        if src is None:
             return {
                 "started": False,
                 "reason": "no_prebuilt_available",
@@ -429,10 +431,18 @@ def start_update() -> dict:
                 ),
                 "job": get_update_status()["job"],
             }
+        if not src.get("update_available"):
+            return {
+                "started": False,
+                "reason": "up_to_date",
+                "message": "The installed llama.cpp build is already at or newer than the latest prebuilt.",
+                "job": get_update_status()["job"],
+            }
+        res = _resolve_prebuilt_for_host()
         install_dir = _llama_install_root(binary)
-        repo = res.get("repo") or DEFAULT_PUBLISHED_REPO
+        repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
-        asset = res.get("asset")
+        asset = (res or {}).get("asset")
 
     if install_dir is None:
         return {

@@ -88,6 +88,21 @@ def test_published_repo_for_host():
         )
         == FORK
     )
+    # Linux with AMD tooling but no probed GPU -> fork (setup.sh routes on tooling).
+    assert (
+        ilp.published_repo_for_host(
+            _host(is_linux = True, is_x86_64 = True), linux_amd_tooling_present = True
+        )
+        == FORK
+    )
+    # The tooling hint is Linux-only: Windows CPU stays on ggml-org.
+    assert (
+        ilp.published_repo_for_host(
+            _host(system = "Windows", is_windows = True, is_x86_64 = True),
+            linux_amd_tooling_present = True,
+        )
+        == UPSTREAM
+    )
 
 
 def _run_resolve(monkeypatch, capsys, plans_or_exc):
@@ -132,4 +147,29 @@ def test_resolve_prebuilt_available(monkeypatch, capsys):
 def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     out = _run_resolve(monkeypatch, capsys, ilp.PrebuiltFallback("no macOS asset"))
     assert out["prebuilt_available"] is False
+    assert out["repo"] == FORK
+
+
+def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
+    # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
+    # fork so a HIP source build is not offered an upstream CPU prebuilt.
+    monkeypatch.setattr(
+        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True)
+    )
+    monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
+    seen = {}
+
+    def _resolver(tag, host, repo, published_release_tag):
+        seen["repo"] = repo
+        raise ilp.PrebuiltFallback("no asset")
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert seen["repo"] == FORK
     assert out["repo"] == FORK

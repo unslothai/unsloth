@@ -3045,16 +3045,17 @@ def _apply_host_overrides(
     return host
 
 
-def published_repo_for_host(host: HostInfo) -> str:
+def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool = False) -> str:
     """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
     fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
     -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
-    or ROCm) -> the fork. Pure (no I/O); mirrors the shell setup routing."""
+    or ROCm) -> the fork. linux_amd_tooling_present mirrors setup.sh routing Linux
+    hosts that expose AMD tooling (rocminfo/amd-smi/hipconfig/hipinfo) to the fork
+    even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
     if host.is_macos:
         return DEFAULT_PUBLISHED_REPO
-    if not (host.has_usable_nvidia or host.has_rocm):
-        return UPSTREAM_REPO
-    return DEFAULT_PUBLISHED_REPO
+    has_gpu = host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
+    return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
 
 
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
@@ -6805,8 +6806,13 @@ def main() -> int:
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
+        # setup.sh routes Linux hosts with AMD tooling to the fork even when no GPU
+        # is probed; mirror that so a HIP source build is not offered a CPU prebuilt.
+        amd_tooling = host.is_linux and any(
+            shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo")
+        )
         repo = (
-            published_repo_for_host(host)
+            published_repo_for_host(host, linux_amd_tooling_present = amd_tooling)
             if args.published_repo == DEFAULT_PUBLISHED_REPO
             else args.published_repo
         )
