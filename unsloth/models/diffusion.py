@@ -24,6 +24,9 @@ import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
+from ._utils import is_bfloat16_supported
+from .llama import logger
+
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
 
 # transformers model_type strings routed to this slow path
@@ -134,8 +137,13 @@ class FastDiffusionModel:
         return_tokenizer = True,
         **kwargs,
     ):
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
+            dtype = torch.float16
+        assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
         # Honor an explicit local_files_only; else fall back to the offline env vars.
         local_files_only = kwargs.pop("local_files_only", None)
