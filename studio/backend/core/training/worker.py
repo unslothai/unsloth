@@ -1727,7 +1727,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
-            _wandb_sensitive = {"hf_token", "wandb_token"}
+            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
                 config = {k: v for k, v in config.items() if k not in _wandb_sensitive},

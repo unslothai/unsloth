@@ -32,16 +32,27 @@ _MAX_VISION_IMAGE_SIZE = 2048
 class S3Config(BaseModel):
     """S3 bucket configuration for loading datasets from AWS S3"""
 
+    # Accept both snake_case and the frontend's camelCase field names.
+    model_config = ConfigDict(populate_by_name = True)
+
     bucket: str = Field(..., description = "S3 bucket name")
     region: str = Field("us-east-1", description = "AWS region")
     prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
     access_key_id: Optional[str] = Field(
-        None, description = "AWS access key ID (optional if using IAM role)"
+        None,
+        alias = "accessKeyId",
+        description = "AWS access key ID (optional if using IAM role)",
     )
     secret_access_key: Optional[str] = Field(
-        None, description = "AWS secret access key (optional if using IAM role)"
+        None,
+        alias = "secretAccessKey",
+        description = "AWS secret access key (optional if using IAM role)",
     )
-    use_iam_role: bool = Field(False, description = "Use IAM role credentials instead of access keys")
+    use_iam_role: bool = Field(
+        False,
+        alias = "useIamRole",
+        description = "Use IAM role credentials instead of access keys",
+    )
 
     @model_validator(mode = "after")
     def _check_credentials(self) -> "S3Config":
