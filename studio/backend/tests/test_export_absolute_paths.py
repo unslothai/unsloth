@@ -247,10 +247,7 @@ def _install_export_backend_stubs(monkeypatch):
     utils_paths.resolve_output_dir = lambda value = None: Path(value or "outputs")
 
 
-def test_gguf_export_cleans_temp_dir_when_post_processing_fails(
-    tmp_path,
-    monkeypatch,
-):
+def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkeypatch):
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module("test_core_export_backend", "core/export/export.py", monkeypatch)
 
