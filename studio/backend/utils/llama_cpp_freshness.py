@@ -105,11 +105,18 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
-    """GitHub API call. None on any failure (offline, rate-limited, etc)."""
+    """Newest published release tag for `repo`, by publish time.
+
+    Resolves "latest" the way install_llama_prebuilt.py does (newest
+    non-draft/non-prerelease by ``published_at``), NOT via GitHub's
+    ``/releases/latest`` pointer. That pointer sorts by commit date and can lag
+    behind the build the installer actually installs, so detection and apply
+    disagreed -- the cause of the downgrade/sticky banner. None on any failure
+    (offline, rate-limited, etc)."""
     import urllib.error
     import urllib.request
 
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "unsloth-studio-freshness-check",
@@ -129,8 +136,20 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     ) as exc:
         logger.debug("freshness fetch failed", repo = repo, error = str(exc))
         return None
-    tag = data.get("tag_name")
-    return tag if isinstance(tag, str) and tag else None
+    if not isinstance(data, list):
+        return None
+    published = [
+        r for r in data
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    if not published:
+        return None
+    newest = max(published, key = lambda r: r.get("published_at") or "")
+    return newest["tag_name"]
 
 
 def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
