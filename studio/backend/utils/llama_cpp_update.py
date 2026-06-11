@@ -297,9 +297,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         behind = installed_build < latest_build
     else:
         behind = installed != latest
-    update_available = bool(
-        freshness.get("has_marker") and installed and latest and behind
-    )
+    update_available = bool(freshness.get("has_marker") and installed and latest and behind)
 
     with _job_lock:
         job = dict(_job)
