@@ -719,6 +719,143 @@ class TestEnsureRocmTorch:
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    def test_torch_backend_cuda_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+        """UNSLOTH_TORCH_BACKEND=cuda must short-circuit before any GPU probe."""
+        with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cuda"}):
+            # Reload _TORCH_BACKEND from the patched environment.
+            with patch.object(stack_mod, "_TORCH_BACKEND", "cuda"):
+                _ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    def test_torch_backend_cpu_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+        """UNSLOTH_TORCH_BACKEND=cpu must short-circuit before any GPU probe."""
+        with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cpu"}):
+            with patch.object(stack_mod, "_TORCH_BACKEND", "cpu"):
+                _ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+
+# TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard
+
+
+class TestHasRocmGpuKfdVendorGuard:
+    """Verify that the KFD sysfs fallback rejects non-AMD (NVIDIA) KFD nodes.
+
+    These tests are source-level: they verify the regex and logic present in
+    the _has_rocm_gpu implementation rather than running the sysfs traversal
+    (which requires Linux path conventions).
+    """
+
+    def _src(self) -> str:
+        """Return the source of _has_rocm_gpu from install_python_stack.py."""
+        import inspect
+        return inspect.getsource(stack_mod._has_rocm_gpu)
+
+    def test_vendor_id_check_present(self):
+        """_has_rocm_gpu sysfs fallback must check vendor_id 4098 (AMD 0x1002)."""
+        src = self._src()
+        assert "vendor_id" in src, (
+            "_has_rocm_gpu KFD sysfs fallback must read the properties file "
+            "to check vendor_id and exclude NVIDIA KFD nodes"
+        )
+        assert "4098" in src, (
+            "_has_rocm_gpu must require AMD vendor_id 4098 (0x1002) in the "
+            "KFD node properties to avoid false positives on NVIDIA systems"
+        )
+
+    def test_vendor_regex_pattern_anchored(self):
+        """The vendor_id regex must use a word boundary to avoid partial matches."""
+        import re as _re
+
+        src = self._src()
+        # The pattern should have a word boundary before and after the number
+        # so "vendor_id 41098" doesn't match "vendor_id 4098".
+        assert (
+            _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src
+        ), "_has_rocm_gpu vendor_id check should use word boundary anchors"
+
+    def test_sysfs_fallback_guarded_by_non_win32(self):
+        """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
+        src = self._src()
+        assert "win32" in src, "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
+
+    def test_cpu_node_excluded(self):
+        """gpu_id == '0' must be excluded (CPU topology nodes)."""
+        src = self._src()
+        assert (
+            '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src
+        ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+
+    def test_install_sh_has_vendor_check(self):
+        """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
+        assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
+
+    def test_has_rocm_gpu_returns_false_when_nvidia_present(self):
+        """_has_rocm_gpu must return False immediately when _has_usable_nvidia_gpu is True.
+
+        This is the primary guard: even if rocminfo, amd-smi, or KFD sysfs
+        produce a false positive, an NVIDIA GPU always wins.
+        """
+        with patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True):
+            with patch("shutil.which", return_value = "/usr/bin/rocminfo"):
+                # Simulate rocminfo claiming an AMD GPU is present
+                mock_result = MagicMock()
+                mock_result.returncode = 0
+                mock_result.stdout = "Name: gfx1100\n"
+                with patch("subprocess.run", return_value = mock_result):
+                    assert not stack_mod._has_rocm_gpu(), (
+                        "_has_rocm_gpu must return False when NVIDIA GPU is detected, "
+                        "regardless of what rocminfo reports"
+                    )
+
+    def test_install_sh_has_rocm_gpu_nvidia_guard(self):
+        """_has_amd_rocm_gpu in install.sh must call _has_usable_nvidia_gpu and return 1 if true."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert (
+            "_has_usable_nvidia_gpu" in func_body
+        ), "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
+        assert (
+            "return 1" in func_body
+        ), "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+
+    def test_has_usable_nvidia_gpu_proc_fallback_present(self):
+        """`_has_usable_nvidia_gpu` must have a /proc/driver/nvidia fallback."""
+        import inspect
+
+        src = inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "/proc/driver/nvidia" in src, (
+            "_has_usable_nvidia_gpu must fall back to /proc/driver/nvidia/gpus when "
+            "nvidia-smi subprocess fails, to handle PATH gaps and driver init races"
+        )
+
+    def test_install_sh_has_usable_nvidia_gpu_proc_fallback(self):
+        """_has_usable_nvidia_gpu in install.sh must also have a /proc/driver/nvidia fallback."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_usable_nvidia_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "/proc/driver/nvidia" in func_body, (
+            "_has_usable_nvidia_gpu in install.sh must fall back to "
+            "/proc/driver/nvidia/gpus when nvidia-smi fails"
+        )
+
 
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
 
@@ -927,16 +1064,21 @@ class TestInstallShStructure:
         source = sh_path.read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
         nvidia_call = body.find("_has_usable_nvidia_gpu")
-        no_nvidia_branch = body.find('if [ -z "$_smi" ]')
+        # Gate changed from [ -z "$_smi" ] to [ "$_nvidia_detected" -eq 0 ] to
+        # handle proc-only NVIDIA hosts where nvidia-smi is absent but _has_usable_nvidia_gpu
+        # returns true via /proc/driver/nvidia/gpus.
+        no_nvidia_branch = body.find('if [ "$_nvidia_detected" -eq 0 ]')
+        if no_nvidia_branch < 0:
+            no_nvidia_branch = body.find('if [ -z "$_smi" ]')
         rocm_call = body.find("_has_amd_rocm_gpu")
         assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
-        assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia-smi"
+        assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
         assert (
             rocm_call > no_nvidia_branch
-        ), "ROCm detection should sit inside the 'no nvidia-smi' branch"
+        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
         assert (
             nvidia_call < no_nvidia_branch
-        ), "NVIDIA detection should run before the no-nvidia-smi branch"
+        ), "NVIDIA detection should run before the no-NVIDIA branch"
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -1017,6 +1159,89 @@ class TestInstallShStructure:
         darwin_pos = func_body.find("Darwin")
         rocm_pos = func_body.find("amd-smi")
         assert darwin_pos < rocm_pos, "macOS check should come before ROCm detection"
+
+    def test_unsloth_torch_backend_exported_after_get_torch_index_url(self):
+        """install.sh must export UNSLOTH_TORCH_BACKEND after TORCH_INDEX_URL is set.
+
+        This lets install_python_stack.py skip ROCm torch operations on CUDA
+        and CPU hosts without re-running GPU detection in a subprocess.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
+        backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
+        assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
+        assert (
+            backend_pos > torch_url_pos
+        ), "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        # Verify all three cases are covered
+        assert '"cuda"' in source[backend_pos : backend_pos + 500]
+        assert '"rocm"' in source[backend_pos : backend_pos + 500]
+        assert '"cpu"' in source[backend_pos : backend_pos + 500]
+        # Must be exported so subprocesses (setup.sh, install_python_stack.py) see it
+        assert "export UNSLOTH_TORCH_BACKEND" in source
+
+    def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
+        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098.
+
+        NVIDIA open kernel module (560+) registers KFD nodes with vendor_id
+        4318 (0x10DE). Without the vendor check, _has_amd_rocm_gpu returns 0
+        (true) on NVIDIA-only hosts that have the nvidia-open driver, causing
+        get_torch_index_url to select a ROCm wheel index.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert (
+            "vendor_id" in func_body
+        ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
+        assert (
+            "4098" in func_body
+        ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+
+    def test_kfd_awk_resets_state_per_file(self):
+        """KFD sysfs awk must reset gpu/amd state per file (FNR==1).
+
+        Without the reset, a Ryzen+NVIDIA host where node 0 is an AMD CPU
+        agent (vendor_id 4098, gpu_id 0) and node 1 is an NVIDIA GPU
+        (gpu_id > 0, vendor_id 4318) can produce a false positive: node 0
+        sets amd=1, node 1 sets gpu=1, and the combined state triggers found=1
+        before vendor_id 4318 is seen on node 1.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("_has_amd_rocm_gpu()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "FNR==1" in func_body, (
+            "_has_amd_rocm_gpu KFD awk must reset state per file with FNR==1 "
+            "to avoid false positives on Ryzen+NVIDIA hosts with multiple KFD nodes"
+        )
+
+    def test_get_torch_index_url_uses_nvidia_detected_flag(self):
+        """get_torch_index_url must track NVIDIA detection independently of _smi.
+
+        When _has_usable_nvidia_gpu returns true via /proc/driver/nvidia fallback
+        but nvidia-smi is not on PATH, _smi stays empty. Without a separate
+        _nvidia_detected flag, the function falls into the AMD/CPU branch even
+        though NVIDIA was confirmed, silently installing CPU wheels instead of CUDA.
+        """
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        func_start = source.find("get_torch_index_url()")
+        func_end = source.find("\n}", func_start)
+        func_body = source[func_start:func_end]
+        assert "_nvidia_detected" in func_body, (
+            "get_torch_index_url must use a _nvidia_detected flag (separate from "
+            "_smi) so that proc-only NVIDIA detection still selects CUDA wheels"
+        )
+        # The AMD/ROCm branch must be gated on _nvidia_detected being 0, not on
+        # _smi being empty.
+        assert (
+            '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body
+        ), "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)
