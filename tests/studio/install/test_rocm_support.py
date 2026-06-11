@@ -2239,10 +2239,11 @@ class TestRuntimeBnbRocmSourceGuards:
 
     def test_fallback_prefers_seeded_value_over_hardcoded_72(self):
         """A failed redetect must not downgrade a persisted suffix to '72'."""
-        main_source = self._MAIN_PATH.read_text(encoding = "utf-8")
-        assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in main_source
-        worker_source = self._TRAINING_WORKER_PATH.read_text(encoding = "utf-8")
-        assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION")\n' in worker_source
+        for path in (self._MAIN_PATH, self._TRAINING_WORKER_PATH):
+            source = path.read_text(encoding = "utf-8")
+            assert (
+                '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source
+            ), path.name
 
     def test_main_requires_found_rocm_dll(self):
         """HIP_PATH/ROCM_PATH alone (HIP SDK on a CUDA/CPU box) must not force
@@ -2251,12 +2252,11 @@ class TestRuntimeBnbRocmSourceGuards:
         assert "if _found_rocm_bnb:" in source
         assert "_hip_env" not in source
 
-    def test_worker_does_not_force_72_without_dll_or_seed(self):
-        """With no DLL found and nothing seeded, the worker must not write a
-        blind '72' override."""
+    def test_worker_requires_found_rocm_dll(self):
+        """No DLL found: the worker must not write any override or touch the
+        seeded marker (later import fixes must still see sitecustomize)."""
         source = self._TRAINING_WORKER_PATH.read_text(encoding = "utf-8")
-        assert 'os.environ.get("BNB_ROCM_VERSION") or "72"' not in source
-        assert "if _bnb_rocm_ver:" in source
+        assert "if _found_rocm_bnb:" in source
 
 
 class TestDetectBnbRocmDllVer:
