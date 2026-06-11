@@ -1818,7 +1818,13 @@ def apply_gpu_ids(gpu_ids) -> None:
             )
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
-        os.environ["ROCR_VISIBLE_DEVICES"] = value
+        # ROCR_VISIBLE_DEVICES operates at the HSA agent level and uses
+        # different indexing semantics to HIP_VISIBLE_DEVICES. Setting it
+        # to a physical GPU index breaks multi-GPU ROCm systems where the
+        # parent already set ROCR_VISIBLE_DEVICES (e.g. "0,1"): narrowing
+        # to "1" causes torch.cuda.is_available() to return False in the
+        # worker subprocess. HIP_VISIBLE_DEVICES is sufficient for GPU
+        # selection on ROCm -- leave ROCR_VISIBLE_DEVICES inherited.
     _visible_gpu_count = None
     if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)

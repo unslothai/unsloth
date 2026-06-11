@@ -1614,14 +1614,18 @@ class TestApplyGpuIdsRocmFallback:
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'getattr(_torch.version, "hip", None)' in func_body
 
-    def test_apply_gpu_ids_sets_hip_and_rocr_visible_devices(self):
-        """apply_gpu_ids should set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES on ROCm."""
+    def test_apply_gpu_ids_sets_hip_but_not_rocr_visible_devices(self):
+        """apply_gpu_ids should set HIP_VISIBLE_DEVICES but leave ROCR_VISIBLE_DEVICES inherited.
+
+        ROCR_VISIBLE_DEVICES uses HSA agent-level indexing, not physical GPU indices.
+        Overwriting it breaks multi-GPU ROCm systems (see issue #6118).
+        """
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'os.environ["HIP_VISIBLE_DEVICES"] = value' in func_body
-        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' in func_body
+        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' not in func_body
 
     def test_apply_gpu_ids_rocm_fallback_is_guarded_by_try_except(self):
         """torch import in apply_gpu_ids must be wrapped in try/except so a missing torch never crashes."""

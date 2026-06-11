@@ -3536,7 +3536,7 @@ class LlamaCppBackend:
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # HIP/ROCR set, so set those too.
+                # set, so set HIP_VISIBLE_DEVICES too.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -3544,7 +3544,19 @@ class LlamaCppBackend:
                         import torch as _torch
                         if getattr(_torch.version, "hip", None) is not None:
                             env["HIP_VISIBLE_DEVICES"] = pinned
-                            env["ROCR_VISIBLE_DEVICES"] = pinned
+                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
+                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
+                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
+                            # setting both with the same physical indices applies
+                            # the mask twice: ROCR reduces the visible set and
+                            # re-indexes it from 0, then HIP indexes into the
+                            # already-reduced set. A single non-zero pin (e.g.
+                            # "1") then points out of range at the HIP layer, HIP
+                            # enumerates 0 devices, and llama.cpp falls back to
+                            # CPU ("ggml_cuda_init: no ROCm-capable device is
+                            # detected"). The HIP mask alone narrows correctly;
+                            # clear any inherited ROCR mask so it can't double up.
+                            env.pop("ROCR_VISIBLE_DEVICES", None)
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 

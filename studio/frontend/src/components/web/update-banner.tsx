@@ -2,13 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { usePlatformStore } from "@/config/env";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-const STUDIO_UPDATE_CMD = "unsloth studio update";
+const STUDIO_INSTALL_UNIX_CMD =
+  "curl -fsSL https://unsloth.ai/install.sh | sh";
+const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -20,6 +23,11 @@ export function WebUpdateBanner({
   enabled = true,
 }: WebUpdateBannerProps): ReactElement | null {
   const { status, dismiss } = useWebUpdateCheck({ enabled });
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const installCmd =
+    deviceType === "windows"
+      ? STUDIO_INSTALL_WINDOWS_CMD
+      : STUDIO_INSTALL_UNIX_CMD;
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -36,7 +44,7 @@ export function WebUpdateBanner({
   }
 
   async function handleCopyCommand() {
-    if (!(await copyToClipboard(STUDIO_UPDATE_CMD))) {
+    if (!(await copyToClipboard(installCmd))) {
       return;
     }
     setCopiedVersion(status?.latestVersion ?? null);
@@ -89,8 +97,8 @@ export function WebUpdateBanner({
                   Package update available: {status.latestVersion}
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Installed package: {status.currentVersion}. To update Studio,
-                  run this in your terminal, then restart Studio.
+                  Installed package: {status.currentVersion}. To update Unsloth,
+                  run this in your terminal, then restart Unsloth.
                 </p>
               </div>
             </div>
