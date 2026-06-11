@@ -28,7 +28,8 @@ pytest.importorskip("fastapi")
 
 
 def _load_route():
-    auth_pkg = types.ModuleType("auth"); auth_pkg.__path__ = []
+    auth_pkg = types.ModuleType("auth")
+    auth_pkg.__path__ = []
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: "test"
     sys.modules.setdefault("auth", auth_pkg)
@@ -47,9 +48,15 @@ rl = _load_route()
 
 def test_status_response_exposes_source_build():
     payload = {
-        "supported": True, "update_available": True, "stale": False,
-        "installed_tag": None, "latest_tag": "b9585", "published_repo": "unslothai/llama.cpp",
-        "installed_at_utc": None, "age_days": None, "source_build": True,
+        "supported": True,
+        "update_available": True,
+        "stale": False,
+        "installed_tag": None,
+        "latest_tag": "b9585",
+        "published_repo": "unslothai/llama.cpp",
+        "installed_at_utc": None,
+        "age_days": None,
+        "source_build": True,
         "job": {"state": "idle"},
     }
     model = rl.LlamaUpdateStatusResponse(**payload)
@@ -61,13 +68,18 @@ def test_status_response_exposes_source_build():
 def test_status_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 
-    def fake_status(force_refresh=False):
+    def fake_status(force_refresh = False):
         seen["thread"] = threading.current_thread()
-        return {"supported": True, "update_available": True, "source_build": True,
-                "latest_tag": "b9585", "job": {"state": "idle"}}
+        return {
+            "supported": True,
+            "update_available": True,
+            "source_build": True,
+            "latest_tag": "b9585",
+            "job": {"state": "idle"},
+        }
 
     monkeypatch.setattr(rl, "get_update_status", fake_status)
-    out = asyncio.run(rl.llama_update_status(force_refresh=False, current_subject="t"))
+    out = asyncio.run(rl.llama_update_status(force_refresh = False, current_subject = "t"))
     assert out.source_build is True
     # Detection ran in a worker thread, not the event-loop thread.
     assert seen["thread"] is not threading.main_thread()
@@ -81,6 +93,6 @@ def test_update_handler_runs_off_event_loop(monkeypatch):
         return {"started": True, "reason": None, "job": {"state": "running"}}
 
     monkeypatch.setattr(rl, "start_update", fake_start)
-    out = asyncio.run(rl.llama_update(current_subject="t"))
+    out = asyncio.run(rl.llama_update(current_subject = "t"))
     assert out.started is True
     assert seen["thread"] is not threading.main_thread()
