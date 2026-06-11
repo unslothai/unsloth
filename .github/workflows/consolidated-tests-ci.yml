@@ -334,21 +334,11 @@ jobs:
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
       - name: generation correctness guards (HARD GATE)
-        # Two deterministic CPU guards for generation bug classes that shipped
-        # to users because nothing tested them:
-        # 1. tests/utils/test_prepare_inputs_leftpad.py - left-padded batched
-        #    generation (issues #1066 / #3699: position_ids from cache_position,
-        #    truncated 2D mask; fixed by #2216 + #4100). Validated to fail on
-        #    the pre-#2216 and pre-#4100 code states; staging proof:
-        #    danielhanchen/unsloth-staging-2 PR 170 (green) / PR 172 (red).
-        # 2. tests/utils/test_rope_scaling_drift.py - config.rope_scaling
-        #    dropped by the replaced rotary classes (issue #2405: Llama-3.1
-        #    gibberish past ~29K tokens because llama3 rope scaling was
-        #    silently ignored on the FastLanguageModel path). Validated to
-        #    fail on the unfixed code state.
-        # Both files put stdlib-ast-only checks first (survive unsloth import
-        # breakage) and behavioral checks second (real functions on CPU via
-        # the tests/conftest.py CUDA spoof).
+        # Deterministic CPU guards, each validated to fail on its pre-fix code:
+        # leftpad = batched left-padded generation (#1066/#3699, fixed by
+        # #2216 + #4100; staging proof: unsloth-staging-2 PRs 170/172);
+        # rope_scaling_drift = config.rope_scaling dropped by replaced rotary
+        # classes (#2405). AST checks run first so import breakage cannot mask them.
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_prepare_inputs_leftpad.py \

@@ -1,33 +1,14 @@
-"""Regression guard for RoPE scaling being silently dropped (issue #2405).
+"""Guard for config.rope_scaling being silently dropped (issue #2405).
 
-Llama-3.1 (and any model with `config.rope_scaling`) ships an `inv_freq`
-rescaling, e.g. `{"rope_type": "llama3", "factor": 8.0, ...}`. Unsloth replaces
-transformers' rotary classes with its own (`unsloth/models/llama.py`), but the
-*config* constructor path of the base `LlamaRotaryEmbedding` only reads
-`rope_theta`, `head_dim` and `max_position_embeddings`. It never inspects
-`config.rope_scaling`, so the scaled `LlamaExtendedRotaryEmbedding` is only used
-when the (legacy) `LlamaAttention.__init__` rewrite in `patch_llama_rope_scaling`
-fires. On modern transformers (rotary moved to `LlamaModel`) that rewrite no
-longer matches, the unscaled base class wins, and long-context inference
-(> ~32k tokens) collapses into repeated-pattern gibberish (issue #2405).
+Unsloth's replacement rotary classes ignored rope_scaling when constructed
+from a config (the modern-transformers path), so Llama-3.1 ran with unscaled
+RoPE and collapsed into gibberish past ~32K tokens.
 
-Three layers, deterministic:
-
-  1. AST structural tripwire (no unsloth import): parse llama.py and assert the
-     config path of `LlamaRotaryEmbedding.__init__` references `rope_scaling`
-     and wires into `_compute_config_rope_inv_freq`.
-  2. CPU behavioral checks: call `_compute_config_rope_inv_freq` (the pure
-     function the constructor delegates to) and assert the result matches
-     transformers' `ROPE_INIT_FUNCTIONS[rope_type]`, for dict and object-style
-     rope_scaling. No rotary instantiation, so this runs on GPU-less CI.
-  3. CUDA behavioral checks (skipped without a real device, probed by actually
-     allocating a tensor so import-time CUDA spoofs cannot fool the gate):
-     instantiate the real class and verify inv_freq, the cos cache at long
-     positions and persistence across extend_rope_embedding. The constructor
-     builds per-device caches via torch.cuda, so it cannot run on CPU.
-
-Layers 2 and 3 FAIL on the unfixed code (inv_freq is unscaled for a llama3
-config). Pattern mirrors tests/utils/test_prepare_inputs_leftpad.py.
+Layers: (1) AST tripwire, stdlib only; (2) CPU checks of the pure helper
+_compute_config_rope_inv_freq against transformers' ROPE_INIT_FUNCTIONS;
+(3) CUDA checks instantiating the real class (skipped without a real device,
+probed by allocating a tensor so import-time CUDA spoofs cannot fool the gate).
+Layers 2 and 3 fail on the unfixed code.
 """
 
 import ast
@@ -57,8 +38,7 @@ LLAMA_PY = REPO_ROOT / "unsloth" / "models" / "llama.py"
 
 CLASS_NAME = "LlamaRotaryEmbedding"
 
-# A Llama-3.1-style rope_scaling block (matches the hardcoded grid-search
-# constants in LlamaExtendedRotaryEmbedding._apply_inv_freq_scaling).
+# Llama-3.1-style rope_scaling.
 LLAMA3_ROPE_SCALING = {
     "rope_type": "llama3",
     "factor": 8.0,
@@ -71,9 +51,7 @@ HEAD_DIM = 128
 MAX_POS = 131072
 
 
-# --------------------------------------------------------------------------
-# Layer 1: AST structural tripwire (stdlib only, no unsloth import)
-# --------------------------------------------------------------------------
+# --- Layer 1: AST structural tripwire (stdlib only, no unsloth import) ---
 
 
 def _load_class_init():
@@ -94,7 +72,6 @@ def _config_branch(init_fn):
     for node in init_fn.body:
         if isinstance(node, ast.If):
             test = node.test
-            # match `config is not None`
             is_config_test = (
                 isinstance(test, ast.Compare)
                 and isinstance(test.left, ast.Name)
@@ -144,9 +121,7 @@ def test_config_path_inspects_rope_scaling():
     )
 
 
-# --------------------------------------------------------------------------
-# Layer 2: CPU behavioral guard (pure helper function, no instantiation)
-# --------------------------------------------------------------------------
+# --- Layer 2: CPU behavioral guard (pure helper, no instantiation) ---
 
 
 def _make_config(rope_scaling):
@@ -194,8 +169,7 @@ def test_llama3_scaling_applied_to_inv_freq():
     expected = _reference_inv_freq(config, "llama3")
     vanilla = _vanilla_inv_freq()
 
-    # Sanity: the scaled reference really does differ from vanilla, else the
-    # test would be vacuous.
+    # Guard against a vacuous test.
     assert not torch.allclose(expected, vanilla, rtol=1e-4), (
         "test setup error: llama3-scaled inv_freq should differ from vanilla"
     )
@@ -213,8 +187,6 @@ def test_llama3_scaling_applied_to_inv_freq():
 
 
 def test_default_rope_type_matches_vanilla_inv_freq():
-    # 'default' must reproduce the vanilla (unscaled) frequencies, proving the
-    # helper does not distort unscaled models.
     config = _make_config(None)
     got, attention_scaling = _compute_helper(config, {"rope_type": "default"})
     assert got is not None
@@ -226,11 +198,7 @@ def test_default_rope_type_matches_vanilla_inv_freq():
 
 
 def _cos_at_position(rot, position):
-    """cos row for a single position, computed from the class's own inv_freq.
-
-    Uses the same construction as _set_cos_sin_cache so we read what the model
-    actually applies, but stays on CPU and independent of device caches.
-    """
+    """cos row at one position, built like _set_cos_sin_cache but CPU-only."""
     inv_freq = rot.inv_freq.float().cpu()
     t = torch.tensor([position], dtype=torch.float32)
     t = rot._apply_time_scaling(t.clone()) if hasattr(rot, "_apply_time_scaling") else t
@@ -239,10 +207,7 @@ def _cos_at_position(rot, position):
     return emb.cos().squeeze(0)
 
 
-# --------------------------------------------------------------------------
-# Layer 3: CUDA behavioral guard (real instantiation; constructor builds
-# per-device CUDA caches, so these need a real device)
-# --------------------------------------------------------------------------
+# --- Layer 3: CUDA behavioral guard (real instantiation needs a device) ---
 
 
 @requires_cuda
@@ -285,7 +250,7 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
 @requires_cuda
 def test_extended_cache_keeps_scaling_after_growth():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
-    # Grow the rope cache past its initial size (mirrors long-context decode).
+    # Grow past the initial cache size (mirrors long-context decode).
     dummy = torch.zeros(1, dtype=torch.float32)
     scaled.extend_rope_embedding(dummy, seq_len=40960)
 
@@ -300,9 +265,7 @@ def test_extended_cache_keeps_scaling_after_growth():
 
 
 def test_object_style_rope_scaling_does_not_crash():
-    # Newer transformers may expose config.rope_scaling as a config object
-    # (e.g. a RopeScalingConfig dataclass) instead of a raw dict. The scaling
-    # computation must normalize it instead of calling .get() on it directly.
+    # Object-style rope_scaling must be normalized, not .get()'d directly.
     from dataclasses import dataclass
 
     from unsloth.models.llama import _compute_config_rope_inv_freq
@@ -327,9 +290,7 @@ def test_object_style_rope_scaling_does_not_crash():
 
 
 def test_object_style_rope_scaling_on_config_delegates_correctly():
-    # When the object sits ON the config itself (not just the passed argument),
-    # delegation to ROPE_INIT_FUNCTIONS must retry with a normalized config
-    # copy. 'linear' has no inline fallback, so only that retry can save it.
+    # 'linear' has no inline fallback; only the normalized-config retry passes this.
     from dataclasses import dataclass
 
     from unsloth.models.llama import _compute_config_rope_inv_freq

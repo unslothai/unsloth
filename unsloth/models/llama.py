@@ -1623,12 +1623,7 @@ def _get_rope_theta(config, default=10000.0):
 
 
 def _rope_scaling_as_dict(rope_scaling):
-    """Normalize config.rope_scaling to a plain dict.
-
-    Newer transformers may expose rope_scaling as a config object (e.g. a
-    RopeScalingConfig dataclass) instead of a raw dict; calling .get() on it
-    would raise AttributeError. Returns {} when nothing usable is found.
-    """
+    """Normalize config.rope_scaling (dict or config object) to a dict; {} on failure."""
     if isinstance(rope_scaling, dict):
         return rope_scaling
     for converter in ("to_dict", "dict"):
@@ -1647,12 +1642,7 @@ def _rope_scaling_as_dict(rope_scaling):
 
 
 def _llama3_inv_freq_from_config(config, rope_scaling, device="cpu"):
-    """Inline llama3 RoPE inv_freq using factors read from config.rope_scaling.
-
-    Fallback for transformers versions without modeling_rope_utils. Mirrors
-    meta-llama's llama3 scaling and LlamaExtendedRotaryEmbedding, but reads the
-    factors from config rather than hardcoding them.
-    """
+    """llama3 inv_freq with factors from config; fallback when modeling_rope_utils is missing."""
     base = _get_rope_theta(config, default=10000.0)
     dim = getattr(config, "head_dim", None)
     if dim is None:
@@ -1670,9 +1660,7 @@ def _llama3_inv_freq_from_config(config, rope_scaling, device="cpu"):
     high_freq_wavelen = old_context_len / high_freq_factor
     assert low_freq_wavelen != high_freq_wavelen
 
-    # Vectorized version of meta-llama's per-frequency loop. Bands match the
-    # reference exactly: wavelen < high_wl keeps the frequency, wavelen >
-    # low_wl divides by the scale factor, the medium band blends the two.
+    # Vectorized meta-llama bands: high freqs kept, low divided by factor, medium blended.
     wavelen = 2 * math.pi / inv_freq
     scaled = torch.where(wavelen > low_freq_wavelen, inv_freq / scale_factor, inv_freq)
     smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
@@ -1682,14 +1670,8 @@ def _llama3_inv_freq_from_config(config, rope_scaling, device="cpu"):
 
 
 def _compute_config_rope_inv_freq(config, rope_scaling):
-    """Return (inv_freq, attention_scaling) honoring config.rope_scaling.
-
-    Delegates to transformers' ROPE_INIT_FUNCTIONS so the result matches stock
-    transformers exactly (default / linear / dynamic / yarn / longrope / llama3).
-    Falls back to an inline llama3 computation on older transformers. On any
-    unexpected failure returns (None, 1.0) so the caller keeps the prior vanilla
-    behavior rather than crashing.
-    """
+    """(inv_freq, attention_scaling) per config.rope_scaling via transformers'
+    ROPE_INIT_FUNCTIONS, with an inline llama3 fallback; (None, 1.0) on failure."""
     original_rope_scaling = rope_scaling
     rope_scaling = _rope_scaling_as_dict(rope_scaling)
     rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
@@ -1700,9 +1682,7 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
         try:
             inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
         except Exception:
-            # config.rope_scaling may be an object the installed transformers
-            # cannot subscript; retry with a shallow config copy carrying the
-            # normalized dict so the delegate sees plain dict access again.
+            # Object-style rope_scaling: retry with a config copy carrying the plain dict.
             if isinstance(original_rope_scaling, dict):
                 raise
             import copy as _copy
@@ -1743,16 +1723,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         config=None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
-        # RoPE long-context attention scaling (multiplies cos/sin). 1.0 for
-        # vanilla / llama3; non-1.0 for yarn / longrope. Set before any
-        # _set_cos_sin_cache call so the cache build always sees it.
+        # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
         self.attention_scaling = 1.0
-        # When config carries a rope_scaling spec and we are the base class used
-        # directly (the modern-transformers path where LlamaModel builds the
-        # rotary from config), derive inv_freq the same way transformers does so
-        # the scaling is not silently dropped. Fixes #2405 (llama3 long-context
-        # gibberish). Subclasses that scale via _apply_inv_freq_scaling /
-        # _apply_time_scaling are excluded so scaling is never applied twice.
+        # Base-class-from-config path (modern transformers): derive inv_freq like
+        # transformers so config.rope_scaling is not dropped (#2405). Scaled
+        # subclasses are excluded to avoid double-scaling.
         config_inv_freq = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
@@ -1782,8 +1757,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
         if config_inv_freq is not None:
-            # Already scaled per config.rope_scaling; do not scale again.
-            inv_freq = config_inv_freq
+            inv_freq = config_inv_freq  # already scaled; skip subclass scaling
         else:
             # Normal Llama-3 RoPE
             inv_freq = 1.0 / (
@@ -1831,9 +1805,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        # attention_scaling is 1.0 except for long-context schemes (yarn /
-        # longrope); multiplying here keeps it applied across cache rebuilds in
-        # extend_rope_embedding. Default 1.0 leaves every existing path bit-identical.
+        # Applied here so attention_scaling survives extend_rope_embedding rebuilds;
+        # default 1.0 keeps unscaled paths bit-identical.
         cos = (emb.cos() * self.attention_scaling).to(dtype=dtype, device=device, non_blocking=True)
         sin = (emb.sin() * self.attention_scaling).to(dtype=dtype, device=device, non_blocking=True)
         self.multi_gpu_cos_cached[device.index] = cos
