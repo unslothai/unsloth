@@ -286,9 +286,10 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
-    update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
-    )
+    # `behind` compares the full release identity with a base-build guard, so a
+    # lagging /releases/latest or a mix-tagged latest can't show a false update
+    # (see llama_cpp_freshness.is_behind).
+    update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
     with _job_lock:
         job = dict(_job)

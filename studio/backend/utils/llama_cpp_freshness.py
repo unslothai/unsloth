@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,19 +173,58 @@ def _parse_installed_at(value: object) -> Optional[datetime]:
     return dt
 
 
+def parse_base_build(tag: object) -> Optional[int]:
+    """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and
+    a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix
+    suffix doesn't defeat it). None for anything not starting with ``bNNNN``."""
+    if not isinstance(tag, str):
+        return None
+    m = re.match(r"b(\d+)", tag.strip())
+    return int(m.group(1)) if m else None
+
+
+def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
+    """Whether `installed` is genuinely behind `latest`, comparing the FULL
+    release identity (so a mix build can legitimately be the latest) with a
+    base-build guard so a lagging GitHub /releases/latest can never read as an
+    update or a downgrade.
+
+    - identical tags -> not behind (clears the sticky banner post-update)
+    - higher base build on `latest` -> behind; lower -> NOT behind (downgrade guard)
+    - same base build: a different/new mix -> behind, but a bare ``bNNNN`` never
+      supersedes a mix build (extra PRs) at that base -> not behind
+    - non-bNNNN tags -> behind (plain inequality, since they already differ)
+    """
+    if not installed or not latest:
+        return False
+    installed, latest = installed.strip(), latest.strip()
+    if installed == latest:
+        return False
+    ib, lb = parse_base_build(installed), parse_base_build(latest)
+    if ib is None or lb is None:
+        return True
+    if lb != ib:
+        return lb > ib
+    # Same base build, different tags: offer a mix (latest carries a suffix), but
+    # never offer a bare base over a mix install at the same base.
+    return latest != f"b{lb}"
+
+
 def check_prebuilt_freshness(
     binary_path: Optional[str],
     *,
     threshold_days: int = STALENESS_THRESHOLD_DAYS,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Returns {has_marker, stale, installed_tag, latest_tag,
+    """Returns {has_marker, stale, behind, installed_tag, latest_tag,
     installed_at_utc, age_days, published_repo, threshold_days}.
-    stale = True iff installed != latest AND age >= threshold.
-    Fails open on missing data (stale stays False)."""
+    behind = installed genuinely older than latest (see is_behind).
+    stale = behind AND age >= threshold.
+    Fails open on missing data (behind/stale stay False)."""
     out: dict = {
         "has_marker": False,
         "stale": False,
+        "behind": False,
         "installed_tag": None,
         "latest_tag": None,
         "installed_at_utc": None,
@@ -196,16 +236,25 @@ def check_prebuilt_freshness(
     if not marker:
         return out
     out["has_marker"] = True
+    # Display prefers the normalized base ("tag"); comparison below prefers the
+    # full "release_tag" -- deliberately opposite fallbacks.
     out["installed_tag"] = marker.get("tag") or marker.get("release_tag")
     out["installed_at_utc"] = marker.get("installed_at_utc")
     out["published_repo"] = marker.get("published_repo")
 
+    # The marker records both a normalized base tag ("tag", e.g. b9596) and the
+    # full release tag ("release_tag", e.g. b9596-mix-<sha>). Compare against the
+    # FULL identity, since GitHub /releases/latest returns the full tag_name --
+    # comparing the normalized base against the full latest is what produced the
+    # permanent "downgrade" banner on every mix release.
+    installed_full = marker.get("release_tag") or marker.get("tag")
     repo = out["published_repo"]
-    if not repo or not out["installed_tag"]:
+    if not repo or not installed_full:
         return out
     latest = latest_published_release(repo)
     out["latest_tag"] = latest
-    if not latest or latest == out["installed_tag"]:
+    out["behind"] = is_behind(installed_full, latest)
+    if not out["behind"]:
         return out
 
     installed_at = _parse_installed_at(out["installed_at_utc"])

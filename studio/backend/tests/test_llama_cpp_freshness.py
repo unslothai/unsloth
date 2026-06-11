@@ -51,6 +51,11 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
         .replace("+00:00", "Z"),
     }
     payload.update(overrides)
+    # The installer always writes `tag` and `release_tag` from the same release
+    # (a normalized base vs the full release tag), so keep the pair consistent
+    # when a test overrides only `tag`.
+    if "tag" in overrides and "release_tag" not in overrides:
+        payload["release_tag"] = overrides["tag"]
     install_dir.mkdir(parents = True, exist_ok = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload))
     return install_dir / "UNSLOTH_PREBUILT_INFO.json"
