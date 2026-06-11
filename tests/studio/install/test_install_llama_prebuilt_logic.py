@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -28,6 +29,7 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
+activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
@@ -664,6 +666,48 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert "cleaning staging, install, and rollback paths before source build fallback" in output
     assert "removing failed install path" in output
     assert "removing rollback path" in output
+
+
+def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    (staging_dir / "bin").mkdir(parents = True)
+    (staging_dir / "bin" / "ggml-base.dll").write_bytes(b"fake dll")
+    dst = tmp_path / "llama.cpp"
+
+    def denied_replace(src, dst_arg):
+        raise PermissionError(errno.EACCES, "Access is denied", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "bin" / "ggml-base.dll").read_bytes() == b"fake dll"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+def test_activate_staged_dir_reraises_non_busy_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    (staging_dir / "new.txt").write_text("new install\n")
+    dst = tmp_path / "llama.cpp"
+
+    def out_of_space_replace(src, dst_arg):
+        raise OSError(errno.ENOSPC, "No space left on device", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", out_of_space_replace)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        activate_staged_dir(staging_dir, dst)
+
+    assert not dst.exists()
+    assert (staging_dir / "new.txt").read_text() == "new install\n"
 
 
 def test_binary_env_linux_includes_binary_parent_in_ld_library_path(

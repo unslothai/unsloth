@@ -4870,6 +4870,35 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
         raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
 
 
+def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
+    """Move a freshly extracted ``staging_dir`` onto ``dst``.
+
+    ``os.replace`` is attempted first as the fast path. On Windows ARM64 the
+    antivirus scanner can transiently hold a freshly extracted DLL open at the
+    moment ``MoveFileEx`` runs, surfacing as ``[WinError 5] Access is denied``;
+    a file-by-file copy bypasses the rename entirely.
+
+    This fallback is intentionally limited to staging trees we just extracted.
+    It must not be used to move an existing/active install aside: there an
+    ``os.replace`` failure means the directory is genuinely in use, and a
+    silent copy + ``rmtree`` could partially delete a live install.
+
+    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
+    else (disk full, cross-device, missing path) re-raises so it cannot leave
+    a partially copied install behind. A copy is preferred over retrying the
+    rename because antivirus scans of large DLLs can outlast any reasonable
+    retry window.
+    """
+    try:
+        os.replace(staging_dir, dst)
+    except OSError as exc:
+        if not is_busy_lock_error(exc):
+            raise
+        log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        remove_tree(staging_dir)
+
+
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
     rollback_dir: Path | None = None
     failed_dir: Path | None = None
@@ -4881,7 +4910,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
-        os.replace(staging_dir, install_dir)
+        activate_staged_dir(staging_dir, install_dir)
         log(f"activated staged install at {install_dir}")
         log(f"confirming activated install tree at {install_dir}")
         confirm_install_tree(install_dir, host)
