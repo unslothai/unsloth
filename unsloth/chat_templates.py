@@ -2348,15 +2348,15 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
-    # Strip surrounding whitespace. Only lstrip-ing left a trailing newline in the
-    # template, which breaks the repeated-example detection below and wrongly raises
-    # (see GH #992). Surrounding whitespace is not significant to the template here.
-    chat_template = chat_template.strip()
+    # Strip only the left: trailing whitespace can be part of the repeated example
+    # (e.g. "{OUTPUT}\n"). Accidental trailing whitespace (#992) is retried on failure.
+    chat_template = chat_template.lstrip()
 
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
+    original_extra_eos_tokens = list(extra_eos_tokens)
 
     vocab = tokenizer.get_vocab()
     for extra_eos in extra_eos_tokens:
@@ -2463,6 +2463,20 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
+        # Accidental trailing whitespace (#992) desyncs the two-example detection,
+        # so retry once without it. Templates that parse as-is are never altered.
+        rstripped_chat_template = chat_template.rstrip()
+        if rstripped_chat_template != chat_template:
+            try:
+                return construct_chat_template(
+                    tokenizer = tokenizer,
+                    chat_template = rstripped_chat_template,
+                    default_system_message = default_system_message,
+                    extra_eos_tokens = original_extra_eos_tokens,
+                )
+            except Exception:
+                pass
+
         output_pos = chat_template.find("{OUTPUT}")
         input_pos  = chat_template.find("{INPUT}")
         if output_pos == -1 or input_pos == -1:
