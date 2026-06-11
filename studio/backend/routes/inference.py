@@ -3193,6 +3193,22 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        if payload.confirm_tool_calls and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls is only supported for local streaming tools.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request)
@@ -3654,6 +3670,7 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                gen = None
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -3776,6 +3793,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except (RuntimeError, ValueError):
+                            pass
                     _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
@@ -4196,6 +4218,7 @@ async def openai_chat_completions(
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
+            gen = None
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -4312,6 +4335,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:

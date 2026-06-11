@@ -61,6 +61,7 @@ from core.inference.tool_loop_controller import (
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
     wait_tool_decision,
@@ -2197,8 +2198,9 @@ class LlamaCppBackend:
                         else None
                     ),
                     (
-                        f"{general['general.organization']}/"
-                        f"{general['general.basename']}".replace(" ", "-")
+                        f"{general['general.organization']}/{general['general.basename']}".replace(
+                            " ", "-"
+                        )
                         if general.get("general.organization") and general.get("general.basename")
                         else None
                     ),
@@ -3739,7 +3741,7 @@ class LlamaCppBackend:
                     )
 
                 logger.info(
-                    f"llama-server ready on port {self._port} " f"for model '{model_identifier}'"
+                    f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
 
             # Probe outside _lock (interruptible by /unload); init inside.
@@ -4364,7 +4366,7 @@ class LlamaCppBackend:
 
                         proc.kill()
                         logger.info(
-                            f"Killed orphaned llama-server process " f"(pid={proc.info['pid']})"
+                            f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
                     except (
                         psutil.NoSuchProcess,
@@ -5069,7 +5071,7 @@ class LlamaCppBackend:
                         if response.status_code != 200:
                             error_body = response.read().decode()
                             raise RuntimeError(
-                                f"llama-server returned {response.status_code}: " f"{error_body}"
+                                f"llama-server returned {response.status_code}: {error_body}"
                             )
 
                         raw_buf = ""
@@ -5480,8 +5482,7 @@ class LlamaCppBackend:
                         force = True,
                     )
                     logger.info(
-                        f"Safety net: parsed {len(tool_calls)} tool call(s) "
-                        f"from streamed content"
+                        f"Safety net: parsed {len(tool_calls)} tool call(s) from streamed content"
                     )
                 else:
                     # ── DRAINING path: assemble tool_calls ──
@@ -5610,36 +5611,42 @@ class LlamaCppBackend:
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
 
-                    yield {"type": "status", "text": decision.status_text}
-                    yield start_event
+                    try:
+                        yield {"type": "status", "text": decision.status_text}
+                        yield start_event
 
-                    if (
-                        decision_slot is not None
-                        and wait_tool_decision(
-                            decision_slot,
-                            approval_id,
-                            cancel_event = cancel_event,
-                        )
-                        == "deny"
-                    ):
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": decision.tool_name,
-                            "tool_call_id": decision.tool_call_id,
-                            "result": TOOL_REJECTED_MESSAGE,
-                            "provenance": decision.provenance,
-                        }
-                        denied_message = {
-                            "role": "tool",
-                            "name": decision.tool_name,
-                            "content": TOOL_REJECTED_MESSAGE,
-                        }
-                        if decision.tool_call_id:
-                            denied_message["tool_call_id"] = decision.tool_call_id
-                        conversation.append(denied_message)
-                        if _forced_tool_call_pending:
-                            _forced_tool_call_pending = False
-                        continue
+                        if (
+                            decision_slot is not None
+                            and wait_tool_decision(
+                                decision_slot,
+                                approval_id,
+                                cancel_event = cancel_event,
+                            )
+                            == "deny"
+                        ):
+                            decision_slot = None
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": TOOL_REJECTED_MESSAGE,
+                                "provenance": decision.provenance,
+                            }
+                            denied_message = {
+                                "role": "tool",
+                                "name": decision.tool_name,
+                                "content": TOOL_REJECTED_MESSAGE,
+                            }
+                            if decision.tool_call_id:
+                                denied_message["tool_call_id"] = decision.tool_call_id
+                            conversation.append(denied_message)
+                            if _forced_tool_call_pending:
+                                _forced_tool_call_pending = False
+                            continue
+                        decision_slot = None
+                    finally:
+                        if decision_slot is not None:
+                            abort_tool_decision(decision_slot, approval_id)
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     # RAG: cap paraphrased KB re-searches that slip past the dup guard.

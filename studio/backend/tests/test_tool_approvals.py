@@ -19,6 +19,7 @@ import pytest
 from state import tool_approvals
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
     request_tool_decision,
@@ -112,6 +113,14 @@ def test_slot_cleaned_up_after_decision():
     resolve_tool_decision(aid, "allow")
     w.join()
     assert _wait_until(lambda: not _has_pending(aid))
+
+
+def test_abort_tool_decision_removes_unwaited_slot():
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    abort_tool_decision(slot, aid)
+    assert not _has_pending(aid)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is False
 
 
 def test_approval_ids_are_unique():

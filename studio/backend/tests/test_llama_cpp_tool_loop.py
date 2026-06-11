@@ -21,7 +21,8 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.llama_cpp import LlamaCppBackend
-from state.tool_approvals import TOOL_REJECTED_MESSAGE
+from state import tool_approvals
+from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
 
 def _sse(delta: dict) -> str:
@@ -1211,6 +1212,43 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
     assert starts[0]["awaiting_confirmation"] is True
     assert calls == [("python", {"code": "print(1)"})]
     assert any(event.get("type") == "tool_end" and event.get("result") == "OK" for event in events)
+
+
+def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
+    approval_id = "approval-close"
+    streams = [_structured_tool_call("python", {"code": "print(1)"}, "call_py")]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("tool should not run")),
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: approval_id)
+
+    with tool_approvals._lock:
+        tool_approvals._pending.clear()
+
+    gen = backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "run python"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = 1,
+        confirm_tool_calls = True,
+        session_id = "sess",
+    )
+    try:
+        assert next(gen)["type"] == "status"
+        start = next(gen)
+        assert start["type"] == "tool_start"
+        assert start["approval_id"] == approval_id
+        with tool_approvals._lock:
+            assert approval_id in tool_approvals._pending
+    finally:
+        gen.close()
+
+    with tool_approvals._lock:
+        assert approval_id not in tool_approvals._pending
+    assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):

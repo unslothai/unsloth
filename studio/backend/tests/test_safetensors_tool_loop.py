@@ -28,6 +28,8 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from state import tool_approvals
+from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
@@ -84,8 +86,7 @@ class TestParser:
         # A code parameter with a literal </parameter> must not truncate: the
         # parser uses end-of-body as the only boundary for single-param calls.
         text = (
-            "<function=python><parameter=code>html = '<a></a>'\n"
-            "print('hi')</parameter></function>"
+            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -844,9 +845,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert (
-            "LLM tool" in final
-        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # A literal ``<tool_call>`` in the tool result must not re-trigger: the
@@ -1032,6 +1033,36 @@ class TestGuardrails:
         )
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_confirm_tool_calls_close_after_prompt_cleans_slot(self, monkeypatch):
+        approval_id = "approval-close-sf"
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: approval_id)
+
+        loop, exec_fn = _make_loop(
+            turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
+            exec_results = ["OK"],
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 1,
+        )
+
+        with tool_approvals._lock:
+            tool_approvals._pending.clear()
+
+        try:
+            assert next(loop)["type"] == "status"
+            start = next(loop)
+            assert start["type"] == "tool_start"
+            assert start["approval_id"] == approval_id
+            with tool_approvals._lock:
+                assert approval_id in tool_approvals._pending
+        finally:
+            loop.close()
+
+        with tool_approvals._lock:
+            assert approval_id not in tool_approvals._pending
+        assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
+        assert exec_fn.calls == []
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(

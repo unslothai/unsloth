@@ -85,6 +85,19 @@ def wait_tool_decision(
                 _pending.pop(approval_id, None)
 
 
+def abort_tool_decision(slot, approval_id) -> None:
+    """Remove a slot that was announced but never entered ``wait_tool_decision``.
+
+    Streaming wrappers may stop after ``tool_start`` is yielded and before
+    the loop resumes into ``wait_tool_decision``. In that case there is no
+    waiter to run the normal cleanup path, so the generator close path calls
+    this explicitly.
+    """
+    with _lock:
+        if _pending.get(approval_id) is slot:
+            _pending.pop(approval_id, None)
+
+
 def request_tool_decision(
     session_id,
     approval_id,

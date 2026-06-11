@@ -37,6 +37,7 @@ from core.inference.tool_loop_controller import (
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
     wait_tool_decision,
@@ -523,34 +524,40 @@ def run_safetensors_tool_loop(
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
 
-            yield {"type": "status", "text": decision.status_text}
-            yield start_event
+            try:
+                yield {"type": "status", "text": decision.status_text}
+                yield start_event
 
-            if (
-                decision_slot is not None
-                and wait_tool_decision(
-                    decision_slot,
-                    approval_id,
-                    cancel_event = cancel_event,
-                )
-                == "deny"
-            ):
-                yield {
-                    "type": "tool_end",
-                    "tool_name": decision.tool_name,
-                    "tool_call_id": decision.tool_call_id,
-                    "result": TOOL_REJECTED_MESSAGE,
-                    "provenance": decision.provenance,
-                }
-                denied_message = {
-                    "role": "tool",
-                    "name": decision.tool_name,
-                    "content": TOOL_REJECTED_MESSAGE,
-                }
-                if decision.tool_call_id:
-                    denied_message["tool_call_id"] = decision.tool_call_id
-                conversation.append(denied_message)
-                continue
+                if (
+                    decision_slot is not None
+                    and wait_tool_decision(
+                        decision_slot,
+                        approval_id,
+                        cancel_event = cancel_event,
+                    )
+                    == "deny"
+                ):
+                    decision_slot = None
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": decision.tool_name,
+                        "tool_call_id": decision.tool_call_id,
+                        "result": TOOL_REJECTED_MESSAGE,
+                        "provenance": decision.provenance,
+                    }
+                    denied_message = {
+                        "role": "tool",
+                        "name": decision.tool_name,
+                        "content": TOOL_REJECTED_MESSAGE,
+                    }
+                    if decision.tool_call_id:
+                        denied_message["tool_call_id"] = decision.tool_call_id
+                    conversation.append(denied_message)
+                    continue
+                decision_slot = None
+            finally:
+                if decision_slot is not None:
+                    abort_tool_decision(decision_slot, approval_id)
 
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
             # RAG: cap paraphrased KB re-searches that slip past the dup guard.
