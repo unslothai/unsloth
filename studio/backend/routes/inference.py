@@ -4897,6 +4897,17 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
+def _responses_tool_output_text(output: Union[str, list]) -> str:
+    """Return Chat Completions-safe content for a Responses tool result."""
+    if isinstance(output, str):
+        return output if output.strip() else "(no output)"
+
+    if output:
+        return json.dumps(output)
+
+    return "(no output)"
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
@@ -4956,10 +4967,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
             # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output.
-            output = item.output
-            if not isinstance(output, str):
-                output = json.dumps(output)
+            # a Responses content-array output and keep empty outputs from
+            # tripping the stricter ChatMessage role validator.
+            output = _responses_tool_output_text(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",

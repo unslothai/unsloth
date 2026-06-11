@@ -31,6 +31,7 @@ class LlamaUpdateJob(BaseModel):
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
     error: Optional[str] = None
+    progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
