@@ -225,7 +225,11 @@ const ToolGroupImpl: FC<
       .slice(startIndex, endIndex + 1)
       .some(
         (part) =>
-          part.type === "tool-call" && part.toolCallId in toolConfirmations,
+          part.type === "tool-call" &&
+          Object.prototype.hasOwnProperty.call(
+            toolConfirmations,
+            part.toolCallId,
+          ),
       ),
   );
   const messageRunning = useAuiState(

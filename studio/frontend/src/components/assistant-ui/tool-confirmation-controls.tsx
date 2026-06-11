@@ -35,13 +35,15 @@ export function ToolConfirmationControls({
   status?: ToolCallMessagePartStatus;
 }) {
   const confirmation = useChatRuntimeStore((s) =>
-    toolCallId ? s.toolConfirmations[toolCallId] : undefined,
+    toolCallId &&
+    Object.prototype.hasOwnProperty.call(s.toolConfirmations, toolCallId)
+      ? s.toolConfirmations[toolCallId]
+      : undefined,
   );
   const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
   const clearToolConfirmation = useChatRuntimeStore(
     (s) => s.clearToolConfirmation,
   );
-  const sessionId = confirmation?.sessionId ?? "";
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   const autoAllowed = useChatRuntimeStore(
     (s) =>

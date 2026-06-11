@@ -1132,7 +1132,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
   clearToolConfirmation: (toolCallId) =>
     set((state) => {
-      if (!(toolCallId in state.toolConfirmations)) return state;
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
       const next = { ...state.toolConfirmations };
       delete next[toolCallId];
       return { toolConfirmations: next };
