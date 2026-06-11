@@ -101,6 +101,7 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    set_task_config_attr,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -887,6 +888,7 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        user_config = kwargs.pop("config", None)
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1066,13 +1068,15 @@ class FastModel(FastBaseModel):
                 kwargs["local_files_only"] = True
 
         try:
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
-            )
+            model_config = user_config
+            if model_config is None:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
             is_model = True
         except ImportError:
             raise
@@ -1333,12 +1337,15 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = False
                 load_in_16bit = True
 
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
-            )
+            if user_config is not None:
+                model_config = user_config
+            else:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
 
         if not was_disabled:
             enable_progress_bars()
@@ -1449,6 +1456,8 @@ class FastModel(FastBaseModel):
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
         _num_labels = kwargs.get("num_labels", None)
+        if _num_labels is not None:
+            set_task_config_attr(model_config, "num_labels", _num_labels)
         if auto_model is None:
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
