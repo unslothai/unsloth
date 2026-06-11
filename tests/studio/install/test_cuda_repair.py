@@ -32,7 +32,12 @@ _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _make_run(torch_state = "hip", cuda_version = "12.8", torch_rc = 0, smi_rc = 0):
+def _make_run(
+    torch_state = "hip",
+    cuda_version = "12.8",
+    torch_rc = 0,
+    smi_rc = 0,
+):
     """Build a subprocess.run side_effect.
 
     The torch-classify probe runs sys.executable and reads bytes stdout; the
@@ -87,20 +92,22 @@ def _run_cuda_repair(
             return smi_path
         return None
 
-    with patch.object(stack_mod, "_TORCH_BACKEND", backend), \
-         patch.object(stack_mod, "IS_MACOS", is_macos), \
-         patch.object(stack_mod, "IS_WINDOWS", is_windows), \
-         patch.object(stack_mod, "NO_TORCH", no_torch), \
-         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia), \
-         patch.object(stack_mod.shutil, "which", side_effect = _which), \
-         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)), \
-         patch.object(stack_mod, "pip_install") as mock_pip, \
-         patch.object(
-             stack_mod.subprocess,
-             "run",
-             side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc),
-         ), \
-         patch.dict(stack_mod.os.environ, env, clear = False):
+    with (
+        patch.object(stack_mod, "_TORCH_BACKEND", backend),
+        patch.object(stack_mod, "IS_MACOS", is_macos),
+        patch.object(stack_mod, "IS_WINDOWS", is_windows),
+        patch.object(stack_mod, "NO_TORCH", no_torch),
+        patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
+        patch.object(stack_mod.shutil, "which", side_effect = _which),
+        patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
+        patch.object(stack_mod, "pip_install") as mock_pip,
+        patch.object(
+            stack_mod.subprocess,
+            "run",
+            side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc),
+        ),
+        patch.dict(stack_mod.os.environ, env, clear = False),
+    ):
         if not rocm_marker:
             stack_mod.os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
         if cvd is None:
@@ -229,8 +236,10 @@ class TestCudaIndexResolution:
         assert "cu126" in _index_url(mock_pip)
 
     def test_detect_index_url_uses_pytorch_base(self):
-        with patch.object(stack_mod.shutil, "which", return_value = None), \
-             patch.object(stack_mod.os.path, "isfile", return_value = False):
+        with (
+            patch.object(stack_mod.shutil, "which", return_value = None),
+            patch.object(stack_mod.os.path, "isfile", return_value = False),
+        ):
             url = _detect_cuda_torch_index_url()
         assert url == f"{stack_mod._PYTORCH_WHL_BASE}/cu126"
 

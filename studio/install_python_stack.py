@@ -905,9 +905,7 @@ def _ensure_cuda_torch() -> None:
     # Take the last non-empty stdout line: stray output from sitecustomize or
     # an import hook must not mask the marker (fail-closed either way).
     _marker_lines = [
-        line.strip()
-        for line in probe.stdout.decode(errors = "replace").splitlines()
-        if line.strip()
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
     ]
     if not _marker_lines or _marker_lines[-1] != "hip":
         return  # healthy CUDA torch, or a deliberate CPU wheel -- leave as-is
