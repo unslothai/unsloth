@@ -1014,6 +1014,28 @@ def test_is_local_model_distinguishes_hf_id_from_path(monkeypatch, tmp_path):
     assert _is_local_model("unsloth/Llama-3.2-1B") is False
 
 
+def test_run_rejects_missing_explicit_local_model_before_auth(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "secret-pw")
+    monkeypatch.delenv("RUNPOD_API_KEY", raising = False)
+
+    from unsloth_cli import app
+
+    result = CliRunner().invoke(
+        app, ["deploy", "run", "--yes", "--model", "./lora_mdoel"]
+    )
+    combined = result.output + (result.stderr or "")
+    assert result.exit_code != 0
+    assert "Local model path does not exist: ./lora_mdoel" in combined
+    assert "RUNPOD_API_KEY" not in combined
+
+
+def test_modal_extra_matches_volume_objects_delete_api():
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text()
+
+    assert '"modal>=1.1.2"' in pyproject
+
+
 def test_rest_non_json_response_raises_deployerror(monkeypatch):
     from unsloth_cli.deploy import DeployError
     from unsloth_cli.deploy import runpod_storage

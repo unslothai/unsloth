@@ -121,6 +121,8 @@ def run(
 
     if model is None and not yes:
         model = _pick_model()
+    if _is_missing_explicit_local_model(model):
+        _fail(f"Local model path does not exist: {model}", code = 2)
     need_local = _is_local_model(model)
 
     if need_local and not provider_cls.supports_local_model:
@@ -594,11 +596,26 @@ def _is_local_model(model: Optional[str]) -> bool:
     path = Path(model).expanduser()
     if not path.exists():
         return False
-    if model.startswith(("/", "./", "../", "~")) or model.startswith(os.sep):
+    if _is_explicit_local_model_path(model):
         return True
     if path.is_dir():
         return _model_kind(path) is not None
     return path.suffix.lower() == ".gguf"
+
+
+def _is_missing_explicit_local_model(model: Optional[str]) -> bool:
+    if model is None or not _is_explicit_local_model_path(model):
+        return False
+    return not Path(model).expanduser().exists()
+
+
+def _is_explicit_local_model_path(model: str) -> bool:
+    path = Path(model).expanduser()
+    return (
+        model.startswith(("./", "../", "~"))
+        or path.is_absolute()
+        or path.suffix.lower() == ".gguf"
+    )
 
 
 def _delete_storage_quietly(provider: Provider, storage_id: Optional[str]) -> None:
