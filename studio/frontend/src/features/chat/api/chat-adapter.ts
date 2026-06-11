@@ -2299,18 +2299,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     });
                   }
                   // Backend-gated tool calls pause for an allow/deny. Record
-                  // the approval id + the session the generation runs under
-                  // (the same id sent as session_id) so the tool card can
-                  // resolve the exact pending call. Non-gated calls (toggle
-                  // off, external providers) never set this, so their cards
-                  // show no approval controls.
+                  // the approval id + the backend session scope the generation
+                  // runs under (the same value sent as session_id) so the tool
+                  // card can resolve the exact pending call. Non-gated calls
+                  // (toggle off, external providers) never set this, so their
+                  // cards show no approval controls.
                   if (toolEvent.awaiting_confirmation === true) {
                     useChatRuntimeStore
                       .getState()
                       .setToolConfirmation(
                         id,
                         (toolEvent.approval_id as string) || "",
-                        resolvedThreadId ?? "",
+                        sandboxSessionId ?? "",
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
