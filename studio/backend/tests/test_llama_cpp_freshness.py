@@ -303,3 +303,17 @@ def test_format_stale_warning_singular_day():
     msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1})
     assert "1 day" in msg
     assert "1 days" not in msg
+
+
+def test_reset_caches_drop_disk_removes_cache_file(monkeypatch, tmp_path):
+    # Default reset keeps the on-disk cache; drop_disk=True removes it so the next
+    # read refetches the latest tag (used after an in-app update).
+    cache_dir = tmp_path / ".freshness"
+    cache_dir.mkdir()
+    cache_file = cache_dir / "unslothai__llama.cpp.json"
+    cache_file.write_text("{}")
+    monkeypatch.setattr(fr, "_cache_dir", lambda: cache_dir)
+    fr.reset_caches()
+    assert cache_file.exists()
+    fr.reset_caches(drop_disk = True)
+    assert not cache_file.exists()

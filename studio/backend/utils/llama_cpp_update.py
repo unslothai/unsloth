@@ -179,6 +179,15 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     return n if n > 1 else None
 
 
+def _tag_build_number(tag: Optional[str]) -> Optional[int]:
+    """Integer build from a ``bNNNN`` release tag ('b9585' -> 9585). None when the
+    tag is missing or has no number, so callers fail open (offer nothing)."""
+    if not tag:
+        return None
+    m = re.search(r"(\d+)", tag)
+    return int(m.group(1)) if m else None
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         p, r = path.resolve(), root.resolve()
@@ -230,12 +239,13 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     if _llama_install_root(binary) is None:
         return None
     installed_build = _installed_build_number(binary)
-    m = re.search(r"(\d+)", latest)
-    latest_build = int(m.group(1)) if m else None
-    # Suppress only when the source build is reliably newer/equal; unknown
-    # version (the involuntary source-build case) is treated as behind.
+    latest_build = _tag_build_number(latest)
+    # Offer only a STRICTLY newer build. Unknown installed version (version: 1 or
+    # unparseable) stays "behind" so the involuntary source build still gets the
+    # prebuilt, but a known build is never downgraded to an older walked-back release.
     update_available = (
-        installed_build is None or latest_build is None or installed_build < latest_build
+        latest_build is not None
+        and (installed_build is None or installed_build < latest_build)
     )
     with _job_lock:
         job = dict(_job)
@@ -286,8 +296,15 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
+    installed_build = _tag_build_number(installed)
+    latest_build = _tag_build_number(latest)
+    # Offer only a STRICTLY newer build. A stale release cache (latest behind the
+    # freshly installed marker) or an older partial release must never downgrade.
     update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
+        freshness.get("has_marker")
+        and installed_build is not None
+        and latest_build is not None
+        and latest_build > installed_build
     )
 
     with _job_lock:
@@ -405,9 +422,11 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             tail = "".join(tail_lines).strip()[-1500:]
             raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
-        # status read reflects the freshly installed tag.
-        reset_caches()
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches (incl. the disk
+        # release cache and the markerless resolver memo) so the next status read
+        # reflects the freshly installed tag and cannot reappear off stale data.
+        reset_caches(drop_disk = True)
+        _resolve_memo.clear()
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
 

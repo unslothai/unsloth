@@ -795,3 +795,66 @@ def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "up_to_date"
+
+
+def test_status_marker_no_downgrade_on_stale_cache(monkeypatch, tmp_path):
+    # Regression: marker is freshly newer (b9585) while the cached GitHub "latest"
+    # still holds the previous release (b9518). Must never offer a downgrade.
+    binary = _write_install(tmp_path, "b9585")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["installed_tag"] == "b9585"
+    assert st["latest_tag"] == "b9518"
+    assert st["update_available"] is False
+
+
+def test_status_source_build_no_downgrade(monkeypatch, tmp_path):
+    # Markerless install whose --version is a known newer build (9585); the resolver
+    # walked back to an older partial release (b9518). Must never downgrade.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9518")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9585)
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+
+
+def test_status_source_build_unparseable_latest_fails_open(monkeypatch, tmp_path):
+    # Resolver returned a tag with no build number; with an unknown installed version
+    # this must fail open to "no update" rather than offer blindly.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "master", llama_tag = "master")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+
+
+def test_apply_clears_resolve_memo(monkeypatch, tmp_path):
+    # After a successful update the markerless resolver memo must be cleared so a
+    # stale older "latest" cannot make the banner reappear.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    upd._resolve_memo.update(at = time.time(), value = {"prebuilt_available": True})
+    _patch_installer_popen(
+        monkeypatch,
+        lines = ["installed\n"],
+        on_start = lambda cmd: _write_install(install_dir, "b9518"),
+    )
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert upd._resolve_memo == {}

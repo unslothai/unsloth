@@ -232,7 +232,15 @@ def format_stale_warning(info: dict) -> str:
     )
 
 
-def reset_caches() -> None:
-    """Test-only: drop all in-memory caches."""
+def reset_caches(*, drop_disk: bool = False) -> None:
+    """Drop in-memory caches. drop_disk=True also removes the on-disk release cache
+    so the next read refetches the latest tag (used after an in-app update so the
+    banner cannot reappear off a stale 'latest')."""
     _marker_cache.clear()
     _release_memo.clear()
+    if drop_disk:
+        try:
+            for path in _cache_dir().glob("*.json"):
+                path.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.debug("freshness cache clear failed", error = str(exc))
