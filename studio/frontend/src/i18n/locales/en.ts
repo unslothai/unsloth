@@ -344,14 +344,13 @@ export const en = {
         commandCopied: "{label} copied",
         copyNamedCommand: "Copy {label}",
         checkingInstall: "Checking how Unsloth was installed...",
+        deprecatedNotice:
+          "Note: the unsloth studio update command is no longer supported. Use the install command instead; it also updates existing installs.",
         localInstallDetected:
           "Source or local install detected. To avoid replacing it with PyPI, update from the checkout or source you originally installed from.",
         pullThenUpdate:
-          "Pull latest changes from your Unsloth repo checkout, then update Unsloth locally:",
+          "Pull latest changes from your Unsloth repo checkout, then run the local installer:",
         gitPullCommand: "git pull command",
-        localUpdateCommand: "local update command",
-        localInstallerFallback:
-          "If the Unsloth update command is unavailable, run the local installer from that checkout:",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
           "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",
@@ -360,14 +359,14 @@ export const en = {
         restartAfterUpdate:
           "Restart Unsloth after updating for changes to take effect.",
         unknownInstall:
-          "Unsloth could not detect how it was installed. Check how you installed Unsloth first, then choose the matching update path.",
-        curlOrPypi: "For curl or PyPI installs, run:",
-        updateCommand: "update command",
+          "Unsloth could not detect how it was installed. If you used the one-line installer or PyPI, run the install command below.",
+        installCommand: "install command",
         localCheckout:
-          "For local checkout installs, update from that checkout instead and use the local update command:",
-        fallbackInstruction:
-          "If that fails or unsloth studio update is unavailable, run:",
-        fallbackCommand: "fallback command",
+          "For local checkout installs, run the local installer from that checkout instead:",
+        docs: "Install docs:",
+        docsInstall: "Installation",
+        docsUpdating: "Updating",
+        docsWindows: "Windows guide",
       },
     },
   },

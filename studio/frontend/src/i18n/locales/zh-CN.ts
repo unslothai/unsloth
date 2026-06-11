@@ -299,14 +299,13 @@ export const zhCN = {
         commandCopied: "{label} 已复制",
         copyNamedCommand: "复制 {label}",
         checkingInstall: "正在检查 Unsloth 的安装方式...",
+        deprecatedNotice:
+          "提示：unsloth studio update 命令已不再受支持。请改用安装命令，它同样会更新现有安装。",
         localInstallDetected:
           "检测到源码或本地安装。为避免替换为 PyPI 版本，请从最初安装时使用的 checkout 或源码位置更新。",
         pullThenUpdate:
-          "从你的 Unsloth 仓库 checkout 拉取最新变更，然后本地更新 Unsloth：",
+          "从你的 Unsloth 仓库 checkout 拉取最新变更，然后运行本地安装器：",
         gitPullCommand: "git pull 命令",
-        localUpdateCommand: "本地更新命令",
-        localInstallerFallback:
-          "如果 Unsloth 更新命令不可用，请从该 checkout 运行本地安装器：",
         localInstallerCommand: "本地安装器命令",
         sourceInstallDetected:
           "这看起来是源码或 VCS 包安装。请从最初使用的本地路径或 Git URL 重新安装。",
@@ -314,14 +313,14 @@ export const zhCN = {
           "如果你仍保留 Unsloth 仓库 checkout，请从该 checkout 运行本地安装器：",
         restartAfterUpdate: "更新后重启 Unsloth，使变更生效。",
         unknownInstall:
-          "Unsloth 无法检测安装方式。请先确认你如何安装 Unsloth，然后选择匹配的更新方式。",
-        curlOrPypi: "对于 curl 或 PyPI 安装，请运行：",
-        updateCommand: "更新命令",
+          "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请运行下面的安装命令。",
+        installCommand: "安装命令",
         localCheckout:
-          "对于本地 checkout 安装，请改为从该 checkout 更新并使用本地更新命令：",
-        fallbackInstruction:
-          "如果失败，或 unsloth studio update 不可用，请运行：",
-        fallbackCommand: "备用命令",
+          "对于本地 checkout 安装，请改为从该 checkout 运行本地安装器：",
+        docs: "安装文档：",
+        docsInstall: "安装",
+        docsUpdating: "更新",
+        docsWindows: "Windows 指南",
       },
     },
   },
