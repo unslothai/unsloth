@@ -1906,6 +1906,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
+                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,

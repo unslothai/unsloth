@@ -676,6 +676,11 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
+        # Why MTP was disabled on the last load that asked for it (auto on an
+        # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
+        # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
+        # a newer prebuilt would help; "runtime_error" -> it may not.
+        self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
@@ -793,6 +798,11 @@ class LlamaCppBackend:
     @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
+
+    @property
+    def spec_fallback_reason(self) -> Optional[str]:
+        """Why MTP was disabled on the last MTP-requesting load, else None."""
+        return self._spec_fallback_reason
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -3594,8 +3604,13 @@ class LlamaCppBackend:
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
                     _lo = "\n".join(self._stdout_lines).lower()
+                    # Only an unknown architecture proves the prebuilt predates
+                    # this MTP model (an update fixes it). The memory/context
+                    # build failures are generic (VRAM / ctx pressure), where an
+                    # update may not help, so classify those as runtime_error.
+                    _arch_unsupported = "unknown model architecture" in _lo
                     if (
-                        "unknown model architecture" in _lo
+                        _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
                         or "failed to create llama_context" in _lo
@@ -3605,10 +3620,14 @@ class LlamaCppBackend:
                             "speculative decoding -- run `unsloth studio "
                             "update` for MTP"
                         )
+                        self._spec_fallback_reason = (
+                            "binary_outdated" if _arch_unsupported else "runtime_error"
+                        )
                     else:
                         _retry_reason = (
                             "retrying without speculative decoding in case MTP is the cause"
                         )
+                        self._spec_fallback_reason = "runtime_error"
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -3804,6 +3823,7 @@ class LlamaCppBackend:
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
+        self._spec_fallback_reason = None
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -3853,6 +3873,7 @@ class LlamaCppBackend:
                     "run `unsloth studio update`. Loading without "
                     "speculative decoding."
                 )
+                self._spec_fallback_reason = "binary_no_mtp"
                 return False
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -4118,6 +4139,7 @@ class LlamaCppBackend:
             self._gguf_path = None
             self._hf_repo = None
             self._mtp_draft_path = None
+            self._spec_fallback_reason = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False

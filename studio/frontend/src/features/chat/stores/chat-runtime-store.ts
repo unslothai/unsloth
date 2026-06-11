@@ -416,6 +416,11 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /**
+   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Mirrors InferenceStatusResponse.spec_fallback_reason.
+   */
+  specFallbackReason: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -765,6 +770,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedKvCacheDtype: null,
   speculativeType: "auto",
   loadedSpeculativeType: null,
+  specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   loadedIsMultimodal: false,
@@ -977,6 +983,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedKvCacheDtype: null,
       speculativeType: "auto",
       loadedSpeculativeType: null,
+      specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       loadedIsMultimodal: false,
