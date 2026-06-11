@@ -62,7 +62,7 @@ class _ExecCaptured(SystemExit):
         self.argv = list(argv)
 
 
-def _install_run_reexec_capture(monkeypatch, *, platform="linux"):
+def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
     studio_mod = _studio()
     captured = []
 
@@ -72,12 +72,15 @@ def _install_run_reexec_capture(monkeypatch, *, platform="linux"):
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
-        Path, "is_file",
+        Path,
+        "is_file",
         lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
     )
     from unsloth_cli import _tool_policy as _tp_mod
+
     monkeypatch.setattr(
-        _tp_mod, "resolve_tool_policy",
+        _tp_mod,
+        "resolve_tool_policy",
         lambda host, flag, yes, silent: False if flag is None else bool(flag),
     )
     monkeypatch.setattr(sys, "platform", platform)
@@ -97,16 +100,16 @@ def _invoke_run(monkeypatch, args):
     captured = _install_run_reexec_capture(monkeypatch)
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, args, catch_exceptions=True)
+    CliRunner().invoke(app, args, catch_exceptions = True)
     return captured
 
 
 @pytest.mark.parametrize(
     "user_flag,expected,unexpected",
     [
-        (None, "--cloudflare", "--no-cloudflare"),       # default on
+        (None, "--cloudflare", "--no-cloudflare"),  # default on
         ("--cloudflare", "--cloudflare", "--no-cloudflare"),
         ("--no-cloudflare", "--no-cloudflare", "--cloudflare"),
     ],
@@ -123,7 +126,12 @@ def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, user_flag, expecte
 # ── re-exec forwarding: plain `unsloth studio` ───────────────────────
 
 
-def _invoke_studio_default(monkeypatch, args, *, platform="linux"):
+def _invoke_studio_default(
+    monkeypatch,
+    args,
+    *,
+    platform = "linux",
+):
     import typer as _typer
 
     studio_mod = _studio()
@@ -145,7 +153,7 @@ def _invoke_studio_default(monkeypatch, args, *, platform="linux"):
 
     app = _typer.Typer()
     app.command()(studio_mod.studio_default)
-    CliRunner().invoke(app, args, catch_exceptions=True)
+    CliRunner().invoke(app, args, catch_exceptions = True)
     return captured
 
 
@@ -184,8 +192,10 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
     from unsloth_cli import _tool_policy as _tp_mod
+
     monkeypatch.setattr(
-        _tp_mod, "resolve_tool_policy",
+        _tp_mod,
+        "resolve_tool_policy",
         lambda host, flag, yes, silent: False if flag is None else bool(flag),
     )
 
@@ -205,9 +215,9 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
 
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     extras = [user_flag] if user_flag else []
-    CliRunner().invoke(app, _BASE + extras, catch_exceptions=True)
+    CliRunner().invoke(app, _BASE + extras, catch_exceptions = True)
 
     assert captured.get("cloudflare") is expected, captured

@@ -177,7 +177,7 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
         assert url.endswith("/cloudflared-darwin-arm64.tgz")
         with tarfile.open(dest, "w:gz") as tar:
             data = b"mach-o"
-            info = tarfile.TarInfo(name="cloudflared")
+            info = tarfile.TarInfo(name = "cloudflared")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         return True
@@ -193,10 +193,14 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
 # ── .tgz extraction (darwin) ─────────────────────────────────────────
 
 
-def _make_tgz(tmp_path, member_name, data=b"bin"):
+def _make_tgz(
+    tmp_path,
+    member_name,
+    data = b"bin",
+):
     tgz = tmp_path / "cf.tgz"
     with tarfile.open(tgz, "w:gz") as tar:
-        info = tarfile.TarInfo(name=member_name)
+        info = tarfile.TarInfo(name = member_name)
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     return tgz
@@ -238,9 +242,9 @@ class _FakePopen:
         self.terminated = True
         self._alive = False
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         if self._alive:
-            raise ct.subprocess.TimeoutExpired(cmd="cloudflared", timeout=timeout)
+            raise ct.subprocess.TimeoutExpired(cmd = "cloudflared", timeout = timeout)
         return 0
 
     def kill(self):
@@ -261,7 +265,7 @@ def test_stop_terminates_process():
 
 def test_wait_for_url_times_out_without_blocking():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
-    assert t.wait_for_url(timeout=0.05) is None
+    assert t.wait_for_url(timeout = 0.05) is None
 
 
 def test_start_studio_tunnel_no_binary(monkeypatch):

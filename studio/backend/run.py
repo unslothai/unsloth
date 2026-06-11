@@ -1060,7 +1060,7 @@ if __name__ == "__main__":
         action = argparse.BooleanOptionalAction,
         default = True,
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
-               "(default on; --no-cloudflare to disable)",
+        "(default on; --no-cloudflare to disable)",
     )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).

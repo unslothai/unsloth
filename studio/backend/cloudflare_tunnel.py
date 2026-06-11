@@ -29,7 +29,7 @@ _URL_RE = re.compile(r"https://[A-Za-z0-9-]+\.trycloudflare\.com")
 
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
-_URL_TIMEOUT = 15.0     # seconds to wait for the public URL before giving up
+_URL_TIMEOUT = 15.0  # seconds to wait for the public URL before giving up
 _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 
 
@@ -121,7 +121,6 @@ def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
     outside dest. Best-effort -> bool.
     """
     import tarfile
-
     try:
         with tarfile.open(tgz_path, "r:gz") as tar:
             member = None
@@ -190,8 +189,10 @@ class CloudflareTunnel:
 
     def start(self) -> None:
         cmd = [
-            self.binary, "tunnel",
-            "--url", f"http://localhost:{self.port}",
+            self.binary,
+            "tunnel",
+            "--url",
+            f"http://localhost:{self.port}",
             "--no-autoupdate",
         ]
         proc = subprocess.Popen(

@@ -1013,7 +1013,10 @@ def run(
     from studio.backend.run import run_server, _resolve_external_ip
 
     run_kwargs = dict(
-        host = host, port = port, silent = True, llama_parallel_slots = parallel,
+        host = host,
+        port = port,
+        silent = True,
+        llama_parallel_slots = parallel,
         cloudflare = cloudflare,
     )
     if frontend is not None:
