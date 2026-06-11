@@ -253,9 +253,15 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     binary = _find_binary()
     marker = read_install_marker(binary)
 
+    with _job_lock:
+        job_running = _job["state"] == _JOB_RUNNING
+
     # No marker = source build / custom path. Offer the official prebuilt if one
     # now exists for this host (this is why macOS source builds showed no button).
-    if marker is None and binary is not None:
+    # Skipped while the updater swaps the tree: each 3s poll would exec the
+    # half-replaced binary (on Windows that exec can make the installer's
+    # os.replace fail) and the poller only consumes job progress.
+    if marker is None and binary is not None and not job_running:
         src = _source_build_status(binary, force_refresh = force_refresh)
         if src is not None:
             return src

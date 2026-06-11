@@ -178,6 +178,33 @@ def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
     assert st["installed_tag"] == "b9600"
 
 
+def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
+    # While the updater swaps the tree, status polls must not exec the binary
+    # being replaced (on Windows that exec can fail the installer's os.replace);
+    # the 3s poller only consumes job progress.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    probes = {"resolve": 0, "version": 0}
+
+    def _count_resolve(*, force_refresh = False):
+        probes["resolve"] += 1
+        return None
+
+    def _count_version(b):
+        probes["version"] += 1
+        return None
+
+    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", _count_resolve)
+    monkeypatch.setattr(upd, "_installed_build_number", _count_version)
+    with upd._job_lock:
+        upd._job["state"] = upd._JOB_RUNNING
+    st = upd.get_update_status()
+    assert st["job"]["state"] == "running"
+    assert probes == {"resolve": 0, "version": 0}
+
+
 def test_status_update_available(monkeypatch, tmp_path):
     binary = _write_install(tmp_path, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
