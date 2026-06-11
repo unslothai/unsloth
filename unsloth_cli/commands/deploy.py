@@ -28,7 +28,7 @@ STUDIO_PORT = 8000
 SSH_PORT = 22
 DEFAULT_MIN_VRAM_GB = 24
 DEFAULT_DISK_GB = 100
-POD_RUNNING_TIMEOUT_S = 1800  # can make Runpod wait longer during container startup 
+POD_RUNNING_TIMEOUT_S = 1800  # can make Runpod wait longer during container startup
 STUDIO_HEALTH_TIMEOUT_S = 300
 
 MAX_GPU_CHOICES = 10
