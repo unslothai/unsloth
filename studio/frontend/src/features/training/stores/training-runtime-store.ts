@@ -209,8 +209,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         currentStep:
           typeof detailStep === "number" ? Math.max(detailStep, 0) : state.currentStep,
         totalSteps:
-          typeof detailTotal === "number"
-            ? Math.max(detailTotal, 0)
+          typeof detailTotal === "number" && detailTotal > 0
+            ? detailTotal
             : state.totalSteps,
         currentLoss:
           typeof detailLoss === "number" ? detailLoss : state.currentLoss,

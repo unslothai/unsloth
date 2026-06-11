@@ -3607,10 +3607,10 @@ class UnslothTrainer:
                 training_args.get("num_epochs", 3),
                 training_args.get("max_steps", 0),
             )
-            self._update_progress(total_steps = total_steps)
-
             # ========== START TRAINING ==========
-            self._update_progress(status_message = "Starting training...")
+            self._update_progress(
+                total_steps = total_steps, status_message = "Starting training..."
+            )
             logger.info("Starting training...\n")
             self.trainer.train(
                 resume_from_checkpoint = training_args.get("resume_from_checkpoint")
