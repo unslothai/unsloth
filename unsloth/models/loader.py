@@ -134,6 +134,53 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
+def _config_get(config, field_name, default = None):
+    if isinstance(config, dict):
+        return config.get(field_name, default)
+    return getattr(config, field_name, default)
+
+
+def _config_diff(config):
+    if isinstance(config, dict):
+        return config
+    to_diff_dict = getattr(config, "to_diff_dict", None)
+    if callable(to_diff_dict):
+        try:
+            diff = to_diff_dict()
+            if isinstance(diff, dict):
+                return diff
+        except Exception:
+            pass
+    return {}
+
+
+def _has_sequence_classification_architecture(config):
+    architectures = _config_get(config, "architectures", None) or []
+    return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
+
+
+def _get_user_task_config_attrs(user_config):
+    if user_config is None:
+        return {}
+    diff = _config_diff(user_config)
+    attrs = {}
+    for key in ("id2label", "label2id", "problem_type"):
+        if key in diff:
+            attrs[key] = _config_get(user_config, key, diff.get(key))
+    if isinstance(user_config, dict) and "num_labels" in user_config:
+        attrs["num_labels"] = user_config["num_labels"]
+    elif _has_sequence_classification_architecture(user_config):
+        num_labels = _config_get(user_config, "num_labels", None)
+        if num_labels is not None:
+            attrs["num_labels"] = num_labels
+    elif "id2label" in attrs:
+        try:
+            attrs["num_labels"] = len(attrs["id2label"])
+        except TypeError:
+            pass
+    return attrs
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -1478,14 +1525,14 @@ class FastModel(FastBaseModel):
 
         # Capture task intent before text_only can replace a parent VLM config
         # with its nested text config.
-        _num_labels = kwargs.get("num_labels", None)
-        if _num_labels is None and user_config is not None:
-            if isinstance(model_config, dict):
-                _num_labels = model_config.get("num_labels", None)
-            else:
-                _num_labels = getattr(model_config, "num_labels", None)
-        if _num_labels is not None:
-            set_task_config_attr(model_config, "num_labels", _num_labels)
+        task_config_attrs = _get_user_task_config_attrs(user_config)
+        for _cfg_key in ("num_labels", "id2label", "label2id", "problem_type"):
+            _cfg_val = kwargs.get(_cfg_key, None)
+            if _cfg_val is not None:
+                task_config_attrs[_cfg_key] = _cfg_val
+        _num_labels = task_config_attrs.get("num_labels", None)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
 
         # Check if VLM
         architectures = getattr(model_config, "architectures", None)
@@ -1517,8 +1564,8 @@ class FastModel(FastBaseModel):
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
-        if _num_labels is not None:
-            set_task_config_attr(model_config, "num_labels", _num_labels)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
         if auto_model is None:
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification

@@ -54,19 +54,6 @@ def _calls_name(method, name):
     )
 
 
-def _contains_user_config_num_labels_fallback(method):
-    for node in ast.walk(method):
-        if not isinstance(node, ast.If):
-            continue
-        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
-        if {"_num_labels", "user_config"} - names:
-            continue
-        body_source = ast.unparse(node)
-        if "model_config" in body_source and "num_labels" in body_source:
-            return True
-    return False
-
-
 def _load_task_attr_helper():
     source = _source(UTILS_PATH)
     funcs = {
@@ -78,6 +65,24 @@ def _load_task_attr_helper():
     for name in ("_config_set", "set_task_config_attr"):
         exec(funcs[name], ns)
     return ns["set_task_config_attr"]
+
+
+def _load_loader_task_helpers():
+    source = _source(LOADER_PATH)
+    funcs = {
+        node.name: ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+    ns = {}
+    for name in (
+        "_config_get",
+        "_config_diff",
+        "_has_sequence_classification_architecture",
+        "_get_user_task_config_attrs",
+    ):
+        exec(funcs[name], ns)
+    return ns["_get_user_task_config_attrs"]
 
 
 def test_fast_model_consumes_user_config_kwarg():
@@ -105,16 +110,54 @@ def test_fast_model_uses_user_config_num_labels_for_task_model_selection():
     tree = ast.parse(_source(LOADER_PATH))
     method = _class_method(tree, "FastModel", "from_pretrained")
 
-    assert _contains_user_config_num_labels_fallback(method)
+    assert _calls_name(method, "_get_user_task_config_attrs")
 
 
 def test_fast_model_captures_user_config_num_labels_before_text_only_switch():
     source = _source(LOADER_PATH)
 
-    fallback = source.index("if _num_labels is None and user_config is not None:")
+    fallback = source.index("task_config_attrs = _get_user_task_config_attrs(user_config)")
     text_only_switch = source.index("model_config = text_config")
 
     assert fallback < text_only_switch
+
+
+def test_user_task_config_attrs_ignore_default_num_labels():
+    get_user_task_config_attrs = _load_loader_task_helpers()
+
+    class Config:
+        num_labels = 2
+        id2label = {0: "LABEL_0", 1: "LABEL_1"}
+        label2id = {"LABEL_0": 0, "LABEL_1": 1}
+
+        def to_diff_dict(self):
+            return {}
+
+    assert get_user_task_config_attrs(Config()) == {}
+
+
+def test_user_task_config_attrs_preserve_custom_label_maps():
+    get_user_task_config_attrs = _load_loader_task_helpers()
+
+    class Config:
+        num_labels = 2
+        id2label = {0: "negative", 1: "positive"}
+        label2id = {"negative": 0, "positive": 1}
+
+        def to_diff_dict(self):
+            return {"id2label": self.id2label, "label2id": self.label2id}
+
+    attrs = get_user_task_config_attrs(Config())
+
+    assert attrs["num_labels"] == 2
+    assert attrs["id2label"] == {0: "negative", 1: "positive"}
+    assert attrs["label2id"] == {"negative": 0, "positive": 1}
+
+
+def test_user_task_config_attrs_preserve_explicit_dict_num_labels():
+    get_user_task_config_attrs = _load_loader_task_helpers()
+
+    assert get_user_task_config_attrs({"num_labels": 2}) == {"num_labels": 2}
 
 
 def test_task_config_attr_updates_parent_and_text_config_objects():
