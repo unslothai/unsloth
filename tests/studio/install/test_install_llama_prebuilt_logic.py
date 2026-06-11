@@ -208,7 +208,9 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
 
 def test_release_asset_download_url():
     fn = INSTALL_LLAMA_PREBUILT.release_asset_download_url
-    assert fn("unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz") == (
+    assert fn(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz"
+    ) == (
         "https://github.com/unslothai/llama.cpp/releases/download/"
         "b9000-mix-abc1234/llama.cpp-source-commit-deadbeef.tar.gz"
     )
@@ -220,8 +222,14 @@ def test_release_asset_download_url():
 
 def _mk_source_tarball(path: Path, tag: str) -> None:
     with tarfile.open(path, "w:gz") as archive:
-        add_bytes_to_tar(archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{tag}/convert_hf_to_gguf.py", b"#!/usr/bin/env python3\nimport gguf\n")
+        add_bytes_to_tar(
+            archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n"
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
         add_bytes_to_tar(archive, f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
 
 
@@ -236,7 +244,9 @@ def test_hydrate_source_tree_prefers_release_asset_for_mix(
     asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
         "unslothai/llama.cpp", "b9000-mix-abc1234", f"llama.cpp-source-commit-{commit}.tar.gz"
     )
-    codeload_urls = set(INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit))
+    codeload_urls = set(
+        INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+    )
     seen = []
 
     def fake_download_file(url: str, destination: Path) -> None:
