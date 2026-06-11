@@ -1759,13 +1759,28 @@ _run_bounded() {
     fi
 }
 
+# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
+# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
+# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
+# var, so the probes below cannot see the distinction on their own.
+_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
+}
+
 # ── NVIDIA usable-GPU helper ──
 # Returns 0 (true) if an NVIDIA GPU is present and usable.
 # Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
 # which the NVIDIA driver populates on Linux regardless of nvidia-smi state
 # -- handles PATH gaps, subprocess timeouts, and driver init races that
 # could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
+# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
 _has_usable_nvidia_gpu() {
+    if _cvd_hides_nvidia; then
+        return 1
+    fi
     _nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nvsmi="nvidia-smi"

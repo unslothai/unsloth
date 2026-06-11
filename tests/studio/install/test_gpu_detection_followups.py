@@ -241,8 +241,8 @@ class TestSetupShHardening:
     def test_cuda_source_build_gated_on_usable_nvidia(self, setup_src):
         """The nvcc source-build search must be gated on _setup_nvidia_usable.
 
-        The gate also honours CUDA_VISIBLE_DEVICES=-1 (deliberately hidden
-        GPU), so assert on both conditions rather than the exact line.
+        The hidden-GPU policy (CUDA_VISIBLE_DEVICES=""/-1) lives inside
+        _setup_has_usable_nvidia_gpu, so the gate itself only needs the flag.
         """
         anchor = setup_src.find('NVCC_PATH=""\n')
         assert anchor >= 0
@@ -250,9 +250,16 @@ class TestSetupShHardening:
         assert (
             'if [ "$_setup_nvidia_usable" = true ]' in window
         ), "CUDA toolkit search must require a usable NVIDIA GPU, not just nvcc"
-        assert (
-            '[ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]' in window
-        ), "CUDA toolkit search must respect a deliberately hidden GPU"
+
+    def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
+        """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so
+        CUDA_VISIBLE_DEVICES=""/-1 suppresses NVIDIA before the AMD probes are
+        gated (mixed hosts steered to the AMD card keep the ROCm route)."""
+        assert "_setup_cvd_hides_nvidia()" in setup_src
+        start = setup_src.find("_setup_has_usable_nvidia_gpu() {")
+        end = setup_src.find("\n}", start)
+        body = setup_src[start:end]
+        assert "_setup_cvd_hides_nvidia" in body
 
     def test_rocm_source_build_gated_on_amd_detected(self, setup_src):
         """The hipcc source-build search must be gated on _setup_amd_detected."""
@@ -320,3 +327,154 @@ class TestBackendExportLeafClassification:
                 ["sh", str(script), url], capture_output = True, text = True, timeout = 30
             ).stdout.strip()
             assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
+
+
+# TEST: CUDA_VISIBLE_DEVICES=""/-1 hides NVIDIA in every usable-GPU helper
+
+
+_STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+_STACK_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_python_stack_followups", _STACK_PATH
+)
+assert _STACK_SPEC is not None and _STACK_SPEC.loader is not None
+stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
+sys.modules[_STACK_SPEC.name] = stack_mod
+_STACK_SPEC.loader.exec_module(stack_mod)
+
+
+def _stack_nvidia_usable(cvd):
+    """Drive install_python_stack._has_usable_nvidia_gpu with a mocked
+    nvidia-smi that always reports a GPU; cvd = None removes the env var."""
+
+    def fake_run(cmd, *args, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "GPU 0: NVIDIA Fake (UUID: GPU-x)\n"
+        return result
+
+    env = {} if cvd is None else {"CUDA_VISIBLE_DEVICES": cvd}
+    with (
+        patch.object(
+            stack_mod.shutil,
+            "which",
+            side_effect = lambda n: "/usr/bin/nvidia-smi" if n == "nvidia-smi" else None,
+        ),
+        patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
+        patch.dict(stack_mod.os.environ, env, clear = False),
+    ):
+        if cvd is None:
+            stack_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        return stack_mod._has_usable_nvidia_gpu()
+
+
+class TestHiddenCvdNotUsable:
+    """CUDA_VISIBLE_DEVICES set to "" or "-1" deliberately hides every NVIDIA
+    device (mixed AMD+NVIDIA hosts steering work to the AMD card). All three
+    _has_usable_nvidia_gpu implementations (install_python_stack.py, install.sh,
+    setup.sh) must report the GPU as not usable so the AMD/CPU routes run,
+    matching install_llama_prebuilt.py's has_usable_nvidia."""
+
+    def test_python_unset_cvd_is_usable(self):
+        assert _stack_nvidia_usable(None) is True
+
+    def test_python_empty_cvd_not_usable(self):
+        assert _stack_nvidia_usable("") is False
+
+    def test_python_minus_one_not_usable(self):
+        assert _stack_nvidia_usable("-1") is False
+
+    def test_python_padded_minus_one_not_usable(self):
+        assert _stack_nvidia_usable(" -1 ") is False
+
+    def test_python_explicit_device_is_usable(self):
+        assert _stack_nvidia_usable("0") is True
+
+    def test_python_device_list_is_usable(self):
+        assert _stack_nvidia_usable("0,1") is True
+
+    def test_hidden_nvidia_restores_rocm_detection(self):
+        """Mixed host, NVIDIA hidden via CVD=-1, rocminfo reports gfx1100:
+        _has_rocm_gpu must proceed past the NVIDIA guard and return True
+        (before this fix the guard ignored CVD and blocked ROCm)."""
+
+        def fake_run(cmd, *args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            exe = str(cmd[0])
+            if exe.endswith("rocminfo"):
+                result.stdout = "  Name:                    gfx1100\n"
+            else:
+                result.stdout = "GPU 0: NVIDIA Fake (UUID: GPU-x)\n"
+            return result
+
+        which_map = {
+            "rocminfo": "/usr/bin/rocminfo",
+            "nvidia-smi": "/usr/bin/nvidia-smi",
+        }
+        with (
+            patch.object(stack_mod.shutil, "which", side_effect = which_map.get),
+            patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
+            patch.dict(
+                stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False
+            ),
+        ):
+            assert stack_mod._has_rocm_gpu() is True
+
+    @staticmethod
+    def _run_sh_helper(tmp_path, src: str, fn_names: list, cvd):
+        """Extract shell functions, run the usable-GPU one against a fake
+        nvidia-smi, and return "usable"/"not_usable"."""
+        import os as _os
+        import subprocess as sp
+
+        blocks = []
+        for name in fn_names:
+            start = src.find(f"{name}() {{")
+            assert start >= 0, f"{name} missing"
+            end = src.find("\n}", start) + 2
+            blocks.append(src[start:end])
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir(exist_ok = True)
+        smi = fake_bin / "nvidia-smi"
+        smi.write_text("#!/bin/sh\necho 'GPU 0: NVIDIA Fake (UUID: GPU-x)'\n")
+        smi.chmod(0o755)
+        script = tmp_path / "probe.sh"
+        script.write_text(
+            "#!/bin/sh\n" + "\n".join(blocks) + "\n"
+            f"if {fn_names[-1]}; then echo usable; else echo not_usable; fi\n"
+        )
+        env = dict(_os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        if cvd is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = cvd
+        return sp.run(
+            ["sh", str(script)], capture_output = True, text = True, timeout = 30, env = env
+        ).stdout.strip()
+
+    @pytest.mark.parametrize(
+        "cvd, expected",
+        [(None, "usable"), ("", "not_usable"), ("-1", "not_usable"), ("0", "usable")],
+    )
+    def test_install_sh_helper_cvd(self, tmp_path, cvd, expected):
+        src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        out = self._run_sh_helper(
+            tmp_path, src,
+            ["_run_bounded", "_cvd_hides_nvidia", "_has_usable_nvidia_gpu"],
+            cvd,
+        )
+        assert out == expected
+
+    @pytest.mark.parametrize(
+        "cvd, expected",
+        [(None, "usable"), ("", "not_usable"), ("-1", "not_usable"), ("0", "usable")],
+    )
+    def test_setup_sh_helper_cvd(self, tmp_path, cvd, expected):
+        src = SETUP_SH.read_text(encoding = "utf-8")
+        out = self._run_sh_helper(
+            tmp_path, src,
+            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            cvd,
+        )
+        assert out == expected

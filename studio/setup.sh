@@ -165,12 +165,28 @@ _setup_run_smi() {
     fi
 }
 
+# Returns 0 when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every NVIDIA
+# device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to the
+# AMD card). Unset means all devices visible. nvidia-smi ignores this env var,
+# so the probes below cannot see the distinction on their own.
+_setup_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _setup_cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_setup_cvd_trim" ] || [ "$_setup_cvd_trim" = "-1" ]
+}
+
 # Returns 0 when an NVIDIA GPU is present and usable. Primary probe is
 # `nvidia-smi -L` (timeout-bounded). Fallback is /proc/driver/nvidia/gpus,
 # which the driver populates per GPU regardless of nvidia-smi state -- handles
 # PATH gaps and driver init races. Mirrors install.sh _has_usable_nvidia_gpu
-# (PR 6174) so setup routes the same way as the torch installer.
+# (PR 6174) so setup routes the same way as the torch installer. A GPU hidden
+# via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
+# and a mixed host steered to its AMD card keeps the ROCm route.
 _setup_has_usable_nvidia_gpu() {
+    if _setup_cvd_hides_nvidia; then
+        return 1
+    fi
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -970,15 +986,15 @@ _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 # use unslothai.
 _LINUX_HAS_GPU=false
 # Route to the fork only for a usable GPU. NVIDIA counts only when a device is
-# actually enumerated (_setup_nvidia_usable, from the nvidia-smi -L probe above)
-# AND not hidden via CUDA_VISIBLE_DEVICES=-1 -- mirroring install_llama_prebuilt.py's
-# has_usable_nvidia. Mere nvidia-smi presence (CPU-only CUDA-toolkit containers,
-# broken drivers) or a hidden GPU therefore takes the ggml-org CPU prebuilt
-# instead of a slow source build. AMD is deliberately left on tooling presence,
-# not usability: an unusable NVIDIA host has a good CPU prebuilt to fall back to,
-# whereas tightening AMD would regress ROCm hosts exposing only hipconfig/hipinfo
-# into an unnecessary CPU build.
-if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
+# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
+# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
+# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
+# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
+# deliberately left on tooling presence, not usability: an unusable NVIDIA host
+# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
+# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ]; then
     _LINUX_HAS_GPU=true
 else
     for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
@@ -1324,13 +1340,12 @@ else
             GPU_BACKEND=""
             NVCC_PATH=""
             # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
-            # (_setup_nvidia_usable, computed in the GPU summary block above).
+            # (_setup_nvidia_usable, computed in the GPU summary block above;
+            # already false when hidden via CUDA_VISIBLE_DEVICES=""/-1).
             # A CUDA toolkit alone (CPU-only build container, leftover packages)
             # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
             # binary that fails at runtime, so fall through to the CPU build.
-            # CUDA_VISIBLE_DEVICES=-1 deliberately hides the GPU (same policy
-            # as the _LINUX_HAS_GPU repo-routing block).
-            if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+            if [ "$_setup_nvidia_usable" = true ]; then
                 if command -v nvcc &>/dev/null; then
                     NVCC_PATH="$(command -v nvcc)"
                     GPU_BACKEND="cuda"
