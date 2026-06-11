@@ -777,7 +777,7 @@
 		height: 36px;
 		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
-		border-radius: 9999px;
+		border-radius: 11px;
 		font-weight: 500;
 		font-size: 15px;
 		line-height: 20px;
@@ -1289,6 +1289,9 @@
 		border-radius: 18px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
+		/* Side gutter so item hover boxes sit slightly inset from the menu edge. */
+		padding-left: 5px;
+		padding-right: 5px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -1312,7 +1315,7 @@
 		@apply gap-3 pl-4 pr-3 py-2 text-[14px];
 		cursor: pointer;
 		/* Pin hover-box radius so dark matches light (same as the container). */
-		border-radius: 1.1rem;
+		border-radius: 11px;
 	}
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
