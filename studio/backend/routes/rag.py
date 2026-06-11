@@ -266,9 +266,7 @@ async def upload_project_document(
 
 
 @router.get("/projects/{project_id}/documents")
-def list_project_documents(
-    project_id: str, subject: str = Depends(get_current_subject)
-) -> dict:
+def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -338,9 +336,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         if payload.thread_id:
             scopes.append(store.thread_scope(payload.thread_id))
         if not scopes:
-            raise HTTPException(
-                status_code = 400, detail = "Provide kb_id, project_id, or thread_id"
-            )
+            raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
         scope = scopes[0] if len(scopes) == 1 else scopes
 
     conn = rag_db.get_connection()
