@@ -177,6 +177,7 @@ class GuidedProjectionPooling(nn.Module):
     """Pooling + GuidedProjection as a single sentence transformers pipeline module."""
 
     PROJECTION_WEIGHTS_NAME = "guided_projection.pt"
+    PROJECTION_SAFETENSORS_NAME = "guided_projection.safetensors"
     PROJECTION_CONFIG_NAME = "guided_projection_config.json"
 
     def __init__(self, pooling_module: nn.Module, projection: GuidedProjection):
@@ -206,9 +207,30 @@ class GuidedProjectionPooling(nn.Module):
         if hasattr(self.pooling, "save"):
             self.pooling.save(output_path)
 
-        torch.save(
-            self.projection.state_dict(),
-            os.path.join(output_path, self.PROJECTION_WEIGHTS_NAME),
+        saved_safetensors = False
+        if safe_serialization:
+            try:
+                from safetensors.torch import save_file
+
+                save_file(
+                    self.projection.state_dict(),
+                    os.path.join(output_path, self.PROJECTION_SAFETENSORS_NAME),
+                )
+                saved_safetensors = True
+            except ImportError:
+                pass
+        if not saved_safetensors:
+            torch.save(
+                self.projection.state_dict(),
+                os.path.join(output_path, self.PROJECTION_WEIGHTS_NAME),
+            )
+
+        # modules.json will reference this unsloth class, so vanilla
+        # sentence-transformers cannot reload the checkpoint. Say so at save
+        # time instead of letting users discover it via ImportError later.
+        print(
+            "Unsloth: this checkpoint contains a GuidedProjectionPooling module — "
+            "loading it requires unsloth to be installed."
         )
 
         config = {
@@ -237,6 +259,7 @@ class GuidedProjectionPooling(nn.Module):
 
         config_path = os.path.join(input_path, cls.PROJECTION_CONFIG_NAME)
         weights_path = os.path.join(input_path, cls.PROJECTION_WEIGHTS_NAME)
+        safetensors_path = os.path.join(input_path, cls.PROJECTION_SAFETENSORS_NAME)
 
         with open(config_path, "r") as f:
             config = json.load(f)
@@ -248,7 +271,13 @@ class GuidedProjectionPooling(nn.Module):
             use_residual = config["use_residual"],
             init = config["init"],
         )
-        projection.load_state_dict(torch.load(weights_path, map_location = "cpu", weights_only = True))
+        if os.path.exists(safetensors_path):
+            from safetensors.torch import load_file
+
+            state_dict = load_file(safetensors_path)
+        else:
+            state_dict = torch.load(weights_path, map_location = "cpu", weights_only = True)
+        projection.load_state_dict(state_dict)
 
         if pooling_module is None:
             # Reconstruct the wrapped Pooling saved alongside the projection.
@@ -718,6 +747,12 @@ def _patch_fused_pooling(st_model):
     if transformer_mod is None or pooling_mod is None:
         return False
 
+    # sentence-transformers >= 5.x has no pooling_mode_* booleans until
+    # _ensure_pooling_flags reconstructs them from the pooling_mode string;
+    # without this the guard below always fails and the fused kernel is
+    # silently skipped on ST 5.x.
+    _ensure_pooling_flags(pooling_mod)
+
     if not getattr(pooling_mod, "pooling_mode_mean_tokens", False):
         return False
 
@@ -786,6 +821,17 @@ def _patch_fused_pooling(st_model):
                 dtype = torch.int64,
             ),
         )
+
+        # Native-varlen batches (sentence-transformers >= 5.x can pass
+        # cu_seq_lens metadata with token_embeddings packed into one row) are
+        # not the padded (B, S, H) layout the fused kernel assumes — fall back.
+        if (
+            "cu_seq_lens_q" in features
+            or "cu_seqlens" in features
+            or token_embeddings.shape[:-1] != attention_mask.shape
+        ):
+            features["token_embeddings"] = stored_ln(token_embeddings)
+            return _original_pooling_forward(features)
 
         # The fused kernel assumes right-padding (real tokens occupy [0, seq_len)).
         # Fall back to the original pooling for left-/irregularly-padded batches
@@ -858,6 +904,11 @@ _UNPAD_SUPPORTED_TYPES = {
     "mpnet",
     "distilbert",
 }
+# Every known bidirectional encoder, including ones we must never unpad-patch
+# (modernbert: native unpadding). _patch_unpadded_decoder refuses these so an
+# encoder that falls through when the fast-encoder path is disabled
+# (UNSLOTH_COMPILE_DISABLE=1) never receives a causal block-diagonal mask.
+_UNPAD_KNOWN_ENCODER_TYPES = _UNPAD_SUPPORTED_TYPES | {"modernbert"}
 _UNPAD_MIN_PADDING_RATIO = 0.15
 # Decoder packing under sdpa/eager enforces sequence boundaries with an explicit
 # block-diagonal causal mask, which is O(total_tokens^2) in memory. Above this many
@@ -1108,6 +1159,12 @@ def _patch_unpadded_encoder(st_model, model_type):
     if transformer_mod is None:
         return False
 
+    # Idempotency: a 2nd call (e.g. re-running from_pretrained on the same
+    # instance) must not wrap the already-wrapped forward — double-packing
+    # corrupts token embeddings silently.
+    if getattr(transformer_mod, "_unpadding_active", False):
+        return True
+
     inner = transformer_mod.auto_model
     if hasattr(inner, "_orig_mod"):
         inner = inner._orig_mod
@@ -1151,7 +1208,9 @@ def _patch_unpadded_encoder(st_model, model_type):
         # The below closure monkey-patches the global F.scaled_dot_product_attention for the
         # duration of a forward pass. Two concurrent forward passes will race on the global.
         # The transformers 5.x path (ALL_ATTENTION_FUNCTIONS registry) does not have this issue.
-        # Resolution: upgrade to transformers >=5.0, or use single-threaded DataLoader.
+        # DataLoader workers are separate processes and do NOT trigger this; the race needs
+        # concurrent in-process forwards (e.g. encode() from multiple threads).
+        # Resolution: upgrade to transformers >=5.0, or avoid multi-threaded forwards.
         def _varlen_sdpa(
             query,
             key,
@@ -1291,7 +1350,7 @@ def _patch_unpadded_encoder(st_model, model_type):
         # checkpointing is active (config resets before checkpoint recompute)
         if hasattr(auto_model, "_orig_mod"):
             return _original_forward(features, **kwargs)
-        if getattr(actual_model, "gradient_checkpointing", False):
+        if _is_gradient_checkpointing(actual_model):
             return _original_forward(features, **kwargs)
 
         B, S = attention_mask.shape
@@ -1423,15 +1482,21 @@ def _patch_unpadded_decoder(st_model):
     if transformer_mod is None:
         return False
 
+    # Idempotency: a 2nd call must not re-wrap the already-wrapped forward —
+    # double-packing corrupts token embeddings silently.
+    if getattr(transformer_mod, "_unpadding_active", False):
+        return True
+
     _patch_am = transformer_mod.auto_model
     _patch_inner = _patch_am._orig_mod if hasattr(_patch_am, "_orig_mod") else _patch_am
     _patch_cfg = getattr(_patch_inner, "config", None)
 
     # Never apply a causal mask to a bidirectional encoder. Encoders usually divert
     # to the fast-encoder path, but UNSLOTH_COMPILE_DISABLE=1 lets a BERT/RoBERTa
-    # model fall through to here, so exclude encoder types explicitly.
+    # model fall through to here, so exclude encoder types explicitly (incl.
+    # modernbert, which is not in _UNPAD_SUPPORTED_TYPES but is still an encoder).
     _model_type = str(getattr(_patch_cfg, "model_type", "")).lower()
-    if _model_type in _UNPAD_SUPPORTED_TYPES:
+    if _model_type in _UNPAD_KNOWN_ENCODER_TYPES:
         return False
 
     _sliding_window = _resolve_sliding_window(_patch_cfg)  # None = full attention
@@ -1716,7 +1781,6 @@ def _patch_dense_dtype():
     global _DENSE_PATCHED
     if _DENSE_PATCHED:
         return
-    _DENSE_PATCHED = True
 
     try:
         from sentence_transformers.models import Dense
@@ -1732,6 +1796,9 @@ def _patch_dense_dtype():
             return _original_dense_forward(self, features)
 
         Dense.forward = _dtype_safe_forward
+        # Set only on success so a failed import doesn't permanently disable
+        # the patch (mirrors _POOLING_PATCHED / _MNRL_PATCHED).
+        _DENSE_PATCHED = True
     except Exception:
         pass
 
@@ -1836,6 +1903,8 @@ def _save_pretrained_torchao(
     torchao_config = None,
     push_to_hub = False,
     token = None,
+    repo_id = None,
+    private = False,
 ):
     # The restore guard must also cover the torchao conversion below: fused pooling
     # swapped the encoder's final LayerNorm for Identity, and the exported weights
@@ -1930,11 +1999,13 @@ def _save_pretrained_torchao(
             token = get_token()
 
         api = HfApi(token = token)
-        repo_id = save_directory  # save_directory doubles as the repo id when pushing
+        if repo_id is None:
+            # legacy behavior: save_directory doubles as the repo id when pushing
+            repo_id = save_directory
 
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
-            api.create_repo(repo_id = repo_id, exist_ok = True)
+            api.create_repo(repo_id = repo_id, exist_ok = True, private = private)
             api.upload_folder(
                 folder_path = save_directory,
                 repo_id = repo_id,
@@ -2068,7 +2139,8 @@ def _save_pretrained_gguf(
             token = get_token()
 
         api = HfApi(token = token)
-        repo_id = save_directory  # Assuming save_directory is the repo name if pushing
+        # legacy behavior: save_directory doubles as the repo id when pushing
+        repo_id = kwargs.get("repo_id") or save_directory
 
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
@@ -2367,12 +2439,17 @@ class FastSentenceTransformer(FastModel):
                     pooling_path = module.get("path", "")
                     if pooling_path:
                         # find config.json for the pooling module
-                        if os.path.exists(model_name) and os.path.exists(
-                            os.path.join(model_name, pooling_path, "config.json")
+                        local_candidate = os.path.join(model_name, pooling_path, "config.json")
+                        # containment: pooling_path comes from modules.json;
+                        # never follow it outside the model directory
+                        if (
+                            os.path.exists(model_name)
+                            and os.path.exists(local_candidate)
+                            and os.path.commonpath(
+                                [os.path.abspath(model_name), os.path.abspath(local_candidate)]
+                            ) == os.path.abspath(model_name)
                         ):
-                            pooling_config_path = os.path.join(
-                                model_name, pooling_path, "config.json"
-                            )
+                            pooling_config_path = local_candidate
                         else:
                             pooling_config_path = hf_hub_download(
                                 model_name,
@@ -2399,6 +2476,11 @@ class FastSentenceTransformer(FastModel):
                             if mode != "mean":
                                 print(f"Pooling mode detected as {mode}, updating...")
                             return mode
+
+            # All pooling_mode_* flags false, or no Pooling module entry: fall
+            # back instead of implicitly returning None (the caller passes the
+            # result straight to Pooling(pooling_mode=...)).
+            return "mean"
 
         except Exception as e:
             print(

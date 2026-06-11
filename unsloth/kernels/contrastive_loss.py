@@ -146,9 +146,13 @@ class FusedContrastiveLoss(torch.autograd.Function):
 
 class FastMultipleNegativesRankingLoss(torch.nn.Module):
     """
-    Drop-in replacement for
-    ``sentence_transformers.losses.MultipleNegativesRankingLoss``
-    that uses :class:`FusedContrastiveLoss` under the hood.
+    Memory-efficient ``MultipleNegativesRankingLoss`` built on
+    :class:`FusedContrastiveLoss`. Users normally never instantiate this:
+    ``FastSentenceTransformer.from_pretrained`` patches
+    ``sentence_transformers.losses.MultipleNegativesRankingLoss.forward``
+    (see ``_patch_mnrl_loss`` in ``unsloth/models/sentence_transformer.py``)
+    so existing training code picks up the fused path automatically. It is
+    kept public for direct use with a plain ``SentenceTransformer``.
     """
 
     def __init__(
