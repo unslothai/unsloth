@@ -299,7 +299,7 @@ def test_broker_capability_names_are_flagged(name):
         "https://user:s3cr3t@feed.example.invalid/simple",  # user:pass@
         "https://ghp_deadbeef@github.com/org/private.git",  # token-only@
         "https://__token__@pypi.example.invalid/simple",
-        "https://ghp_1234:@npm.pkg.github.com/simple",       # empty password
+        "https://ghp_1234:@npm.pkg.github.com/simple",  # empty password
         "postgres://dbuser:dbpass@db.example.invalid/app",
     ],
 )
@@ -310,11 +310,11 @@ def test_url_userinfo_values_are_flagged(value):
 @pytest.mark.parametrize(
     "value",
     [
-        "https://example.invalid/simple",            # no userinfo
-        "http://proxy.corp.example:8080",            # benign proxy
-        "https://pypi.corp.example/simple",          # benign internal index
-        "redis://localhost:6379/0",                  # no creds
-        "https://example.invalid/path?ref=a@b",      # '@' only in query, not userinfo
+        "https://example.invalid/simple",  # no userinfo
+        "http://proxy.corp.example:8080",  # benign proxy
+        "https://pypi.corp.example/simple",  # benign internal index
+        "redis://localhost:6379/0",  # no creds
+        "https://example.invalid/path?ref=a@b",  # '@' only in query, not userinfo
     ],
 )
 def test_non_credential_url_values_are_not_flagged(value):
@@ -388,9 +388,7 @@ def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
 def test_bypass_exec_fails_closed_when_hardening_fails(monkeypatch, captured_popen):
     # If the parent cannot be hardened (e.g. prctl denied), the unsandboxed
     # child must NOT run - otherwise the parent environ stays readable.
-    monkeypatch.setattr(
-        tools, "_harden_parent_against_proc_env_leak", lambda: False
-    )
+    monkeypatch.setattr(tools, "_harden_parent_against_proc_env_leak", lambda: False)
     out_py = _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
     out_sh = _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
     assert "refusing bypass execution" in out_py
@@ -452,7 +450,5 @@ def test_anthropic_request_model_bypass_default_false():
     from models.inference import AnthropicMessagesRequest
 
     assert AnthropicMessagesRequest.model_fields["bypass_permissions"].default is False
-    req = AnthropicMessagesRequest(
-        model = "x", messages = [], max_tokens = 8
-    )
+    req = AnthropicMessagesRequest(model = "x", messages = [], max_tokens = 8)
     assert bool(req.bypass_permissions) is False
