@@ -159,6 +159,12 @@ def test_create_instance_mounts_volume_at_workspace_and_opens_ports(monkeypatch)
     assert captured["volume_mount_path"] == "/workspace"
     assert "8000/http" in captured["ports"]
     assert "22/tcp" in captured["ports"]
+    command = captured["docker_args"]
+    assert "UNSLOTH_STUDIO_HOME=/workspace/.unsloth/studio" in command
+    assert ".bootstrap_password" in command
+    assert "printenv UNSLOTH_ADMIN_PASSWORD" in command
+    assert "secret" not in command
+    assert "unsloth studio --api-only -p 8000 -H 0.0.0.0" in command
 
 
 def test_wait_ready_waits_for_runtime(monkeypatch):
@@ -523,8 +529,11 @@ def test_bootstrap_drives_full_chain_and_prints_endpoint(monkeypatch):
     from unsloth_cli.commands import deploy
 
     store = {}
+    pod_kwargs = {}
     _stub_with_catalog(
-        monkeypatch, create_pod = lambda **kw: {"id": "pod-xyz"}, get_pod = _running_pod
+        monkeypatch,
+        create_pod = lambda **kw: pod_kwargs.update(kw) or {"id": "pod-xyz"},
+        get_pod = _running_pod,
     )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
@@ -555,6 +564,10 @@ def test_bootstrap_drives_full_chain_and_prints_endpoint(monkeypatch):
     ]
     assert client.calls[1] == ("login", "unsloth", "bootstrap-pw")
     assert client.calls[2][1] == "bootstrap-pw" and client.calls[2][2] != "bootstrap-pw"
+    command = pod_kwargs["docker_args"]
+    assert "UNSLOTH_STUDIO_HOME=/workspace/.unsloth/studio" in command
+    assert "printenv UNSLOTH_ADMIN_PASSWORD" in command
+    assert "bootstrap-pw" not in command
 
     assert "sk-unsloth-fake-key" in result.output
     assert "unsloth/Llama-3.2-1B-Instruct" in result.output
@@ -1311,15 +1324,18 @@ def _stub_modal(
         def from_id(object_id, client = None):
             return _Sandbox(object_id)
 
+    class _VolumeObjectsNS:
+        @staticmethod
+        def delete(name, **kw):
+            state["volumes_deleted"].append(name)
+
     class _VolumeNS:
+        objects = _VolumeObjectsNS
+
         @staticmethod
         def from_name(name, create_if_missing = False, **kw):
             state["volumes_created"].append(name)
             return _Volume()
-
-        @staticmethod
-        def delete(name, **kw):
-            state["volumes_deleted"].append(name)
 
     class _SecretNS:
         @staticmethod
@@ -1518,6 +1534,14 @@ def test_modal_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
     with pytest.raises(DeployError, match = "upload failed"):
         p.stage_local_model(model, gpu = _gpu())
     assert state["volumes_deleted"]
+
+
+def test_modal_delete_storage_uses_volume_objects_delete(monkeypatch):
+    p, state = _authed_modal(monkeypatch)
+
+    p.delete_storage("vol-x")
+
+    assert state["volumes_deleted"] == ["vol-x"]
 
 
 def test_modal_yes_picks_cheapest_without_stock_warning(monkeypatch, capsys):

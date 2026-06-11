@@ -193,7 +193,7 @@ class Modal(Provider):
         except BaseException as e:
             # Delete the volume on any failure (incl. Ctrl-C) so it stops billing.
             try:
-                sdk.Volume.delete(volume_name)
+                sdk.Volume.objects.delete(volume_name)
             except Exception:
                 log(
                     f"  warning: couldn't delete volume {volume_name} after a failed "
@@ -213,7 +213,7 @@ class Modal(Provider):
 
     def delete_storage(self, storage_id: str) -> None:
         try:
-            self._sdk().Volume.delete(storage_id)
+            self._sdk().Volume.objects.delete(storage_id)
         except Exception as e:
             raise DeployError(f"Modal volume delete failed: {e}") from e
 

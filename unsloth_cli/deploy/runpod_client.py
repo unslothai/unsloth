@@ -21,6 +21,7 @@ from unsloth_cli.deploy.base import (
 
 VOLUME_MOUNT_PATH = "/workspace"
 POD_UPLOADS_DIR = "/workspace/uploads"
+STUDIO_HOME = "/workspace/.unsloth/studio"
 TERMINAL_STATUSES = ("EXITED", "FAILED", "TERMINATED", "DEAD")
 POLL_INTERVAL_S = 3
 
@@ -219,6 +220,7 @@ class RunPod(Provider):
             volume_mount_path = VOLUME_MOUNT_PATH,
             support_public_ip = True,
             env = env,
+            docker_args = self._start_command(http_port),
         )
         if staged and staged.storage_id:
             kwargs["network_volume_id"] = staged.storage_id
@@ -233,6 +235,21 @@ class RunPod(Provider):
         if not pod or "id" not in pod:
             raise DeployError(f"RunPod create_pod returned unexpected payload: {pod!r}")
         return pod["id"]
+
+    def _start_command(self, http_port: int) -> str:
+        # Studio seeds its admin user from .bootstrap_password, not directly
+        # from UNSLOTH_ADMIN_PASSWORD. Keep this free of double quotes because
+        # the RunPod SDK injects docker_args into a quoted GraphQL string.
+        pw_file = f"{STUDIO_HOME}/auth/.bootstrap_password"
+        return (
+            "/bin/sh -lc '"
+            f"export UNSLOTH_STUDIO_HOME={STUDIO_HOME}; "
+            f"mkdir -p {STUDIO_HOME}/auth; "
+            f"printenv UNSLOTH_ADMIN_PASSWORD > {pw_file}; "
+            f"chmod 600 {pw_file}; "
+            f"exec unsloth studio --api-only -p {http_port} -H 0.0.0.0"
+            "'"
+        )
 
     def wait_ready(self, instance_id: str, timeout_s: int) -> None:
         sdk = self._sdk()
