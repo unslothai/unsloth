@@ -6,11 +6,18 @@
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def ensure_studio_backend_path() -> None:
+    backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
 
 
 def configure_quiet_logging() -> None:
@@ -163,7 +170,8 @@ class ChatBackend:
 
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
-    from studio.backend.core import ModelConfig
+    ensure_studio_backend_path()
+    from utils.models import ModelConfig
 
     model_config = ModelConfig.from_identifier(model_id = model, hf_token = hf_token)
     if not model_config:
@@ -173,7 +181,8 @@ def resolve_model_config(model: str, *, hf_token: Optional[str]):
 
 
 def _load_gguf_backend(model_config, *, hf_token, max_seq_length):
-    from studio.backend.core.inference.llama_cpp import LlamaCppBackend
+    ensure_studio_backend_path()
+    from core.inference.llama_cpp import LlamaCppBackend
 
     llama_backend = LlamaCppBackend()
     common = dict(
@@ -190,6 +199,7 @@ def _load_gguf_backend(model_config, *, hf_token, max_seq_length):
         loaded = llama_backend.load_model(
             gguf_path = model_config.gguf_file,
             mmproj_path = model_config.gguf_mmproj_file,
+            mtp_draft_path = model_config.gguf_mtp_file,
             **common,
         )
     if not loaded:
@@ -212,8 +222,6 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    from studio.backend.core import get_inference_backend
-
     if model_config is None:
         model_config = resolve_model_config(model, hf_token = hf_token)
 
@@ -223,9 +231,12 @@ def load_chat_backend(
         return _load_gguf_backend(model_config, hf_token = hf_token, max_seq_length = max_seq_length)
 
     if fresh_backend:
-        from studio.backend.core.inference import InferenceOrchestrator
+        ensure_studio_backend_path()
+        from core.inference import InferenceOrchestrator
         backend = InferenceOrchestrator()
     else:
+        ensure_studio_backend_path()
+        from core.inference import get_inference_backend
         backend = get_inference_backend()
     if not backend.load_model(
         config = model_config,

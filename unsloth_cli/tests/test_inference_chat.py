@@ -34,6 +34,7 @@ class _FakeConfig:
     is_lora = True
     display_name = "fake-model"
     base_model = "fake/base"
+    path = None
 
 
 def _chat_app():
@@ -200,12 +201,12 @@ def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
 
 
 def test_pick_trained_model_lists_and_selects(monkeypatch):
-    fake_core = types.ModuleType("studio.backend.core")
-    fake_core.scan_trained_models = lambda: [
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_trained_models = lambda: [
         ("run-new", "outputs/run-new", "lora"),
         ("run-old", "outputs/run-old", "merged"),
     ]
-    monkeypatch.setitem(sys.modules, "studio.backend.core", fake_core)
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
 
     monkeypatch.setattr("builtins.input", lambda prompt = "": "2")
     assert chatmod._pick_trained_model(Console()) == "outputs/run-old"

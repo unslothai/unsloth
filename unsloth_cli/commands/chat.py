@@ -10,6 +10,7 @@ from unsloth_cli._inference import (
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
+    ensure_studio_backend_path,
     load_chat_backend,
     render_columns,
     resolve_model_config,
@@ -107,7 +108,8 @@ def _compare_needs_second_model() -> bool:
 
 
 def _pick_trained_model(console) -> str:
-    from studio.backend.core import scan_trained_models
+    ensure_studio_backend_path()
+    from utils.models import scan_trained_models
 
     trained = scan_trained_models()
     if not trained:
