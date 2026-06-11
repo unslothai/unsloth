@@ -24,6 +24,7 @@ import {
 } from "../utils/chat-settings-storage";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
+const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
 const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
@@ -38,8 +39,100 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
+  "unsloth_chat_collapse_html_artifacts";
+export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
+  "unsloth_chat_allow_artifact_network_access";
+export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
+export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
+export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
+  "unsloth_chat_rag_autoinject_min_score";
+
+export type RagSource =
+  | { type: "thread" }
+  | { type: "kb"; kbId: string };
+
+export type RagMode = "hybrid" | "lexical" | "dense";
+
+export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+export const DEFAULT_RAG_MODE: RagMode = "hybrid";
+export const DEFAULT_RAG_TOP_K = 5;
+// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
+export type RagAutoInject = "auto" | "on" | "off";
+export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
+export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+
+function loadRagSource(): RagSource {
+  if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_SOURCE_KEY);
+    if (!raw) return DEFAULT_RAG_SOURCE;
+    const parsed = JSON.parse(raw) as RagSource;
+    if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
+      return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "thread") return { type: "thread" };
+    return DEFAULT_RAG_SOURCE;
+  } catch {
+    return DEFAULT_RAG_SOURCE;
+  }
+}
+
+function saveRagSource(value: RagSource): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+  } catch {
+  }
+}
+
+function loadRagMode(): RagMode {
+  const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
+  return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagAutoInject(): RagAutoInject {
+  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  // Legacy boolean migration: false -> Off, else Auto.
+  return raw === "false" ? "off" : "auto";
+}
+
+function loadRagTopK(): number {
+  if (typeof window === "undefined") return DEFAULT_RAG_TOP_K;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_TOP_K_KEY);
+    if (raw === null) return DEFAULT_RAG_TOP_K;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
+  } catch {
+    return DEFAULT_RAG_TOP_K;
+  }
+}
+
+// Preserves a stored 0 (score floors can legitimately be 0).
+function loadRagNumber(
+  key: string,
+  fallback: number,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = integer ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  } catch {
+    return fallback;
+  }
+}
 
 /**
  * Built-in OCR model presets selectable from the Document Extraction settings.
@@ -138,12 +231,11 @@ function asOcrSelection(value: unknown): OcrModelSelection {
 }
 
 // External provider selection is encoded into `params.checkpoint` as
-// `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
-// Omits `checkpoint` because the local-model side is mirrored by the
-// backend's `/api/inference/status.active_model` response. External
-// selections have no such backend mirror, so without explicit
-// localStorage persistence here the user's external pick is silently
-// reset to the default on every page refresh.
+// `external::<providerId>::<modelId>`. PersistedChatSettings omits `checkpoint`
+// because the local-model side is mirrored by the backend's
+// /api/inference/status.active_model. External selections have no such mirror,
+// so without explicit localStorage persistence here the user's external pick
+// is reset to the default on every refresh.
 const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
 
 function loadLastExternalCheckpoint(): string | null {
@@ -161,13 +253,13 @@ function saveLastExternalCheckpoint(value: string | null): void {
     if (value && isExternalModelId(value)) {
       window.localStorage.setItem(LAST_EXTERNAL_CHECKPOINT_KEY, value);
     } else {
-      // Clearing on a switch to a local / empty checkpoint means the
-      // next refresh won't override the now-active local selection.
+      // Clear on switch to a local/empty checkpoint so the next refresh
+      // won't override the now-active local selection.
       window.localStorage.removeItem(LAST_EXTERNAL_CHECKPOINT_KEY);
     }
   } catch {
-    // Storage quota / private-mode failures are non-fatal -- the
-    // selection just won't survive the refresh.
+    // Storage quota / private-mode failures are non-fatal; selection just
+    // won't survive the refresh.
   }
 }
 
@@ -205,10 +297,9 @@ function warnSettingsPersistenceFailure(): void {
   });
 }
 
-// Coalesce setting writes into one pendingPatch (deep merge for nested
-// keys), flush on a trailing-edge debounce, flush on beforeunload so a
-// pending patch survives tab close. Slider drag ticks now produce one
-// HTTP write per quiet window instead of one per tick.
+// Coalesce setting writes into one pendingPatch (deep merge for nested keys),
+// flush on a trailing-edge debounce and on beforeunload so a pending patch
+// survives tab close. Slider drags produce one HTTP write per quiet window.
 type SettingsPatch = Parameters<typeof savePersistedChatSettingsPatch>[0];
 
 const SETTINGS_DEBOUNCE_MS = 400;
@@ -258,9 +349,9 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   }, SETTINGS_DEBOUNCE_MS);
 }
 
-// Best-effort flush of any pending patch when the tab closes. keepalive
-// lets the PUT outlive the unload; without it the browser cancels the
-// fetch and the user's last slider drag is dropped.
+// Best-effort flush of any pending patch on tab close. keepalive lets the PUT
+// outlive the unload; without it the browser cancels the fetch and the user's
+// last slider drag is dropped.
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     if (pendingTimer !== null) clearTimeout(pendingTimer);
@@ -289,6 +380,23 @@ export function loadOptionalBool(key: string): boolean | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the web-search / code-execution pill state to apply when a model
+ * loads. Honors the user's persisted preference so a tool-capable model never
+ * re-enables a pill the user turned off; falls back to the model's capability
+ * only when no preference has been expressed.
+ */
+export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+  toolsEnabled: boolean;
+  codeToolsEnabled: boolean;
+} {
+  if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
+  return {
+    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? true,
+    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? true,
+  };
 }
 
 function warnStoragePersistence(): void {
@@ -489,6 +597,15 @@ function saveDocExtract(value: DocExtractSettings): boolean {
   }
 }
 
+function notifyHfTokenChanged(value: string): void {
+  if (!canUseStorage()) return;
+  try {
+    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
+  } catch {
+    // ignore
+  }
+}
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -511,12 +628,10 @@ type ChatRuntimeStore = {
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
   /**
-   * The model id the OpenRouter router actually picked for the most recent
-   * stream when the active checkpoint is the openrouter/free meta-model.
-   * Updated each time a chunk arrives carrying a non-empty `model` field
-   * that differs from the requested id. Cleared when a non-OpenRouter
-   * model is selected. Used purely for UI display — appended after
-   * `openrouter/free:` in the active model chip.
+   * The model id the OpenRouter router picked for the most recent stream when
+   * the active checkpoint is the openrouter/free meta-model. Updated when a
+   * chunk's `model` field differs from the requested id; cleared on a
+   * non-OpenRouter model. UI display only (appended after `openrouter/free:`).
    */
   lastOpenRouterChosenModel: string | null;
   reasoningStyle: ReasoningStyle;
@@ -527,40 +642,45 @@ type ChatRuntimeStore = {
   preserveThinking: boolean;
   supportsTools: boolean;
   /**
-   * Whether the active external provider exposes a server-side
-   * web_search tool (OpenAI's /v1/responses today). Distinct from
-   * `supportsTools` — that flag governs the local tool runtime (Code,
-   * python sandbox, our DuckDuckGo web_search). This one only enables
-   * the chat composer's Search pill for external models. Local models
-   * keep `supportsTools` only.
+   * Whether the active external provider exposes a server-side web_search tool
+   * (OpenAI's /v1/responses today). Distinct from `supportsTools` (the local
+   * tool runtime): this only enables the composer's Search pill for external
+   * models. Local models keep `supportsTools` only.
    */
   supportsBuiltinWebSearch: boolean;
   /**
-   * Whether the active external provider exposes a server-side
-   * code-execution tool (Anthropic's `code_execution_20250825` on the
-   * Claude 4.x family). Distinct from `supportsTools` for the same
-   * reason as `supportsBuiltinWebSearch`: external providers don't
-   * give us a local tool runtime, but Anthropic dispatches code
-   * execution server-side. Read by both composers' Code pill gate.
+   * Whether the active external provider exposes a server-side code-execution
+   * tool (Anthropic's `code_execution_20250825` on Claude 4.x). Distinct from
+   * `supportsTools` like supportsBuiltinWebSearch: Anthropic dispatches it
+   * server-side. Read by both composers' Code pill gate.
    */
   supportsBuiltinCodeExecution: boolean;
   /**
-   * Whether the active external provider exposes a server-side
-   * image-generation tool (OpenAI's Responses-API `image_generation`
-   * today). Gates the chat composer's Images pill. Local models never
-   * receive the tool because their runtime cannot dispatch it.
+   * Whether the active external provider exposes a server-side image-generation
+   * tool (OpenAI's Responses-API `image_generation`). Gates the composer's
+   * Images pill. Local models never receive it (their runtime can't dispatch it).
    */
   supportsBuiltinImageGeneration: boolean;
   /**
-   * Whether the active external provider exposes a server-side
-   * web_fetch tool (Anthropic's `web_fetch_20250910` /
-   * `web_fetch_20260209`). Gates the composer's Fetch pill,
-   * independent of Search.
+   * Whether the active external provider exposes a server-side web_fetch tool
+   * (Anthropic's `web_fetch_20250910` / `web_fetch_20260209`). Gates the
+   * composer's Fetch pill, independent of Search.
    */
   supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  artifactsEnabled: boolean;
+  collapseHtmlArtifacts: boolean;
+  allowArtifactNetworkAccess: boolean;
+  mcpEnabledForChat: boolean;
+  ragEnabled: boolean;
+  ragSource: RagSource;
+  ragMode: RagMode;
+  ragTopK: number;
+  // autoInject = forced first-pass retrieval before answering.
+  ragAutoInject: RagAutoInject;
+  ragAutoInjectMinScore: number;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -584,6 +704,7 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeProjectId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -619,6 +740,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -632,7 +754,20 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setArtifactsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setCollapseHtmlArtifacts: (enabled: boolean) => void;
+  setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
+  setRagEnabled: (enabled: boolean) => void;
+  setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
+  setRagTopK: (topK: number) => void;
+  setRagAutoInject: (value: RagAutoInject) => void;
+  setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -663,6 +798,8 @@ type ScalarSettingKey =
   | "autoTitle"
   | "reasoningEffort"
   | "preserveThinking"
+  | "collapseHtmlArtifacts"
+  | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
@@ -697,6 +834,8 @@ const SCALAR_SETTING_KEYS = [
   "autoTitle",
   "reasoningEffort",
   "preserveThinking",
+  "collapseHtmlArtifacts",
+  "allowArtifactNetworkAccess",
   "autoHealToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
@@ -839,10 +978,9 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
-  // Hydrate the last external checkpoint into params.checkpoint so the
-  // external picker selection survives a page refresh. Local model
-  // checkpoints are re-derived from the backend in useChatModelRuntime
-  // and intentionally NOT persisted here.
+  // Hydrate the last external checkpoint so the external picker survives a
+  // refresh. Local checkpoints are re-derived from the backend in
+  // useChatModelRuntime and intentionally NOT persisted here.
   params: (() => {
     const persistedExternal = loadLastExternalCheckpoint();
     return persistedExternal
@@ -882,7 +1020,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
+  allowArtifactNetworkAccess: loadBool(
+    CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    false,
+  ),
+  mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
+  // RAG is opt-in per session: always starts off, never restored from storage.
+  ragEnabled: false,
+  ragSource: loadRagSource(),
+  ragMode: loadRagMode(),
+  ragTopK: loadRagTopK(),
+  ragAutoInject: loadRagAutoInject(),
+  ragAutoInjectMinScore: loadRagNumber(
+    CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
+    { min: 0, max: 1 },
+  ),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -900,6 +1056,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeProjectId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -949,9 +1106,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           return nextState;
         });
       } catch {
-        // Hydrate failed: treat as hydrated-with-defaults so future
-        // setParams calls reach saveSettingsPatch (which surfaces its
-        // own toast on real network failure).
+        // Hydrate failed: treat as hydrated-with-defaults so future setParams
+        // calls reach saveSettingsPatch (which toasts on real network failure).
         warnSettingsPersistenceFailure();
         set({ settingsHydrated: true });
       } finally {
@@ -965,16 +1121,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set((state) => {
-      // Bump version unconditionally so a late hydration response
-      // won't clobber a pre-hydrate user edit; only the HTTP write
-      // is gated on settingsHydrated.
+      // Bump version unconditionally so a late hydration response won't clobber
+      // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      // Mirror setCheckpoint: the local model load path can mutate
-      // params.checkpoint via setParams() before setCheckpoint runs,
-      // leaving stale per-turn counters under the new checkpoint.
+      // Mirror setCheckpoint: the local load path can mutate params.checkpoint
+      // via setParams() before setCheckpoint runs, leaving stale per-turn
+      // counters under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
@@ -1029,30 +1184,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) =>
-    set(() => {
-      if (!saveString(HF_TOKEN_KEY, hfToken)) {
-        warnStoragePersistence();
-      }
-      return { hfToken };
-    }),
+  setHfToken: (hfToken) => {
+    if (!saveString(HF_TOKEN_KEY, hfToken)) {
+      warnStoragePersistence();
+    }
+    set({ hfToken });
+    notifyHfTokenChanged(hfToken);
+  },
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
       invalidateDocumentSupportCache();
-      // Persist external selections so they survive a page refresh.
-      // Local model ids are NOT persisted here - they get re-derived
-      // from the backend's `/api/inference/status.active_model` on
-      // mount, and a stale persisted local id would race against the
-      // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
+      // Persist external selections so they survive a refresh. Local ids are
+      // NOT persisted -- they're re-derived from the backend on mount, and a
+      // stale persisted local id would race the freshly-loaded model. See
+      // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      // Clear stale per-turn usage when the model changes; the relaxed
-      // external-provider render gate would otherwise show old counters
-      // until the next completion overwrites them.
+      // Clear stale per-turn usage on model change; the relaxed external-provider
+      // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
-      // Clamp maxTokens to the new model's cap on switch into an
-      // external model so a value carried over from a prior local
-      // session does not render above the slider's max.
+      // Clamp maxTokens to the new model's cap when switching into an external
+      // model so a value carried over from a local session doesn't exceed the
+      // slider's max.
       let nextMaxTokens = state.params.maxTokens;
       if (checkpointChanged && isExternalModelId(modelId)) {
         const parsed = parseExternalModelId(modelId);
@@ -1081,13 +1234,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     invalidateDocumentSupportCache();
-    // Mirror setCheckpoint's persistence behavior: dropping the
-    // checkpoint must also clear any stored external selection so
-    // the next refresh doesn't snap back to a model the user
-    // intentionally cleared.
+    // Mirror setCheckpoint's persistence: dropping the checkpoint must also
+    // clear any stored external selection so the next refresh doesn't snap
+    // back to a model the user intentionally cleared.
     saveLastExternalCheckpoint(null);
     return set((state) => ({
       params: {
@@ -1116,7 +1269,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      artifactsEnabled: false,
+      mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
+      // Only the per-session enable pill resets; source/mode/top_k persist.
+      ragEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1177,10 +1334,74 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
     }),
+  setArtifactsEnabled: (artifactsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      }
+      return { artifactsEnabled };
+    }),
+  setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
+    set((state) => {
+      saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
+      setScalarSettingVersion(
+        "collapseHtmlArtifacts",
+        collapseHtmlArtifacts,
+        state.collapseHtmlArtifacts,
+      );
+      return { collapseHtmlArtifacts };
+    }),
+  setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
+    set((state) => {
+      saveBool(
+        CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+        allowArtifactNetworkAccess,
+      );
+      setScalarSettingVersion(
+        "allowArtifactNetworkAccess",
+        allowArtifactNetworkAccess,
+        state.allowArtifactNetworkAccess,
+      );
+      return { allowArtifactNetworkAccess };
+    }),
+  setMcpEnabledForChat: (mcpEnabledForChat) =>
+    set(() => {
+      saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
+      return { mcpEnabledForChat };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
       return { webFetchToolsEnabled };
+    }),
+  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagSource: (ragSource) =>
+    set(() => {
+      saveRagSource(ragSource);
+      return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set(() => {
+      saveString(CHAT_RAG_MODE_KEY, ragMode);
+      return { ragMode };
+    }),
+  setRagTopK: (ragTopK) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
+      return { ragTopK };
+    }),
+  setRagAutoInject: (ragAutoInject) =>
+    set(() => {
+      saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      return { ragAutoInject };
+    }),
+  setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
+    set(() => {
+      saveString(
+        CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+        String(ragAutoInjectMinScore),
+      );
+      return { ragAutoInjectMinScore };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

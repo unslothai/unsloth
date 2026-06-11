@@ -42,16 +42,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 
-# ---------------------------------------------------------------------------
 # 1. Source-level structure check on _IS_MLX (no platform dependencies).
-# ---------------------------------------------------------------------------
 
 
 def test_is_mlx_gate_uses_three_required_predicates():
-    """The _IS_MLX assignment must AND together exactly the three checks
-    that Studio depends on: Darwin OS, arm64 machine, and an importable
-    mlx package. Dropping any one of them silently breaks dispatch.
-    """
+    """_IS_MLX must AND the three checks Studio depends on (Darwin, arm64, importable mlx); dropping any breaks dispatch."""
     tree = ast.parse(UNSLOTH_INIT.read_text())
 
     target = None
@@ -67,9 +62,7 @@ def test_is_mlx_gate_uses_three_required_predicates():
     assert target is not None, "_IS_MLX assignment not found in unsloth/__init__.py"
     assert isinstance(target, ast.Call), "_IS_MLX must call the shared MLX helper"
     expr_src = ast.unparse(target)
-    assert (
-        expr_src == "_is_mlx_available()"
-    ), "_IS_MLX must delegate to the shared MLX runtime gate"
+    assert expr_src == "_is_mlx_available()", "_IS_MLX must delegate to the shared MLX runtime gate"
 
     helper = None
     for node in ast.walk(tree):
@@ -97,18 +90,13 @@ def test_is_mlx_gate_uses_three_required_predicates():
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
 
 
-# ---------------------------------------------------------------------------
 # 2. Runtime gate behavior with the platform spoofed to Apple Silicon and a
-#    fake mlx module in sys.modules.  Re-evaluates the same expression
-#    rather than reloading unsloth (which would cascade-reload torch).
-# ---------------------------------------------------------------------------
+#    fake mlx module in sys.modules. Re-evaluates the same expression rather
+#    than reloading unsloth (which would cascade-reload torch).
 
 
 def _evaluate_is_mlx_precheck(platform_module, importlib_util, os_module):
-    """Re-evaluate the local _is_mlx_available precheck using injected dependencies.
-
-    Mirrors only the cheap import barrier before unsloth imports unsloth_zoo.
-    """
+    """Re-evaluate the local _is_mlx_available precheck (the import barrier before zoo) with injected deps."""
     return (
         os_module.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") != "1"
         and platform_module.system() == "Darwin"
@@ -166,7 +154,6 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         # On a Mac CI runner this assertion would not apply; skip there.
         import pytest
-
         pytest.skip("Test host is Apple Silicon; CUDA-side canary doesn't apply.")
 
     import os
@@ -227,11 +214,8 @@ def test_detect_hardware_picks_cuda_on_real_host():
 
     if not torch.cuda.is_available():
         import pytest
-
         pytest.skip("No CUDA available on this host; canary not applicable.")
 
     hw = _import_studio_hardware()
     detected = hw.detect_hardware()
-    assert (
-        detected == hw.DeviceType.CUDA
-    ), f"CUDA host must dispatch to CUDA, got {detected!r}"
+    assert detected == hw.DeviceType.CUDA, f"CUDA host must dispatch to CUDA, got {detected!r}"

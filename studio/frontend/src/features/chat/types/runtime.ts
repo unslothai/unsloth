@@ -19,8 +19,8 @@ export interface InferenceParams {
    *  the original quantization instead of forcing 4-bit. */
   loadIn4Bit?: boolean;
   /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at
-   * 6x standard Opus pricing. Default false.
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at 6x Opus
+   * pricing. Default false.
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fastMode?: boolean;
@@ -49,6 +49,7 @@ export interface ChatModelSummary {
   isVision: boolean;
   isLora: boolean;
   isGguf?: boolean;
+  isMlx?: boolean;
   isAudio?: boolean;
   audioType?: string | null;
   hasAudioInput?: boolean;

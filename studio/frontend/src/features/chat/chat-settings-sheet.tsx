@@ -64,6 +64,7 @@ import {
   ArrowTurnBackwardIcon,
   CodeIcon,
   Delete02Icon,
+  Edit03Icon,
   File01Icon,
   FloppyDiskIcon,
   InformationCircleIcon,
@@ -77,7 +78,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
 import {
   Fragment,
   type ReactNode,
@@ -112,13 +113,13 @@ import {
   toPresetParams,
 } from "./presets/preset-policy";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
+import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
@@ -163,19 +164,11 @@ export function InfoHint({ children }: { children: ReactNode }) {
 }
 
 /**
- * Editable numeric value display.
- *
- * Renders as a single <input> that *looks* like text by default —
- * transparent background, no border, no ring — and only shows a faint
- * surface tint on hover/focus to signal editability. When unfocused,
- * the input shows the formatted display string (`displayValue ?? value`,
- * so labels like "Off" / "Max" still render); on focus, it switches to
- * the raw numeric value, selects it, and accepts free text input.
- * Commit happens on blur or Enter; Escape reverts. The clamp-to-range
- * happens on commit so users can type intermediate values without the
- * input fighting them mid-keystroke. Single component shared by every
- * slider value and the Context Length input so the click-to-edit
- * affordance is consistent across the panel.
+ * Editable numeric value display, shared by every slider value and the Context
+ * Length input. An <input> that looks like text (shows `displayValue ?? value`,
+ * so "Off"/"Max" labels render) until focus, when it swaps to the raw number,
+ * selects it, and accepts free text. Commits on blur/Enter, reverts on Escape.
+ * Clamping happens on commit so typing intermediate values isn't fought.
  */
 function snapToStep(
   value: number,
@@ -230,18 +223,22 @@ function NumericValueInput({
     }
   };
 
+  const displayed = focused ? draft : (displayValue ?? String(value));
+
   return (
     <input
       type="text"
       inputMode="decimal"
       size={sizeAttr}
-      value={focused ? draft : (displayValue ?? String(value))}
+      /* Fixed 4ch pill; grows only when a longer value would clip. */
+      style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
+      value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
         setDraft(String(value));
         setFocused(true);
-        // Defer the select() so it runs after the value swap above.
+        // Defer select() so it runs after the value swap above.
         const target = e.currentTarget;
         requestAnimationFrame(() => target.select());
       }}
@@ -306,7 +303,7 @@ function ParamSlider({
           onChange={onChange}
           displayValue={displayValue}
           ariaLabel={label}
-          size={valueSize ?? 6}
+          size={valueSize ?? 4}
         />
       </div>
       <Slider
@@ -478,11 +475,25 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 
 function CollapsibleSection({
   label,
+  labelHref,
+  headerAction,
   children,
   defaultOpen = false,
   first = false,
 }: {
   label: string;
+  /**
+   * When set, the label becomes an external link (e.g. the feature's GitHub PR)
+   * instead of part of the toggle. The chevron still toggles, so link and button
+   * are siblings rather than an <a> nested in a <button> (invalid HTML).
+   */
+  labelHref?: string;
+  /**
+   * Optional control rendered before the chevron (e.g. an edit icon). The
+   * label and chevron become sibling toggles so the action is not a button
+   * nested in a button.
+   */
+  headerAction?: ReactNode;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -492,6 +503,17 @@ function CollapsibleSection({
     return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
 
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    saveCollapsibleOpen(label, next);
+  };
+
+  const headerClasses = cn(
+    "flex w-full items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
+    first ? "pt-4 pb-5" : "py-5",
+  );
+
   return (
     <div
       className={cn(
@@ -499,25 +521,65 @@ function CollapsibleSection({
           "border-t border-black/[0.13] dark:border-white/[0.09]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          saveCollapsibleOpen(label, next);
-        }}
-        className={cn(
-          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors hover:text-nav-fg focus-visible:outline-none focus-visible:ring-0",
-          first ? "pt-4 pb-5" : "py-5",
-        )}
-      >
-        <span className="leading-none">{label}</span>
-        <span className="flex shrink-0 items-center leading-none">
-          <ChevronDown
-            className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
-          />
-        </span>
-      </button>
+      {labelHref ? (
+        <div className={headerClasses}>
+          <a
+            href={labelHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex cursor-pointer items-center gap-1 leading-none transition-colors hover:text-nav-fg"
+          >
+            <span>{label}</span>
+            <ExternalLink className="size-3" />
+          </a>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+            className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+          >
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </button>
+        </div>
+      ) : headerAction ? (
+        <div className={headerClasses}>
+          <button
+            type="button"
+            onClick={toggle}
+            className="flex min-w-0 flex-1 cursor-pointer items-center text-left leading-none transition-colors hover:text-nav-fg"
+          >
+            <span className="leading-none">{label}</span>
+          </button>
+          <span className="flex shrink-0 items-center gap-1">
+            {headerAction}
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+              className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+            >
+              <ChevronDown
+                className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+              />
+            </button>
+          </span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={toggle}
+          className={cn("cursor-pointer hover:text-nav-fg", headerClasses)}
+        >
+          <span className="leading-none">{label}</span>
+          <span className="flex shrink-0 items-center leading-none">
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </span>
+        </button>
+      )}
       {open && <div className="pb-7">{children}</div>}
     </div>
   );
@@ -530,17 +592,16 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   isExternalModel?: boolean;
   /**
-   * Sampling-param capability set for the active external provider, or `null`
-   * for local models (in which case every knob is rendered). Drives the
-   * per-param visibility in the sampling section.
+   * Sampling-param capabilities for the active external provider, or `null` for
+   * local models (every knob rendered). Drives per-param sampling visibility.
    */
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
   onExternalProviderChange?: (provider: ExternalProviderConfig) => void;
   /**
    * Backend provider type for the active external model (e.g. "kimi",
-   * "anthropic", "openai"), or `null` for local models. Drives the
-   * per-provider Max Tokens floor in the slider.
+   * "anthropic", "openai"), or `null` for local models. Drives the per-provider
+   * Max Tokens floor in the slider.
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
@@ -558,9 +619,8 @@ export function ChatSettingsPanel({
   externalProviderType = null,
   onReloadModel,
 }: ChatSettingsPanelProps) {
-  // For non-external (local) models we show every knob — providerCapabilities
-  // is only consulted when `isExternalModel` is true. An external model with an
-  // unknown provider falls back to the OpenAI-compat shape via
+  // Local models show every knob; providerCapabilities is only consulted when
+  // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
   // getProviderCapabilities, so these flags never undercount support.
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
@@ -589,16 +649,6 @@ export function ChatSettingsPanel({
     (s) => s.modelRequiresTrustRemoteCode,
   );
   const currentCheckpoint = params.checkpoint;
-  const currentModelIsMultimodal = useChatRuntimeStore((s) => {
-    if (s.loadedIsMultimodal) return true;
-    const m = s.models.find((m) => m.id === currentCheckpoint);
-    return (
-      Boolean(m?.isVision) ||
-      Boolean(m?.isAudio) ||
-      Boolean(m?.hasAudioInput) ||
-      m?.audioType === "audio_vlm"
-    );
-  });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
@@ -860,26 +910,29 @@ export function ChatSettingsPanel({
     [onOpenChange],
   );
 
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
+      <div className="flex h-full min-h-0 flex-col">
+      {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
+      <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-            Configuration
+          <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-              Configuration
+            <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+              Run settings
             </span>
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close configuration"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close run settings"
                 >
                   <HugeiconsIcon
                     icon={LayoutAlignRightIcon}
@@ -893,13 +946,17 @@ export function ChatSettingsPanel({
                 sideOffset={6}
                 className="tooltip-compact"
               >
-                Close configuration
+                Close run settings
               </TooltipContent>
             </Tooltip>
           </>
         )}
       </div>
 
+      <div
+        ref={settingsScrollRef}
+        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+      >
       <div className="px-[18px] pt-3">
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
@@ -981,7 +1038,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ArrowDown01Icon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[60px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -1021,7 +1078,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ArrowDown01Icon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[120px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
                       >
                         <SelectValue />
@@ -1072,7 +1129,7 @@ export function ChatSettingsPanel({
                       }}
                       data-test-id="spec-draft-n-max-input"
                       aria-label="Speculative decoding draft tokens"
-                      className="h-7 w-[72px] rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                      className="h-7 w-[76px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
                     />
                   </div>
                 )}
@@ -1111,7 +1168,7 @@ export function ChatSettingsPanel({
               </>
             )}
             <ChatTemplateFields />
-            {(modelSettingsDirty || templateDirty) && (
+            {modelSettingsDirty && (
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Button
                   type="button"
@@ -1202,7 +1259,7 @@ export function ChatSettingsPanel({
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
-                sideOffset={6}
+                sideOffset={0}
                 className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
               >
                 {presets.map((p, index) => (
@@ -1236,7 +1293,7 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav",
+                  "h-9 w-full rounded-full text-[13px] font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1251,7 +1308,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1362,13 +1419,41 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
         ) : null}
 
-        <CollapsibleSection label="System Prompt" defaultOpen={true}>
+        <CollapsibleSection
+          label="System Prompt"
+          defaultOpen={true}
+          headerAction={
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={openSystemPromptEditor}
+                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  aria-label="Edit system prompt"
+                >
+                  <HugeiconsIcon
+                    icon={Edit03Icon}
+                    strokeWidth={1.75}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent
+                side="top"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
+                Edit prompt
+              </TooltipContent>
+            </Tooltip>
+          }
+        >
           <button
             type="button"
             onClick={openSystemPromptEditor}
             aria-label="Edit system prompt"
             className={cn(
-              "panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              "panel-text-surface -mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
               params.systemPrompt
                 ? "text-nav-fg"
                 : "text-muted-foreground",
@@ -1508,7 +1593,14 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
         ) : null}
 
+        {!isExternalModel ? (
+          <CollapsibleSection label="Retrieval">
+            <RetrievalSettingsSection />
+          </CollapsibleSection>
+        ) : null}
+
         <DocumentExtractionSection />
+      </div>
       </div>
       </div>
       <Dialog
@@ -1518,7 +1610,7 @@ export function ChatSettingsPanel({
         }}
       >
         <DialogContent
-          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
           overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
@@ -1541,7 +1633,7 @@ export function ChatSettingsPanel({
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle focus-visible:border-input focus-visible:ring-0"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>
@@ -1549,20 +1641,31 @@ export function ChatSettingsPanel({
             <Button
               type="button"
               variant="ghost"
-              onClick={() => {
-                setSystemPromptDraft(params.systemPrompt);
-                setSystemPromptEditorOpen(false);
-              }}
+              onClick={() => setSystemPromptDraft("")}
+              disabled={systemPromptDraft.length === 0}
+              className="text-muted-foreground"
             >
-              Cancel
+              Reset
             </Button>
-            <Button
-              type="button"
-              onClick={saveSystemPromptEditor}
-              disabled={!systemPromptEditorDirty}
-            >
-              Save
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setSystemPromptDraft(params.systemPrompt);
+                  setSystemPromptEditorOpen(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={saveSystemPromptEditor}
+                disabled={!systemPromptEditorDirty}
+              >
+                Save
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1575,7 +1678,7 @@ export function ChatSettingsPanel({
         <SheetContent side="right" className="w-[18rem] p-0 font-heading">
 
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
+            <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>
@@ -2402,19 +2505,27 @@ function ChatTemplateFields() {
     setEditorOpen(true);
   };
   const saveEditor = () => {
-    setOverride(
-      draft.trim().length === 0 || draft === defaultTemplate ? null : draft,
-    );
+    const cleared = draft.trim().length === 0 || draft === defaultTemplate;
+    setOverride(cleared ? null : draft);
     setEditorOpen(false);
+    toast.success(
+      cleared
+        ? "Chat template reset to default. It applies on the next model reload."
+        : "Chat template saved. It applies on the next model reload.",
+    );
   };
 
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
-            Chat Template
-          </span>
+      <div className="-mb-1.5 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={openEditor}
+          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
+        >
+          Chat Template
+        </button>
+        <div className="flex items-center gap-1">
           {isModified && (
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -2440,21 +2551,34 @@ function ChatTemplateFields() {
               </TooltipContent>
             </Tooltip>
           )}
+          <Tooltip>
+            <TooltipPrimitive.Trigger asChild>
+              <button
+                type="button"
+                onClick={openEditor}
+                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                aria-label="Edit chat template"
+              >
+                <HugeiconsIcon
+                  icon={Edit03Icon}
+                  strokeWidth={1.75}
+                  className="size-3"
+                />
+              </button>
+            </TooltipPrimitive.Trigger>
+            <TooltipContent
+              side="top"
+              sideOffset={6}
+              className="tooltip-compact"
+            >
+              Edit template
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <button
-          type="button"
-          onClick={openEditor}
-          aria-label="Edit chat template"
-          className="panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
-        >
-          <span className="block line-clamp-3 whitespace-pre-wrap break-words">
-            {displayValue}
-          </span>
-        </button>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent
-          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
           overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
@@ -2475,7 +2599,7 @@ function ChatTemplateFields() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto font-mono text-xs leading-5 corner-squircle focus-visible:border-input focus-visible:ring-0"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
               rows={14}
               spellCheck={false}
             />
@@ -2484,13 +2608,24 @@ function ChatTemplateFields() {
             <Button
               type="button"
               variant="ghost"
-              onClick={() => setEditorOpen(false)}
+              onClick={() => setDraft(defaultTemplate)}
+              disabled={draft === defaultTemplate}
+              className="text-muted-foreground"
             >
-              Cancel
+              Reset
             </Button>
-            <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
-              Save
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setEditorOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
+                Save
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

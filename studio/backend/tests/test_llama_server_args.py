@@ -4,8 +4,8 @@
 """Unit tests for the llama-server pass-through args validator.
 
 The validator is the boundary between user CLI/HTTP input and the
-llama-server subprocess. These tests pin denylist behaviour so it
-doesn't quietly regress when new managed flags are added.
+llama-server subprocess. These tests pin denylist behaviour so it doesn't
+regress when new managed flags are added.
 """
 
 from __future__ import annotations
@@ -16,20 +16,16 @@ from pathlib import Path
 
 import pytest
 
-# Load llama_server_args.py directly so this test doesn't drag in the
-# full backend chain (fastapi / structlog / loggers / utils.hardware)
-# via core/inference/__init__.py. The validator is intentionally
-# dependency-free and unit-tests should reflect that.
-_LSA_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "core"
-    / "inference"
-    / "llama_server_args.py"
-)
+# Load llama_server_args.py directly to avoid dragging in the full backend
+# chain via core/inference/__init__.py. The validator is dependency-free.
+_LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
+parse_cache_override = _lsa.parse_cache_override
+parse_ctx_override = _lsa.parse_ctx_override
+resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 validate_extra_args = _lsa.validate_extra_args
 
@@ -74,10 +70,9 @@ validate_extra_args = _lsa.validate_extra_args
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed: user-supplied flags last-wins-override Studio's
-        # auto-set version. --parallel / -np / --n-parallel are NOT
-        # here -- they're hard-denied (KV-cache + slot count would
-        # desync). Use `unsloth studio run --parallel N` instead.
+        # Soft-managed: user flags last-wins over Studio's auto-set version.
+        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
+        # count would desync); use `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -126,8 +121,8 @@ def test_non_flag_token_passes_through():
         "-np",
         "--parallel",
         "--n-parallel",
-        # Model identity (every alias; bumping llama.cpp must keep
-        # every form rejected, not just the long).
+        # Model identity (every alias; bumping llama.cpp must keep every
+        # form rejected, not just the long one).
         "-m",
         "--model",
         "-mu",
@@ -175,8 +170,8 @@ def test_non_flag_token_passes_through():
         "--models-max",
         "--models-autoload",
         "--no-models-autoload",
-        # Server-mode flips: --embedding / --rerank would restrict
-        # llama-server to those endpoints and break Studio's chat hop.
+        # Server-mode flips: --embedding / --rerank restrict llama-server to
+        # those endpoints and break Studio's chat hop.
         "--embedding",
         "--embeddings",
         "--rerank",
@@ -193,16 +188,16 @@ def test_denylist_rejects_all_aliases(denied):
 @pytest.mark.parametrize(
     "args,offending",
     [
-        # Pass-through --parallel would last-wins-override the real
-        # slot count while Studio's KV-cache fit + llama_parallel_slots
-        # stay at the typer value -- plan vs. process disagree.
+        # Pass-through --parallel would last-wins-override the real slot
+        # count while Studio's KV-cache fit + llama_parallel_slots stay at
+        # the typer value -- plan vs. process disagree.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
         (["--n-parallel=16"], "--n-parallel"),
         (["-np", "32"], "-np"),
-        # Attached short form: Click clusters it CLI-side; HTTP /load
-        # with `["-np8"]` must still resolve to managed.
+        # Attached short form: Click clusters it CLI-side; HTTP /load with
+        # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
         # Out-of-range values that would bypass the typer 1..64 guard.
@@ -229,8 +224,8 @@ def test_denylist_rejects_equals_form():
     [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np \n", "-np\t"],
 )
 def test_denylist_rejects_whitespace_padded_forms(padded):
-    # `_flag_name` trims whitespace before lookup; otherwise a trailing
-    # space could slip a managed flag past the boundary.
+    # `_flag_name` trims whitespace before lookup; else a trailing space
+    # could slip a managed flag past the boundary.
     with pytest.raises(ValueError, match = "parallel|np"):
         validate_extra_args([padded, "8"])
 
@@ -240,15 +235,15 @@ def test_denylist_rejects_whitespace_padded_forms(padded):
     ["-np8x", "-np-1foo", "-np+1bar", "-np9zzz"],
 )
 def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
-    # Backend `_flag_name` must classify the same forms the CLI
-    # rewriter expands, else HTTP /load could smuggle `-np8x` through.
+    # Backend `_flag_name` must classify the same forms the CLI rewriter
+    # expands, else HTTP /load could smuggle `-np8x` through.
     with pytest.raises(ValueError, match = "np"):
         validate_extra_args([attached])
 
 
 def test_denylist_rejects_short_form_when_long_is_denied():
-    # `-m` is the short form of --model; rejecting only the long
-    # form would leave a trivial bypass.
+    # `-m` is the short form of --model; rejecting only the long form
+    # would leave a trivial bypass.
     with pytest.raises(ValueError, match = "-m"):
         validate_extra_args(["-m", "/some/other/path.gguf"])
 
@@ -356,14 +351,7 @@ def test_strip_shadowing_flags_keeps_cache_when_cache_disabled():
         ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"],
         strip_cache = False,
     )
-    assert out == [
-        "--cache-type-k",
-        "q8_0",
-        "--cache-type-v",
-        "q8_0",
-        "--top-k",
-        "20",
-    ]
+    assert out == ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
@@ -371,14 +359,7 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"],
         strip_spec = False,
     )
-    assert out == [
-        "--spec-type",
-        "ngram-mod",
-        "--draft-min",
-        "48",
-        "--top-k",
-        "20",
-    ]
+    assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
@@ -410,6 +391,86 @@ def test_is_managed_flag_false_for_mtp_pass_through():
     assert is_managed_flag("--spec-ngram-mod-n-max") is False
 
 
+# ── parse_ctx_override ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--ctx-size", "128000"], 128000),
+        (["--ctx-size=128000"], 128000),
+        (["-c", "128000"], 128000),
+        (["-c=128000"], 128000),
+        (["-c", "4096", "--ctx-size", "128000"], 128000),
+    ],
+)
+def test_parse_ctx_override(args, expected):
+    assert parse_ctx_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--ctx-size"],
+        ["--ctx-size", "--top-k"],
+        ["--ctx-size", "abc"],
+        ["--ctx-size=abc"],
+        ["-c", "-1"],
+    ],
+)
+def test_parse_ctx_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "ctx-size|'-c'"):
+        parse_ctx_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_ctx_override():
+    with pytest.raises(ValueError, match = "ctx-size"):
+        validate_extra_args(["--ctx-size", "abc"])
+
+
+# ── parse_cache_override ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--cache-type-k", "q8_0"], "q8_0"),
+        (["-ctk", "q4_0"], "q4_0"),
+        (["-ctv", "q4_0"], "q4_0"),
+        (["--cache-type-k=q4_0"], "q4_0"),
+        (["-ctk", "f16", "-ctk", "q8_0"], "q8_0"),
+    ],
+)
+def test_parse_cache_override(args, expected):
+    assert parse_cache_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-ctk"],
+        ["-ctk", "-c", "4096"],
+    ],
+)
+def test_parse_cache_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "cache-type|'-ctk'"):
+        parse_cache_override(args)
+
+
+def test_resolve_cache_type_kv_uses_override_when_present():
+    assert resolve_cache_type_kv(["--cache-type-k", "q8_0"], "f16") == "q8_0"
+
+
+def test_resolve_cache_type_kv_uses_fallback_without_override():
+    assert resolve_cache_type_kv(["--top-k", "20"], "f16") == "f16"
+
+
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():
     # `--spec-default` is boolean; drop just the flag, keep the next token.
     out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec = True)
@@ -422,9 +483,7 @@ def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
 
 
 def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
-    out = strip_shadowing_flags(
-        ["--no-jinja", "trailing-positional"], strip_template = True
-    )
+    out = strip_shadowing_flags(["--no-jinja", "trailing-positional"], strip_template = True)
     assert out == ["trailing-positional"]
 
 
@@ -448,3 +507,28 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+def test_strip_shadowing_flags_drops_model_draft_with_spec():
+    # --model-draft (and aliases) are Studio-managed since the separate
+    # MTP drafter support: an inherited copy must not last-wins-override
+    # the auto-detected drafter.
+    out = strip_shadowing_flags(
+        ["--model-draft", "/old/mtp.gguf", "-md", "/old2.gguf", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_model_draft_without_spec():
+    out = strip_shadowing_flags(
+        ["--model-draft", "/custom/mtp.gguf"],
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["--model-draft", "/custom/mtp.gguf"]

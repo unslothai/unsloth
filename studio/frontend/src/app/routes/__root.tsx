@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { useChatRuntimeStore } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
@@ -40,6 +41,8 @@ function RouteFallback() {
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
+  "/projects",
+  "/hub",
   "/login",
   "/signup",
   "/change-password",
@@ -53,8 +56,8 @@ function isChatOnlyAllowed(pathname: string): boolean {
 
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
-    // Ensure platform info is fetched before checking chat-only guard.
-    // fetchDeviceType caches after first call, so subsequent navigations are instant.
+    // Fetch platform info before the chat-only guard. fetchDeviceType caches,
+    // so later navigations are instant.
     await fetchDeviceType();
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
@@ -109,6 +112,13 @@ function RootLayout() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  useEffect(() => {
+    if (isChatRoute) return;
+    const chatRuntime = useChatRuntimeStore.getState();
+    chatRuntime.setActiveProjectId(null);
+    chatRuntime.setActiveThreadId(null);
+  }, [isChatRoute]);
 
   return (
     <AppProvider>

@@ -13,7 +13,7 @@
 #   2. Tool calling Tests
 #        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
 #   3. JSON, images
-#        gemma-4-E2B-it UD-Q4_K_XL + mmproj-F16 (~3.4 GiB total).
+#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total).
 #        Within the 14 GB windows-latest SSD budget.
 
 name: Windows Studio GGUF CI
@@ -64,6 +64,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+
+      # Fast GPU-free gate: parse setup.ps1 and run the Resolve-CudaToolkit unit
+      # test (deferred Windows CUDA Toolkit check) before the heavy GGUF smoke.
+      - name: setup.ps1 unit test (Resolve-CudaToolkit)
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path studio/setup.ps1).Path, [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+          Write-Host "setup.ps1 parsed with no errors"
+          pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -360,6 +372,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -373,6 +388,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-openai-anthropic-log
@@ -788,6 +805,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -801,6 +821,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-tool-calling-log
@@ -821,9 +843,9 @@ jobs:
       run:
         shell: bash
     env:
-      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-4-E2B-it-UD-Q4_K_XL.gguf
+      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      GGUF_VARIANT: UD-IQ2_XXS
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18899'
       HF_HOME: ${{ github.workspace }}/hf-cache
@@ -1101,7 +1123,7 @@ jobs:
           )
           data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
 
-          # On Windows + the gemma-4-E2B mmproj, llama.cpp's vision
+          # On Windows + the Qwen3-VL mmproj, llama.cpp's vision
           # path runs on CPU (no Metal involvement). The wrapper is
           # kept for resilience but the vision path is expected to
           # work on Windows; an exception here is a real regression.
@@ -1186,6 +1208,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -1199,6 +1224,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-json-images-log

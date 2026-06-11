@@ -2,11 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Inference submodule - Inference backend for model loading and generation
+Inference submodule - backend for model loading and generation.
 
 The default get_inference_backend() returns an InferenceOrchestrator that
-delegates to a subprocess. The original InferenceBackend runs inside
-the subprocess and can be imported directly from .inference when needed.
+delegates to a subprocess. The original InferenceBackend runs inside the
+subprocess and can be imported directly from .inference when needed.
 
 Symbols are exposed lazily through ``__getattr__`` (PEP 562) so that
 importing a stdlib-only helper from this package (e.g.
