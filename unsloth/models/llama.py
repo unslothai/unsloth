@@ -1622,6 +1622,74 @@ def _get_rope_theta(config, default = 10000.0):
     return default
 
 
+def _llama3_inv_freq_from_config(config, rope_scaling, device = "cpu"):
+    """Inline llama3 RoPE inv_freq using factors read from config.rope_scaling.
+
+    Fallback for transformers versions without modeling_rope_utils. Mirrors
+    meta-llama's llama3 scaling and LlamaExtendedRotaryEmbedding, but reads the
+    factors from config rather than hardcoding them.
+    """
+    base = _get_rope_theta(config, default = 10000.0)
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        dim = int(config.hidden_size // config.num_attention_heads)
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim)
+    )
+
+    scale_factor = rope_scaling.get("factor", 8.0)
+    low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
+    high_freq_factor = rope_scaling.get("high_freq_factor", 4.0)
+    old_context_len = rope_scaling.get("original_max_position_embeddings", 8192)
+
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+    new_freqs = []
+    for freq in inv_freq:
+        wavelen = 2 * math.pi / freq
+        if wavelen < high_freq_wavelen:
+            new_freqs.append(freq)
+        elif wavelen > low_freq_wavelen:
+            new_freqs.append(freq / scale_factor)
+        else:
+            assert low_freq_wavelen != high_freq_wavelen
+            smooth = (old_context_len / wavelen - low_freq_factor) / (
+                high_freq_factor - low_freq_factor
+            )
+            new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
+    return torch.tensor(new_freqs, dtype = inv_freq.dtype, device = inv_freq.device)
+
+
+def _compute_config_rope_inv_freq(config, rope_scaling):
+    """Return (inv_freq, attention_scaling) honoring config.rope_scaling.
+
+    Delegates to transformers' ROPE_INIT_FUNCTIONS so the result matches stock
+    transformers exactly (default / linear / dynamic / yarn / longrope / llama3).
+    Falls back to an inline llama3 computation on older transformers. On any
+    unexpected failure returns (None, 1.0) so the caller keeps the prior vanilla
+    behavior rather than crashing.
+    """
+    rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+        rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
+        inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
+        return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
+    except Exception as exception:
+        if rope_type == "llama3":
+            try:
+                return _llama3_inv_freq_from_config(config, rope_scaling), 1.0
+            except Exception:
+                pass
+        logger.warning_once(
+            f"Unsloth: Could not apply RoPE scaling '{rope_type}' from config "
+            f"({type(exception).__name__}: {exception}); falling back to unscaled RoPE. "
+            "Long-context generation may degrade."
+        )
+        return None, 1.0
+
+
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
 # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
@@ -1640,6 +1708,17 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # RoPE long-context attention scaling (multiplies cos/sin). 1.0 for
+        # vanilla / llama3; non-1.0 for yarn / longrope. Set before any
+        # _set_cos_sin_cache call so the cache build always sees it.
+        self.attention_scaling = 1.0
+        # When config carries a rope_scaling spec and we are the base class used
+        # directly (the modern-transformers path where LlamaModel builds the
+        # rotary from config), derive inv_freq the same way transformers does so
+        # the scaling is not silently dropped. Fixes #2405 (llama3 long-context
+        # gibberish). Subclasses that scale via _apply_inv_freq_scaling /
+        # _apply_time_scaling are excluded so scaling is never applied twice.
+        config_inv_freq = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
@@ -1652,6 +1731,12 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 
+            rope_scaling = getattr(config, "rope_scaling", None)
+            if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
+                config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
+                    config, rope_scaling,
+                )
+
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
@@ -1660,12 +1745,16 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
-        # Normal Llama-3 RoPE
-        inv_freq = 1.0 / (
-            self.base
-            ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
-        )
-        inv_freq = self._apply_inv_freq_scaling(inv_freq)
+        if config_inv_freq is not None:
+            # Already scaled per config.rope_scaling; do not scale again.
+            inv_freq = config_inv_freq
+        else:
+            # Normal Llama-3 RoPE
+            inv_freq = 1.0 / (
+                self.base
+                ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
+            )
+            inv_freq = self._apply_inv_freq_scaling(inv_freq)
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
@@ -1704,8 +1793,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim = -1)
-        cos = emb.cos().to(dtype = dtype, device = device, non_blocking = True)
-        sin = emb.sin().to(dtype = dtype, device = device, non_blocking = True)
+        # attention_scaling is 1.0 except for long-context schemes (yarn /
+        # longrope); multiplying here keeps it applied across cache rebuilds in
+        # extend_rope_embedding. Default 1.0 leaves every existing path bit-identical.
+        cos = (emb.cos() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
+        sin = (emb.sin() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
