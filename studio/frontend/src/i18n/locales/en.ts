@@ -14,6 +14,7 @@ export const en = {
     new: "New",
     rename: "Rename",
     save: "Save",
+    saving: "Saving...",
     search: "Search",
     shutdown: "Shutdown",
   },
@@ -33,6 +34,7 @@ export const en = {
       newChat: "New Chat",
       compare: "Compare",
       search: "Search",
+      hub: "Hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -54,11 +56,11 @@ export const en = {
     dialog: {
       deleteChat: {
         title: "Delete chat",
-        description: "Are you sure you want to delete this chat \"{name}\"?",
+        description: 'Are you sure you want to delete this chat "{name}"?',
       },
       deleteRun: {
         title: "Delete training run",
-        description: "Are you sure you want to delete this run \"{name}\"?",
+        description: 'Are you sure you want to delete this run "{name}"?',
       },
       renameChat: {
         title: "Rename chat",
@@ -106,20 +108,36 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a short title from the first message.",
+      helperLlm: {
+        sectionTitle: "Helper LLM",
+        preloadOnStartup: "Pre-cache Helper LLM on startup",
+        preloadOnStartupDescription:
+          "Download and cache the AI Assist helper model in the background when Studio starts. Off by default; AI Assist can still download it on demand when clicked.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
+        loadError: "Failed to load Helper LLM settings.",
+        saveError: "Failed to save Helper LLM settings.",
+      },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:
         "Open the setup wizard again without changing your account.",
       startOnboardingAction: "Start onboarding",
+      uploads: {
+        sectionTitle: "Uploads",
+        maxUploadSize: "Training dataset upload cap",
+        maxUploadSizeDescription:
+          "Applies to training dataset uploads. Default is {defaultSize} MB.",
+      },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
         description:
-          "Clears local-only preferences. Chats, API access, and DB-backed chat settings are not affected.",
+          "Clears local-only preferences. Chats, API access, and DB-backed settings are not affected.",
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
         confirmDescription:
-          "This clears local-only preferences, then reloads Studio. Chats, API access, and DB-backed chat settings are not affected.",
+          "This clears local-only preferences, then reloads Studio. Chats, API access, and DB-backed settings are not affected.",
         confirmAction: "Reset and reload",
       },
     },
@@ -180,12 +198,27 @@ export const en = {
         "Download all chats and messages as a JSON file.",
       exportAction: "Export",
       exportingAction: "Exporting...",
+      exportConversations: "Export Recents and Projects",
+      exportConversationsDescription:
+        "Download Recents only, or Recents plus project chats, as Raw JSONL, CSV, or ShareGPT JSONL, combined or one file per chat.",
+      exportConversationsAction: "Export",
+      exportScopeRecents: "Recents",
+      exportScopeAll: "Recents + Projects",
+      exportCombinedSuffix: "(combined)",
+      exportPerChatSuffix: "(per chat)",
+      importChats: "Import chats",
+      importChatsDescription:
+        "Add conversations from a JSONL, NDJSON, or CSV export to Recents.",
+      importChatsAction: "Import",
+      importNoConversations: "No conversations found in file.",
+      importedOneChat: "Imported 1 conversation to Recents.",
+      importedChatCount: "Imported {count} conversations to Recents.",
+      importFailed: "Import failed.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete local chat history from this device.",
       clearAction: "Clear",
       clearAllChats: "Clear all chats",
-      clearAllChatsDescription:
-        "Permanently delete every chat on this device.",
+      clearAllChatsDescription: "Permanently delete every chat on this device.",
       noChatsToClear: "No chats to clear.",
       clearOneChatDescription:
         "Permanently delete the only chat on this device.",
@@ -209,8 +242,7 @@ export const en = {
         "{clearedCount} chats cleared; {remainingCount} chats remain. Please retry.",
       oneChatClearedRemain:
         "1 chat cleared; {remainingCount} chats remain. Please retry.",
-      oneChatClearedRemainOne:
-        "1 chat cleared; 1 chat remains. Please retry.",
+      oneChatClearedRemainOne: "1 chat cleared; 1 chat remains. Please retry.",
       storageClearFailedOne:
         "A storage clear failed; 1 chat may remain. Please retry.",
       storageClearFailed:
@@ -223,7 +255,8 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth programmatically via the OpenAI-compatible API.",
+      description:
+        "Access Unsloth programmatically via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       newBadge: "New",
@@ -261,10 +294,10 @@ export const en = {
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
       revokeToken: "Revoke token",
-      revokeTitle: "Revoke access token \"{name}\"?",
+      revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
         "Applications using this token will immediately lose access. This cannot be undone.",
-      revokeAction: "Revoke \"{name}\"",
+      revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
     },
     about: {
@@ -361,7 +394,8 @@ export const en = {
       fasterTrainingBadge: "2x Faster Training",
       baseModel: "Base model",
       localModel: "Local Model",
-      localModelTooltip: "Path to a locally downloaded model or a custom HF repo.",
+      localModelTooltip:
+        "Path to a locally downloaded model or a custom HF repo.",
       scanningLocalAndCachedModels: "Scanning local and cached models...",
       scanning: "Scanning...",
       scanningLocalModels: "Scanning local models...",
@@ -410,8 +444,7 @@ export const en = {
       noLocalDatasetsYet: "No local datasets yet.",
       noLocalDatasetsMatchSearch: "No local datasets match search.",
       openDataRecipes: "Open Data Recipes",
-      browsingSource:
-        "Browsing {browsing}. Current selection stays {current}.",
+      browsingSource: "Browsing {browsing}. Current selection stays {current}.",
       localDatasets: "Local datasets",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
@@ -493,7 +526,8 @@ export const en = {
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
       epochsDescription: "Each epoch is one full pass over your dataset.",
-      maxStepsDescription: "Limits training to a fixed number of optimizer steps.",
+      maxStepsDescription:
+        "Limits training to a fixed number of optimizer steps.",
       contextLength: "Context Length",
       contextLengthTooltip: "Maximum number of tokens per training sample.",
       customContextLength: "Enter a custom value",
@@ -509,11 +543,13 @@ export const en = {
       embeddingLearningRateDescription:
         "Leave blank to use lr/10 (recommended). Typical range is 2x-10x smaller than the main learning rate.",
       rank: "Rank",
-      rankTooltip: "Dimension of the low-rank matrices. Higher = more capacity.",
+      rankTooltip:
+        "Dimension of the low-rank matrices. Higher = more capacity.",
       alpha: "Alpha",
       alphaTooltip: "Scaling factor for LoRA updates. Usually 2x rank.",
       dropout: "Dropout",
-      dropoutTooltip: "Dropout probability for LoRA layers to reduce overfitting.",
+      dropoutTooltip:
+        "Dropout probability for LoRA layers to reduce overfitting.",
       visionLayers: "Vision layers",
       languageLayers: "Language layers",
       attentionModules: "Attention modules",
@@ -551,7 +587,8 @@ export const en = {
       weightDecay: "Weight Decay",
       weightDecayTooltip: "L2 regularization to prevent overfitting.",
       warmupSteps: "Warmup Steps",
-      warmupStepsTooltip: "Gradually increase LR at training start for stability.",
+      warmupStepsTooltip:
+        "Gradually increase LR at training start for stability.",
       scheduleEpochsTooltip:
         "Number of full passes over the dataset. Set 0 to run by max steps.",
       saveSteps: "Save Steps",
@@ -608,7 +645,8 @@ export const en = {
       exportModel: "Export Model",
       milestone: "Milestone",
       halfwayDone: "Halfway done. Training is past 50%.",
-      doneNextStep: "Training done. Next step: compare base vs fine-tuned outputs.",
+      doneNextStep:
+        "Training done. Next step: compare base vs fine-tuned outputs.",
     },
     history: {
       title: "History",
@@ -654,7 +692,8 @@ export const en = {
     },
     charts: {
       settings: "Chart Settings",
-      settingsDescription: "Tune chart presentation while training keeps running.",
+      settingsDescription:
+        "Tune chart presentation while training keeps running.",
       openSettings: "Open chart settings",
       viewWindow: "View window",
       viewWindowDescription: "Show latest steps only or the full history.",
@@ -689,7 +728,8 @@ export const en = {
       waitingForFirstEvaluationStep: "Waiting for first evaluation step...",
       evaluationNotConfigured: "Evaluation not configured",
       evalChartWillAppear: "Chart will appear once eval_steps is reached",
-      setEvalDatasetAndSteps: "Set eval dataset & eval_steps to track eval loss",
+      setEvalDatasetAndSteps:
+        "Set eval dataset & eval_steps to track eval loss",
     },
     progress: {
       title: "Training Progress",

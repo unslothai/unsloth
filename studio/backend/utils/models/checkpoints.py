@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Checkpoint scanning utilities for discovering training runs and their checkpoints.
-"""
+"""Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
 import json
 import structlog
@@ -16,11 +14,7 @@ logger = get_logger(__name__)
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
-    """
-    Read the training loss from a checkpoint's trainer_state.json.
-
-    Returns the loss from the last log_history entry, or None if unavailable.
-    """
+    """Read loss from the last log_history entry of trainer_state.json, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not trainer_state.exists():
         return None
@@ -38,14 +32,13 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 def scan_checkpoints(
     outputs_dir: str = str(outputs_root()),
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
-    """
-    Scan outputs folder for training runs and their checkpoints.
+    """Scan outputs folder for training runs and their checkpoints.
 
     Returns:
-        List of tuples: [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
-        metadata keys: base_model, peft_type, lora_rank (all optional)
-        The first entry in each checkpoint list is the main adapter; its loss is
-        set to the loss of the last (highest-step) intermediate checkpoint.
+        [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
+        metadata keys (optional): base_model, peft_type, lora_rank.
+        First checkpoint entry is the main adapter; its loss mirrors the last
+        (highest-step) intermediate checkpoint.
     """
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
@@ -65,7 +58,7 @@ def scan_checkpoints(
             if not (config_file.exists() or adapter_config.exists()):
                 continue
 
-            # Extract training metadata from adapter_config.json / config.json
+            # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
                 if adapter_config.exists():
@@ -77,7 +70,7 @@ def scan_checkpoints(
                     cfg = json.loads(config_file.read_text())
                     metadata["base_model"] = cfg.get("_name_or_path")
 
-                # Detect BNB quantization from config.json (present in both cases)
+                # Detect BNB quantization from config.json
                 if config_file.exists():
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text())
@@ -91,27 +84,25 @@ def scan_checkpoints(
             except Exception:
                 pass
 
-            # Fallback: extract base model name from folder name
-            # e.g. "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            # Fallback: extract base model name from the folder name, e.g.
+            # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
             if not metadata.get("base_model"):
                 parts = item.name.rsplit("_", 1)
                 if len(parts) == 2 and parts[1].isdigit():
                     name_part = parts[0]
                     idx = name_part.find("_")
                     if idx > 0:
-                        metadata["base_model"] = (
-                            name_part[:idx] + "/" + name_part[idx + 1 :]
-                        )
+                        metadata["base_model"] = name_part[:idx] + "/" + name_part[idx + 1 :]
                     else:
                         metadata["base_model"] = name_part
 
-            # This is a valid training run
+            # Valid training run.
             checkpoints = []
 
-            # Placeholder for the main adapter — loss filled from last checkpoint below
+            # Main adapter placeholder — loss filled from the last checkpoint below.
             checkpoints.append((item.name, str(item), None))
 
-            # Scan for intermediate checkpoints (checkpoint-N subdirs)
+            # Scan for intermediate checkpoints (checkpoint-N subdirs).
             for sub in sorted(item.iterdir()):
                 if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
                     continue
@@ -121,7 +112,7 @@ def scan_checkpoints(
                     loss = _read_checkpoint_loss(sub)
                     checkpoints.append((sub.name, str(sub), loss))
 
-            # Assign the last checkpoint's loss to the main adapter entry
+            # Assign the last checkpoint's loss to the main adapter entry.
             if len(checkpoints) > 1:
                 last_checkpoint_loss = checkpoints[-1][2]
                 checkpoints[0] = (
@@ -131,9 +122,7 @@ def scan_checkpoints(
                 )
 
             models.append((item.name, checkpoints, metadata))
-            logger.debug(
-                f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)"
-            )
+            logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)

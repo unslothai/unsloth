@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
 # Unsloth Studio uninstaller (macOS / Linux / WSL).
 # Stops running servers and removes install dir, launcher data,
 # CLI shim, desktop shortcut, .app bundle, and Launch Services entry.
@@ -209,6 +212,21 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
+# Default-mode shared llama.cpp build + cache are siblings of studio (not removed
+# by deleting it). No-op in env/custom mode (they nest under the custom root) and
+# when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
+_remove_path "$HOME/.unsloth/llama.cpp"
+_remove_path "$HOME/.unsloth/.cache"
+# llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
+# Normally pruned after activate, but an interrupted build can leave it behind;
+# removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
+_remove_path "$HOME/.unsloth/.staging"
+# ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
+# where they don't exist; removing them lets the rmdir below succeed.
+_remove_path "$HOME/.unsloth/librocdxg"
+_remove_path "$HOME/.unsloth/rocm-smoketest"
+# Drop ~/.unsloth only if now empty (rmdir refuses non-empty, so user content is kept).
+rmdir "$HOME/.unsloth" 2>/dev/null || true
 _remove_path "$HOME/.local/share/unsloth"
 # CLI shim: only the symlink Studio created, never a pip-installed file.
 _remove_cli_shim
@@ -241,22 +259,101 @@ case "$_os" in
     Linux)
         if [ "$_is_wsl" = "1" ]; then
             echo "Removing WSL Windows-side shortcuts..."
-            # install.sh creates 'Unsloth Studio.lnk' on the Windows Desktop and
-            # Start Menu Programs folder via powershell.exe; mirror that path.
-            if command -v powershell.exe >/dev/null 2>&1; then
+            # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk'
+            # on the Windows Desktop + Start Menu via powershell.exe. Scope removal
+            # to THIS distro (passed as $args[0]) so a multi-distro install keeps the
+            # other distros' launchers; the TARGET=wsl.exe check still spares a
+            # native install's "Unsloth Studio.lnk". Prefer powershell.exe; test it
+            # can EXECUTE (`command -v` succeeds even with interop OFF -- .exe then
+            # fails "Exec format error", common on systemd-enabled distros).
+            _wsl_distro="${WSL_DISTRO_NAME:-}"
+            _ps_ran=0
+            if command -v powershell.exe >/dev/null 2>&1 && \
+               powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
+                _ps_ran=1
+                # Inject the distro into the command: a -Command string does not
+                # receive trailing tokens as $args. WSL distro names are safe to
+                # embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
-                # $env:APPDATA is a PowerShell expansion; intentionally literal at shell level.
-                powershell.exe -NoProfile -Command '
-                    $names = @("Desktop","StartMenu");
+                powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
                         (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
                     );
+                    $ws = New-Object -ComObject WScript.Shell;
                     foreach ($d in $dirs) {
-                        if (-not $d) { continue }
-                        $p = Join-Path $d "Unsloth Studio.lnk";
-                        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+                        if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                        Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
+                            try {
+                                $sc = $ws.CreateShortcut($_.FullName);
+                                if ("$($sc.TargetPath) $($sc.Arguments)" -notmatch "wsl\.exe") { return }
+                                # When the distro is known, require the per-distro
+                                # name for this distro or its -d "<distro>" argument
+                                # so launchers for other distros are not removed.
+                                if ($distro) {
+                                    $nameMatch = ($_.Name -eq "Unsloth Studio (WSL - $distro).lnk");
+                                    $argMatch  = ($sc.Arguments -match ("-d\s+`"?" + [regex]::Escape($distro) + "`"?"));
+                                    if (-not ($nameMatch -or $argMatch)) { return }
+                                }
+                                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                            } catch { }
+                        }
                     }' >/dev/null 2>&1 || true
+            fi
+            # Fallback when powershell.exe can't run (interop disabled): remove the
+            # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
+            # WSL-specific, so a native install's "Unsloth Studio.lnk" never matches.
+            if [ "$_ps_ran" = "0" ]; then
+                for _drive in /mnt/c /mnt/d /mnt/e; do
+                    [ -d "$_drive/Users" ] || continue
+                    for _udir in "$_drive"/Users/*; do
+                        [ -d "$_udir" ] || continue
+                        for _scdir in \
+                            "$_udir/Desktop" \
+                            "$_udir/OneDrive/Desktop" \
+                            "$_udir"/OneDrive*/Desktop \
+                            "$_udir/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"; do
+                            [ -d "$_scdir" ] || continue
+                            if [ -n "$_wsl_distro" ]; then
+                                # Exact per-distro name (no glob) so other distros survive.
+                                _lnk="$_scdir/Unsloth Studio (WSL - ${_wsl_distro}).lnk"
+                                [ -e "$_lnk" ] && rm -f "$_lnk" 2>/dev/null && echo "  removed: $_lnk" || true
+                            else
+                                # Distro unknown: fall back to the broad WSL prefix.
+                                for _lnk in "$_scdir"/"Unsloth Studio (WSL"*.lnk; do
+                                    [ -e "$_lnk" ] && rm -f "$_lnk" 2>/dev/null && echo "  removed: $_lnk" || true
+                                done
+                            fi
+                        done
+                    done
+                done
+            fi
+            # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
+            # Remove Unsloth's own ROCDXG config (the env it persisted). The system
+            # ROCm userspace is a shared prereq (like CUDA) and is LEFT IN PLACE by
+            # default; set UNSLOTH_UNINSTALL_ROCM=1 to remove it too.
+            echo "Removing ROCm-on-WSL config..."
+            _sudo=""
+            if [ "$_uid" != "0" ] && command -v sudo >/dev/null 2>&1; then _sudo="sudo"; fi
+            $_sudo rm -f /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+            if [ -f "$HOME/.bashrc" ] && grep -q "Unsloth ROCm-on-WSL" "$HOME/.bashrc" 2>/dev/null; then
+                _bk=$(mktemp 2>/dev/null || echo "$HOME/.bashrc.unsloth.tmp")
+                if sed '/# >>> Unsloth ROCm-on-WSL/,/# <<< Unsloth ROCm-on-WSL/d' "$HOME/.bashrc" > "$_bk" 2>/dev/null; then
+                    cat "$_bk" > "$HOME/.bashrc" 2>/dev/null || true
+                    echo "  cleaned ROCm-on-WSL block from ~/.bashrc"
+                fi
+                rm -f "$_bk" 2>/dev/null || true
+            fi
+            if [ "${UNSLOTH_UNINSTALL_ROCM:-0}" = "1" ]; then
+                echo "  removing system ROCm (UNSLOTH_UNINSTALL_ROCM=1)..."
+                $_sudo rm -f /etc/apt/sources.list.d/rocm.list /etc/apt/preferences.d/rocm-pin-600 \
+                    /etc/apt/keyrings/rocm.gpg /etc/ld.so.conf.d/rocm.conf 2>/dev/null || true
+                $_sudo sh -c 'rm -rf /opt/rocm /opt/rocm-*' 2>/dev/null || true
+                if command -v ldconfig >/dev/null 2>&1; then $_sudo ldconfig 2>/dev/null || true; fi
+            elif [ -d /opt/rocm ]; then
+                echo "  Note: ROCm userspace (/opt/rocm*) left in place (shared prereq)."
+                echo "        Remove it by re-running with UNSLOTH_UNINSTALL_ROCM=1, or manually:"
+                echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
             fi
         fi
         echo "Removing Linux .desktop entry..."

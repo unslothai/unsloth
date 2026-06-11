@@ -54,10 +54,8 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
 }
 
 /**
- * Fetch GPU info from the backend /api/system endpoint.
- *
- * The result is cached at module level -- only one network request is made
- * regardless of how many components call this hook.
+ * Fetch GPU info from /api/system. Cached at module level, so only one request
+ * is made no matter how many components call this hook.
  */
 export function useGpuInfo(): GpuInfo {
   const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);

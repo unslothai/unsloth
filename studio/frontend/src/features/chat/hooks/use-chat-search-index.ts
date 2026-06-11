@@ -95,8 +95,8 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   );
 
   // Legacy-only chats can exist before server-side history import finishes.
-  // Fill just the missing ids from the legacy-aware path instead of issuing
-  // one request per thread up front.
+  // Fill only the missing ids via the legacy path instead of one request per
+  // thread up front.
   const missingThreadIds = allThreadIds.filter(
     (threadId) => !messagesByThread.has(threadId),
   );
@@ -163,8 +163,7 @@ export function useChatSearchIndex(enabled: boolean): {
       setLoading(true);
       buildIndex()
         .then((result) => {
-          // Drop out-of-order responses so a slower rebuild can't clobber
-          // a fresher one.
+          // Drop out-of-order responses so a slower rebuild can't clobber a fresher one.
           if (cancelled || seq !== requestSeqRef.current) return;
           setItems(result);
         })

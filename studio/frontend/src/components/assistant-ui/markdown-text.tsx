@@ -8,13 +8,12 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -158,8 +157,7 @@ const UNSAFE_SVG_RE =
 
 function sanitizeSvg(source: string): string | null {
   if (UNSAFE_SVG_RE.test(source)) return null;
-  // Strip XML declaration (<?xml ...?>) -- not needed for data URI
-  // rendering and can cause issues with some renderers.
+  // Strip XML declaration: unneeded for data URIs and breaks some renderers.
   return source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
 }
 
@@ -279,7 +277,7 @@ function CodeBlockActions({
             downloadTextFile(getCodeFilename(language), source);
           }}
         >
-          <DownloadIcon className="size-icon" />
+          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
         </button>
       </div>
     </div>
@@ -382,11 +380,75 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
+// Coalesce markdown re-parses to one per frame while streaming: tokens arrive
+// hundreds/sec, faster than the monitor can paint. When not streaming we return
+// live text (not the throttled state) so final text never lags and a reused
+// instance (parts keyed by index) shows completed text instead of a stale frame.
+function useRafCoalescedText(text: string, isStreaming: boolean): string {
+  const [displayed, setDisplayed] = useState(text);
+  const pendingRef = useRef(text);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    pendingRef.current = text;
+    if (!isStreaming) {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      return;
+    }
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setDisplayed(pendingRef.current);
+      });
+    }
+  }, [text, isStreaming]);
+
+  // Unmount cleanup: cancel the in-flight rAF and null the handle so a
+  // StrictMode remount isn't gated by a stale id. Separate from the scheduling
+  // effect so it doesn't cancel mid-stream and defeat the throttle.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
+  if (isStreaming && text.startsWith(displayed)) {
+    return displayed;
+  }
+  return text;
+}
+
+const safeImageUrl: UrlTransform = (url, _key, node) => {
+  // Only images are restricted; links/other nodes use the default transform.
+  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
+
+  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
+  // "\t//attacker.com" would otherwise slip past the guards below.
+  // eslint-disable-next-line no-control-regex
+  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
+  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
+  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
+  return normalized; // relative -> same-origin
+};
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  const processedText = useMemo(() => preprocessLaTeX(text), [text]);
+  const displayText = useRafCoalescedText(text, status.type === "running");
+  const processedText = useMemo(
+    () => preprocessLaTeX(displayText),
+    [displayText],
+  );
 
-  const audioMatch = text.match(AUDIO_PLAYER_RE);
+  const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
     return <AudioPlayer src={audioMatch[1]} />;
   }
@@ -398,6 +460,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
+        urlTransform={safeImageUrl}
         controls={{
           code: false,
           mermaid: {
