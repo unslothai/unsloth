@@ -1251,6 +1251,19 @@
 		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	}
 
+	/* Buttons, links, and clickable icons never show a focus outline or ring
+	   (Radix re-focuses triggers on menu close, which lights them up). Inputs
+	   keep their own focus styles. Zeroing the ring vars leaves decorative
+	   shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
