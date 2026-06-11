@@ -247,4 +247,4 @@ def test_object_style_rope_scaling_does_not_crash():
         "(issue #2405)."
     )
     expected = _reference_inv_freq(config, "llama3")
-    assert torch.allclose(inv_freq.float().cpu(), expected, rtol=1e-4, atol=1e-6)
+    assert torch.allclose(inv_freq.float().cpu(), expected, rtol = 1e-4, atol = 1e-6)
