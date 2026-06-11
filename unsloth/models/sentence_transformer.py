@@ -211,7 +211,6 @@ class GuidedProjectionPooling(nn.Module):
         if safe_serialization:
             try:
                 from safetensors.torch import save_file
-
                 save_file(
                     self.projection.state_dict(),
                     os.path.join(output_path, self.PROJECTION_SAFETENSORS_NAME),
@@ -273,7 +272,6 @@ class GuidedProjectionPooling(nn.Module):
         )
         if os.path.exists(safetensors_path):
             from safetensors.torch import load_file
-
             state_dict = load_file(safetensors_path)
         else:
             state_dict = torch.load(weights_path, map_location = "cpu", weights_only = True)
@@ -2447,7 +2445,8 @@ class FastSentenceTransformer(FastModel):
                             and os.path.exists(local_candidate)
                             and os.path.commonpath(
                                 [os.path.abspath(model_name), os.path.abspath(local_candidate)]
-                            ) == os.path.abspath(model_name)
+                            )
+                            == os.path.abspath(model_name)
                         ):
                             pooling_config_path = local_candidate
                         else:
