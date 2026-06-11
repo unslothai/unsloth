@@ -297,9 +297,8 @@ export const zhCN = {
         commandCopied: "{label} 已复制",
         copyNamedCommand: "复制 {label}",
         checkingInstall: "正在检查 Unsloth 的安装方式...",
-        installIntro: "标准安装命令。再次运行即可更新现有安装。",
-        unixLabel: "MacOS、Linux、WSL：",
-        windowsLabel: "Windows PowerShell：",
+        installIntro: "安装或更新 Unsloth：",
+        localUpdateHeading: "本地更新",
         installCommandUnix: "macOS/Linux 安装命令",
         installCommandWindows: "Windows 安装命令",
         localInstallDetected:

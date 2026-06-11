@@ -172,28 +172,29 @@ function UpdateDocsLinks(): ReactElement {
   );
 }
 
-function StandardInstallCommands(): ReactElement {
-  const t = useT();
+function ShellToggleButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}): ReactElement {
   return (
-    <>
-      <p className="text-xs text-muted-foreground leading-relaxed">
-        {t("settings.about.update.installIntro")}
-      </p>
-      <p className="text-xs font-semibold text-foreground">
-        {t("settings.about.update.unixLabel")}
-      </p>
-      <CopyableCommand
-        command={STUDIO_INSTALL_UNIX_CMD}
-        copyLabel={t("settings.about.update.installCommandUnix")}
-      />
-      <p className="text-xs font-semibold text-foreground">
-        {t("settings.about.update.windowsLabel")}
-      </p>
-      <CopyableCommand
-        command={STUDIO_INSTALL_WINDOWS_CMD}
-        copyLabel={t("settings.about.update.installCommandWindows")}
-      />
-    </>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+        active
+          ? "border-transparent bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
+          : "border-border text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -245,34 +246,17 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setShellOverride("windows")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              windows
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-emerald-600",
-            )}
-            aria-pressed={windows}
-          >
-            Windows
-          </button>
-          <span className="text-border">/</span>
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ShellToggleButton
+            active={!windows}
+            label="MacOS / Linux"
             onClick={() => setShellOverride("unix")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              windows
-                ? "text-muted-foreground hover:text-emerald-600"
-                : "text-foreground",
-            )}
-            aria-pressed={!windows}
-          >
-            macOS/Linux
-          </button>
+          />
+          <ShellToggleButton
+            active={windows}
+            label="Windows"
+            onClick={() => setShellOverride("windows")}
+          />
         </div>
       </div>
       {loadingInstallSource ? (
@@ -280,10 +264,37 @@ export function UpdateStudioInstructions({
           {t("settings.about.update.checkingInstall")}
         </p>
       ) : (
-        <StandardInstallCommands />
+        <>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {t("settings.about.update.installIntro")}
+          </p>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={`install-${shell}`}
+              initial={fadeInitial}
+              animate={fadeAnimate}
+              exit={fadeExit}
+              transition={fadeTransition}
+            >
+              <CopyableCommand
+                command={
+                  windows ? STUDIO_INSTALL_WINDOWS_CMD : STUDIO_INSTALL_UNIX_CMD
+                }
+                copyLabel={
+                  windows
+                    ? t("settings.about.update.installCommandWindows")
+                    : t("settings.about.update.installCommandUnix")
+                }
+              />
+            </motion.div>
+          </AnimatePresence>
+        </>
       )}
       {loadingInstallSource ? null : localInstallSource ? (
         <>
+          <p className="text-xs font-semibold text-foreground">
+            {t("settings.about.update.localUpdateHeading")}
+          </p>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.localInstallDetected")}
           </p>
@@ -353,6 +364,9 @@ export function UpdateStudioInstructions({
         <>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.unknownInstall")}
+          </p>
+          <p className="text-xs font-semibold text-foreground">
+            {t("settings.about.update.localUpdateHeading")}
           </p>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.localCheckout")}

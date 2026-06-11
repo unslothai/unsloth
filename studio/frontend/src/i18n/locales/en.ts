@@ -312,7 +312,7 @@ export const en = {
         "Documentation, release notes, feedback, and Unsloth build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
-      updates: "Updates",
+      updates: "Update",
       help: "Help",
       documentation: "Documentation",
       releaseNotes: "Release notes",
@@ -342,10 +342,8 @@ export const en = {
         commandCopied: "{label} copied",
         copyNamedCommand: "Copy {label}",
         checkingInstall: "Checking how Unsloth was installed...",
-        installIntro:
-          "Standard install commands. Running them again updates an existing install.",
-        unixLabel: "MacOS, Linux, WSL:",
-        windowsLabel: "Windows PowerShell:",
+        installIntro: "To install or update Unsloth:",
+        localUpdateHeading: "Local update",
         installCommandUnix: "macOS/Linux install command",
         installCommandWindows: "Windows install command",
         localInstallDetected:
