@@ -956,7 +956,7 @@ class FastBaseModel:
             _num_labels = kwargs.pop("num_labels", None)
             if _num_labels is not None:
                 set_task_config_attr(model_config, "num_labels", _num_labels)
-            for _cfg_key in ("id2label", "label2id"):
+            for _cfg_key in ("id2label", "label2id", "problem_type"):
                 _cfg_val = kwargs.pop(_cfg_key, None)
                 if _cfg_val is not None:
                     set_task_config_attr(model_config, _cfg_key, _cfg_val)

@@ -106,6 +106,12 @@ def test_fast_base_model_sets_task_attrs_on_nested_text_config():
     assert _calls_name(method, "set_task_config_attr")
 
 
+def test_fast_base_model_pops_problem_type_as_config_attr():
+    source = _source(VISION_PATH)
+
+    assert '("id2label", "label2id", "problem_type")' in source
+
+
 def test_fast_model_uses_user_config_num_labels_for_task_model_selection():
     tree = ast.parse(_source(LOADER_PATH))
     method = _class_method(tree, "FastModel", "from_pretrained")
