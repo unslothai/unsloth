@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import platform
@@ -14,12 +15,50 @@ import urllib.request
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _logger = logging.getLogger(__name__)
 
-FLASH_ATTN_RELEASE_BASE_URL = (
-    "https://github.com/Dao-AILab/flash-attention/releases/download"
-)
+FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
+
+
+@functools.lru_cache(maxsize = 1)
+def has_blackwell_gpu() -> bool:
+    """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
+
+    Dao-AILab ships no flash-attention wheels for these archs and older-arch wheels
+    fail to load, so callers use this to skip the flash-attn install path. Cached
+    for the process lifetime; tests mocking nvidia-smi must call
+    ``has_blackwell_gpu.cache_clear()`` first.
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+            env = child_env_without_native_path_secret(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        cap = line.strip()
+        if not cap:
+            continue
+        major_part = cap.split(".", 1)[0]
+        try:
+            major = int(major_part)
+        except ValueError:
+            continue
+        if major >= 10:
+            return True
+    return False
 
 
 def linux_wheel_platform_tag() -> str | None:
@@ -62,6 +101,7 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
             text = True,
             timeout = timeout,
             env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return None

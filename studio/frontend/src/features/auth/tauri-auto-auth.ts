@@ -6,6 +6,7 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
+  setMustChangePassword,
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
@@ -19,8 +20,8 @@ type TauriAutoAuthOptions = {
   force?: boolean;
 };
 
-// Concurrency guard: multiple route guards can call tauriAutoAuth simultaneously.
-// Without this, the first-launch password-change could race with itself.
+// Concurrency guard: multiple route guards can call tauriAutoAuth at once;
+// without this the first-launch password-change could race with itself.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 
@@ -60,7 +61,7 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     return true;
   }
 
-  // Try refreshing existing session
+  // Try refreshing an existing session.
   if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {
@@ -72,7 +73,8 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
-    storeAuthTokens(tokens.access_token, tokens.refresh_token, false);
+    storeAuthTokens(tokens.access_token, tokens.refresh_token);
+    setMustChangePassword(false);
     clearTauriAuthFailure();
     return true;
   } catch (error) {

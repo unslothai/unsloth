@@ -341,8 +341,10 @@ fn append_device_signals_section(
                     | "device_type"
                     | "chat_only"
                     | "desktop_protocol_version"
+                    | "desktop_manageability_version"
                     | "supports_api_only"
                     | "supports_desktop_auth"
+                    | "supports_desktop_backend_ownership"
             ) {
                 out.push_str(&format!("  {key}={value}\n"));
             }

@@ -23,7 +23,12 @@ export function buildTrainingStartPayload(
   const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
   const isQloraMethod = config.trainingMethod === "qlora";
-  const isFourBitModel = (config.selectedModel ?? "").toLowerCase().includes("4bit");
+  const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
+  const isFourBitModel = _selectedModelLower.includes("4bit");
+  // DeepSeek OCR ignores user-selected image size; do not send it.
+  const isDeepseekOcr =
+    _selectedModelLower.includes("deepseek") &&
+    _selectedModelLower.includes("ocr");
   const isEmbedding = config.isEmbeddingModel;
   const isRawText = isRawTextDatasetFormat(config.datasetFormat);
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
@@ -55,6 +60,10 @@ export function buildTrainingStartPayload(
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
+    vision_image_size:
+      config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
+        ? config.visionImageSize
+        : null,
     trust_remote_code: config.trustRemoteCode ?? false,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
@@ -83,6 +92,7 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
+    max_grad_norm: 0.0,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
     optim: config.optimizerType,

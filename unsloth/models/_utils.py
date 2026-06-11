@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.2"
+__version__ = "2026.6.2"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -92,6 +92,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import copy
 import re
 from dataclasses import dataclass, field
 import functools
@@ -192,14 +193,11 @@ from unsloth_zoo.temporary_patches import (
 )
 
 
-def apply_unsloth_gradient_checkpointing(
-    use_gradient_checkpointing, max_seq_length, dtype
-):
+def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
     """
     Apply gradient checkpointing with smart heuristics.
 
-    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
-    is not worth it. Benchmarks show standard gc is faster for small sequences.
+    For seq < 512, gc="unsloth" offloading overhead isn't worth it; standard gc is faster.
 
     Args:
         use_gradient_checkpointing: "unsloth", True, False, or None
@@ -210,9 +208,7 @@ def apply_unsloth_gradient_checkpointing(
         The effective use_gradient_checkpointing value (may change from "unsloth" to True)
     """
     if use_gradient_checkpointing == "unsloth":
-        # Gradient offloading overhead is not worth it for small sequences.
-        # Benchmarks show crossover point is around seq_len 384-512.
-        # For seq < 512, standard gradient checkpointing is faster.
+        # Offloading not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
             unpatch_unsloth_smart_gradient_checkpointing()
             return True
@@ -226,14 +222,19 @@ def apply_unsloth_gradient_checkpointing(
     return use_gradient_checkpointing
 
 
-# Models that don't work with flex_attention:
-# GPT-OSS: left padding issues cause incorrect outputs.
+# Models that don't work with flex_attention as the global Transformers
+# attention implementation:
+# GPT-OSS: training uses the custom flex sink patch, but inference intentionally
+# falls back to eager because flex decoding gives incorrect outputs.
 # Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
 # NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
 # Gemma3N: timm vision wrappers don't support flex_attention.
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
+_FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
+_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
+_FLASH_EXCLUDED_MODELS = ("gpt_oss",)
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -243,8 +244,41 @@ def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
 
+def _is_sdpa_excluded(model_type):
+    return model_type in _SDPA_EXCLUDED_MODELS
+
+
+def _is_flash_excluded(model_type):
+    return model_type in _FLASH_EXCLUDED_MODELS
+
+
+def _config_prefers_flex_attention(config):
+    return any(
+        _config_get(attention_config, "model_type", "").lower() in _FLEX_PREFERRED_MODELS
+        for attention_config in _iter_attention_configs(config)
+    )
+
+
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _supports_flex_attention(model_class, config, model_type):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return False
+    if not getattr(model_class, "_supports_flex_attn", False):
+        return False
+    if _is_flex_excluded(model_type):
+        return False
+    for attention_config in _iter_attention_configs(config):
+        attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
+        if attention_dropout != 0:
+            return False
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+        return is_torch_flex_attn_available()
+    except Exception:
+        return False
 
 
 def _config_items(config):
@@ -255,7 +289,11 @@ def _config_items(config):
     return ()
 
 
-def _config_get(config, field_name, default = None):
+def _config_get(
+    config,
+    field_name,
+    default = None,
+):
     if isinstance(config, dict):
         return config.get(field_name, default)
     return getattr(config, field_name, default)
@@ -269,9 +307,7 @@ def _config_set(config, field_name, value):
 
 
 def _iter_attention_configs(config, seen = None):
-    if config is None or (
-        not isinstance(config, dict) and not hasattr(config, "__dict__")
-    ):
+    if config is None or (not isinstance(config, dict) and not hasattr(config, "__dict__")):
         return
     if seen is None:
         seen = set()
@@ -314,11 +350,7 @@ def _collect_attention_head_dims(config):
             continue
         for num_heads_name in num_heads_names:
             num_heads = _config_get(config, num_heads_name, None)
-            if (
-                isinstance(num_heads, int)
-                and num_heads > 0
-                and (hidden_size % num_heads) == 0
-            ):
+            if isinstance(num_heads, int) and num_heads > 0 and (hidden_size % num_heads) == 0:
                 head_dims.append(hidden_size // num_heads)
 
     return head_dims
@@ -332,6 +364,9 @@ def _get_max_attention_head_dim(config):
 
 
 def _get_flash_attention_disable_reason(config):
+    model_type = _config_get(config, "model_type", "").lower()
+    if _is_flash_excluded(model_type):
+        return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
         return (
@@ -355,6 +390,7 @@ def _disable_flash_attention_if_needed(
     config,
     attn_implementation = None,
     supports_sdpa = False,
+    supports_flex_attention = False,
     would_use_flash_attention = False,
     disable_reason = None,
 ):
@@ -365,20 +401,20 @@ def _disable_flash_attention_if_needed(
 
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(
-            config, "_attn_implementation", None
-        )
+        requested_attn_implementation = _config_get(config, "_attn_implementation", None)
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "attn_implementation", None)
 
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
 
-    fallback_attn_implementation = "sdpa" if supports_sdpa else "eager"
-    if (
-        _is_flash_attention_requested(requested_attn_implementation)
-        or would_use_flash_attention
-    ):
+    if supports_sdpa:
+        fallback_attn_implementation = "sdpa"
+    elif supports_flex_attention:
+        fallback_attn_implementation = "flex_attention"
+    else:
+        fallback_attn_implementation = "eager"
+    if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:
         logged_attn_implementation = (
             requested_attn_implementation
             if _is_flash_attention_requested(requested_attn_implementation)
@@ -418,20 +454,14 @@ def resolve_model_class(auto_model, config):
         result = None
         for key in list(getattr(mapping, "_model_mapping", {})):
             try:
-                config_class = mapping._load_attr_from_module(
-                    key, mapping._config_mapping[key]
-                )
+                config_class = mapping._load_attr_from_module(key, mapping._config_mapping[key])
                 if isinstance(config, config_class):
-                    result = mapping._load_attr_from_module(
-                        key, mapping._model_mapping[key]
-                    )
+                    result = mapping._load_attr_from_module(key, mapping._model_mapping[key])
                     break
             except Exception:
                 continue
         if result is None:
-            for extra_cls, extra_model in getattr(
-                mapping, "_extra_content", {}
-            ).items():
+            for extra_cls, extra_model in getattr(mapping, "_extra_content", {}).items():
                 try:
                     if isinstance(config, extra_cls):
                         result = extra_model
@@ -443,6 +473,98 @@ def resolve_model_class(auto_model, config):
     return result[0] if isinstance(result, (list, tuple)) else result
 
 
+def _is_family_text_decoder(parent_model_type, text_model_type):
+    # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
+    # reused decoder (llava -> llama) would load random weights, so keep the full model.
+    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+
+
+def _get_text_only_config(model_config, model_name):
+    # Text sub-config of a vision-language config so FastLanguageModel skips the vision tower (PR #5816).
+    text_config = None
+    if hasattr(model_config, "get_text_config"):
+        text_config = model_config.get_text_config()
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None:
+        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # Carry over quantization_config; copy first since get_text_config() shares the parent's object.
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config = copy.copy(text_config)
+        text_config.quantization_config = _remap_text_only_skip_modules(qc)
+    return text_config
+
+
+def _remap_text_only_skip_modules(qc):
+    # Remap llm_int8_skip_modules off the VLM wrapper prefix (language_model.model.* ->
+    # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
+    is_dict = isinstance(qc, dict)
+    skip = (
+        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    )
+    if not skip:
+        return qc
+    remapped = []
+    for name in skip:
+        for pref in (
+            "language_model.model.",
+            "model.language_model.",
+            "language_model.",
+        ):
+            if name.startswith(pref):
+                name = (
+                    ("model." + name[len(pref) :])
+                    if pref != "language_model."
+                    else name[len(pref) :]
+                )
+                break
+        if name.startswith(
+            (
+                "vision_tower",
+                "multi_modal_projector",
+                "audio_tower",
+                "modality_projection",
+            )
+        ):
+            continue
+        remapped.append(name)
+    remapped = list(dict.fromkeys(remapped))
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    if is_dict:
+        qc["llm_int8_skip_modules"] = remapped
+    else:
+        qc.llm_int8_skip_modules = remapped
+    return qc
+
+
+def _get_text_only_key_mapping(parent_config, text_config):
+    # transformers >=5 stopped auto-stripping the VLM wrapper prefix (base_model_prefix
+    # changed language_model -> model), so remap the text weights onto the decoder keys.
+    # None on tf <5 (still strips; a mapping would break the load) or non-family. See PR #5816.
+    if Version(transformers_version) < Version("5.0.0"):
+        return None
+    if not _is_family_text_decoder(
+        getattr(parent_config, "model_type", ""),
+        getattr(text_config, "model_type", ""),
+    ):
+        return None
+    return {
+        r"^language_model\.model\.": "model.",
+        r"^model\.language_model\.": "model.",
+        r"^language_model\.lm_head\.": "lm_head.",
+    }
+
+
+def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
+    # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
+    mapping = _get_text_only_key_mapping(parent_config, text_config)
+    if not mapping:
+        return
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+
+
 def resolve_attention_implementation(
     model_class,
     config,
@@ -452,56 +574,51 @@ def resolve_attention_implementation(
     model_type_name = _config_get(config, "model_type", "")
     model_type = model_type_name.lower()
     if supports_sdpa is None:
-        supports_sdpa = model_class is not None and getattr(
-            model_class, "_supports_sdpa", False
+        supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
+    if _is_sdpa_excluded(model_type):
+        supports_sdpa = False
+    supports_flash_attention = (
+        model_class is not None
+        and (
+            getattr(model_class, "_supports_flash_attn_2", False)
+            or getattr(model_class, "_supports_flash_attn", False)
         )
-    supports_flash_attention = model_class is not None and (
-        getattr(model_class, "_supports_flash_attn_2", False)
-        or getattr(model_class, "_supports_flash_attn", False)
+        and not _is_flash_excluded(model_type)
     )
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:
         attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
     else:
+        prefers_flex_attention = _config_prefers_flex_attention(config)
         if _is_eager_only(model_type):
             attn_impl = _set_attn_impl(config, "eager")
+        elif prefers_flex_attention and supports_flex_attention:
+            # Models in _FLEX_PREFERRED_MODELS (gemma3 family) prefer flex_attention
+            # over flash. Caller can still override by passing
+            # requested_attn_implementation="sdpa" (handled below).
+            attn_impl = _set_attn_impl(config, "flex_attention")
+        elif not flash_attention_disabled and HAS_FLASH_ATTENTION and supports_flash_attention:
+            attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
                 supports_sdpa = supports_sdpa,
-                would_use_flash_attention = (
-                    HAS_FLASH_ATTENTION and supports_flash_attention
-                ),
+                supports_flex_attention = supports_flex_attention,
+                would_use_flash_attention = (HAS_FLASH_ATTENTION and supports_flash_attention),
                 disable_reason = disable_reason,
             )
-        elif HAS_FLASH_ATTENTION and supports_flash_attention:
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
+        elif supports_flex_attention:
+            # Flex is only a fallback for models that don't support SDPA
+            # (e.g. some custom configurations). Without this fallback such
+            # models would land on eager.
+            attn_impl = _set_attn_impl(config, "flex_attention")
         else:
-            attn_impl = "eager"
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
-                try:
-                    from transformers.utils.import_utils import (
-                        is_torch_flex_attn_available,
-                    )
-
-                    if (
-                        is_torch_flex_attn_available()
-                        and getattr(model_class, "_supports_flex_attn", False)
-                        and not _is_flex_excluded(model_type)
-                    ):
-                        attention_dropout = (
-                            _config_get(config, "attention_dropout", 0) or 0
-                        )
-                        if attention_dropout == 0:
-                            attn_impl = _set_attn_impl(config, "flex_attention")
-                except Exception:
-                    pass
-            if attn_impl == "eager":
-                attn_impl = _set_attn_impl(config, "eager")
+            attn_impl = _set_attn_impl(config, "eager")
 
     if requested_attn_implementation is None:
         final_attn_impl = attn_impl
@@ -510,6 +627,7 @@ def resolve_attention_implementation(
             config,
             requested_attn_implementation,
             supports_sdpa = supports_sdpa,
+            supports_flex_attention = supports_flex_attention,
             disable_reason = disable_reason,
         )
     else:
@@ -532,9 +650,7 @@ def resolve_encoder_attention_implementation(
     disable_sdpa_model_names = (),
 ):
     model_class = resolve_model_class(auto_model, config)
-    supports_sdpa = model_class is not None and getattr(
-        model_class, "_supports_sdpa", False
-    )
+    supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if any(name in model_type.lower() for name in disable_sdpa_model_names):
         return "eager"
     if supports_sdpa:
@@ -544,7 +660,6 @@ def resolve_encoder_attention_implementation(
 
 def _run_temporary_patches(phase):
     import inspect
-
     for temporary_patch in TEMPORARY_PATCHES:
         try:
             sig = inspect.signature(temporary_patch)
@@ -563,18 +678,14 @@ _run_temporary_patches("init")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
-warnings.filterwarnings(
-    action = "ignore", category = FutureWarning, module = "huggingface_hub"
-)
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
-warnings.filterwarnings(
-    action = "ignore", category = RuntimeWarning, module = "multiprocessing"
-)
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
@@ -608,7 +719,12 @@ class ReplaceWarningMessage:
     _installed = False
 
     @classmethod
-    def add_rule(cls, match_text, replacement, category = None):
+    def add_rule(
+        cls,
+        match_text,
+        replacement,
+        category = None,
+    ):
         cls._rules.append((match_text, replacement, category))
         if not cls._installed:
             cls._install()
@@ -619,13 +735,16 @@ class ReplaceWarningMessage:
         cls._installed = True
 
         def _patched_showwarning(
-            message, category, filename, lineno, file = None, line = None
+            message,
+            category,
+            filename,
+            lineno,
+            file = None,
+            line = None,
         ):
             msg_str = str(message)
             for match_text, replacement, match_category in cls._rules:
-                if match_text in msg_str and (
-                    match_category is None or category is match_category
-                ):
+                if match_text in msg_str and (match_category is None or category is match_category):
                     print(replacement)
                     return
             cls._original_showwarning(message, category, filename, lineno, file, line)
@@ -637,14 +756,12 @@ class ReplaceWarningMessage:
 if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
-
         vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
         del vllm_worker_logger
     except:
         pass
     try:
         from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
-
         vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
         del vllm_gpu_worker_logger
     except:
@@ -663,9 +780,7 @@ if not UNSLOTH_ENABLE_LOGGING:
 
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_v1_executor_logger.addFilter(
-            HideLoggingMessage("Executor is not sleeping")
-        )
+        vllm_v1_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
         del vllm_v1_executor_logger
     except:
         pass
@@ -673,25 +788,20 @@ if not UNSLOTH_ENABLE_LOGGING:
         from vllm.core.block.prefix_caching_block import (
             logger as vllm_prefix_caching_logger,
         )
-
         vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_prefix_caching_logger
     except:
         pass
     try:
         from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
-
         vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_block_pool_logger
     except:
         pass
     try:
         from vllm.lora.models import logger as vllm_lora_model_logger
-
         vllm_lora_model_logger.addFilter(
-            HideLoggingMessage(
-                "Regarding multimodal models, vLLM currently only supports adding"
-            )
+            HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding")
         )
         del vllm_lora_model_logger
     except:
@@ -700,10 +810,7 @@ if not UNSLOTH_ENABLE_LOGGING:
         from vllm.attention.utils.fa_utils import (
             logger as vllm_attention_utils_fa_utils_logger,
         )
-
-        vllm_attention_utils_fa_utils_logger.addFilter(
-            HideLoggingMessage("Cannot use FA version")
-        )
+        vllm_attention_utils_fa_utils_logger.addFilter(HideLoggingMessage("Cannot use FA version"))
         del vllm_attention_utils_fa_utils_logger
     except:
         pass
@@ -715,9 +822,7 @@ transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
 # average_tokens_across_devices is set to True but it is invalid when world size is1
-transformers_training_args_logger.addFilter(
-    HideLoggingMessage("average_tokens_across_devices")
-)
+transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
 del transformers_training_args_logger
 
 # No label_names provided for model class
@@ -729,10 +834,24 @@ transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
 transformers_trainer_logger.addFilter(HideLoggingMessage("The tokenizer has new"))
 del transformers_trainer_logger
 
+# Strip the "[transformers] " prefix transformers>=5 adds; keep the messages.
+try:
+    try:
+        import transformers.utils.logging as _tf_log
+        _tf_log._configure_library_root_logger()
+    except Exception:
+        pass
+    _tf_root = logging.getLogger("transformers")
+    _tf_fmt = logging.Formatter("%(message)s")
+    for _h in list(_tf_root.handlers):
+        _h.setFormatter(_tf_fmt)
+    del _tf_root, _tf_fmt
+except Exception:
+    pass
+
 # Using the default loss: `ForCausalLMLoss`.
 try:
     from transformers.modeling_utils import logger as transformers_modeling_utils_logger
-
     transformers_modeling_utils_logger.addFilter(HideLoggingMessage("ForCausalLMLoss"))
     del transformers_modeling_utils_logger
 except:
@@ -741,10 +860,7 @@ except:
 # The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
 try:
     from accelerate.utils.modeling import logger as accelerate_utils_modeling_logger
-
-    accelerate_utils_modeling_logger.addFilter(
-        HideLoggingMessage("The model weights are not tied")
-    )
+    accelerate_utils_modeling_logger.addFilter(HideLoggingMessage("The model weights are not tied"))
     del accelerate_utils_modeling_logger
 except:
     pass
@@ -769,7 +885,6 @@ try:
     from transformers.generation.configuration_utils import (
         logger as configuration_logger,
     )
-
     configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
     del configuration_logger
 except:
@@ -778,7 +893,6 @@ except:
 # Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
 try:
     from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
-
     gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
     del gemma3_logger
 except:
@@ -787,7 +901,6 @@ except:
 # Gemma4 It is strongly recommended to train Gemma4 models with the `eager`
 try:
     from transformers.models.gemma4.modeling_gemma4 import logger as gemma4_logger
-
     gemma4_logger.addFilter(HideLoggingMessage("strongly recommended"))
     del gemma4_logger
 except:
@@ -796,7 +909,6 @@ except:
 # Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
 try:
     from huggingface_hub.file_download import logger as hub_logger
-
     hub_logger.addFilter(HideLoggingMessage("hf_xet"))
     del hub_logger
 except:
@@ -805,7 +917,6 @@ except:
 # MXFP4 quantization requires triton >= 3.4.0
 try:
     from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
-
     mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
     del mxfp4_logger
 except:
@@ -837,7 +948,6 @@ except:
 # Using a slow image processor as `use_fast`
 try:
     from transformers.processing_utils import logger as processing_utils_logger
-
     processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
     del processing_utils_logger
 except:
@@ -848,7 +958,6 @@ try:
     from transformers.models.auto.image_processing_auto import (
         logger as processing_utils_logger,
     )
-
     processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
     del processing_utils_logger
 except:
@@ -857,7 +966,6 @@ except:
 # `use_cache=True` is incompatible with gradient checkpointing
 try:
     from transformers.trainer import logger as trainer_logger
-
     trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
     del trainer_logger
 except:
@@ -866,7 +974,6 @@ except:
 # `use_cache=True` is incompatible with gradient checkpointing
 try:
     from transformers.utils.generic import logger as trainer_logger
-
     trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
     del trainer_logger
 except:
@@ -875,7 +982,6 @@ except:
 # We detected that you are using `from_pretrained` with a meta device context manager or `torch.set_default_device('meta')
 try:
     from transformers.modeling_utils import logger as modeling_utils_logger
-
     modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
     del modeling_utils_logger
 except:
@@ -919,7 +1025,6 @@ class RaiseUninitialized:
 
 try:
     from transformers.trainer import logger as transformers_trainer_logger
-
     transformers_trainer_logger.addFilter(
         HideLoggingMessage("The model is already on multiple devices.")
     )
@@ -929,10 +1034,7 @@ except:
 # Hide HF Hub unauthenticated request warnings
 try:
     from huggingface_hub.utils._http import logger as hf_http_logger
-
-    hf_http_logger.addFilter(
-        HideLoggingMessage("You are sending unauthenticated requests")
-    )
+    hf_http_logger.addFilter(HideLoggingMessage("You are sending unauthenticated requests"))
     del hf_http_logger
 except:
     pass
@@ -977,9 +1079,7 @@ def get_model_param_count(model, trainable_only = False):
         def numel(p):
             return p.numel()
 
-    s = sum(
-        numel(p) for p in model.parameters() if not trainable_only or p.requires_grad
-    )
+    s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
     if (
         (not trainable_only)
         and hasattr(model, "config")
@@ -1011,9 +1111,7 @@ def patch_mistral_nemo_config(config):
             "        head_dim (`int`, *optional*, defaults to `hidden_size // num_attention_heads`):\n"
             "            The attention head dimension."
         )
-        config = config.replace(
-            "If it is not specified, will default to `8`.", add_head_dim
-        )
+        config = config.replace("If it is not specified, will default to `8`.", add_head_dim)
 
         add_head_dim = "num_key_value_heads=8,\n        head_dim=None,"
         config = config.replace("num_key_value_heads=8,", add_head_dim)
@@ -1163,8 +1261,6 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
-
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
@@ -1203,9 +1299,7 @@ if DEVICE_TYPE == "cuda":
                 # Also check for softcapping
                 from flash_attn import __version__ as flash_attn_version
 
-                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(
-                    flash_attn_version
-                ) >= Version("2.6.3")
+                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
                 if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                     print(
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
@@ -1227,9 +1321,7 @@ if DEVICE_TYPE == "cuda":
                 )
                 import transformers.utils
 
-                transformers.utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: False
-                )
+                transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
 
                 HAS_FLASH_ATTENTION = False
         else:
@@ -1252,9 +1344,7 @@ elif DEVICE_TYPE == "hip":
             # Also check for softcapping
             from flash_attn import __version__ as flash_attn_version
 
-            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version(
-                "2.6.3"
-            )
+            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
             if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                 print(
                     "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
@@ -1328,23 +1418,21 @@ try:
             'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
         )
 
-    if Version(torch_version) < Version("2.2.0") and Version(
-        xformers_version
-    ) >= Version("0.0.24"):
+    if Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers < 0.0.24 for torch = {torch_version}."
         )
-    elif Version(torch_version) < Version("2.3.0") and Version(
-        xformers_version
-    ) >= Version("0.0.26"):
+    elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= Version(
+        "0.0.26"
+    ):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers < 0.0.26 for torch = {torch_version}."
         )
-    elif Version(torch_version) < Version("2.4.0") and Version(
-        xformers_version
-    ) > Version("0.0.27"):
+    elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version(
+        "0.0.27"
+    ):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers <= 0.0.27 for torch = {torch_version}."
@@ -1371,9 +1459,7 @@ except ModuleNotFoundError:
     xformers_version = None
 except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
-        print(
-            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-        )
+        print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
         print(str(e))
     xformers = None
     xformers_attention = None
@@ -1423,26 +1509,16 @@ if False:  # Version(trl_version) >= Version("0.9.0"):
 import transformers.generation.configuration_utils
 
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
-    if (
-        type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS)
-        is list
-    ):
-        if (
-            "dynamic"
-            not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS
-        ):
-            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append(
-                "dynamic"
-            )
+    if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
+        if "dynamic" not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS:
+            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
 # =============================================
 
 # =============================================
 # Torch compile settings
 UNSLOTH_COMPILE_DEBUG = os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM = os.environ.get("UNSLOTH_COMPILE_MAXIMUM", "0") == "1"
-UNSLOTH_COMPILE_IGNORE_ERRORS = (
-    os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
-)
+UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 from torch._inductor.runtime.hints import DeviceProperties
 
@@ -1450,14 +1526,10 @@ from torch._inductor.runtime.hints import DeviceProperties
 @functools.lru_cache(None)
 def is_big_gpu(index) -> bool:
     if DEVICE_TYPE == "xpu":
-        prop = DeviceProperties.create(
-            torch.device("xpu", index) if type(index) is int else index
-        )
+        prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
         min_sms = 16
     else:
-        prop = DeviceProperties.create(
-            torch.device("cuda", index) if type(index) is int else index
-        )
+        prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
         min_sms = 80
 
     avail_sms = prop.multi_processor_count
@@ -1563,7 +1635,6 @@ from peft.utils.integrations import dequantize_module_weight
 
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
-
     try:
         source = inspect.getsource(LoraLayer.update_layer)
         text = "if weight is not None:\n"
@@ -1606,7 +1677,11 @@ import socket
 
 
 @functools.lru_cache(1)
-def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
+def has_internet(
+    host = "8.8.8.8",
+    port = 53,
+    timeout = 3,
+):
     if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1":
         return False
 
@@ -1644,7 +1719,6 @@ def _get_statistics(statistics = None, force_download = True):
         # Prefer filesystem markers (harder to misidentify) before env-key matching
         try:
             from pathlib import Path
-
             if Path("/kaggle/working").exists():
                 statistics = "kaggle"
             elif Path("/content").exists() and Path("/opt/colab").exists():
@@ -1751,6 +1825,13 @@ def get_statistics(local_files_only = False):
         return
     if local_files_only:
         return
+    # Also skip when HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are set.
+    _offline_vals = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+        or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
+    ):
+        return
     from huggingface_hub.utils import (
         disable_progress_bars,
         enable_progress_bars,
@@ -1807,9 +1888,7 @@ BitsAndBytesConfig__init__ = re.sub(
 )
 BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
 length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-BitsAndBytesConfig__init__ = "\n".join(
-    x[length_spaces:] for x in BitsAndBytesConfig__init__
-)
+BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
 BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
     "__init__",
     "_BitsAndBytesConfig__init__",
@@ -1825,23 +1904,12 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = (
-        lambda *args, **kwargs: DistributedType.NO
-    )
+    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 
 
 # to move multiple tensors to the same device
 def move_to_device(target_device, *tensors):
-    """
-    Move multiple tensors to target device if they're not already there.
-
-    Args:
-        target_device: The target device to move tensors to
-        *tensors: Variable number of tensors to potentially move
-
-    Returns:
-        tuple: The tensors on the target device (same objects if already on device, new if moved)
-    """
+    """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):
         target_device = torch.device(target_device)
     elif isinstance(target_device, str):
@@ -1862,9 +1930,7 @@ def move_to_device(target_device, *tensors):
 
 import transformers.utils.quantization_config
 
-transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
-    _BitsAndBytesConfig__init__
-)
+transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
 # =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
@@ -1872,7 +1938,10 @@ import pickle
 
 
 def offload_to_disk(
-    W, model, name, temporary_location: str = "_unsloth_temporary_saved_buffers"
+    W,
+    model,
+    name,
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
 ):
     file_location = os.path.join(temporary_location, model.config._name_or_path)
     if not os.path.exists(file_location):
@@ -1887,16 +1956,12 @@ def offload_to_disk(
         pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     # We must use weights_only = False due to pickling
-    offloaded_W = torch.load(
-        filename, map_location = "cpu", mmap = True, weights_only = False
-    )
+    offloaded_W = torch.load(filename, map_location = "cpu", mmap = True, weights_only = False)
     offloaded_W._offloaded_file_location = filename
     return offloaded_W
 
 
-def offload_input_embeddings(
-    model, temporary_location: str = "_unsloth_temporary_saved_buffers"
-):
+def offload_input_embeddings(model, temporary_location: str = "_unsloth_temporary_saved_buffers"):
     offloaded_W = offload_to_disk(
         model.get_input_embeddings(), model, "input_embeddings", temporary_location
     )
@@ -1906,9 +1971,7 @@ def offload_input_embeddings(
     return
 
 
-def offload_output_embeddings(
-    model, temporary_location: str = "_unsloth_temporary_saved_buffers"
-):
+def offload_output_embeddings(model, temporary_location: str = "_unsloth_temporary_saved_buffers"):
     offloaded_W = offload_to_disk(
         model.get_output_embeddings(), model, "output_embeddings", temporary_location
     )
@@ -1919,9 +1982,7 @@ def offload_output_embeddings(
     new_output_embeddings.in_features = offloaded_W.shape[1]
     new_output_embeddings.out_features = offloaded_W.shape[0]
 
-    new_output_embeddings._offloaded_file_location = (
-        offloaded_W._offloaded_file_location
-    )
+    new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
     model.set_output_embeddings(new_output_embeddings)
     return
 
@@ -2123,7 +2184,6 @@ def create_boolean_mask(n = 4096, sliding_window = 2048):
 
 def test_mask_creation():
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
     for n in range(2, 23):
         for s in range(1, 23):
             correct_mask = (
@@ -2233,9 +2293,7 @@ def patch_gradient_accumulation_fix(Trainer):
             .strip()
             .endswith("return batch_samples, num_items_in_batch")
         ):
-            raise NotImplementedError(
-                "Unsloth: Please make a Github issue immediately!!"
-            )
+            raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
                 Trainer.get_batch_samples = _unsloth_get_batch_samples
@@ -2285,8 +2343,7 @@ def patch_gradient_accumulation_fix(Trainer):
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
     if not (
         Trainer.training_step.__name__ == "_unsloth_training_step"
-        or "num_items_in_batch"
-        not in inspect.signature(Trainer.training_step).parameters
+        or "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters
     ):
         function = inspect.getsource(Trainer.training_step)
         where = function.find("def")
@@ -2302,9 +2359,7 @@ def patch_gradient_accumulation_fix(Trainer):
             if item in function:
                 good_items.append(item)
         exec(
-            "from transformers.trainer import ("
-            + ", ".join(x for x in good_items)
-            + ")",
+            "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
             globals(),
         )
 
@@ -2314,9 +2369,7 @@ def patch_gradient_accumulation_fix(Trainer):
             "loss *= self.args.gradient_accumulation_steps",
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
-        function = function.replace(
-            "def training_step", "def _unsloth_training_step", 1
-        )
+        function = function.replace("def training_step", "def _unsloth_training_step", 1)
 
         # Fix 4.47.0 issue where num_items_in_batch was removed
         # See https://github.com/huggingface/transformers/pull/35121
@@ -2496,7 +2549,6 @@ def patch_tokenizer(model, tokenizer):
 def patch_fast_lora():
     import peft.tuners.lora.bnb
     from ..kernels.fast_lora import fast_lora_forward
-
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 
 
@@ -2633,9 +2685,7 @@ EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
 for j, function in enumerate(functions):
     if function.startswith("__") and function.endswith("__"):
-        exec(
-            f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals()
-        )
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
         try:
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
@@ -2676,7 +2726,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
     if init_lora_weights == "loftq":
         if not SUPPORTS_LOFTQ:
             import peft
-
             raise RuntimeError(
                 f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"
                 "Please install PEFT 0.7.2 or higher.\n"
@@ -2685,7 +2734,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
 
         if loftq_config == {}:
             from peft import LoftQConfig
-
             logger.warning_once(
                 "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
@@ -2704,9 +2752,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
 def fast_inference_setup(model_name, model_config):
     fast_inference = True
     if not is_vLLM_available():
-        logger.warning_once(
-            "Unsloth: vLLM is not installed! Will use Unsloth inference!"
-        )
+        logger.warning_once("Unsloth: vLLM is not installed! Will use Unsloth inference!")
         fast_inference = False
     from unsloth_zoo.vllm_utils import (
         patch_vllm,
@@ -2747,7 +2793,6 @@ def error_out_no_vllm(*args, **kwargs):
 
 try:
     from torchao.core.config import AOBaseConfig
-
     try:
         from torchao.quantization import Int4WeightOnlyConfig
     except:
@@ -2769,8 +2814,7 @@ class TorchAOConfig:
         default_factory = lambda: [
             (
                 Int4WeightOnlyConfig(group_size = 128),
-                lambda m, _: isinstance(m, torch.nn.Linear)
-                and getattr(m, "in_features", 0) >= 128,
+                lambda m, _: isinstance(m, torch.nn.Linear) and getattr(m, "in_features", 0) >= 128,
             ),
         ]
     )
@@ -2814,14 +2858,11 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     # 5) Verify no shared storage
-    assert (
-        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
-    ), "Embeddings still tied!"
+    assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
 
 
 def _filter_fn_to_fqns(
-    model: torch.nn.Module,
-    filter_fn: Callable[[torch.nn.Module, str], bool],
+    model: torch.nn.Module, filter_fn: Callable[[torch.nn.Module, str], bool]
 ) -> Iterator[str]:
     """
     Given a model and a filter function (m, fqn) -> bool,
@@ -2908,10 +2949,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
-                and m.in_features >= group_size
-            )
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -2923,9 +2961,7 @@ def _prepare_model_for_qat(
                 )
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
-            base_config = Float8DynamicActivationFloat8WeightConfig(
-                granularity = PerRow()
-            )
+            base_config = Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
@@ -2941,9 +2977,7 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
                     (
-                        IntxWeightOnlyConfig(
-                            weight_dtype = torch.int8, granularity = PerAxis(0)
-                        ),
+                        IntxWeightOnlyConfig(weight_dtype = torch.int8, granularity = PerAxis(0)),
                         lambda m, fqn: isinstance(m, torch.nn.Embedding),
                     ),
                     (
@@ -2962,10 +2996,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
-                and m.in_features >= group_size
-            )
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -3065,7 +3096,6 @@ def patch_hf_quantizer():
         from transformers.quantizers.quantizer_finegrained_fp8 import (
             FineGrainedFP8HfQuantizer,
         )
-
         FineGrainedFP8HfQuantizer.is_trainable = property(make_trainable)
         FineGrainedFP8HfQuantizer.is_qat_trainable = property(make_trainable)
     except Exception as e:
@@ -3073,7 +3103,6 @@ def patch_hf_quantizer():
 
     try:
         from transformers.quantizers.quantizer_fbgemm_fp8 import FbgemmFp8HfQuantizer
-
         FbgemmFp8HfQuantizer.is_trainable = property(make_trainable)
         FbgemmFp8HfQuantizer.is_qat_trainable = property(make_trainable)
     except Exception as e:
@@ -3081,7 +3110,6 @@ def patch_hf_quantizer():
 
     try:
         from transformers.quantizers.quantizer_torchao import TorchAoHfQuantizer
-
         TorchAoHfQuantizer.is_trainable = property(make_trainable)
         TorchAoHfQuantizer.is_qat_trainable = property(make_trainable)
     except Exception as e:
@@ -3136,7 +3164,6 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     if token is None:
         try:
             from huggingface_hub import get_token
-
             token = get_token()
             if token is None:
                 return None
@@ -3144,7 +3171,6 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
             return None
     try:
         from huggingface_hub import login
-
         login(token = token)
         return token
     except Exception as e:
@@ -3221,6 +3247,21 @@ def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -
     return default_name
 
 
+_MOE_BROAD_MLP_TARGETS = frozenset(("gate_proj", "up_proj", "down_proj", "gate_up_proj"))
+
+
+def _moe_target_set_from_string(target_modules: str) -> set[str]:
+    if target_modules in _MOE_BROAD_MLP_TARGETS:
+        return {target_modules}
+
+    is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
+    targets_mlp = "mlp" in target_modules or "ffn" in target_modules
+    if is_regex and "proj" in target_modules and targets_mlp:
+        return set(_MOE_BROAD_MLP_TARGETS)
+
+    return set()
+
+
 def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
     Get the target_parameters for MoE expert layers if applicable.
@@ -3260,22 +3301,18 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     if num_experts is None:
         num_experts = 0
 
-    # Determine which MoE parameters to include based on target_modules
-    moe_params = []
-
-    # Normalize target_modules to a set for efficient lookup
     if target_modules is None:
-        # If no target_modules specified, include all MoE params
-        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
+        return None
     elif isinstance(target_modules, str):
-        target_set = {target_modules}
-        # Heuristic for regex matching MLPs
-        if "proj" in target_modules and (
-            "mlp" in target_modules or "ffn" in target_modules
-        ):
-            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
+        target_set = _moe_target_set_from_string(target_modules)
     else:
-        target_set = set(target_modules) if target_modules else set()
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+
+    moe_params = []
 
     gate_up_name = _resolve_moe_parameter_name(
         model,
@@ -3290,11 +3327,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
 
     # gate_up_proj combines both gate_proj and up_proj in MoE
     # Also match "gate_up_proj" directly since users may specify the fused name
-    if (
-        "gate_proj" in target_set
-        or "up_proj" in target_set
-        or "gate_up_proj" in target_set
-    ):
+    if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
         moe_params.append(gate_up_name)
 
     if "down_proj" in target_set:
@@ -3394,9 +3427,7 @@ if (
             aliases.add(full_name.replace("language_model.model.", "language_model."))
         if full_name.startswith("model.language_model.model."):
             aliases.add(
-                full_name[len("model.") :].replace(
-                    "language_model.model.", "language_model."
-                )
+                full_name[len("model.") :].replace("language_model.model.", "language_model.")
             )
         return aliases
 
@@ -3425,16 +3456,11 @@ if (
             for candidate in _get_full_name_aliases(full_name)
         )
 
-    patched_should_convert_module._original_should_convert_module = (
-        _original_should_convert_module
-    )
+    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
     _quantizers_utils.should_convert_module = patched_should_convert_module
 
     try:
         import transformers.integrations.bitsandbytes
-
-        transformers.integrations.bitsandbytes.should_convert_module = (
-            patched_should_convert_module
-        )
+        transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
     except Exception:
         pass

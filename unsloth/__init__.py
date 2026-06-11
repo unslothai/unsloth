@@ -12,16 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, platform, importlib.util
+import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# ── Windows console UTF-8 safety ─────────────────────────────────────────────
+# Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
+# glyphs and crash with UnicodeEncodeError. Force stdout/stderr to UTF-8 only on
+# Windows and only when not already UTF-8; no-op elsewhere. errors="replace"
+# guarantees we never crash on an unencodable glyph.
+if platform.system() == "Windows":
+    import sys as _sys
+    for _name in ("stdout", "stderr"):
+        _s = getattr(_sys, _name, None)
+        try:
+            _enc = (getattr(_s, "encoding", None) or "").lower()
+            if _s is not None and hasattr(_s, "reconfigure") and "utf" not in _enc:
+                _s.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
+
+def _is_mlx_available():
+    # Transitional import barrier: keep non-Apple-Silicon imports from touching
+    # unsloth_zoo until unsloth_zoo.mlx is import-safe on GPU hosts. Then this
+    # can collapse back to the centralized zoo runtime call below.
+    if (
+        os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
+        or platform.system() != "Darwin"
+        or platform.machine() != "arm64"
+        or importlib.util.find_spec("mlx") is None
+    ):
+        return False
+    try:
+        from unsloth_zoo.mlx import is_mlx_available
+    except ImportError:
+        return False
+    return is_mlx_available()
+
+
 # Detect Apple Silicon + MLX before any torch/numpy imports
-_IS_MLX = (
-    platform.system() == "Darwin"
-    and platform.machine() == "arm64"
-    and importlib.util.find_spec("mlx") is not None
-)
+_IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
     try:
@@ -31,18 +62,16 @@ if _IS_MLX:
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
             "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
         ) from _e
-    # The mlx_trainer / mlx_loader submodules ship with unsloth-zoo's MLX
-    # support. An older installed unsloth-zoo (e.g. from PyPI before the
-    # MLX release lands) will satisfy `import unsloth_zoo` but be missing
-    # these submodules. Surface the same friendly install hint instead of
-    # a raw ImportError on the submodule path.
+    # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the
+    # mlx.trainer / mlx.loader submodules. Surface a friendly install hint
+    # instead of a raw ImportError on the submodule path.
     try:
-        from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
-        from unsloth_zoo.mlx_loader import FastMLXModel
+        from unsloth_zoo.mlx.trainer import MLXTrainer, MLXTrainingConfig
+        from unsloth_zoo.mlx.loader import FastMLXModel
     except ImportError as _e:
         raise ImportError(
             "Unsloth: MLX support requires an unsloth-zoo build that includes "
-            "`unsloth_zoo.mlx_trainer` and `unsloth_zoo.mlx_loader`. Upgrade with "
+            "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Upgrade with "
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
 
@@ -51,9 +80,7 @@ if _IS_MLX:
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
-    _raw_text_spec = importlib.util.spec_from_file_location(
-        "unsloth._mlx_raw_text", _raw_text_path
-    )
+    _raw_text_spec = importlib.util.spec_from_file_location("unsloth._mlx_raw_text", _raw_text_path)
     if _raw_text_spec is None or _raw_text_spec.loader is None:
         raise ImportError("Unsloth: could not load MLX raw_text dataprep helpers.")
     _raw_text = importlib.util.module_from_spec(_raw_text_spec)
@@ -107,7 +134,6 @@ if _IS_MLX:
     def is_bfloat16_supported():
         try:
             import mlx.core as mx
-
             name = mx.device_info().get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:

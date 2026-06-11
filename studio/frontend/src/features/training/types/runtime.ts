@@ -105,6 +105,9 @@ export interface TrainingRuntimeState {
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
+  // True while the studio "Current Run" tab is the active view, so the sidebar
+  // can highlight which run row the current run refers to (the active job).
+  currentRunViewActive: boolean;
 }
 
 export interface TrainingRuntimeActions {
@@ -127,6 +130,7 @@ export interface TrainingRuntimeActions {
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
+  setCurrentRunViewActive: (value: boolean) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;

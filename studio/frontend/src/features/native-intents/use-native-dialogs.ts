@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { pickNativeModel } from "./api";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
