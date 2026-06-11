@@ -932,7 +932,8 @@ function ProjectLanding({
             } as CSSProperties
           }
         >
-          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
+          {/* 46rem matches the composer so every block shares the same edges. */}
+          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
