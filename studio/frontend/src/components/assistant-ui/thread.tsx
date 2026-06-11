@@ -142,6 +142,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { create } from "zustand";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -149,79 +150,164 @@ const PageDragContext = createContext(false);
 
 // Single-chat prompt queue. State lives at module level so it survives the
 // Composer remount when the first queued message creates a new thread, and
-// detection subscribes to the store's runningByThreadId rather than
-// aui.thread() (unbound on the welcome screen).
-
-import { create as _createZustand } from "zustand";
-
-// Module-level Zustand so ComposerRightControls re-renders across Composer mounts.
-interface _QueueUIState { isRunning: boolean; current: number; total: number; }
-const _useQueueUI = _createZustand<_QueueUIState>(() => ({
+// detection subscribes to runningByThreadId instead of aui.thread() so the
+// welcome-screen composer can queue safely before a thread is bound.
+interface PromptQueueUIState {
+  isRunning: boolean;
+  current: number;
+  total: number;
+}
+const usePromptQueueUI = create<PromptQueueUIState>(() => ({
   isRunning: false, current: 0, total: 0,
 }));
 
-let _qItems: string[] = [];
-let _qIndex = 0;
-let _qIsRunning = false;
-let _qPrevStoreRunning = false;
-let _qStoreUnsub: (() => void) | null = null;
+let promptQueueItems: string[] = [];
+let promptQueueIndex = 0;
+let promptQueueIsRunning = false;
+let promptQueuePrevStoreRunning = false;
+let promptQueueStoreUnsub: (() => void) | null = null;
 
 // Points to the current Composer's aui (updated every render), so it stays valid
 // after a remount.
-let _qGetAui: () => ReturnType<typeof useAui> = () => {
+let getPromptQueueAui: () => ReturnType<typeof useAui> = () => {
   throw new Error("aui not initialised");
 };
 
-function _qStopSubscription() {
-  if (_qStoreUnsub) { _qStoreUnsub(); _qStoreUnsub = null; }
-  _qPrevStoreRunning = false;
+function stopPromptQueueSubscription() {
+  if (promptQueueStoreUnsub) {
+    promptQueueStoreUnsub();
+    promptQueueStoreUnsub = null;
+  }
+  promptQueuePrevStoreRunning = false;
 }
 
-function _qAdvance() {
-  const nextIndex = _qIndex + 1;
-  if (nextIndex >= _qItems.length) {
-    _qIsRunning = false;
-    _qItems = [];
-    _qIndex = 0;
-    _qStopSubscription();
-    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+function resetPromptQueue(showToast = false) {
+  promptQueueIsRunning = false;
+  promptQueueItems = [];
+  promptQueueIndex = 0;
+  stopPromptQueueSubscription();
+  usePromptQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+  if (showToast) {
     toast.success("Prompt queue complete");
+  }
+}
+
+function queueToastDescription(prompt: string) {
+  return prompt.length > 80 ? `${prompt.slice(0, 80)}...` : prompt;
+}
+
+function appendQueuedPrompt(prompt: string) {
+  if (!promptQueueIsRunning) {
     return;
   }
-  _qIndex = nextIndex;
-  _useQueueUI.setState({ current: nextIndex + 1, total: _qItems.length });
-  const next = _qItems[nextIndex];
-  toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
-    description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+  getPromptQueueAui().thread().append({
+    role: "user",
+    content: [{ type: "text", text: prompt }],
+    createdAt: new Date(),
+  } as never);
+}
+
+function advancePromptQueue() {
+  const nextIndex = promptQueueIndex + 1;
+  if (nextIndex >= promptQueueItems.length) {
+    resetPromptQueue(true);
+    return;
+  }
+  promptQueueIndex = nextIndex;
+  usePromptQueueUI.setState({
+    current: nextIndex + 1,
+    total: promptQueueItems.length,
   });
-  _qPrevStoreRunning = false; // catch the next run
+  const next = promptQueueItems[nextIndex];
+  toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
+    description: queueToastDescription(next),
+  });
+  promptQueuePrevStoreRunning = false;
   setTimeout(() => {
-    _qGetAui().thread().append({
-      role: "user",
-      content: [{ type: "text", text: next }],
-      createdAt: new Date(),
-    } as never);
+    appendQueuedPrompt(next);
   }, 100);
 }
 
-function _qStartSubscription() {
-  _qStopSubscription();
+function startPromptQueueSubscription() {
+  stopPromptQueueSubscription();
   // runningByThreadId tracks the actual thread (not aui.thread()), so detection
   // survives navigation.
-  _qStoreUnsub = useChatRuntimeStore.subscribe((state) => {
-    if (!_qIsRunning) { _qStopSubscription(); return; }
+  promptQueueStoreUnsub = useChatRuntimeStore.subscribe((state) => {
+    if (!promptQueueIsRunning) {
+      stopPromptQueueSubscription();
+      return;
+    }
     const isRunning = Object.keys(state.runningByThreadId).length > 0;
-    const wasRunning = _qPrevStoreRunning;
-    _qPrevStoreRunning = isRunning;
+    const wasRunning = promptQueuePrevStoreRunning;
+    promptQueuePrevStoreRunning = isRunning;
     if (wasRunning && !isRunning) {
-      _qAdvance();
+      advancePromptQueue();
     }
   });
+
+  const isRunningNow =
+    Object.keys(useChatRuntimeStore.getState().runningByThreadId).length > 0;
+  if (promptQueuePrevStoreRunning && !isRunningNow) {
+    promptQueuePrevStoreRunning = false;
+    advancePromptQueue();
+  }
 }
 
-interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
-const PromptQueueContext = createContext<_QueueCallbacks>({
-  startQueue: () => {}, stopQueue: () => {},
+function startPromptQueue(items: string[], waitForCurrentRun = false) {
+  const filtered = items.map((item) => item.trim()).filter(Boolean);
+  if (filtered.length === 0) {
+    return;
+  }
+
+  if (promptQueueIsRunning) {
+    promptQueueItems.push(...filtered);
+    usePromptQueueUI.setState({
+      isRunning: true,
+      current: Math.max(promptQueueIndex + 1, 0),
+      total: promptQueueItems.length,
+    });
+    toast.success("Added to prompt queue", {
+      description: `${filtered.length} prompt${filtered.length === 1 ? "" : "s"} queued.`,
+    });
+    return;
+  }
+
+  const shouldWaitForCurrentRun =
+    waitForCurrentRun &&
+    Object.keys(useChatRuntimeStore.getState().runningByThreadId).length > 0;
+  promptQueueItems = filtered;
+  promptQueueIndex = shouldWaitForCurrentRun ? -1 : 0;
+  promptQueueIsRunning = true;
+  promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
+  usePromptQueueUI.setState({
+    isRunning: true,
+    current: shouldWaitForCurrentRun ? 0 : 1,
+    total: filtered.length,
+  });
+  toast(
+    shouldWaitForCurrentRun ? "Prompt queued" : `Prompt 1 / ${filtered.length}`,
+    {
+      description: queueToastDescription(filtered[0]),
+    },
+  );
+  startPromptQueueSubscription();
+  if (!shouldWaitForCurrentRun) {
+    setTimeout(() => {
+      appendQueuedPrompt(filtered[0]);
+    }, 50);
+  }
+}
+
+interface PromptQueueCallbacks {
+  startQueue: (items: string[], waitForCurrentRun?: boolean) => void;
+  stopQueue: () => void;
+}
+const noopStartPromptQueue: PromptQueueCallbacks["startQueue"] = () =>
+  undefined;
+const noopStopPromptQueue: PromptQueueCallbacks["stopQueue"] = () => undefined;
+const PromptQueueContext = createContext<PromptQueueCallbacks>({
+  startQueue: noopStartPromptQueue,
+  stopQueue: noopStopPromptQueue,
 });
 
 // Gap (px) between last message and floating composer; bottom spacer tracks
@@ -934,9 +1020,18 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+  const canQueueCurrentPrompt =
+    composerText.trim().length > 0 &&
+    !hasAttachments &&
+    !hasPendingAudio &&
+    !isComposing &&
+    !hasPendingAttachments &&
+    !disabled &&
+    !overlay;
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =
@@ -1073,6 +1168,25 @@ const Composer: FC<{
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
       if (interceptSend(event)) return;
 
+      if (threadIsRunning) {
+        event.preventDefault();
+        if (!canQueueCurrentPrompt) {
+          if (overlay || hasAttachments || hasPendingAudio) {
+            toast.error("Wait for the current response to finish", {
+              description:
+                "Only text prompts can be queued while a response is running.",
+            });
+          }
+          return;
+        }
+        const queuedPrompt = composerText.trim();
+        flushResourcesSync(() => {
+          aui.composer().setText("");
+        });
+        startPromptQueue([queuedPrompt], true);
+        return;
+      }
+
       if (overlay) {
         const trimmed = composerText.trim();
         if (!trimmed) {
@@ -1117,51 +1231,41 @@ const Composer: FC<{
     },
     [
       aui,
+      canQueueCurrentPrompt,
       closeOverlay,
       composerText,
+      hasAttachments,
+      hasPendingAudio,
       interceptSend,
       overlay,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      threadIsRunning,
     ],
   );
 
   // Update the getter every render so the queue always calls the current
   // Composer's aui (post-remount).
-  _qGetAui = () => aui;
+  getPromptQueueAui = () => aui;
 
   const stopQueue = useCallback(() => {
-    _qIsRunning = false;
-    _qStopSubscription();
-    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
-    _qItems = [];
-    _qIndex = 0;
-    try { _qGetAui().thread().cancelRun(); } catch {}
+    resetPromptQueue();
+    try {
+      getPromptQueueAui().thread().cancelRun();
+    } catch {
+      // The active run may have already ended.
+    }
   }, []);
 
-  const startQueue = useCallback((items: string[]) => {
-    const filtered = items.filter((p) => p.trim());
-    if (!filtered.length) return;
-    _qItems = filtered;
-    _qIndex = 0;
-    _qIsRunning = true;
-    _useQueueUI.setState({ isRunning: true, current: 1, total: filtered.length });
-    toast(`Prompt 1 / ${filtered.length}`, {
-      description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
-    });
-    // Subscribe BEFORE appending so we don't miss a very fast completion.
-    _qStartSubscription();
-    setTimeout(() => {
-      _qGetAui().thread().append({
-        role: "user",
-        content: [{ type: "text", text: filtered[0] }],
-        createdAt: new Date(),
-      } as never);
-    }, 50);
-  }, []);
+  const startQueue = useCallback(
+    (items: string[], waitForCurrentRun = false) => {
+      startPromptQueue(items, waitForCurrentRun);
+    },
+    [],
+  );
 
-  const queueContextValue: _QueueCallbacks = { startQueue, stopQueue };
+  const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
 
   const composerContent = (
     <>
@@ -1217,7 +1321,19 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
+          queueDisabled={!canQueueCurrentPrompt}
+          onQueueClick={() => {
+            const queuedPrompt = composerText.trim();
+            if (queuedPrompt.length === 0) {
+              return;
+            }
+            flushResourcesSync(() => {
+              aui.composer().setText("");
+            });
+            startPromptQueue([queuedPrompt], true);
+          }}
           onSendClick={interceptSend}
+          onStopClick={stopQueue}
           pendingSend={pendingSend}
           menuSide={effectiveMenuSide}
         />
@@ -1370,6 +1486,11 @@ function useImeComposerInputHandlers() {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         composingRef.current = true;
         refreshStuckTimer();
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.currentTarget.form?.requestSubmit();
       }
     },
     [refreshStuckTimer],
@@ -2391,14 +2512,24 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
+  queueDisabled?: boolean;
+  onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
+  onStopClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, onSendClick, pendingSend, menuSide }) => {
-  const isQueueRunning = _useQueueUI((s) => s.isRunning);
-  const queueCurrent = _useQueueUI((s) => s.current);
-  const queueTotal = _useQueueUI((s) => s.total);
-  const { stopQueue } = useContext(PromptQueueContext);
+}> = ({
+  disabled,
+  queueDisabled,
+  onQueueClick,
+  onSendClick,
+  onStopClick,
+  pendingSend,
+  menuSide,
+}) => {
+  const isQueueRunning = usePromptQueueUI((s) => s.isRunning);
+  const queueCurrent = usePromptQueueUI((s) => s.current);
+  const queueTotal = usePromptQueueUI((s) => s.total);
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -2427,57 +2558,68 @@ const ComposerRightControls: FC<{
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
       {isQueueRunning ? (
-        <button
-          type="button"
-          onClick={stopQueue}
-          aria-label="Stop prompt queue"
-          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        <span
+          className="ml-1 flex h-7 items-center rounded-full bg-primary/10 px-2 text-[11px] font-semibold text-primary"
+          aria-live="polite"
         >
-          <SquareIcon className="size-2.5 shrink-0 fill-current" />
-          <span className="tabular-nums">
-            Stop queue {queueCurrent}/{queueTotal}
-          </span>
-        </button>
-      ) : (
-        <>
-          <AuiIf condition={({ thread }) => !thread.isRunning}>
-            <ComposerPrimitive.Send asChild={true}>
-              <TooltipIconButton
-                tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
-                side="bottom"
-                type="submit"
-                variant="default"
-                size="icon"
-                // Stay clickable while docs index so a click can queue the send;
-                // disabled only once a send is parked.
-                disabled={disabled || pendingSend}
-                onClick={(event) => onSendClick?.(event)}
-                className="aui-composer-send ml-1.5 size-8 rounded-full"
-                aria-label="Send message"
-              >
-                {pendingSend ? (
-                  <Spinner className="size-[18px]" />
-                ) : (
-                  <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-                )}
-              </TooltipIconButton>
-            </ComposerPrimitive.Send>
-          </AuiIf>
-          <AuiIf condition={({ thread }) => thread.isRunning}>
+          <span className="tabular-nums">Queue {queueCurrent}/{queueTotal}</span>
+        </span>
+      ) : null}
+      <AuiIf condition={({ thread }) => !thread.isRunning}>
+        <ComposerPrimitive.Send asChild={true}>
+          <TooltipIconButton
+            tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
+            side="bottom"
+            type="submit"
+            variant="default"
+            size="icon"
+            // Stay clickable while docs index so a click can queue the send;
+            // disabled only once a send is parked.
+            disabled={disabled || pendingSend}
+            onClick={(event) => onSendClick?.(event)}
+            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            aria-label="Send message"
+          >
+            {pendingSend ? (
+              <Spinner className="size-[18px]" />
+            ) : (
+              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            )}
+          </TooltipIconButton>
+        </ComposerPrimitive.Send>
+      </AuiIf>
+      <AuiIf condition={({ thread }) => thread.isRunning}>
+        <div className="ml-1.5 flex items-center">
+          {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
                 variant="default"
                 size="icon"
-                className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+                className="aui-composer-cancel size-8 rounded-full"
                 aria-label="Stop generating"
+                onClick={isQueueRunning ? onStopClick : undefined}
               >
                 <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-          </AuiIf>
-        </>
-      )}
+          ) : (
+            <TooltipIconButton
+              tooltip="Queue message"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              disabled={queueDisabled}
+              onClick={onQueueClick}
+              className="aui-composer-send size-8 rounded-full"
+              aria-label="Queue message"
+            >
+              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            </TooltipIconButton>
+          )}
+        </div>
+      </AuiIf>
     </div>
   );
 };
