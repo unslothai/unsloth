@@ -1,17 +1,22 @@
 #!/bin/sh
-# Unsloth Studio Installer
-# Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
-# Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
-# Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
-# Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
-# Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
-# Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME=/abs/path  -> install under that path
-#   STUDIO_HOME=/abs/path          -> alias, same effect (UNSLOTH_STUDIO_HOME wins)
-#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append.)
-# Default ($HOME/.unsloth/studio) is preserved when no env var is set.
+# Unsloth Studio Installer
+#
+# Usage:  curl -fsSL https://unsloth.ai/install.sh | sh
+#         wget  -qO- https://unsloth.ai/install.sh | sh
+#         ./install.sh --local   (install from a cloned repo instead of PyPI)
+#
+# Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
+# makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
+# Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+#
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
 
 # ── Output style (aligned with studio/setup.sh) ──
@@ -69,6 +74,10 @@ for arg in "$@"; do
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
     esac
 done
+
+# Env-var equivalents for piped installs; an explicit flag still wins.
+case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+[ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
@@ -1198,6 +1207,15 @@ STUB_EOF
         # Escape single quotes for PowerShell single-quoted string embedding
         _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
 
+        # DISTINCT shortcut name so the WSL launcher never clobbers a native
+        # install's "Unsloth Studio.lnk" in the same folder. Per-distro suffix.
+        if [ -n "$_css_distro" ]; then
+            _css_lnk_name="Unsloth Studio (WSL - ${_css_distro}).lnk"
+        else
+            _css_lnk_name="Unsloth Studio (WSL).lnk"
+        fi
+        _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
+
         # Create shortcuts via a temp PowerShell script to avoid escaping issues
         _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
         if [ -n "$_css_ps1_tmp" ]; then
@@ -1205,19 +1223,57 @@ STUB_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
+# Best-effort: fetch the Unsloth icon to a stable Windows path (shared with a
+# native install if one exists) so the WSL shortcut shows the proper icon.
+\$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
+\$iconPath = Join-Path \$iconDir 'unsloth.ico'
+if (-not (Test-Path -LiteralPath \$iconPath)) {
+    try {
+        New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
+        Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico' -OutFile \$iconPath -UseBasicParsing -ErrorAction Stop
+    } catch {}
+}
+\$hasIcon = \$false
+if (Test-Path -LiteralPath \$iconPath) {
+    try { \$b = [System.IO.File]::ReadAllBytes(\$iconPath); if (\$b.Length -ge 4 -and \$b[0] -eq 0 -and \$b[1] -eq 0 -and \$b[2] -eq 1 -and \$b[3] -eq 0) { \$hasIcon = \$true } } catch {}
+}
 \$locations = @(
     [Environment]::GetFolderPath('Desktop'),
     (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
+\$created = @()
 foreach (\$dir in \$locations) {
     if (-not \$dir -or -not (Test-Path \$dir)) { continue }
-    \$linkPath = Join-Path \$dir 'Unsloth Studio.lnk'
+    \$linkPath = Join-Path \$dir '$_css_lnk_name_ps'
     \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
     \$shortcut.TargetPath = \$targetExe
     \$shortcut.Arguments = '$_css_sc_args_ps'
-    \$shortcut.Description = 'Launch Unsloth Studio'
+    \$shortcut.Description = 'Launch Unsloth Studio (WSL)'
+    if (\$hasIcon) { \$shortcut.IconLocation = "\$iconPath,0" }
     \$shortcut.Save()
+    \$created += \$linkPath
 }
+# Force Explorer to re-read EACH new shortcut's icon so it renders immediately
+# instead of a stale/blank (generic) icon. The reliable, NON-disruptive fix
+# (no explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM,
+# SHCNF_PATHW, <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a
+# stale item. Also clear the on-disk icon cache for heavier staleness.
+try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
+try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+try {
+    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
+    foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
+    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
+} catch {}
+# Win11 Start Menu keeps its own tile-icon cache (preserve start2.bin).
+try {
+    \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
+    if (Test-Path -LiteralPath \$smeh) {
+        Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
+        Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
 WSLPS1_EOF
 
             # Convert WSL path to Windows path for powershell.exe
@@ -1226,6 +1282,13 @@ WSLPS1_EOF
                 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
             fi
             rm -f "$_css_ps1_tmp"
+        fi
+        # If WSL interop is disabled (powershell.exe "Exec format error"), the
+        # shortcut wasn't created; tell the user how to launch / re-enable it.
+        if [ "$_css_created" -ne 1 ]; then
+            substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
+            substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
+            substep "  (re-enable shortcuts: turn WSL interop back on, e.g. run 'wsl --shutdown' then reopen WSL.)" "$C_WARN"
         fi
     fi
 
@@ -1520,7 +1583,17 @@ fi
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
-    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
+        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
+        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
+        # wheels since 2.2.2, so an x86_64 venv makes the torch install
+        # unresolvable. The arm64 guard below is kept as a backstop for
+        # migrated / pre-existing venvs.
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+    else
+        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
 fi
 
 # Mark the freshly-created venv as Studio-owned so a partial install can be
@@ -1552,6 +1625,21 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _info=$(_inspect_venv)
     _VENV_ARCH=${_info%% *}
     _PY_VER=${_info##* }
+    # If the interpreter could not be executed (an x86_64 venv python on a Mac
+    # without Rosetta installed), the probe above yields an empty arch. Fall
+    # back to reading the binary's Mach-O arch statically so the x86_64
+    # recreate below still triggers instead of letting uv fail later.
+    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        # uv symlinks bin/python to the base interpreter, so dereference with
+        # file -L (lipo already follows the link). Trailing || true keeps the
+        # installer alive under set -e when neither tool is present.
+        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
+            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+        case "$_archs" in
+            *arm64*)  _VENV_ARCH=arm64 ;;
+            *x86_64*) _VENV_ARCH=x86_64 ;;
+        esac
+    fi
 
     if [ "$_VENV_ARCH" = "x86_64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
@@ -1616,9 +1704,28 @@ _find_no_torch_runtime() {
 }
 
 # ── AMD ROCm GPU detection helper ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before any
+# rocminfo probe or a ROCDXG WSL host is misdetected as CPU-only.
+_ensure_rocm_probe_env() {
+    export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+    if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+        PATH="$PATH:/opt/rocm/bin"
+    fi
+}
+
 # Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
 # KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
+# Always returns 1 (false) when an NVIDIA GPU is present: blocks every
+# detection path (rocminfo, amd-smi, KFD sysfs) from producing a false
+# positive on NVIDIA-only or NVIDIA-primary hosts, even when ROCm tools
+# are co-installed.
 _has_amd_rocm_gpu() {
+    _ensure_rocm_probe_env
+    if _has_usable_nvidia_gpu; then
+        return 1
+    fi
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
@@ -1626,27 +1733,42 @@ _has_amd_rocm_gpu() {
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     elif [ -e /dev/kfd ] && \
-         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
+        # 560+) can register KFD topology nodes with non-zero gpu_id but
+        # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
+        # NVIDIA-only hosts to the ROCm install path.
         return 0
     fi
     return 1
 }
 
 # ── NVIDIA usable-GPU helper ──
-# Returns 0 (true) only if nvidia-smi is present AND actually lists a GPU.
-# Prevents AMD-only hosts with a stale nvidia-smi on PATH from being routed
-# into the CUDA branch.
+# Returns 0 (true) if an NVIDIA GPU is present and usable.
+# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
+# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
+# -- handles PATH gaps, subprocess timeouts, and driver init races that
+# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
 _has_usable_nvidia_gpu() {
     _nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nvsmi="nvidia-smi"
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _nvsmi="/usr/bin/nvidia-smi"
-    else
-        return 1
     fi
-    "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'
+    if [ -n "$_nvsmi" ]; then
+        if "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # ── Detect GPU and choose PyTorch index URL ──
@@ -1663,14 +1785,16 @@ get_torch_index_url() {
     # packages) is not sufficient: otherwise an AMD-only host would
     # silently install CUDA wheels.
     _smi=""
+    _nvidia_detected=0
     if _has_usable_nvidia_gpu; then
+        _nvidia_detected=1
         if command -v nvidia-smi >/dev/null 2>&1; then
             _smi="nvidia-smi"
         elif [ -x "/usr/bin/nvidia-smi" ]; then
             _smi="/usr/bin/nvidia-smi"
         fi
     fi
-    if [ -z "$_smi" ]; then
+    if [ "$_nvidia_detected" -eq 0 ]; then
         # No NVIDIA GPU -- check for AMD ROCm GPU.
         # PyTorch only publishes ROCm wheels for linux-x86_64; skip the
         # ROCm branch entirely on aarch64 / arm64 / other architectures
@@ -1880,7 +2004,132 @@ _pick_radeon_wheel() {
     esac
 }
 
+# ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
+# No-op everywhere except: WSL + GPU wanted + no usable GPU yet + /dev/dxg +
+# Strix Halo APU. Every other config (NVIDIA, native-Linux ROCm, macOS, Windows,
+# CPU, non-Strix WSL) skips it and normal detection runs unchanged. NEVER aborts
+# the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
+# librocdxg), then sources the env it persisted so detection finds the GPU.
+_maybe_bootstrap_rocm_wsl() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
+    if _has_usable_nvidia_gpu; then return 0; fi
+    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
+    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
+    # would skip this bootstrap while the real GPU is still unusable. awk consumes
+    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    _ensure_rocm_probe_env
+    if command -v rocminfo >/dev/null 2>&1 && \
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+        return 0
+    fi
+    # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
+    [ -e /dev/dxg ] || return 0
+    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
+    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
+    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    command -v bash >/dev/null 2>&1 || return 0
+
+    # Fast path: already configured (librocdxg present) but launched from a
+    # non-login shell so the persisted env wasn't loaded -- just load it.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+            # shellcheck disable=SC1091
+            . /etc/profile.d/unsloth-rocm-wsl.sh || true
+        else
+            # librocdxg present but the env drop-in is gone (e.g. a Studio
+            # uninstall removed it while keeping shared ROCm). Restore the FULL
+            # env inline (so rocminfo is on PATH) and recreate the drop-in.
+            _rw_rocm=/opt/rocm
+            export HSA_ENABLE_DXG_DETECTION=1
+            export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+            export PATH="${_rw_rocm}/bin:${PATH}"
+            export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
+            # Persist the drop-in so later non-login Studio launches get the env
+            # too. /etc/profile.d is root-owned: a plain redirect fails for a
+            # non-root reinstall (ROCm would silently disappear after this shell),
+            # so tee through sudo when not root. Best-effort -- the current shell
+            # already has the env, so the install proceeds either way.
+            _rw_dropin="$(
+                printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
+                printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
+                printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+                printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
+                printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+                printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
+            )"
+            if [ "$(id -u)" = "0" ]; then
+                printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+            elif command -v sudo >/dev/null 2>&1; then
+                printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+            fi
+        fi
+        return 0
+    fi
+
+    echo ""
+    substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
+    substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
+    substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
+
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
+    _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
+    _rw_tmp=""
+    if [ ! -r "$_rw_helper" ]; then
+        _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
+        if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+            _rw_helper="$_rw_tmp"
+        else
+            substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
+            [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+            return 0
+        fi
+    fi
+
+    # Consent: the narrow guarded case is exactly the GPU setup the user ran the
+    # installer for, so it proceeds AUTOMATICALLY by default (works with no TTY,
+    # e.g. `curl ... | sh`). Opt out via UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (top of
+    # function). The Tauri app drives its own consent UI, so under TAURI_MODE it
+    # only runs when the app passes UNSLOTH_ROCM_WSL_AUTO=1; else surface and wait.
+    _rw_go=1
+    if [ "${TAURI_MODE:-false}" = "true" ] && [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" != "1" ]; then
+        tauri_log "ROCM_WSL_AVAILABLE" "strixhalo"
+        substep "Enable the GPU from the desktop app (or set UNSLOTH_ROCM_WSL_AUTO=1)." "$C_WARN"
+        _rw_go=0
+    fi
+
+    if [ "$_rw_go" = "1" ]; then
+        # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
+        # installs torch itself right after, into the real venv.
+        if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
+            # Pull the helper's persisted env into THIS shell so detection
+            # (rocminfo) now enumerates the GPU and routes to gfx1151.
+            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+                # shellcheck disable=SC1091
+                . /etc/profile.d/unsloth-rocm-wsl.sh || true
+            fi
+            substep "ROCm-on-WSL ready; continuing with GPU install." "$C_OK"
+        else
+            substep "ROCm-on-WSL setup did not complete; falling back to CPU-only." "$C_WARN"
+        fi
+    fi
+    [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+    return 0
+}
+_maybe_bootstrap_rocm_wsl || true
+
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
+# downstream scripts (setup.sh -> install_python_stack.py) know what was
+# chosen here and can skip ROCm-specific repair steps on CUDA/CPU hosts.
+case "$TORCH_INDEX_URL" in
+    */rocm*|*/gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
+    */cpu)          export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    *)              export UNSLOTH_TORCH_BACKEND="cuda" ;;
+esac
 
 # rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
 # All other ROCm tags and CUDA stay within <2.11.0.
@@ -1984,6 +2233,7 @@ if _has_usable_nvidia_gpu; then
     step "gpu" "NVIDIA GPU detected"
 elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
+    _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
     _gpu_disp_mkt=""
     if command -v rocminfo >/dev/null 2>&1; then
@@ -2014,14 +2264,20 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_gpu_disp_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors install.ps1 nameArchTable)
     elif [ -z "$_gpu_disp_gfx" ] && [ -n "$_gpu_disp_mkt" ]; then
+        # Kept in sync with the nameArchTable in install.ps1 / setup.ps1.
+        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_gpu_disp_mkt" in
-            *"9070 XT"*|*9080*)                                                     _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                          _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)        _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                           _gpu_disp_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                               _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_gpu_disp_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_gpu_disp_gfx"
@@ -2055,7 +2311,34 @@ case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
             substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
-            substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+            if [ "$OS" = "wsl" ]; then
+                # WSL + no GPU detected (detection above found nothing). Common
+                # cause: an AMD GPU whose ROCm-on-WSL runtime isn't exposed yet --
+                # /dev/dxg present (graphics) but no ROCm runtime.
+                _wsl_ubu_ver=""
+                [ -r /etc/os-release ] && _wsl_ubu_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+                if [ -e /dev/dxg ]; then
+                    substep "A GPU is plumbed into WSL (/dev/dxg) but no ROCm runtime is exposed to it." "$C_WARN"
+                fi
+                substep "For an AMD GPU, ROCm-on-WSL currently needs ALL of:"
+                substep "  1. AMD Adrenalin Edition 26.1.1+ on Windows (26.2.2+ for Strix Halo / Ryzen AI Max+)."
+                substep "     Older drivers lack production ROCDXG/WSL support, so ROCm can't see the GPU."
+                substep "     Get it from AMD (open in a browser -- direct downloads are referrer-gated):"
+                substep "       https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html"
+                substep "  2. ROCm 7.2.1 + librocdxg inside WSL (with HSA_ENABLE_DXG_DETECTION=1)."
+                substep "  3. A WSL distro AMD supports for ROCm -- Ubuntu 24.04 is the known-good one."
+                if [ -n "$_wsl_ubu_ver" ] && [ "$_wsl_ubu_ver" != "24.04" ]; then
+                    substep "  This distro is Ubuntu $_wsl_ubu_ver, which AMD may not support for ROCm-on-WSL yet." "$C_WARN"
+                fi
+                substep "Set up the GPU in WSL with a dedicated Ubuntu 24.04 distro:"
+                substep "  wsl --install Ubuntu-24.04        # run in Windows PowerShell, then reopen WSL"
+                substep "  # then re-run this installer inside Ubuntu-24.04 -- it will detect the GPU."
+                substep "AMD ROCm-on-WSL docs: https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/"
+                substep "Strix Halo (gfx1151): this installer auto-offers ROCm-on-WSL setup once the"
+                substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
+            else
+                substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+            fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
         fi
@@ -2083,7 +2366,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.10" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2096,7 +2379,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.10" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2300,7 +2583,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.5.10" unsloth-zoo
+            "unsloth>=2026.6.2" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2318,7 +2601,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.5.10" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.6.2" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2350,7 +2633,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.10" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.2" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

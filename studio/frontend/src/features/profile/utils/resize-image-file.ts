@@ -50,9 +50,7 @@ function encodeCanvasWithinLimit(
   return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
 }
 
-/**
- * Downscale the image and keep transparency when present while staying localStorage-friendly.
- */
+/** Downscale the image, preserving transparency, to stay localStorage-friendly. */
 export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   const img = await loadImage(file);
   const w = img.naturalWidth;

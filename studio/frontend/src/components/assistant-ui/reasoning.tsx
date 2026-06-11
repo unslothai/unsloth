@@ -33,7 +33,7 @@ import {
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
 
-export const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
+export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
     variant: {
       outline: "rounded-lg border px-3 py-2",
@@ -121,7 +121,7 @@ function ReasoningTrigger({
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
       className={cn(
-        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -140,7 +140,7 @@ function ReasoningTrigger({
       <ChevronDownIcon
         data-slot="reasoning-trigger-chevron"
         className={cn(
-          "aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0",
+          "aui-reasoning-trigger-chevron mt-0.5 size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
@@ -241,8 +241,8 @@ function ReasoningText({
       ref={scrollRef}
       data-slot="reasoning-text"
       className={cn(
-        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-2 pl-0 leading-relaxed",
-        streaming ? "max-h-32" : "max-h-64",
+        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed",
+        streaming ? "max-h-64" : "",
         "transform-gpu transition-[transform,opacity]",
         "group-data-[state=open]/collapsible-content:animate-in",
         "group-data-[state=closed]/collapsible-content:animate-out",
@@ -358,18 +358,18 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset dismissed flag when a new stream starts
+  // Reset dismissed flag on new stream.
   useEffect(() => {
     if (isReasoningStreaming) {
       setDismissedWhileStreaming(false);
     }
   }, [isReasoningStreaming]);
 
-  // Derived: open during streaming (unless dismissed), or if user manually opened after
+  // Open while streaming (unless dismissed), or once manually opened.
   const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
   const variant = isOpen ? "outline" : "ghost";
 
-  // Allow closing during streaming (matches ChatGPT)
+  // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (isReasoningStreaming) {

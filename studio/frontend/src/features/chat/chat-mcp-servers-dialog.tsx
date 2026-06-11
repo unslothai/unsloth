@@ -85,10 +85,9 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // Anything else is treated as a local command (stdio); the backend gates
-  // whether stdio servers are allowed on this host. Reject other URL schemes
-  // only when the command itself is a URL; "://" is fine inside an argument
-  // (e.g. a database connection string passed to the server).
+  // Otherwise it's a local command (stdio); the backend gates whether those
+  // are allowed. Reject only when the command itself is a URL; "://" is fine
+  // inside an argument (e.g. a DB connection string passed to the server).
   return !trimmed.split(/\s+/)[0].includes("://");
 }
 
@@ -179,8 +178,6 @@ function HeadersEditor({
 export interface ChatMcpServersDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Open straight into the "add server" form instead of the list view. */
-  openToCreate?: boolean;
 }
 
 type View =
@@ -191,7 +188,6 @@ type View =
 export function ChatMcpServersDialog({
   open,
   onOpenChange,
-  openToCreate = false,
 }: ChatMcpServersDialogProps) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [loading, setLoading] = useState(false);
@@ -220,12 +216,10 @@ export function ChatMcpServersDialog({
   useEffect(() => {
     if (!open) return;
     refresh();
-    // Land on the create form when opened via "Add custom MCP".
-    if (openToCreate) {
-      setView({ kind: "create" });
-      setForm(EMPTY_FORM);
-    }
-  }, [open, openToCreate, refresh]);
+    // Reset to the list on each open, else a stale create/edit view persists.
+    setView({ kind: "list" });
+    setForm(EMPTY_FORM);
+  }, [open, refresh]);
 
   function startCreate() {
     setView({ kind: "create" });

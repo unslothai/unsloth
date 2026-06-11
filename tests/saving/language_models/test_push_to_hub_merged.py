@@ -32,13 +32,10 @@ from tests.utils.perplexity_eval import (
 )
 
 
-# Define helper functions outside of main
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(
-            convo, tokenize = False, add_generation_prompt = False
-        )
+        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
         for convo in convos
     ]
     return {"text": texts}
@@ -137,7 +134,7 @@ trainer = train_on_responses_only(
 trainer_stats = trainer.train()
 
 
-# saving and merging the model to local disk
+# save and merge the model to local disk
 hf_username = os.environ.get("HF_USER", "")
 if not hf_username:
     hf_username = input("Please enter your Hugging Face username: ").strip()
@@ -176,9 +173,7 @@ try:
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
     # Force download even if cached
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        f"{hf_username}/merged_llama_text_model"
-    )
+    model, tokenizer = FastLanguageModel.from_pretrained(f"{hf_username}/merged_llama_text_model")
     success["download"] = True
     print("✅ Model downloaded successfully!")
 except Exception as e:
