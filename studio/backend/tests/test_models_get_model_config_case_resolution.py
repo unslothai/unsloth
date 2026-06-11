@@ -179,7 +179,7 @@ def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
 
 @pytest.mark.parametrize(
     "route_fn",
-    ["get_model_config", "check_vision_model"],
+    ["get_model_config", "check_vision_model", "check_embedding_model"],
 )
 def test_rejects_hf_token_query(route_fn) -> None:
     with pytest.raises(models_route.HTTPException) as exc_info:

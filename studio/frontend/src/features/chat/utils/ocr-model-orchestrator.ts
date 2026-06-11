@@ -36,6 +36,8 @@ export type { OcrPhase };
 
 export interface ChatModelSnapshot {
   checkpoint: string;
+  /** Full user-tuned inference params at swap time; restore re-applies them. */
+  params: InferenceParams;
   ggufVariant: string | null;
   trustRemoteCode: boolean;
   maxSeqLength: number;
@@ -186,6 +188,7 @@ function captureSnapshot(): ChatModelSnapshot {
     activeModel?.isLora ?? (activeLora?.exportType === "lora");
   return {
     checkpoint: state.params.checkpoint,
+    params: { ...state.params },
     ggufVariant: state.activeGgufVariant,
     trustRemoteCode: state.params.trustRemoteCode ?? false,
     maxSeqLength: state.params.maxSeqLength,
@@ -329,7 +332,9 @@ function applyLoadedModelToStore(
 
   const paramsState = useChatRuntimeStore.getState();
   paramsState.setParams(
-    mergeRecommendedInference(paramsState.params, loaded, modelId),
+    preserve
+      ? { ...preserve.params, checkpoint: modelId }
+      : mergeRecommendedInference(paramsState.params, loaded, modelId),
   );
 
   const supportsReasoning =
@@ -386,9 +391,9 @@ function applyLoadedModelToStore(
     loadedKvCacheDtype: loadedKv,
     speculativeType: loadedSpec,
     loadedSpeculativeType: loadedSpec,
-    customContextLength: null,
+    customContextLength: preserve ? preserve.customContextLength : null,
     defaultChatTemplate: loaded.chat_template ?? preserve?.defaultChatTemplate ?? null,
-    chatTemplateOverride: null,
+    chatTemplateOverride: preserve ? preserve.chatTemplateOverride : null,
   });
 }
 

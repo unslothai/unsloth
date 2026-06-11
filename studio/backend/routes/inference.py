@@ -2249,6 +2249,16 @@ def _convert_openai_image_b64_to_png_b64(image_b64: str) -> str:
         raise HTTPException(status_code = 400, detail = f"Failed to process image: {e}") from e
 
 
+def _decode_guarded_chat_image(image_b64: str):
+    """Decode one chat image through the shared byte/pixel guards into a PIL image."""
+    import base64 as _b64
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+
+    png_b64 = _convert_openai_image_b64_to_png_b64(image_b64)
+    return _Image.open(_BytesIO(_b64.b64decode(png_b64, validate = True)))
+
+
 def _data_url_base64_payload(url: str) -> str:
     try:
         header, b64data = url.split(",", 1)
@@ -4007,19 +4017,20 @@ async def _openai_chat_completions_impl(payload: ChatCompletionRequest, request:
 
     if image_b64:
         try:
-            import base64
-            from PIL import Image
-            from io import BytesIO
-
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Image provided but current model is text-only. Load a vision model.",
                 )
+            if len(extracted_image_b64s) > _OPENAI_CHAT_MAX_IMAGES:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = f"Too many images provided; maximum is {_OPENAI_CHAT_MAX_IMAGES}.",
+                )
 
-            image_data = base64.b64decode(image_b64)
-            image = Image.open(BytesIO(image_data))
+            # Same byte/pixel guards as the GGUF and Anthropic image paths.
+            image = _decode_guarded_chat_image(image_b64)
             image = backend.resize_image(image)
 
         except HTTPException:
@@ -7766,6 +7777,7 @@ async def extract_document_endpoint(
             form.get("max_visual_payloads"),
             default = _DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
             lo = 0,
+            hi = _MAX_DOCUMENT_VISUAL_PAYLOADS,
         )
         token_budget = _parse_int_form(
             form.get("token_budget"),

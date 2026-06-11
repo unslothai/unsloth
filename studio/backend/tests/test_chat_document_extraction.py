@@ -453,6 +453,32 @@ async def test_max_figures_zero_sets_describe_skipped_reason(
 
 
 @pytest.mark.asyncio
+async def test_extract_document_clamps_visual_payloads_to_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core clamps max_visual_payloads to MAX_DOCUMENT_VISUAL_PAYLOADS so
+    non-route callers cannot exceed the advertised cap."""
+    from core.chat import document_extractor as de
+
+    captured: dict[str, object] = {}
+
+    def fake_extract(_fb, _fn, opts, _ct = ""):
+        captured.update(opts)
+        return "# Doc\n", [], 1, 0, 0
+
+    install_fake_extract(monkeypatch, extract = fake_extract)
+
+    await de.extract_document(
+        b"# Doc\n",
+        "doc.md",
+        max_figures = 1000,
+        max_visual_payloads = 222,
+    )
+
+    assert captured["max_visual_payloads"] == de.MAX_DOCUMENT_VISUAL_PAYLOADS
+
+
+@pytest.mark.asyncio
 async def test_run_extract_sync_seam_receives_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """The test seam path (monkeypatched _run_extract_sync) must be invoked
     with the content_type so dispatch-by-content-type can be exercised in

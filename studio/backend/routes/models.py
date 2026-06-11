@@ -2105,9 +2105,27 @@ async def _check_vision_model_response(
 
 @router.get("/check-embedding/{model_name:path}", response_model = EmbeddingCheckResponse)
 async def check_embedding_model(
+    request: Request,
     model_name: str,
-    hf_token: Optional[str] = Query(None),
     current_subject: str = Depends(get_current_subject),
+):
+    _reject_hf_token_query(request)
+    return await _check_embedding_model_response(model_name, hf_token = None)
+
+
+@router.post("/check-embedding", response_model = EmbeddingCheckResponse)
+async def post_check_embedding_model(
+    request: ModelProbeRequest, current_subject: str = Depends(get_current_subject)
+):
+    return await _check_embedding_model_response(
+        request.model_name,
+        hf_token = request.hf_token,
+    )
+
+
+async def _check_embedding_model_response(
+    model_name: str,
+    hf_token: Optional[str] = None,
 ):
     """
     Check if a model is an embedding model.

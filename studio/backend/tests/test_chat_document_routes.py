@@ -556,7 +556,8 @@ def test_extract_document_endpoint_accepts_multipart_smoke(monkeypatch: pytest.M
     assert captured["authorization_header"] == "Bearer test-token"
     assert captured["content_type"] == "text/markdown"
     assert captured["max_figures"] == 12345
-    assert captured["max_visual_payloads"] == 222
+    # The route clamps visual payloads to the advertised cap.
+    assert captured["max_visual_payloads"] == route._MAX_DOCUMENT_VISUAL_PAYLOADS == 10
 
 
 def test_extract_document_endpoint_does_not_globally_gate_on_pdf_backend(

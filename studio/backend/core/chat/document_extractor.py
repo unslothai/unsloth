@@ -907,7 +907,7 @@ async def extract_document(
                 logger.debug("progress_cb raised; continuing", exc_info = True)
 
     max_figures = max(0, max_figures)
-    max_visual_payloads = max(0, min(max_visual_payloads, max_figures))
+    max_visual_payloads = max(0, min(max_visual_payloads, max_figures, MAX_DOCUMENT_VISUAL_PAYLOADS))
     cap = capability if capability is not None else detect_loaded_vlm(self_base_url)
     image_input_available = bool(cap.is_vlm and cap.endpoint_url and cap.model_name)
     describe_available = bool(
