@@ -514,9 +514,18 @@ _CTX_FIT_VRAM_FRACTION = 0.90
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
-def _auto_mode_drops_mtp(req_mode: Optional[str], size_b: Optional[float]) -> bool:
-    """Auto mode drops MTP below _MTP_MIN_SIZE_B (draft-mtp regresses there);
-    forced mtp / mtp+ngram engage regardless of size."""
+def _auto_mode_drops_mtp(
+    req_mode: Optional[str],
+    size_b: Optional[float],
+    *,
+    has_separate_drafter: bool = False,
+) -> bool:
+    """Auto mode drops MTP below _MTP_MIN_SIZE_B for an embedded draft head
+    (its per-token cost regresses there); a separate drafter (Gemma) is a tiny
+    standalone model that still speeds up below 3B, so it never drops. Forced
+    mtp / mtp+ngram engage regardless of size."""
+    if has_separate_drafter:
+        return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
@@ -667,6 +676,11 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
+        # Why MTP was disabled on the last load that asked for it (auto on an
+        # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
+        # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
+        # a newer prebuilt would help; "runtime_error" -> it may not.
+        self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
@@ -784,6 +798,11 @@ class LlamaCppBackend:
     @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
+
+    @property
+    def spec_fallback_reason(self) -> Optional[str]:
+        """Why MTP was disabled on the last MTP-requesting load, else None."""
+        return self._spec_fallback_reason
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -1134,6 +1153,8 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "supports_kv_unified": False,
+                "supports_fit_ctx": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1147,6 +1168,8 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        supports_kv_unified = False
+        supports_fit_ctx = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1234,6 +1257,9 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+
+            supports_kv_unified = _is_real("--kv-unified")
+            supports_fit_ctx = _is_real("--fit-ctx")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1244,6 +1270,8 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "supports_kv_unified": supports_kv_unified,
+            "supports_fit_ctx": supports_fit_ctx,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -2910,19 +2938,14 @@ class LlamaCppBackend:
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
                     # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops. Skipped when the user disabled MTP, drives
-                    # --spec-type manually via extra_args, or in auto mode on a
-                    # sub-3B model (e.g. Gemma E2B) where the resolver drops
-                    # MTP anyway -- no point fetching a drafter it never uses.
-                    # Forced mtp / mtp+ngram still download (user override).
+                    # this no-ops, so the size gate stays out of it: a separate
+                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
+                    # below decides the final emission. Skipped only when the
+                    # user disabled MTP or drives --spec-type manually.
                     _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-                    _auto_drops_mtp = _auto_mode_drops_mtp(
-                        _spec_canon, _extract_model_size_b(model_identifier)
-                    )
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _auto_drops_mtp
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         mtp_draft_path = self._download_mtp(
@@ -3002,8 +3025,12 @@ class LlamaCppBackend:
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
+                    # Sub-3B drops MTP only for an embedded head; a separate
+                    # drafter (Gemma) engages and needs its VRAM reserved.
                     _mtp_sub_3b_for_fit = (
-                        _mtp_size_for_fit is not None and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        _mtp_size_for_fit is not None
+                        and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        and not bool(mtp_draft_path)
                     )
                     _mtp_will_engage = bool(
                         not _extra_args_set_spec_type(extra_args)
@@ -3213,6 +3240,16 @@ class LlamaCppBackend:
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
+
+                cmd.extend(
+                    self._ctx_integrity_flags(
+                        n_parallel,
+                        use_fit,
+                        requested_ctx,
+                        effective_ctx,
+                        self.probe_server_capabilities(binary),
+                    )
+                )
 
                 # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
                 # so we don't inherit llama-server's internal default, which
@@ -3579,6 +3616,7 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
+                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
@@ -3598,8 +3636,13 @@ class LlamaCppBackend:
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
                     _lo = "\n".join(self._stdout_lines).lower()
+                    # Only an unknown architecture proves the prebuilt predates
+                    # this MTP model (an update fixes it). The memory/context
+                    # build failures are generic (VRAM / ctx pressure), where an
+                    # update may not help, so classify those as runtime_error.
+                    _arch_unsupported = "unknown model architecture" in _lo
                     if (
-                        "unknown model architecture" in _lo
+                        _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
                         or "failed to create llama_context" in _lo
@@ -3609,10 +3652,14 @@ class LlamaCppBackend:
                             "speculative decoding -- run `unsloth studio "
                             "update` for MTP"
                         )
+                        self._spec_fallback_reason = (
+                            "binary_outdated" if _arch_unsupported else "runtime_error"
+                        )
                     else:
                         _retry_reason = (
                             "retrying without speculative decoding in case MTP is the cause"
                         )
+                        self._spec_fallback_reason = "runtime_error"
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -3783,23 +3830,32 @@ class LlamaCppBackend:
               https://github.com/ggml-org/llama.cpp/pull/18471
               MTP guide: unsloth.ai/docs/models/qwen3.6#mtp-guide
 
-        Sub-3B dense MTP regresses vs spec-off: the draft head's per-token
-        cost exceeds the acceptance savings at this scale. Q4_K_XL clean
-        bench (each prompt once after an unrelated warmup) on B200 + x86 CPU:
+        Sub-3B dense MTP regresses vs spec-off when the head is baked into the
+        main GGUF (Qwen): the draft head's per-token cost exceeds the
+        acceptance savings at this scale. Q4_K_XL clean bench (each prompt once
+        after an unrelated warmup) on B200 + x86 CPU:
           0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
           2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
           0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
           2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
           4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
+        A separate drafter (Gemma's root mtp-*.gguf) is a different, cheaper
+        mechanism that wins even below 3B, so it is exempt from the sub-3B drop
+        (``mtp_draft_path`` set -> not too small). B200 Q4_K_XL bench, draft-mtp
+        n=2 vs OFF: gemma-4-E2B (2B) = 1.21x, accept ~0.65 (vs ngram = 1.00x);
+        gemma-4-E4B (4B) and 12B engage as usual.
         Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
-        diverse content); forced MTP on a model with no head/drafter defaults
-        back (mtp -> spec-default, mtp+ngram -> ngram-mod) since llama-server
-        aborts otherwise; sub-3B real-MTP engages with a warning.
+        diverse content) for an embedded sub-3B head; forced MTP on a model
+        with no head/drafter defaults back (mtp -> spec-default, mtp+ngram ->
+        ngram-mod) since llama-server aborts otherwise; a drafter the binary
+        cannot build (older prebuilt, or a CUDA kernel limit) aborts the spawn
+        and the load retries once without speculative decoding.
         """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
+        self._spec_fallback_reason = None
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -3813,7 +3869,11 @@ class LlamaCppBackend:
         )
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
-        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B
+        # The sub-3B regression is an embedded-head cost; a separate drafter
+        # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        _mtp_too_small = (
+            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -3845,6 +3905,7 @@ class LlamaCppBackend:
                     "run `unsloth studio update`. Loading without "
                     "speculative decoding."
                 )
+                self._spec_fallback_reason = "binary_no_mtp"
                 return False
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -4110,6 +4171,7 @@ class LlamaCppBackend:
             self._gguf_path = None
             self._hf_repo = None
             self._mtp_draft_path = None
+            self._spec_fallback_reason = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False
@@ -4437,6 +4499,64 @@ class LlamaCppBackend:
 
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
+
+    @staticmethod
+    def _ctx_integrity_flags(
+        n_parallel: int, use_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict
+    ) -> list[str]:
+        """Flags that keep the per-request window equal to the advertised ctx.
+
+        Explicit ``--parallel`` disables llama-server's auto-slots
+        ``--kv-unified`` default, silently splitting ``-c`` into per-slot
+        windows of ``-c / N``; restore the shared pool so one request can use
+        the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
+        at an explicitly requested ctx (default floor is 4096) so it offloads
+        or fails instead of silently shrinking the window.
+        """
+        flags: list[str] = []
+        if n_parallel > 1 and caps.get("supports_kv_unified"):
+            flags.append("--kv-unified")
+        if use_fit and requested_ctx > 0 and effective_ctx > 0 and caps.get("supports_fit_ctx"):
+            flags.extend(["--fit-ctx", str(effective_ctx)])
+        return flags
+
+    def _query_server_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated, from ``/props``.
+
+        The memory-fit step or ``--parallel`` slot split can leave this below
+        the requested ``-c``; requests are validated against this value.
+        """
+        url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(url, timeout = 5.0)
+            if resp.status_code != 200:
+                return None
+            settings = resp.json().get("default_generation_settings") or {}
+            n_ctx = settings.get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except Exception:
+            return None
+
+    def _reconcile_effective_ctx_with_server(self) -> None:
+        """Adopt the server's real ``n_ctx`` when it is below Studio's value.
+
+        Keeps ``context_length`` (load response, status route, passthrough
+        ``max_tokens`` ceiling) honest; clients sized to the requested value
+        would otherwise hit ``exceed_context_size_error`` 400s early.
+        """
+        actual_n_ctx = self._query_server_n_ctx()
+        if not actual_n_ctx or actual_n_ctx <= 0:
+            return
+        if self._effective_context_length and actual_n_ctx < self._effective_context_length:
+            logger.warning(
+                "llama-server allocated a smaller per-request context than "
+                f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
+                "memory fit or --parallel slot split); clients must treat "
+                f"{actual_n_ctx} as the real context window."
+            )
+            self._effective_context_length = actual_n_ctx
+        elif not self._effective_context_length:
+            self._effective_context_length = actual_n_ctx
 
     # ── Message building (OpenAI format) ──────────────────────────
 

@@ -78,8 +78,7 @@ async def load_checkpoint(
                 for _ in range(60):  # up to 30s
                     if not trn.is_training_active():
                         break
-                    import time
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                 else:
                     logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
         except Exception as e:

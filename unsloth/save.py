@@ -1092,7 +1092,6 @@ def unsloth_save_model(
     gc.collect()
 
     # Remove temporary location
-    import shutil
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
@@ -1224,7 +1223,6 @@ def install_llama_cpp_old(version = -10):
         for i in range(30):
             print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
             time.sleep(1)
-        import shutil
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
 
@@ -2494,7 +2492,6 @@ def unsloth_push_to_hub_gguf(
 
     except Exception as e:
         if cleanup_temp:
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 try:
                     shutil.rmtree(d)
@@ -2681,7 +2678,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         # Clean up temporary directory
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 if os.path.exists(d):
                     try:
