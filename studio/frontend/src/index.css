@@ -958,6 +958,11 @@
 		border-radius: 14px !important;
 	}
 
+	/* Account menu: a touch rounder than standard list menus. */
+	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
+		border-radius: 18px !important;
+	}
+
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
 	   none in dark. !important so it also overrides the bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
