@@ -231,33 +231,14 @@ jobs:
             tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_mlx_training_worker_behaviors.py
 
-      # Studio prebuilt llama.cpp install + GGUF inference. Drives the
-      # exact path Studio's setup.sh takes on macOS: invokes
-      # studio/install_llama_prebuilt.py with --published-repo
-      # ggml-org/llama.cpp and --published-release-tag b9049 (the
-      # latest llama.cpp release at the time this step was added; bump
-      # via UNSLOTH_LLAMA_TAG / DEFAULT_LLAMA_TAG when refreshing).
-      # The installer downloads llama-b9049-bin-macos-arm64.tar.gz,
-      # which is the universal Apple Silicon (arm64) build -- the
-      # same artifact works on M1/M2/M3/M4 because llama.cpp compiles
-      # against the ARMv8.2 baseline.
-      #
-      # The b9049 release also publishes:
-      #   - llama-b9049-bin-macos-arm64-kleidiai.tar.gz
-      #     KleidiAI dispatches at runtime; on M1 it falls back where
-      #     ISA features (e.g. I8MM) are missing, so this asset also
-      #     runs on M1 -- Studio just doesn't choose it by default.
-      #   - llama-b9049-bin-macos-x64.tar.gz
-      #     Intel-only; would only run on M1 via Rosetta 2 emulation,
-      #     which we explicitly avoid.
-      #   - iOS XCFramework
-      #     iOS-app build artifact, unrelated to a macOS desktop CI.
-      #
-      # After install, downloads a small published GGUF
-      # (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) from HuggingFace and
-      # runs the prebuilt llama-cli on it. Asserts the prompt echo
-      # appears in stdout. If the install fails OR the binary exits
-      # non-zero, that's an Unsloth/Studio bug.
+      # Studio prebuilt llama.cpp install + GGUF inference. Mirrors the
+      # path Studio's setup.sh takes on macOS since #5963: plan against
+      # the unslothai/llama.cpp fork's latest release, which ships the
+      # bin-macos-arm64 bundle plus the llama-prebuilt-manifest.json the
+      # default policy reads. After install, downloads a small published
+      # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
+      # llama-server /completion end to end. An install failure or a
+      # non-zero binary exit is an Unsloth/Studio bug.
       - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -272,20 +253,12 @@ jobs:
           set -euo pipefail
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
           rm -rf "$INSTALL_DIR"
-          # --simple-policy is required when --published-repo points
-          # at upstream ggml-org/llama.cpp; that repo doesn't ship the
-          # llama-prebuilt-manifest.json asset Studio's default policy
-          # expects, so the simple platform-specific policy maps
-          # Darwin+arm64 -> bin-macos-arm64 directly. studio/setup.sh
-          # passes both --published-repo ggml-org/llama.cpp AND
-          # --simple-policy automatically on macOS, so this CI step
-          # exercises the same code path users hit when they run
-          # `curl -fsSL https://unsloth.ai/install.sh | sh`.
+          # Mirror studio/setup.sh on macOS (the install.sh user path):
+          # it plans against the unslothai/llama.cpp fork's latest
+          # release with no policy or tag flags.
           python studio/install_llama_prebuilt.py \
             --install-dir "$INSTALL_DIR" \
-            --published-repo ggml-org/llama.cpp \
-            --published-release-tag b9049 \
-            --simple-policy
+            --published-repo unslothai/llama.cpp
 
           # Studio bundles only llama-server + llama-quantize from the
           # prebuilt (not llama-cli) -- inference goes through
