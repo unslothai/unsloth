@@ -10,7 +10,8 @@ the next model load uses it.
 
 Design notes:
 - Detection is delegated to check_prebuilt_freshness(). We surface an
-  ``update_available`` flag (installed_tag != latest_tag) which is laxer than
+  ``update_available`` flag (installed build older than the latest release;
+  tag inequality only when either tag is not bNNNN) which is laxer than
   freshness' ``stale`` (which additionally requires the install to be >= 3 days
   old). The UI shows the "Update llama.cpp" affordance on update_available.
 - The install is slow (download + extract + validate), so it runs on a daemon
@@ -37,6 +38,7 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    parse_build_number,
     read_install_marker,
     reset_caches,
 )
@@ -286,8 +288,17 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
+    # GitHub /releases/latest sorts by commit date, so it can point at an older
+    # build than the one the installer just resolved; compare build numbers and
+    # only offer real upgrades. Tag inequality is the fallback for non-bNNNN tags.
+    installed_build = parse_build_number(installed)
+    latest_build = parse_build_number(latest)
+    if installed_build is not None and latest_build is not None:
+        behind = installed_build < latest_build
+    else:
+        behind = installed != latest
     update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
+        freshness.get("has_marker") and installed and latest and behind
     )
 
     with _job_lock:

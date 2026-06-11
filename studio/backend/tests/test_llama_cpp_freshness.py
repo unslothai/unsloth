@@ -222,6 +222,34 @@ def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_pa
     assert info["latest_tag"] == "b9300"
 
 
+def test_check_prebuilt_freshness_not_stale_when_installed_newer(monkeypatch, tmp_path):
+    """/releases/latest can lag behind out-of-order fork releases; an installed
+    build newer than "latest" must never be flagged stale."""
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(
+        install_dir,
+        tag = "b9596",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 30))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9594")
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["stale"] is False
+    assert info["installed_tag"] == "b9596"
+    assert info["latest_tag"] == "b9594"
+
+
+def test_parse_build_number():
+    assert fr.parse_build_number("b9596") == 9596
+    assert fr.parse_build_number(" b9596 ") == 9596
+    assert fr.parse_build_number("9596") is None
+    assert fr.parse_build_number("b9596-custom") is None
+    assert fr.parse_build_number("") is None
+    assert fr.parse_build_number(None) is None
+
+
 def test_check_prebuilt_freshness_not_stale_within_threshold(monkeypatch, tmp_path):
     # Behind by tag but within the 3-day grace window.
     install_dir = tmp_path / "llama.cpp"

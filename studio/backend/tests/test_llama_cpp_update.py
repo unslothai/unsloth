@@ -275,6 +275,26 @@ def test_status_up_to_date(monkeypatch, tmp_path):
     assert st["update_available"] is False
 
 
+def test_status_installed_newer_than_latest_release_not_offered(monkeypatch, tmp_path):
+    """GitHub /releases/latest sorts by commit date and can return an older
+    build than the one just installed; never offer that as an "update"."""
+    binary = _write_install(tmp_path, "b9596")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9594")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["installed_tag"] == "b9596"
+    assert st["latest_tag"] == "b9594"
+    assert st["update_available"] is False
+
+
+def test_status_non_numeric_tags_fall_back_to_inequality(monkeypatch, tmp_path):
+    binary = _write_install(tmp_path, "custom-build")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9594")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+
+
 def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     binary = tmp_path / "llama-server"
     binary.write_text("stub")  # no marker

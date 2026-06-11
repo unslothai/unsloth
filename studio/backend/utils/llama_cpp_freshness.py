@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,14 @@ def _cache_dir() -> Path:
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
+
+
+def parse_build_number(tag: object) -> Optional[int]:
+    """Numeric build from a ``bNNNN`` tag, None for anything else."""
+    if not isinstance(tag, str):
+        return None
+    m = re.fullmatch(r"b(\d+)", tag.strip())
+    return int(m.group(1)) if m else None
 
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
@@ -206,6 +215,14 @@ def check_prebuilt_freshness(
     latest = latest_published_release(repo)
     out["latest_tag"] = latest
     if not latest or latest == out["installed_tag"]:
+        return out
+
+    # GitHub /releases/latest sorts by commit date, not build number, so it can
+    # lag the installed build when releases land out of order; never call a
+    # downgrade stale.
+    installed_build = parse_build_number(out["installed_tag"])
+    latest_build = parse_build_number(latest)
+    if installed_build is not None and latest_build is not None and latest_build <= installed_build:
         return out
 
     installed_at = _parse_installed_at(out["installed_at_utc"])
