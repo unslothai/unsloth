@@ -608,16 +608,12 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                pre_existing_subs = {
-                    d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()
-                }
+                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
 
                 # Avoid clobbering an existing user-owned model/ directory.
                 import uuid
 
-                _model_tmp = os.path.join(
-                    abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}"
-                )
+                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
@@ -649,10 +645,7 @@ class ExportBackend:
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if (
-                        gguf_dir.is_dir()
-                        and gguf_dir.resolve() != Path(abs_save_dir).resolve()
-                    ):
+                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)

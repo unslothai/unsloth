@@ -159,7 +159,6 @@ def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
         from storage.studio_db import add_scan_folder
-
         folder = add_scan_folder(str(path))
         return True, str(folder.get("path") or path)
     except Exception as exc:

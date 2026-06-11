@@ -12,7 +12,11 @@ import pytest
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
-def _load_module(module_name: str, relative_path: str, monkeypatch = None):
+def _load_module(
+    module_name: str,
+    relative_path: str,
+    monkeypatch = None,
+):
     path = _BACKEND_DIR / relative_path
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None
@@ -43,7 +47,11 @@ class _Router:
 
 
 class _HTTPException(Exception):
-    def __init__(self, status_code: int, detail: str | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str | None = None,
+    ):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
@@ -210,14 +218,11 @@ def test_save_directory_validator_rejects_windows_parent_segments(monkeypatch):
     _install_pydantic_stub(monkeypatch)
     export_models = _load_module("test_models_export", "models/export.py", monkeypatch)
 
-    with pytest.raises(ValueError, match=r"\.\."):
+    with pytest.raises(ValueError, match = r"\.\."):
         export_models._validate_save_directory(r"E:\AI\..\secret")
 
 
-def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(
-    tmp_path,
-    monkeypatch,
-):
+def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(tmp_path, monkeypatch):
     storage_roots = _load_module(
         "test_storage_roots_accept_external",
         "utils/paths/storage_roots.py",
@@ -231,7 +236,7 @@ def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(
 
     assert storage_roots.resolve_export_write_dir(str(external)) == external
 
-    with pytest.raises(ValueError, match="path escapes root"):
+    with pytest.raises(ValueError, match = "path escapes root"):
         storage_roots.resolve_export_dir(str(external))
 
 
@@ -241,7 +246,7 @@ def test_resolve_export_write_dir_rejects_backslash_parent_segment():
         "utils/paths/storage_roots.py",
     )
 
-    with pytest.raises(ValueError, match=r"\.\."):
+    with pytest.raises(ValueError, match = r"\.\."):
         storage_roots.resolve_export_write_dir(r"exports\..\outside")
 
 
