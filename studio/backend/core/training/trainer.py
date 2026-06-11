@@ -3368,10 +3368,7 @@ class UnslothTrainer:
             self.trainer.add_callback(self._create_progress_callback())
 
             num_samples = None
-            if (
-                hasattr(self.trainer, "train_dataset")
-                and self.trainer.train_dataset is not None
-            ):
+            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
                 try:
                     num_samples = len(self.trainer.train_dataset)
                 except TypeError:
@@ -3392,9 +3389,7 @@ class UnslothTrainer:
                 training_args.get("max_steps", 0),
             )
             # ========== START TRAINING ==========
-            self._update_progress(
-                total_steps = total_steps, status_message = "Starting training..."
-            )
+            self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
 
