@@ -108,6 +108,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
 
     utils_pkg = types.ModuleType("utils")
+    utils_pkg.__path__ = []
     utils_paths = types.ModuleType("utils.paths")
     storage_roots = _load_module(
         "utils.paths.storage_roots",
@@ -162,6 +163,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     )
 
     models_pkg = types.ModuleType("models")
+    models_pkg.__path__ = []
     for name in (
         "CheckpointInfo",
         "CheckpointListResponse",
@@ -212,6 +214,74 @@ def _install_pydantic_stub(monkeypatch):
     pydantic.Field = lambda default = None, **_kwargs: default
     pydantic.field_validator = _identity_decorator
     monkeypatch.setitem(sys.modules, "pydantic", pydantic)
+
+
+def _install_export_backend_stubs(monkeypatch):
+    _install_lightweight_backend_stubs(monkeypatch)
+
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastLanguageModel = object
+    unsloth.FastVisionModel = object
+    unsloth._IS_MLX = True
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+
+    huggingface_hub = types.ModuleType("huggingface_hub")
+    huggingface_hub.HfApi = object
+    huggingface_hub.ModelCard = object
+    monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
+
+    utils_hardware = types.ModuleType("utils.hardware")
+    utils_hardware.clear_gpu_cache = lambda: None
+    monkeypatch.setitem(sys.modules, "utils.hardware", utils_hardware)
+
+    utils_models = sys.modules["utils.models"]
+    utils_models.get_base_model_from_lora = lambda *args, **kwargs: None
+    utils_models.is_vision_model = lambda *args, **kwargs: False
+
+    utils_model_config = sys.modules["utils.models.model_config"]
+    utils_model_config.detect_audio_type = lambda *args, **kwargs: None
+
+    utils_paths = sys.modules["utils.paths"]
+    utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)
+    utils_paths.resolve_export_write_dir = lambda value = None: Path(value or "exports")
+    utils_paths.resolve_output_dir = lambda value = None: Path(value or "outputs")
+
+
+def test_gguf_export_cleans_temp_dir_when_post_processing_fails(
+    tmp_path,
+    monkeypatch,
+):
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module("test_core_export_backend", "core/export/export.py", monkeypatch)
+
+    cwd = tmp_path / "cwd"
+    save_dir = tmp_path / "export"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+    monkeypatch.setattr(
+        export_mod.shutil,
+        "move",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("move failed")),
+    )
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            Path(model_save_path).mkdir(parents = True)
+            (Path(model_save_path) / "model.safetensors").write_bytes(b"weights")
+            (cwd / "converted.gguf").write_bytes(b"gguf")
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is False
+    assert "move failed" in message
+    assert output_path is None
+    assert list(save_dir.glob("_tmp_model_*")) == []
 
 
 def test_save_directory_validator_rejects_windows_parent_segments(monkeypatch):

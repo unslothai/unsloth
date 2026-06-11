@@ -568,6 +568,7 @@ class ExportBackend:
             return False, "No model loaded. Please select a checkpoint first.", None
 
         output_path: Optional[str] = None
+        model_tmp_to_cleanup: Optional[str] = None
         try:
             # unsloth expects lowercase quant method
             quant_method = quantization_method.lower()
@@ -614,15 +615,12 @@ class ExportBackend:
                 import uuid
 
                 _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
-                try:
-                    self.current_model.save_pretrained_gguf(
-                        _model_tmp,
-                        self.current_tokenizer,
-                        quantization_method = quant_method,
-                    )
-                except Exception:
-                    shutil.rmtree(_model_tmp, ignore_errors = True)
-                    raise
+                model_tmp_to_cleanup = _model_tmp
+                self.current_model.save_pretrained_gguf(
+                    _model_tmp,
+                    self.current_tokenizer,
+                    quantization_method = quant_method,
+                )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
                 new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
@@ -698,6 +696,8 @@ class ExportBackend:
             )
 
         except Exception as e:
+            if model_tmp_to_cleanup:
+                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
