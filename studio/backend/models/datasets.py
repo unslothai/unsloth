@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Dataset-related Pydantic models for API requests and responses.
-"""
+"""Dataset Pydantic models for API requests and responses."""
 
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +40,7 @@ class CheckFormatResponse(BaseModel):
     detected_audio_column: Optional[str] = None
     detected_text_column: Optional[str] = None
     detected_speaker_column: Optional[str] = None
+    chat_column: Optional[str] = None
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
     warning: Optional[str] = None

@@ -134,12 +134,8 @@ def test_unknown_gpu_not_in_families():
 def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
     host = _make_rocm_host(gfx, windows = windows)
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        result = resolve_lemonade_rocm_choice(
-            host, os_prefix, "default", llama_tag = "latest"
-        )
-    assert (
-        result is not None
-    ), f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
+        result = resolve_lemonade_rocm_choice(host, os_prefix, "default", llama_tag = "latest")
+    assert result is not None, f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
     assert _lookup_family(gfx) in result.name
     assert result.url.startswith("https://github.com/lemonade-sdk/llamacpp-rocm")
 
@@ -151,61 +147,70 @@ def test_unknown_gpu_falls_through_to_upstream():
 
 
 # ---------------------------------------------------------------------------
-# Simple-policy dispatcher must plan a lemonade ROCm attempt for AMD-only hosts.
-# This is the path setup.sh actually invokes (via --simple-policy), so the
-# lemonade integration is useless if it isn't wired in here.
+# The Linux attempt builder must plan a lemonade ROCm attempt for AMD-only hosts.
+# This is the path setup.sh actually invokes (fork hosts now select from the
+# manifest), so the lemonade integration is useless if it isn't wired in here.
 # ---------------------------------------------------------------------------
 
-direct_linux_release_plan = getattr(_mod, "direct_linux_release_plan", None)
+_linux_published_attempts = getattr(_mod, "_linux_published_attempts", None)
 direct_upstream_release_plan = getattr(_mod, "direct_upstream_release_plan", None)
 
+PublishedLlamaArtifact = _mod.PublishedLlamaArtifact
+PublishedReleaseBundle = _mod.PublishedReleaseBundle
 
-def _stub_unsloth_release(release_tag: str = "b9022") -> dict:
-    # Minimal payload that parse_direct_linux_release_bundle accepts. It
-    # requires at least one `app-{label}-linux-x64*.tar.gz` asset for the
-    # bundle to be recognised; we ship a bare CPU one so the planner has a
-    # baseline non-ROCm attempt to fall through to.
-    asset_name = f"app-{release_tag}-linux-x64.tar.gz"
-    return {
-        "tag_name": release_tag,
-        "name": release_tag,
-        "assets": [
-            {
-                "name": asset_name,
-                "browser_download_url": f"https://example.invalid/{asset_name}",
-            },
-        ],
-    }
+
+def _rocm_bundle(gfx_family: str, mapped_targets: list[str]) -> "PublishedReleaseBundle":
+    """A fork manifest bundle exposing a per-gfx linux-rocm artifact, so
+    published_rocm_choice_for_host can match the host before the lemonade
+    fallback is appended."""
+    asset_name = f"app-b9457-linux-x64-rocm-{gfx_family}.tar.gz"
+    artifact = PublishedLlamaArtifact(
+        asset_name = asset_name,
+        install_kind = "linux-rocm",
+        runtime_line = None,
+        coverage_class = None,
+        supported_sms = [],
+        min_sm = None,
+        max_sm = None,
+        bundle_profile = None,
+        rank = 1000,
+        gfx_target = gfx_family,
+        mapped_targets = mapped_targets,
+    )
+    return PublishedReleaseBundle(
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        upstream_tag = "b9457",
+        assets = {asset_name: f"https://example.invalid/{asset_name}"},
+        artifacts = [artifact],
+    )
 
 
 @pytest.mark.skipif(
-    direct_linux_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    _linux_published_attempts is None,
+    reason = "Linux attempt builder not present on this branch",
 )
-def test_simple_policy_plans_lemonade_for_rocm_host():
+def test_linux_attempts_include_fork_rocm_and_lemonade_for_rocm_host():
     host = _make_rocm_host("gfx1151")
+    bundle = _rocm_bundle("gfx1151", ["gfx1151"])
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        plan = direct_linux_release_plan(
-            _stub_unsloth_release(),
-            host,
-            "unslothai/llama.cpp",
-            "latest",
-        )
-    assert plan is not None, "ROCm host should not be skipped by simple-policy planner"
-    kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "linux-rocm" in kinds
-    ), f"simple-policy planner did not include a lemonade ROCm attempt; got {kinds}"
-    rocm_attempt = next(a for a in plan.attempts if a.install_kind == "linux-rocm")
-    assert rocm_attempt.source_label == "lemonade"
-    assert "gfx1151" in rocm_attempt.name
+        attempts = _linux_published_attempts(host, bundle, "latest")
+    kinds = [a.install_kind for a in attempts]
+    assert "linux-rocm" in kinds, f"builder did not include any linux-rocm attempt; got {kinds}"
+    sources = {a.source_label for a in attempts if a.install_kind == "linux-rocm"}
+    # The fork's own per-gfx bundle is preferred, with the lemonade prebuilt as
+    # the fallback -- both must be present for a covered ROCm host.
+    assert "published" in sources, f"fork ROCm bundle missing; got {sources}"
+    assert "lemonade" in sources, f"lemonade ROCm fallback missing; got {sources}"
+    lemonade_attempt = next(a for a in attempts if a.source_label == "lemonade")
+    assert "gfx1151" in lemonade_attempt.name
 
 
 @pytest.mark.skipif(
     direct_upstream_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    reason = "direct release planners not present on this branch",
 )
-def test_simple_policy_plans_lemonade_for_windows_hip_host():
+def test_direct_upstream_plan_includes_lemonade_for_windows_hip_host():
     host = _make_rocm_host("gfx1151", windows = True)
     release = {
         "tag_name": "b9022",
@@ -213,21 +218,17 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
         "assets": [],
     }
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        plan = direct_upstream_release_plan(
-            release, host, "ggml-org/llama.cpp", "latest"
-        )
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "windows-hip" in kinds
-    ), f"simple-policy planner did not include a lemonade HIP attempt; got {kinds}"
+    assert "windows-hip" in kinds, f"planner did not include a lemonade HIP attempt; got {kinds}"
 
 
 @pytest.mark.skipif(
     direct_upstream_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    reason = "direct release planners not present on this branch",
 )
-def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavailable():
+def test_windows_hip_falls_back_to_upstream_when_lemonade_unavailable():
     """If lemonade returns None (e.g. gfx999 or transient API failure), the planner
     must still include the upstream HIP asset rather than silently downgrading to CPU."""
     host = _make_rocm_host("gfx999", windows = True)
@@ -245,9 +246,7 @@ def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavaila
     plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None
     kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "windows-hip" in kinds
-    ), f"upstream HIP asset not included as fallback; got {kinds}"
+    assert "windows-hip" in kinds, f"upstream HIP asset not included as fallback; got {kinds}"
     hip_attempt = next(a for a in plan.attempts if a.install_kind == "windows-hip")
     assert hip_attempt.source_label == "upstream"
 
@@ -294,9 +293,7 @@ def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = bad_release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -349,9 +346,7 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -428,3 +423,96 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
     assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
+
+
+# ---------------------------------------------------------------------------
+# Fork release scan: Windows ROCm resolves lemonade by the requested tag
+# ---------------------------------------------------------------------------
+
+_resolve_release_asset_choice = getattr(_mod, "resolve_release_asset_choice", None)
+_ApprovedReleaseChecksums = getattr(_mod, "ApprovedReleaseChecksums", None)
+
+
+@pytest.mark.skipif(
+    _resolve_release_asset_choice is None or _ApprovedReleaseChecksums is None,
+    reason = "fork release planner not present on this branch",
+)
+def test_fork_scan_windows_rocm_resolves_lemonade_by_requested_tag():
+    """The fork release scan pins llama_tag to per-release upstream tags
+    (b9457, ...) that lemonade's own tag series never contains, so the
+    lemonade lookup must use the requested tag ("latest") instead. Pinning
+    lemonade to the per-release tag 404s on every scanned release and a
+    Windows ROCm host ends in a rate-limited fatal instead of the lemonade
+    prebuilt."""
+    host = _make_rocm_host("gfx1151", windows = True)
+    # No windows-rocm artifact in the bundle, matching current fork releases.
+    bundle = _rocm_bundle("gfx1151", ["gfx1151"])
+    checksums = _ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        upstream_tag = "b9457",
+        artifacts = {},
+    )
+    seen_urls: list[str] = []
+
+    def _fake_fetch(api_url, *args, **kwargs):
+        seen_urls.append(api_url)
+        if "lemonade-sdk" in api_url:
+            if api_url.endswith("/releases/latest"):
+                return _stub_lemonade_release()
+            raise RuntimeError(f"unexpected pinned lemonade fetch: {api_url}")
+        # ggml-org asset listing for the upstream HIP/CPU filename fallbacks.
+        return {"tag_name": "b9457", "assets": []}
+
+    with patch.object(_mod, "fetch_json", side_effect = _fake_fetch):
+        attempts = _resolve_release_asset_choice(
+            host,
+            "b9457",  # concrete per-release upstream tag from the scan loop
+            bundle,
+            checksums,
+            requested_tag = "latest",
+        )
+
+    lemonade = [a for a in attempts if a.source_label == "lemonade"]
+    assert lemonade, f"lemonade attempt missing for Windows ROCm host; got {attempts}"
+    assert "gfx1151" in lemonade[0].name
+    assert any(
+        u.endswith("/releases/latest") for u in seen_urls
+    ), f"lemonade was never resolved via /releases/latest; fetches: {seen_urls}"
+    assert not any(
+        "lemonade-sdk" in u and "/releases/tags/" in u for u in seen_urls
+    ), f"lemonade lookup was pinned to the fork release tag: {seen_urls}"
+
+
+@pytest.mark.skipif(
+    direct_upstream_release_plan is None,
+    reason = "direct release planners not present on this branch",
+)
+def test_direct_upstream_plan_includes_lemonade_for_linux_rocm_host():
+    """A Linux ROCm host on the ggml-org direct path (e.g. a --published-repo
+    override) must plan lemonade before the CPU tarball, mirroring the Windows
+    branch. The lemonade planning previously lived in the removed
+    --simple-policy dispatcher, so without this leg such hosts silently
+    install the CPU build."""
+    host = _make_rocm_host("gfx1151")
+    release = {
+        "tag_name": "b9022",
+        "name": "b9022",
+        "assets": [
+            {
+                "name": "llama-b9022-bin-ubuntu-x64.tar.gz",
+                "browser_download_url": (
+                    "https://github.com/ggml-org/llama.cpp/releases/download/"
+                    "b9022/llama-b9022-bin-ubuntu-x64.tar.gz"
+                ),
+            }
+        ],
+    }
+    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
+    assert plan is not None, "Linux ROCm host should produce a direct plan"
+    kinds = [a.install_kind for a in plan.attempts]
+    sources = [a.source_label for a in plan.attempts]
+    assert "linux-rocm" in kinds, f"lemonade ROCm attempt missing; got {kinds}"
+    assert sources[0] == "lemonade", f"lemonade must be the first attempt; got {sources}"
+    assert "gfx1151" in plan.attempts[0].name
