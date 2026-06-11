@@ -302,6 +302,10 @@ async def start_training(
             error = None,
         )
 
+    except HTTPException:
+        # Deliberate rejections (S3 not implemented, resume validation) must
+        # reach the client with their original status, not a generic 500.
+        raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         # Deliberate user-facing GPU-selection validation message.

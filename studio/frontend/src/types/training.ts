@@ -8,7 +8,9 @@ export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora" || method === "cpt";
 }
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
-export type DatasetSource = "huggingface" | "upload" | "s3";
+// "s3" joins this union when the S3 loader and its UI land; widening it early
+// breaks strict typechecks in components that only handle the first two.
+export type DatasetSource = "huggingface" | "upload";
 
 /** S3 bucket configuration for loading datasets */
 export interface S3Config {
