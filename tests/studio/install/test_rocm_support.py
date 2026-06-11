@@ -1211,7 +1211,7 @@ class TestInstallShStructure:
         before vendor_id 4318 is seen on node 1.
         """
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text(encoding="utf-8")
+        source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
@@ -1229,7 +1229,7 @@ class TestInstallShStructure:
         though NVIDIA was confirmed, silently installing CPU wheels instead of CUDA.
         """
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text(encoding="utf-8")
+        source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("get_torch_index_url()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
@@ -1239,9 +1239,9 @@ class TestInstallShStructure:
         )
         # The AMD/ROCm branch must be gated on _nvidia_detected being 0, not on
         # _smi being empty.
-        assert '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body, (
-            "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
-        )
+        assert (
+            '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body
+        ), "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)
