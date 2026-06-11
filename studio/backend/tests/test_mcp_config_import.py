@@ -72,6 +72,8 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         # A command path with spaces is the case that actually needs quoting.
         ["C:\\Program Files\\node\\node.exe", "server.js"],
         ["C:\\Program Files\\Foo\\", "server.js"],
+        ["C:\\Program Files\\Foo\\", '{"foo":"bar"}'],
+        ["'C:\\Program Files\\node\\node.exe'", "server.js"],
         ["node", ""],
     ],
 )
@@ -79,6 +81,15 @@ def test_join_parse_roundtrip_win32(monkeypatch, parts):
     monkeypatch.setattr(sys, "platform", "win32")
     joined = mcp_client.join_stdio_command(parts)
     assert mcp_client.parse_stdio_command(joined) == parts
+
+
+def test_parse_manual_single_quoted_windows_command(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    command = "'C:\\Program Files\\node\\node.exe' server.js"
+    assert mcp_client.parse_stdio_command(command) == [
+        "C:\\Program Files\\node\\node.exe",
+        "server.js",
+    ]
 
 
 # ── 2. parse_mcp_config ─────────────────────────────────────────────
@@ -143,7 +154,11 @@ def test_parse_preserves_disabled_and_oauth():
         {"command": "node", "args": ["server.js"], "cwd": "/tmp/server"},
         {"command": "node", "args": ["server.js"], "envFile": ".env"},
         {"command": "node", "args": ["server.js"], "env": {"API_KEY": "${input:api-key}"}},
+        {"command": "node", "args": ["${workspaceFolder}/server.js"]},
+        {"command": "node", "args": ["server.js"], "env": {"HTTP_PROXY": None}},
+        {"command": "node", "args": ["server.js"], "sandboxEnabled": True},
         {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${input:token}"}},
+        {"url": "https://example.com/mcp", "headers": {"Authorization": None}},
         {"type": "sse", "url": "https://example.com/custom"},
     ],
 )
@@ -202,6 +217,12 @@ def test_missing_servers_key():
     entries, errors = parse_mcp_config({"foo": {}})
     assert entries == []
     assert len(errors) == 1
+
+
+def test_servers_alias_error_names_actual_key():
+    entries, errors = parse_mcp_config({"servers": []})
+    assert entries == []
+    assert errors == ["'servers' must be an object mapping name -> server."]
 
 
 # ── 3. POST /import route ───────────────────────────────────────────

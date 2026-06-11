@@ -31,7 +31,7 @@ def _split_windows_command_line(address: str) -> list[str]:
     closing quote from being doubled in the resulting argv."""
     parts: list[str] = []
     current: list[str] = []
-    in_quotes = False
+    quote_char: str | None = None
     backslashes = 0
     arg_started = False
     i = 0
@@ -43,16 +43,33 @@ def _split_windows_command_line(address: str) -> list[str]:
             i += 1
             continue
         if ch == '"':
-            current.extend("\\" * (backslashes // 2))
-            if backslashes % 2:
-                current.append('"')
+            if quote_char == "'":
+                current.extend("\\" * backslashes)
+                current.append(ch)
             else:
-                in_quotes = not in_quotes
+                current.extend("\\" * (backslashes // 2))
+                if backslashes % 2:
+                    current.append('"')
+                else:
+                    quote_char = None if quote_char == '"' else '"'
             arg_started = True
             backslashes = 0
             i += 1
             continue
-        if ch.isspace() and not in_quotes:
+        if ch == "'":
+            if backslashes:
+                current.extend("\\" * backslashes)
+            if quote_char is None:
+                quote_char = "'"
+            elif quote_char == "'":
+                quote_char = None
+            else:
+                current.append(ch)
+            arg_started = True
+            backslashes = 0
+            i += 1
+            continue
+        if ch.isspace() and quote_char is None:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True

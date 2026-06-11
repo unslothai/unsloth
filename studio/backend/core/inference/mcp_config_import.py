@@ -32,17 +32,21 @@ class ParsedMcpEntry:
 
 
 def _coerce_str_dict(value: dict) -> dict[str, str]:
-    return {str(k): str(v) for k, v in value.items() if v is not None}
+    return {str(k): str(v) for k, v in value.items()}
 
 
-def _has_input_reference(value: object) -> bool:
+def _has_variable_reference(value: object) -> bool:
     if isinstance(value, str):
-        return "${input:" in value
+        return "${" in value
     if isinstance(value, list):
-        return any(_has_input_reference(item) for item in value)
+        return any(_has_variable_reference(item) for item in value)
     if isinstance(value, dict):
-        return any(_has_input_reference(item) for item in value.values())
+        return any(_has_variable_reference(item) for item in value.values())
     return False
+
+
+def _has_null_value(value: object) -> bool:
+    return isinstance(value, dict) and any(item is None for item in value.values())
 
 
 def _enabled_from_spec(label: str, spec: dict) -> tuple[Optional[bool], Optional[str]]:
@@ -60,8 +64,8 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         return None, "Server entry has an empty name."
     if not isinstance(spec, dict):
         return None, f"{label}: entry must be an object."
-    if _has_input_reference(spec):
-        return None, f"{label}: '${{input:...}}' variables are not supported by import."
+    if _has_variable_reference(spec):
+        return None, f"{label}: VS Code variable references are not supported by import."
 
     is_enabled, error = _enabled_from_spec(label, spec)
     if error:
@@ -81,6 +85,11 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         entry_type = spec.get("type")
         if entry_type is not None and entry_type != "stdio":
             return None, f"{label}: stdio entry has unsupported type {entry_type!r}."
+        sandbox_enabled = spec.get("sandboxEnabled")
+        if sandbox_enabled is not None and not isinstance(sandbox_enabled, bool):
+            return None, f"{label}: 'sandboxEnabled' must be true or false."
+        if sandbox_enabled:
+            return None, f"{label}: sandboxed stdio servers cannot be preserved by import."
         unsupported = [field for field in _UNSUPPORTED_STDIO_FIELDS if spec.get(field) is not None]
         if unsupported:
             return None, f"{label}: import cannot preserve {', '.join(unsupported)}."
@@ -92,6 +101,8 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         env = spec.get("env")
         if env is not None and not isinstance(env, dict):
             return None, f"{label}: 'env' must be an object."
+        if _has_null_value(env):
+            return None, f"{label}: null environment values are not supported by import."
         url = join_stdio_command([command, *(str(a) for a in args)])
         headers = _coerce_str_dict(env) if env else None
         return ParsedMcpEntry(label, url, headers, True, is_enabled = is_enabled), None
@@ -110,6 +121,8 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
     headers_raw = spec.get("headers")
     if headers_raw is not None and not isinstance(headers_raw, dict):
         return None, f"{label}: 'headers' must be an object."
+    if _has_null_value(headers_raw):
+        return None, f"{label}: null header values are not supported by import."
     headers = _coerce_str_dict(headers_raw) if headers_raw else None
     return ParsedMcpEntry(
         label,
@@ -127,13 +140,12 @@ def parse_mcp_config(config: object) -> tuple[list[ParsedMcpEntry], list[str]]:
     ``(entries, errors)``; a bad entry adds an error rather than raising."""
     if not isinstance(config, dict):
         return [], ["Config must be a JSON object."]
-    servers = config.get("mcpServers")
-    if servers is None:
-        servers = config.get("servers")
+    servers_key = "mcpServers" if "mcpServers" in config else "servers"
+    servers = config.get(servers_key)
     if servers is None:
         return [], ["Config has no 'mcpServers' (or 'servers') object."]
     if not isinstance(servers, dict):
-        return [], ["'mcpServers' must be an object mapping name -> server."]
+        return [], [f"'{servers_key}' must be an object mapping name -> server."]
 
     entries: list[ParsedMcpEntry] = []
     errors: list[str] = []

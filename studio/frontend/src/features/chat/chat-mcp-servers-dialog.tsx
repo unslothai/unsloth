@@ -341,7 +341,13 @@ export function ChatMcpServersDialog({
       }
       const summary = parts.join(", ");
       if (result.errors.length) {
-        toast.warning(summary, { description: result.errors.slice(0, 5).join("\n") });
+        toast.warning(summary, {
+          description: (
+            <div className="whitespace-pre-line">
+              {result.errors.slice(0, 5).join("\n")}
+            </div>
+          ),
+        });
       } else {
         toast.success(summary);
       }
