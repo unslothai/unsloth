@@ -1807,6 +1807,16 @@ _has_usable_nvidia_gpu() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
+    # Explicit pin for hosts where probing is impossible or must not happen
+    # (Docker image builds, CI runners). Names the index path leaf directly:
+    # UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|rocm7.2|cpu|...
+    # The Blackwell Docker image build uses this: at build time there is no
+    # GPU and no nvidia-smi, but the image targets CUDA, so probing would
+    # land on the cpu (CI) or cu126 (GPU build hosts leak /proc/driver/nvidia
+    # but not nvidia-smi) wheels depending on which host built the image.
+    if [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+        echo "$_base/${UNSLOTH_TORCH_INDEX_FAMILY}"; return
+    fi
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.

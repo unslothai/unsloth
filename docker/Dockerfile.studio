@@ -33,6 +33,7 @@ FROM ${BASE_IMAGE}
 # that pins BASE_IMAGE to a digest should pin this too (same UNSLOTH_REF as
 # the base) so the published image is reproducible against a known ref.
 ARG UNSLOTH_STUDIO_REF=main
+ARG TARGETARCH
 
 USER root
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
@@ -55,18 +56,37 @@ RUN apt-get update \
 # The llama.cpp symlink BEFORE install.sh points Studio's prebuilt dir at
 # the bundle already baked into the base image (validated, sha256-checked,
 # UNSLOTH_PREBUILT_INFO.json present), so the installer's prebuilt step
-# recognises it and skips a second ~400MB download.
+# recognises it and skips a second ~400MB download. The
+# .unsloth-studio-owned marker satisfies setup.sh's ownership assertion for
+# custom STUDIO_HOMEs -- the dir IS provisioned exclusively for Studio.
+#
+# UNSLOTH_TORCH_INDEX_FAMILY pins the torch wheel index for the Studio
+# venv: at build time there is no GPU and no nvidia-smi, so install.sh's
+# probing would land on cpu or cu126 wheels depending on which host built
+# the image. The image targets CUDA: cu128 on amd64 (Turing..Blackwell,
+# same line as the base venv), cu130 on arm64 (DGX Spark / Grace, the
+# aarch64 CUDA wheel line).
+#
 # fetch+checkout FETCH_HEAD instead of `clone --branch` because the CI
 # pipeline passes a commit SHA as the ref (clone --branch only accepts
 # branch/tag names).
-RUN mkdir -p "${UNSLOTH_STUDIO_HOME}" \
+RUN set -eux \
+ && case "${TARGETARCH:-amd64}" in \
+        amd64) TORCH_FAMILY="cu128" ;; \
+        arm64) TORCH_FAMILY="cu130" ;; \
+        *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
  && ln -s /opt/unsloth/llama.cpp "${UNSLOTH_STUDIO_HOME}/llama.cpp" \
+ && touch /opt/unsloth/llama.cpp/.unsloth-studio-owned \
  && git init -q "${UNSLOTH_STUDIO_HOME}/src" \
  && cd "${UNSLOTH_STUDIO_HOME}/src" \
  && git remote add origin https://github.com/unslothai/unsloth \
  && git fetch -q --depth 1 origin "${UNSLOTH_STUDIO_REF}" \
  && git checkout -q FETCH_HEAD \
- && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" bash install.sh --local \
+ && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
+    UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
+    bash install.sh --local \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
