@@ -296,7 +296,13 @@ del patch_peft_weight_converter_compatibility
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" on driverless hosts (CPU
+    # CI, Docker Desktop without GPU passthrough); probing the device would
+    # raise. bf16 stays on: CPU bf16 kernels exist, fp16 ones largely do not.
+    SUPPORTS_BFLOAT16 = True
+    torch.cuda.is_bf16_supported = lambda *args, **kwargs: True
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 
