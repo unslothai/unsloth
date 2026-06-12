@@ -416,7 +416,7 @@ type ChatRuntimeStore = {
   alwaysAllowToolsBySession: Map<string, Set<string>>;
   /**
    * Tool calls currently paused awaiting the user's allow/deny decision,
-   * keyed by the frontend tool-call id. Each entry carries the backend
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
    * ``approvalId`` to echo back and the ``sessionId`` the generation runs
    * under, so the confirmation always resolves the exact pending call. The
    * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.

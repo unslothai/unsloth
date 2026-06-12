@@ -1251,6 +1251,30 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
     assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
 
 
+def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("RAG autoinject must not run before approval")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "use docs"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            session_id = "sess",
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
     same_call = _structured_tool_call("python", {"code": "print(1)"}, "call_py")
     streams = [

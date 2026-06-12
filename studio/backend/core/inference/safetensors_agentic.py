@@ -182,7 +182,7 @@ def run_safetensors_tool_loop(
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
     from core.inference.tools import build_rag_autoinject
 
-    _auto = build_rag_autoinject(conversation, rag_scope)
+    _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
             yield _ev

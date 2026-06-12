@@ -1064,6 +1064,22 @@ class TestGuardrails:
         assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
         assert exec_fn.calls == []
 
+    def test_confirm_tool_calls_skips_rag_autoinject(self, monkeypatch):
+        def fail_autoinject(*_args, **_kwargs):
+            raise AssertionError("RAG autoinject must not run before approval")
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        loop, exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            rag_scope = {"thread_id": "t1"},
+        )
+        events = _collect_events(loop)
+        assert any(
+            e.get("type") == "content" and e.get("text") == "plain answer" for e in events
+        )
+        assert exec_fn.calls == []
+
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
             [

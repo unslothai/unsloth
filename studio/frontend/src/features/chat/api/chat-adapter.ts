@@ -1438,6 +1438,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
+      const toolConfirmationIdsByBackendId = new Map<string, string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -2559,10 +2560,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   toolEvent.provenance,
                 );
                 if (toolEvent.type === "tool_start") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvalId = (toolEvent.approval_id as string) || "";
+                  const awaitingConfirmation =
+                    toolEvent.awaiting_confirmation === true;
                   const id =
-                    (toolEvent.tool_call_id as string) ||
-                    (toolEvent.approval_id as string) ||
-                    `${toolEvent.tool_name}_${Date.now()}`;
+                    awaitingConfirmation && approvalId
+                      ? `${toolConfirmationScopeId}:${approvalId}`
+                      : backendToolCallId ||
+                        approvalId ||
+                        `${toolEvent.tool_name}_${Date.now()}`;
+                  if (awaitingConfirmation && backendToolCallId) {
+                    toolConfirmationIdsByBackendId.set(backendToolCallId, id);
+                  }
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -2593,21 +2604,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
                     } as PositionedToolCallPart);
                   }
-                  if (toolEvent.awaiting_confirmation === true) {
+                  if (awaitingConfirmation) {
                     useChatRuntimeStore
                       .getState()
                       .setToolConfirmation(
                         id,
-                        (toolEvent.approval_id as string) || "",
+                        approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
                   const id =
-                    (toolEvent.tool_call_id as string) ||
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  if (backendToolCallId) {
+                    toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                  }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,

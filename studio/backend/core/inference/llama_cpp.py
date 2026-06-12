@@ -4934,7 +4934,7 @@ class LlamaCppBackend:
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
         # the same tool card + citations a real call would.
-        _auto = build_rag_autoinject(conversation, rag_scope)
+        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
