@@ -776,7 +776,7 @@ async def _aiter_llama_stream_items(
                 cancel_event.set()
             return
         try:
-            item = await anext(async_iter)
+            item = await async_iter.__anext__()
         except StopAsyncIteration:
             return
         except httpx.ReadTimeout:
