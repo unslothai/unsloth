@@ -1389,12 +1389,11 @@ def _iter_hf_cache_snapshots(repo_id: str):
         return
 
     cache_dir = Path(hf_constants.HF_HUB_CACHE)
-    if not cache_dir.is_dir():
-        return
-
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dir: Optional[Path] = None
     try:
+        if not cache_dir.is_dir():
+            return
         for entry in cache_dir.iterdir():
             if entry.is_dir() and entry.name.lower() == target:
                 repo_dir = entry
@@ -1405,10 +1404,9 @@ def _iter_hf_cache_snapshots(repo_id: str):
         return
 
     snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return
-
     try:
+        if not snapshots.is_dir():
+            return
         snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
     except OSError:
         return
