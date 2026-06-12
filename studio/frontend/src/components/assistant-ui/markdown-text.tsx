@@ -285,11 +285,14 @@ function CodeBlockActions({
 }
 
 // DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
-// thread.tsx), so it no longer forces HTML into an iframe artifact; it follows the
-// same artifact rules as every other model.
+// thread.tsx) and has the artifacts canvas on by default, so a full-HTML answer
+// (e.g. a playable game) renders as an interactive card without the global toggle.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      state.artifactsEnabled ||
+      state.collapseHtmlArtifacts ||
+      state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
