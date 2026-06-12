@@ -1260,6 +1260,25 @@
 		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	}
 
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	button:focus:not(:focus-visible),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);

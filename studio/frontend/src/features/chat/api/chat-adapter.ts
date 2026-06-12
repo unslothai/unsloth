@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -1097,14 +1098,11 @@ async function resolveProjectInstructions(
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
-  let projectId: string | null | undefined;
   if (threadId) {
     const thread = await getStoredChatThread(threadId).catch(() => null);
-    projectId = thread?.projectId ?? null;
+    return thread?.projectId ?? null;
   }
-  if (!projectId) {
-    projectId = useChatRuntimeStore.getState().activeProjectId;
-  }
+  const projectId = useChatRuntimeStore.getState().activeProjectId;
   if (!projectId) {
     return null;
   }
@@ -1561,6 +1559,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      // Project sources auto-scope: a chat inside a project retrieves from the
+      // project's indexed sources even when the Docs pill is off. The probe is
+      // cached, so this is one round trip per project every ~30s at most.
+      const ragProjectId = await resolveProjectId(resolvedThreadId);
+      const projectRagEnabled = ragProjectId
+        ? await projectHasSources(ragProjectId)
+        : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -2462,12 +2467,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
-              ragEnabled)
+              ragEnabled ||
+              projectRagEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     // First so retrieval is the primary tool when Docs is on.
-                    ...(ragEnabled ? ["search_knowledge_base"] : []),
+                    ...(ragEnabled || projectRagEnabled
+                      ? ["search_knowledge_base"]
+                      : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(renderHtmlToolEnabledForThisTurn
@@ -2476,15 +2484,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   confirm_tool_calls: confirmToolCalls,
-                  // Scope: thread_id = this thread's docs, kb_id = a KB.
-                  ...(ragEnabled
+                  // Scope: thread_id = this thread's docs, kb_id = a KB,
+                  // project_id = the thread's project sources (auto-on whenever
+                  // the project has indexed sources, no Docs pill needed).
+                  ...(ragEnabled || projectRagEnabled
                     ? {
                         rag_scope: {
-                          ...(ragSource.type === "kb"
+                          ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : resolvedThreadId
-                              ? { thread_id: resolvedThreadId }
-                              : {}),
+                            : {
+                                ...(ragEnabled && resolvedThreadId
+                                  ? { thread_id: resolvedThreadId }
+                                  : {}),
+                                ...(projectRagEnabled && ragProjectId
+                                  ? { project_id: ragProjectId }
+                                  : {}),
+                              }),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(
