@@ -152,7 +152,9 @@ def can_keep_chat_during_training(
             # A requested GPU missing from the device list contributes 0.
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
             ranked = sorted(free_vals, reverse = True)
-            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:]) if ranked else 0.0
+            usable_gb = (
+                ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:]) if ranked else 0.0
+            )
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
             # Activations don't shard, so each GPU needs its own weight shard plus
@@ -162,7 +164,9 @@ def can_keep_chat_during_training(
             per_gpu_fits = True
             min_free_gb = min(free_vals) if free_vals else 0.0
             if len(resolved) > 1:
-                min_per_gpu_gb = est_meta.get("vram_breakdown", {}).get(f"min_per_gpu_{len(resolved)}")
+                min_per_gpu_gb = est_meta.get("vram_breakdown", {}).get(
+                    f"min_per_gpu_{len(resolved)}"
+                )
                 if min_per_gpu_gb is not None:
                     per_gpu_fits = min_free_gb >= min_per_gpu_gb
 

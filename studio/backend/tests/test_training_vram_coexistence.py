@@ -213,10 +213,21 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, *, required, devices, resolved, gpu_ids, est_meta = None, resolve_side_effect = None):
+    def _run(
+        self,
+        *,
+        required,
+        devices,
+        resolved,
+        gpu_ids,
+        est_meta = None,
+        resolve_side_effect = None,
+    ):
         kw = {**_BASE_KW, "gpu_ids": gpu_ids}
         resolve_kwargs = (
-            {"side_effect": resolve_side_effect} if resolve_side_effect else {"return_value": resolved}
+            {"side_effect": resolve_side_effect}
+            if resolve_side_effect
+            else {"return_value": resolved}
         )
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -286,7 +297,10 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},  # 10 free
         ]
         keep, info, _ = self._run(
-            required = 40.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1],
+            required = 40.0,
+            devices = devices,
+            resolved = [0, 1],
+            gpu_ids = [0, 1],
             est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
         )
         self.assertFalse(keep)
@@ -299,7 +313,10 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 50.0},  # 30 free
         ]
         keep, _, _ = self._run(
-            required = 40.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1],
+            required = 40.0,
+            devices = devices,
+            resolved = [0, 1],
+            gpu_ids = [0, 1],
             est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
         )
         self.assertTrue(keep)
@@ -309,7 +326,10 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
         # (400) before training runs, so the resident chat model must be left
         # alone rather than torn down.
         keep, info, _ = self._run(
-            required = 5.0, devices = [], resolved = None, gpu_ids = [99],
+            required = 5.0,
+            devices = [],
+            resolved = None,
+            gpu_ids = [99],
             resolve_side_effect = ValueError("Invalid gpu_ids [99]"),
         )
         self.assertTrue(keep)
