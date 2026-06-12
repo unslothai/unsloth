@@ -187,6 +187,7 @@ let promptQueueItems: PromptQueueItem[] = [];
 let promptQueueIndex = 0;
 let promptQueueIsRunning = false;
 let promptQueuePrevStoreRunning = false;
+let promptQueueWaitingForTargetIdle = false;
 let promptQueueStoreUnsub: (() => void) | null = null;
 let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -208,6 +209,7 @@ function resetPromptQueue(showToast = false) {
   promptQueueIsRunning = false;
   promptQueueItems = [];
   promptQueueIndex = 0;
+  promptQueueWaitingForTargetIdle = false;
   if (promptQueueRetryTimer) {
     clearTimeout(promptQueueRetryTimer);
     promptQueueRetryTimer = null;
@@ -264,6 +266,17 @@ function scheduleQueuedPromptDispatch(item: PromptQueueItem, delay: number) {
 
 async function dispatchQueuedPrompt(item: PromptQueueItem) {
   if (!promptQueueIsRunning) {
+    return;
+  }
+  if (
+    isPromptQueueTargetRunning(
+      item.target,
+      useChatRuntimeStore.getState().runningByThreadId,
+    )
+  ) {
+    promptQueueWaitingForTargetIdle = true;
+    promptQueuePrevStoreRunning = true;
+    startPromptQueueSubscription();
     return;
   }
   if (await targetHasIndexingDocuments(item)) {
@@ -333,6 +346,7 @@ function advancePromptQueue() {
   toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
     description: queueToastDescription(next.prompt),
   });
+  promptQueueWaitingForTargetIdle = false;
   promptQueuePrevStoreRunning = false;
   scheduleQueuedPromptDispatch(next, 100);
 }
@@ -352,6 +366,14 @@ function startPromptQueueSubscription() {
     const wasRunning = promptQueuePrevStoreRunning;
     promptQueuePrevStoreRunning = isRunning;
     if (wasRunning && !isRunning) {
+      if (promptQueueWaitingForTargetIdle) {
+        promptQueueWaitingForTargetIdle = false;
+        const activeItem = promptQueueItems[promptQueueIndex];
+        if (activeItem) {
+          scheduleQueuedPromptDispatch(activeItem, 50);
+        }
+        return;
+      }
       advancePromptQueue();
     }
   });
@@ -361,6 +383,14 @@ function startPromptQueueSubscription() {
   );
   if (promptQueuePrevStoreRunning && !isRunningNow) {
     promptQueuePrevStoreRunning = false;
+    if (promptQueueWaitingForTargetIdle) {
+      promptQueueWaitingForTargetIdle = false;
+      const activeItem = promptQueueItems[promptQueueIndex];
+      if (activeItem) {
+        scheduleQueuedPromptDispatch(activeItem, 50);
+      }
+      return;
+    }
     advancePromptQueue();
   }
 }
@@ -1153,6 +1183,7 @@ const Composer: FC<{
     Boolean(s.pendingAudioName),
   );
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const promptQueueActive = usePromptQueueUI((s) => s.isRunning);
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
@@ -1346,14 +1377,19 @@ const Composer: FC<{
         return;
       }
 
-      if (threadIsRunning) {
+      if (threadIsRunning || promptQueueActive) {
         event.preventDefault();
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
-            toast.error("Wait for the current response to finish", {
-              description:
-                "Only text prompts can be queued while a response is running.",
-            });
+            toast.error(
+              threadIsRunning
+                ? "Wait for the current response to finish"
+                : "Wait for the prompt queue to finish",
+              {
+                description:
+                  "Only text prompts can be queued while a response is running or the prompt queue is active.",
+              },
+            );
           }
           return;
         }
@@ -1361,7 +1397,11 @@ const Composer: FC<{
         flushResourcesSync(() => {
           aui.composer().setText("");
         });
-        startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+        startPromptQueue(
+          [queuedPrompt],
+          createPromptQueueTarget(),
+          threadIsRunning,
+        );
         return;
       }
 
@@ -1419,6 +1459,7 @@ const Composer: FC<{
       hasPendingAudio,
       interceptSend,
       overlay,
+      promptQueueActive,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
@@ -2761,7 +2802,7 @@ const ComposerRightControls: FC<{
           <span className="tabular-nums">Queue {queueCurrent}/{queueTotal}</span>
         </span>
       ) : null}
-      <AuiIf condition={({ thread }) => !thread.isRunning}>
+      <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
@@ -2784,6 +2825,23 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
+      {isQueueRunning ? (
+        <AuiIf condition={({ thread }) => !thread.isRunning}>
+          <TooltipIconButton
+            tooltip="Queue message"
+            side="bottom"
+            type="button"
+            variant="default"
+            size="icon"
+            disabled={disabled || queueDisabled}
+            onClick={onQueueClick}
+            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            aria-label="Queue message"
+          >
+            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+          </TooltipIconButton>
+        </AuiIf>
+      ) : null}
       <AuiIf condition={({ thread }) => thread.isRunning}>
         <div className="ml-1.5 flex items-center">
           {queueDisabled ? (
