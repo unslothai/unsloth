@@ -1536,6 +1536,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded = false;
         let blockedByTrustRemoteCode = false;
         try {

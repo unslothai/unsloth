@@ -24,20 +24,19 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
-  type ReasoningEffort,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import {
-  mergeBackendRecommendedInference,
-  resolveLoadMaxSeqLength,
-} from "../presets/preset-policy";
 import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
+import {
+  mergeBackendRecommendedInference,
+  resolveLoadMaxSeqLength,
+} from "../presets/preset-policy";
 import {
   isMultimodalResponse,
   type InferenceStatusResponse,

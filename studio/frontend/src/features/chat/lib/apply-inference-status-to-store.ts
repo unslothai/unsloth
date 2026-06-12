@@ -208,27 +208,29 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     return true;
   }
 
+  let status: InferenceStatusResponse;
   try {
-    const status = await getInferenceStatus();
-    if (!status.active_model) {
-      return false;
-    }
-
-    const checkpointId = resolveInferenceCheckpointId(status);
-    if (!checkpointId) {
-      return false;
-    }
-
-    const currentCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-    if (currentCheckpoint) {
-      return true;
-    }
-
-    const previousCheckpoint = currentCheckpoint;
-    store.setCheckpoint(checkpointId, status.gguf_variant);
-    applyActiveModelStatusToStore(status, { previousCheckpoint });
-    return true;
+    status = await getInferenceStatus();
   } catch {
+    // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
+  if (!status.active_model) {
+    return false;
+  }
+
+  const checkpointId = resolveInferenceCheckpointId(status);
+  if (!checkpointId) {
+    return false;
+  }
+
+  // Re-check after the await: keep a checkpoint the user picked meanwhile.
+  const previousCheckpoint =
+    useChatRuntimeStore.getState().params.checkpoint;
+  if (previousCheckpoint) {
+    return true;
+  }
+  store.setCheckpoint(checkpointId, status.gguf_variant);
+  applyActiveModelStatusToStore(status, { previousCheckpoint });
+  return true;
 }
