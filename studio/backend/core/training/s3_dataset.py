@@ -41,7 +41,11 @@ class S3DownloadCancelled(RuntimeError):
 
 
 class S3DatasetDownload:
-    def __init__(self, files: list[str], temp_dir: Optional[str] = None):
+    def __init__(
+        self,
+        files: list[str],
+        temp_dir: Optional[str] = None,
+    ):
         self.files = files
         self.temp_dir = temp_dir
 
@@ -189,9 +193,7 @@ def prepare_s3_dataset_download(
             local_path = _unique_local_path(target_dir, filename, used_paths)
             download_kwargs = {}
             if cancel_callback is not None:
-                download_kwargs["Callback"] = lambda _bytes: _raise_if_cancelled(
-                    cancel_callback
-                )
+                download_kwargs["Callback"] = lambda _bytes: _raise_if_cancelled(cancel_callback)
             client.download_file(bucket, key, local_path, **download_kwargs)
             _raise_if_cancelled(cancel_callback)
             local_files.append(local_path)
