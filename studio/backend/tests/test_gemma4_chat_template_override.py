@@ -36,8 +36,10 @@ resolve_effective_chat_template_override = (
     chat_templates.resolve_effective_chat_template_override
 )
 load_bundled_chat_template = chat_templates.load_bundled_chat_template
+is_unsloth_gemma4_edge_gguf = chat_templates.is_unsloth_gemma4_edge_gguf
 
-BUNDLED = load_bundled_chat_template("gemma-4.jinja")
+BUNDLED = load_bundled_chat_template("gemma-4.jinja")        # 12b / 26B-A4B / 31B
+EDGE = load_bundled_chat_template("gemma-4-edge.jinja")      # E2B / E4B
 
 
 # ── Stubs so detect_reasoning_flags imports without the full studio venv ──
@@ -91,11 +93,34 @@ def test_is_unsloth_gemma4_gguf(model_id, expected):
 # ── Resolver precedence ──────────────────────────────────────────────
 
 
-def test_resolver_returns_bundled_for_gemma4_gguf():
-    out = resolve_effective_chat_template_override(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF", user_override=None
-    )
-    assert out == BUNDLED
+@pytest.mark.parametrize(
+    "model_id,expected_edge",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-GGUF", True),
+        ("UNSLOTH/GEMMA-4-E4B-IT-GGUF", True),
+        ("unsloth/gemma-4-12b-it-GGUF", False),
+        ("unsloth/gemma-4-26B-A4B-it-GGUF", False),
+        ("unsloth/gemma-4-31B-it-GGUF", False),
+        ("unsloth/gemma-3-4b-it-GGUF", False),
+    ],
+)
+def test_is_unsloth_gemma4_edge_gguf(model_id, expected_edge):
+    assert is_unsloth_gemma4_edge_gguf(model_id) is expected_edge
+
+
+def test_resolver_returns_edge_template_for_e2b_e4b():
+    for mid in ("unsloth/gemma-4-E2B-it-GGUF", "unsloth/gemma-4-E4B-it-GGUF"):
+        out = resolve_effective_chat_template_override(model_identifier=mid, user_override=None)
+        assert out == EDGE
+        assert out != BUNDLED
+
+
+def test_resolver_returns_standard_template_for_larger_models():
+    for mid in ("unsloth/gemma-4-12b-it-GGUF", "unsloth/gemma-4-26B-A4B-it-GGUF",
+                "unsloth/gemma-4-31B-it-GGUF"):
+        out = resolve_effective_chat_template_override(model_identifier=mid, user_override=None)
+        assert out == BUNDLED
 
 
 def test_resolver_user_override_wins():
@@ -107,7 +132,7 @@ def test_resolver_user_override_wins():
 
 def test_resolver_blank_override_falls_back_to_bundled():
     out = resolve_effective_chat_template_override(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF", user_override="   "
+        model_identifier="unsloth/gemma-4-31B-it-GGUF", user_override="   "
     )
     assert out == BUNDLED
 
@@ -124,14 +149,16 @@ def test_resolver_none_for_non_gemma():
 # ── Bundled asset content + capability classification ────────────────
 
 
-def test_bundled_template_has_preserve_thinking_defaulted_off():
-    assert "preserve_thinking" in BUNDLED
-    assert "preserve_thinking | default(false)" in BUNDLED
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_bundled_template_has_preserve_thinking_defaulted_off(tpl):
+    assert "preserve_thinking" in tpl
+    assert "preserve_thinking | default(false)" in tpl
 
 
-def test_detect_reasoning_flags_on_bundled_template():
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_detect_reasoning_flags_on_bundled_template(tpl):
     detect_reasoning_flags = _detect_reasoning_flags()
-    flags = detect_reasoning_flags(BUNDLED, "unsloth/gemma-4-E2B-it-GGUF")
+    flags = detect_reasoning_flags(tpl, "unsloth/gemma-4-E2B-it-GGUF")
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking"
     assert flags["reasoning_always_on"] is False
@@ -140,20 +167,38 @@ def test_detect_reasoning_flags_on_bundled_template():
     assert flags["supports_tools"] is True
 
 
+def test_edge_template_omits_empty_thought_block_on_thinking_off():
+    """E2B/E4B must NOT emit the empty <|channel>thought<channel|> block when
+    thinking is disabled; the larger-model template must. This is the only
+    intended difference between the two bundled templates."""
+    EMPTY = "<|channel>thought\n<channel|>"
+    msgs = [{"role": "user", "content": "hi"}]
+    edge_off = _render_with(EDGE, msgs, enable_thinking=False)
+    std_off = _render_with(BUNDLED, msgs, enable_thinking=False)
+    assert EMPTY not in edge_off, "edge (E2B/E4B) should not emit empty thought block"
+    assert EMPTY in std_off, "standard (12b/26B/31B) should emit empty thought block"
+    # With thinking ON neither appends the empty block at the prompt tail.
+    assert EMPTY not in _render_with(EDGE, msgs, enable_thinking=True)
+
+
 # ── Jinja gate behaviour (off = omit prior reasoning, on = keep) ─────
 
 
-def _render(messages, **kw):
+def _render_with(tpl, messages, **kw):
     from jinja2 import Environment, BaseLoader
 
     def raise_exception(msg):
         raise RuntimeError(msg)
 
     env = Environment(loader=BaseLoader())
-    return env.from_string(BUNDLED).render(
+    return env.from_string(tpl).render(
         messages=messages, bos_token="<bos>", raise_exception=raise_exception,
         add_generation_prompt=True, **kw,
     )
+
+
+def _render(messages, **kw):
+    return _render_with(BUNDLED, messages, **kw)
 
 
 def _convo_with_prior_tool_reasoning():

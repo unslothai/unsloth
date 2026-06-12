@@ -30,7 +30,14 @@ _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 # non-Unsloth, and non-GGUF identifiers (e.g. the bf16 "unsloth/gemma-4-E2B-it").
 _GEMMA4_GGUF_RE = re.compile(r"^unsloth/gemma-4-.+-gguf$", re.IGNORECASE)
 
-_GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"
+# Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty
+# "<|channel>thought<channel|>" block on enable_thinking=false, while the
+# 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching
+# bundled template so each keeps its model's intended behavior.
+_GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it-gguf$", re.IGNORECASE)
+
+_GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"            # 12b / 26B-A4B / 31B
+_GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"  # E2B / E4B
 
 
 def is_unsloth_gemma4_gguf(model_identifier: Optional[str]) -> bool:
@@ -38,6 +45,22 @@ def is_unsloth_gemma4_gguf(model_identifier: Optional[str]) -> bool:
     if not model_identifier:
         return False
     return bool(_GEMMA4_GGUF_RE.match(model_identifier.strip()))
+
+
+def is_unsloth_gemma4_edge_gguf(model_identifier: Optional[str]) -> bool:
+    """True for the E2B / E4B GGUF repos, which use the edge-variant template."""
+    if not model_identifier:
+        return False
+    return bool(_GEMMA4_EDGE_GGUF_RE.match(model_identifier.strip()))
+
+
+def _gemma4_template_file(model_identifier: Optional[str]) -> Optional[str]:
+    """Return the bundled template filename for a gemma-4 GGUF id, else None."""
+    if is_unsloth_gemma4_edge_gguf(model_identifier):
+        return _GEMMA4_EDGE_TEMPLATE_FILE
+    if is_unsloth_gemma4_gguf(model_identifier):
+        return _GEMMA4_TEMPLATE_FILE
+    return None
 
 
 @lru_cache(maxsize=8)
@@ -55,9 +78,10 @@ def resolve_effective_chat_template_override(
 
     Precedence:
       1. An explicit, non-empty user override always wins (advanced users).
-      2. For ``unsloth/gemma-4-*-GGUF``, return the bundled ``gemma-4.jinja``
+      2. For ``unsloth/gemma-4-*-GGUF``, return the bundled gemma-4 template
          (adds ``preserve_thinking``, default off) so the embedded GGUF template
-         is overridden without re-downloading quants.
+         is overridden without re-downloading quants. E2B/E4B get the edge
+         variant; 12b/26B-A4B/31B get the standard one.
       3. Otherwise ``None`` -> llama-server renders the GGUF's embedded template.
 
     The result is fed to ``LlamaCppBackend.load_model(chat_template_override=...)``
@@ -66,6 +90,7 @@ def resolve_effective_chat_template_override(
     """
     if user_override and user_override.strip():
         return user_override
-    if is_unsloth_gemma4_gguf(model_identifier):
-        return load_bundled_chat_template(_GEMMA4_TEMPLATE_FILE)
+    template_file = _gemma4_template_file(model_identifier)
+    if template_file is not None:
+        return load_bundled_chat_template(template_file)
     return None
