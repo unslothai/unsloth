@@ -72,7 +72,7 @@ class LoadRequest(BaseModel):
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "still accepted. Ignored for non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -180,7 +180,7 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -361,6 +361,17 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it. None when MTP engaged or was not "
+            "requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -550,8 +561,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -648,7 +661,8 @@ class ChatCompletionRequest(BaseModel):
         None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None,
+        description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
@@ -697,6 +711,16 @@ class ChatCompletionRequest(BaseModel):
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
+    )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
         ge = 0,
@@ -710,6 +734,16 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
+            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "autoinject_min_score?}. Candidate pools and the RRF constant come from "
+            "server config. The model never sees this; the server resolves which "
+            "documents to search."
+        ),
     )
     cancel_id: Optional[str] = Field(
         None,

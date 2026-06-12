@@ -23,6 +23,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
@@ -205,6 +206,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
@@ -624,6 +626,44 @@ class TestLoopBehaviour:
             event.get("type") == "content" and "final from first result" in event.get("text", "")
             for event in events
         )
+
+    def test_kb_search_capped_per_turn(self):
+        # Paraphrased KB searches differ by args (dup guard misses them); the
+        # per-turn cap stops the runaway re-search loop.
+        n = RAG_MAX_SEARCHES_PER_TURN
+        queries = [f"paraphrase {i}" for i in range(n + 1)]
+        turns = [
+            [
+                '<tool_call>{"name":"search_knowledge_base",'
+                f'"arguments":{{"query":"{q}"}}}}</tool_call>'
+            ]
+            for q in queries
+        ] + [["final answer"]]
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([f"chunk-{i}" for i in range(n)])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        assert len(exec_fn.calls) == n
+        assert all(c[0] == "search_knowledge_base" for c in exec_fn.calls)
+        tool_end_events = [e for e in events if e["type"] == "tool_end"]
+        assert len(tool_end_events) == n + 1
+        assert "do not search again" in tool_end_events[n]["result"].lower()
 
     def test_image_sentinel_stripped_from_model_feed(self):
         # The image sentinel is stripped before the next turn, but tool_end still

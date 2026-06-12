@@ -3,6 +3,7 @@
 
 import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
+import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
@@ -33,6 +34,7 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  type RagAutoInject,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -73,6 +75,18 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+
+// Small models (<=9B) answer from memory instead of calling search, so "auto"
+// forces retrieval for them and leaves it to larger ones.
+const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  const size = parseParamCountB(checkpoint);
+  // Unknown size -> enable.
+  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
+}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -972,24 +986,51 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Message content parts (compare view CompareMessagePart type: "audio").
+function extractAudioPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "audio" || !("audio" in part)) return undefined;
+  const audioPart = (
+    part as unknown as {
+      type: "audio";
+      audio: string | { data: string; format: string };
+    }
+  ).audio;
+  const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+  if (!raw) return undefined;
+  return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+}
+
+// Exported for tests.
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
+    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (
-          part as unknown as {
-            type: "audio";
-            audio: string | { data: string; format: string };
-          }
-        ).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      const base64 = extractAudioPartBase64(part);
+      if (base64) return base64;
+    }
+
+    // Attachment content parts (from AudioAttachmentAdapter)
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractAudioPartBase64(part);
+          if (base64) return base64;
+        }
       }
     }
+
+    // Only the newest user message counts. audio_base64 switches the
+    // backend onto the audio generation path, so replaying audio from an
+    // older turn would hijack text follow-ups (Whisper would retranscribe
+    // the stale clip). Matches the consumed-on-send semantics of the
+    // legacy pendingAudio path.
+    break;
   }
 
   // Runtime store (main composer's audio upload).
@@ -1471,6 +1512,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         webFetchToolsEnabled,
+        ragEnabled,
+        ragSource,
+        ragMode,
+        ragTopK,
+        ragAutoInject,
+        ragAutoInjectMinScore,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
@@ -2372,10 +2419,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat)
+              mcpEnabledForChat ||
+              ragEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // First so retrieval is the primary tool when Docs is on.
+                    ...(ragEnabled ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(renderHtmlToolEnabledForThisTurn
@@ -2383,6 +2433,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  // Scope: thread_id = this thread's docs, kb_id = a KB.
+                  ...(ragEnabled
+                    ? {
+                        rag_scope: {
+                          ...(ragSource.type === "kb"
+                            ? { kb_id: ragSource.kbId }
+                            : resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          default_top_k: ragTopK,
+                          mode: ragMode,
+                          autoinject: resolveAutoInject(
+                            ragAutoInject,
+                            params.checkpoint,
+                          ),
+                          autoinject_min_score: ragAutoInjectMinScore,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

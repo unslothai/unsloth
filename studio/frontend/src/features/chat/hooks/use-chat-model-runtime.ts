@@ -142,6 +142,50 @@ function toChatModelSummary(model: {
   };
 }
 
+// Merge capability flags from a load/status response into the matching
+// models[] entry. /api/models/list omits audio capability for default and
+// active-GGUF entries, so the attach gates (`activeModel?.hasAudioInput`)
+// would otherwise stay false. Mirrors the compare composer's sync.
+// Exported for tests.
+export function syncModelCapabilities(
+  modelId: string,
+  resp: {
+    display_name?: string | null;
+    is_vision?: boolean;
+    is_lora?: boolean;
+    is_gguf?: boolean;
+    is_audio?: boolean;
+    audio_type?: string | null;
+    has_audio_input?: boolean;
+  },
+): void {
+  const store = useChatRuntimeStore.getState();
+  const models = store.models;
+  const synced = {
+    isVision: Boolean(resp.is_vision),
+    isGguf: Boolean(resp.is_gguf),
+    isAudio: Boolean(resp.is_audio),
+    audioType: resp.audio_type ?? null,
+    hasAudioInput: Boolean(resp.has_audio_input),
+  };
+  const idx = models.findIndex((m) => m.id === modelId);
+  if (idx === -1) {
+    store.setModels([
+      ...models,
+      {
+        id: modelId,
+        name: resp.display_name || modelId,
+        isLora: Boolean(resp.is_lora),
+        ...synced,
+      },
+    ]);
+  } else {
+    const next = [...models];
+    next[idx] = { ...next[idx], ...synced };
+    store.setModels(next);
+  }
+}
+
 function toLoraSummary(lora: {
   display_name: string;
   adapter_path: string;
@@ -368,6 +412,7 @@ export function useChatModelRuntime() {
             statusRes.requires_trust_remote_code ?? false,
           defaultChatTemplate: nextDefaultChatTemplate,
           loadedIsMultimodal: isMultimodalResponse(statusRes),
+          specFallbackReason: statusRes.spec_fallback_reason ?? null,
           ...(prevState.loadedSpeculativeType === null && {
             speculativeType: currentSpecType,
             loadedSpeculativeType: currentSpecType,
@@ -395,6 +440,9 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: statusRes.chat_template_override,
             }),
         });
+        // setModels(listRes...) above used catalog data, which omits audio
+        // capability. Re-apply live status so attach gates survive a refresh.
+        syncModelCapabilities(statusRes.active_model, statusRes);
 
         // Set reasoning default for Qwen3.5/3.6 small models
         if (
@@ -746,6 +794,8 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               activeNativePathToken: nativePathToken ?? null,
             });
+            // Unlock attach menus for capabilities the catalog entry lacked.
+            syncModelCapabilities(modelId, loadResponse);
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (
               modelId.toLowerCase().includes("qwen3") &&

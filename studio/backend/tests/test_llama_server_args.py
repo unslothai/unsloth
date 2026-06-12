@@ -618,6 +618,20 @@ def test_strip_shadowing_flags_drops_split_mode_when_requested():
     assert out == ["--top-k", "20"]
 
 
+def test_strip_shadowing_flags_drops_model_draft_with_spec():
+    # --model-draft (and aliases) are Studio-managed since the separate
+    # MTP drafter support: an inherited copy must not last-wins-override
+    # the auto-detected drafter.
+    out = strip_shadowing_flags(
+        ["--model-draft", "/old/mtp.gguf", "-md", "/old2.gguf", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
 def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
     # No tensor_parallel field supplied on the Apply -> an inherited
     # --split-mode survives (mirrors the chat-template keep behavior).
@@ -667,3 +681,14 @@ def test_strip_split_mode_only_preserves_none_and_empty():
     # None means "inherit"; [] means "explicit empty" -- both must round-trip.
     assert strip_split_mode_only(None) is None
     assert strip_split_mode_only([]) == []
+
+
+def test_strip_shadowing_flags_keeps_model_draft_without_spec():
+    out = strip_shadowing_flags(
+        ["--model-draft", "/custom/mtp.gguf"],
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["--model-draft", "/custom/mtp.gguf"]

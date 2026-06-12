@@ -133,7 +133,13 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
-        # MTP path (llama.cpp #22673).
+        # MTP path (llama.cpp #22673). --model-draft and aliases are
+        # Studio-managed since the separate-drafter support (Gemma 4): an
+        # inherited copy must not last-wins-override the auto-detected
+        # drafter. Explicit extras for the current load are never stripped.
+        "--model-draft",
+        "-md",
+        "--spec-draft-model",
         "--spec-draft-n-max",
         "--spec-draft-n-min",
         "--spec-draft-p-min",

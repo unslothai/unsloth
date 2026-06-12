@@ -725,8 +725,6 @@ export const ModelInspector = memo(function ModelInspector({
           />
         )}
       </div>
-
-      <div aria-hidden="true" className="h-3 shrink-0" />
     </div>
   );
 });
