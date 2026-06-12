@@ -205,7 +205,7 @@ if [ -z "$STUDIO_CID" ]; then
 else
   info "container : ${STUDIO_CID:0:12} (studio http://localhost:$PORT_STUDIO, jupyter http://localhost:$PORT_JUPYTER)"
   ok_studio=0; ok_jupyter=0
-  for i in $(seq 1 60); do
+  for _ in $(seq 1 60); do
     if [ "$ok_studio" = 0 ] && curl -fsS "http://localhost:$PORT_STUDIO/api/health" >/dev/null 2>&1; then ok_studio=1; fi
     if [ "$ok_jupyter" = 0 ] && curl -fsS "http://localhost:$PORT_JUPYTER/api" >/dev/null 2>&1; then ok_jupyter=1; fi
     [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
