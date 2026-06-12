@@ -181,6 +181,16 @@ def test_bundled_template_has_preserve_thinking_defaulted_off(tpl):
     assert "preserve_thinking | default(false)" in tpl
 
 
+@pytest.mark.parametrize("name", ["gemma-4.jinja", "gemma-4-edge.jinja"])
+def test_bundled_templates_are_ascii(name):
+    # The temp file written for --chat-template-file must encode on any locale.
+    # Keeping the bundled templates ASCII avoids UnicodeEncodeError on non-UTF-8
+    # Windows locales (cp932/cp1252) regardless of the writer's encoding.
+    text = load_bundled_chat_template(name)
+    non_ascii = sorted({c for c in text if ord(c) > 127})
+    assert not non_ascii, f"{name} has non-ASCII chars: {non_ascii}"
+
+
 @pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
 def test_detect_reasoning_flags_on_bundled_template(tpl):
     detect_reasoning_flags = _detect_reasoning_flags()

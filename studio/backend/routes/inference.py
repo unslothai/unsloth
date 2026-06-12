@@ -1558,7 +1558,13 @@ async def load_model(
                 else:
                     # Strip only the groups whose first-class field was set by
                     # the caller, so an inherited --chat-template-file survives
-                    # an Apply that omits chat_template_override.
+                    # an Apply that omits chat_template_override. A bundled family
+                    # template (e.g. the gemma-4 override) is an effective
+                    # first-class template setting even when the raw request
+                    # omits chat_template_override, so strip the inherited
+                    # --chat-template-file in that case too -- otherwise the stale
+                    # extra arg (appended last) shadows the bundled template while
+                    # Studio reports the bundled template's capabilities.
                     fields_set = getattr(request, "model_fields_set", set())
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
@@ -1567,7 +1573,10 @@ async def load_model(
                         strip_spec = (
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
-                        strip_template = "chat_template_override" in fields_set,
+                        strip_template = (
+                            "chat_template_override" in fields_set
+                            or effective_chat_template_override is not None
+                        ),
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
@@ -2175,6 +2184,21 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
+            # Don't surface Studio's auto-applied bundled family template (e.g. the
+            # gemma-4 override) as a user-authored override: the frontend adopts
+            # status.chat_template_override as editable state and would otherwise
+            # re-send it as an explicit override for a later, unrelated model. Only
+            # expose a genuine user override.
+            _reported_chat_template_override = llama_backend.chat_template_override
+            _auto_chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = _model_id,
+                user_override = None,
+            )
+            if (
+                _auto_chat_template_override is not None
+                and _reported_chat_template_override == _auto_chat_template_override
+            ):
+                _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
@@ -2200,7 +2224,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
-                chat_template_override = llama_backend.chat_template_override,
+                chat_template_override = _reported_chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,

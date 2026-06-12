@@ -3712,6 +3712,7 @@ class LlamaCppBackend:
 
                     self._chat_template_file = tempfile.NamedTemporaryFile(
                         mode = "w",
+                        encoding = "utf-8",
                         suffix = ".jinja",
                         delete = False,
                         prefix = "unsloth_chat_template_",
