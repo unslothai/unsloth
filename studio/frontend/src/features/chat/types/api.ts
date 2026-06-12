@@ -114,6 +114,7 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -152,6 +153,7 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -293,9 +295,10 @@ export interface OpenAIChatCompletionsRequest {
   mcp_enabled?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
-  /** Exactly one of `kb_id` (a KB) or `thread_id` (thread docs). */
+  /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;
+    project_id?: string;
     thread_id?: string;
     default_top_k: number;
     mode: "hybrid" | "lexical" | "dense";
