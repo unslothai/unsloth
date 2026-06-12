@@ -408,8 +408,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ffmpeg: torchcodec (datasets' audio decode path, pip-installed by the
 # TTS/STT notebooks) dlopens the system FFmpeg libraries; the wheel does not
 # bundle them, so without ffmpeg every audio notebook dies at load_dataset.
+# wget: notebooks fetch sample assets with `!wget URL`; without it the cell
+# "succeeds" with sh's not-found on stderr and the next cell crashes on the
+# missing file (the Whisper notebook died exactly this way).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common ca-certificates curl git libgomp1 \
+        software-properties-common ca-certificates curl wget git libgomp1 \
         gcc g++ zstd ffmpeg \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
