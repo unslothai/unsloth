@@ -2854,7 +2854,7 @@ def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_
 
 
 def test_validate_prebuilt_choice_hashless_build_always_validated(tmp_path, monkeypatch):
-    # A hashless external build (e.g. lemonade) has no approved sha256, so the
+    # A hashless external build has no approved sha256, so the
     # functional smoke test is its only integrity gate and must run even while the
     # flag is off -- otherwise a corrupted/replaced archive could be activated.
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
