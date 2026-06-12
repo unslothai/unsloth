@@ -2433,14 +2433,20 @@ class LlamaCppBackend:
         import os
         import sys
 
-        # Visual-server binary: env override, else the install tree (sibling of llama-server).
+        # Visual-server binary: env override, else next to llama-server or in the
+        # install's build/bin (where the prebuilt/installer puts it). .exe on Windows.
         visual_bin = os.environ.get("DG_VISUAL_BIN")
         if not visual_bin:
+            name = "llama-diffusion-gemma-visual-server" + (".exe" if os.name == "nt" else "")
             base = self._find_llama_server_binary()
             if base:
-                cand = Path(base).parent / "llama-diffusion-gemma-visual-server"
-                if cand.is_file():
-                    visual_bin = str(cand)
+                base_dir = Path(base).parent
+                for cand in (base_dir / name,
+                             base_dir / "build" / "bin" / name,
+                             base_dir / "build" / "bin" / "Release" / name):
+                    if cand.is_file():
+                        visual_bin = str(cand)
+                        break
         if not (visual_bin and Path(visual_bin).is_file()):
             return None
 
@@ -2520,7 +2526,8 @@ class LlamaCppBackend:
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
         # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
         if extra_pythonpath:
-            env["PYTHONPATH"] = extra_pythonpath + os.pathsep + env.get("PYTHONPATH", "")
+            existing = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = (extra_pythonpath + os.pathsep + existing) if existing else extra_pythonpath
 
         logger.info(f"Starting DiffusionGemma runner: {' '.join(cmd)}")
         self._stdout_lines = []
@@ -2538,7 +2545,7 @@ class LlamaCppBackend:
         # PR_SET_PDEATHSIG: the shim (and its visual server) die with this backend
         # process, so a Studio crash/restart never orphans a GPU process.
         popen_kwargs = dict(_windows_hidden_subprocess_kwargs())
-        if os.name == "posix":
+        if sys.platform.startswith("linux"):  # prctl/libc.so.6 are Linux-only
 
             def _pdeathsig():
                 try:
@@ -2567,6 +2574,7 @@ class LlamaCppBackend:
         self._gguf_path = model_path
         self._hf_repo = hf_repo
         self._is_vision = False
+        self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
         self._gpu_offload_active = True
