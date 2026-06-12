@@ -5324,9 +5324,13 @@ def _build_chat_request(
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
         if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
-            chat_kwargs["reasoning_effort"] = effort
             if not explicit_enable_thinking:
+                chat_kwargs["reasoning_effort"] = effort
                 chat_kwargs["enable_thinking"] = effort != "none"
+            elif chat_kwargs.get("enable_thinking") is False:
+                chat_kwargs["reasoning_effort"] = "none"
+            elif effort != "none":
+                chat_kwargs["reasoning_effort"] = effort
 
     return ChatCompletionRequest(**chat_kwargs)
 
@@ -5396,6 +5400,8 @@ async def _responses_non_streaming(
     # the model produced content, so clients expecting a pure tool-call turn
     # (finish_reason="tool_calls") don't see a spurious empty message item.
     output_items: list[dict] = []
+    if reasoning_text and not text and not tool_calls:
+        text = reasoning_text
     if reasoning_text:
         output_items.append(_responses_reasoning_output_item(reasoning_text))
     if text:
@@ -5879,6 +5885,20 @@ async def _responses_stream(
                     "output_index": message_state["output_index"],
                     "content_index": 0,
                     "delta": final_visible,
+                },
+            )
+        if full_reasoning and not full_text and not tool_call_state:
+            for event in _ensure_message_open():
+                yield event
+            full_text = full_reasoning
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": full_text,
                 },
             )
 

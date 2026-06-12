@@ -327,7 +327,7 @@ class TestBuildChatRequest:
         assert chat_req.reasoning_effort == "none"
         assert chat_req.enable_thinking is False
 
-    def test_explicit_enable_thinking_wins_over_reasoning_effort(self):
+    def test_explicit_enable_thinking_false_disables_reasoning_effort(self):
         payload = ResponsesRequest(
             input = "hi",
             reasoning = {"effort": "high"},
@@ -337,7 +337,7 @@ class TestBuildChatRequest:
 
         chat_req = _build_chat_request(payload, messages, stream = False)
 
-        assert chat_req.reasoning_effort == "high"
+        assert chat_req.reasoning_effort == "none"
         assert chat_req.enable_thinking is False
 
 
@@ -681,7 +681,7 @@ class TestResponsesNonStreamingAdapter:
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "33"
 
-    def test_reasoning_only_does_not_emit_empty_message(self, monkeypatch):
+    def test_reasoning_only_is_also_visible_message_text(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
@@ -689,8 +689,9 @@ class TestResponsesNonStreamingAdapter:
             payload = payload,
         )
 
-        assert [item["type"] for item in body["output"]] == ["reasoning"]
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
         assert body["output"][0]["content"][0]["text"] == "plan"
+        assert body["output"][1]["content"][0]["text"] == "plan"
 
 
 # =====================================================================
@@ -811,6 +812,33 @@ class TestResponsesStreamAdapter:
         assert completed["response"]["output"][0]["content"][0]["text"] == (
             "show <think>x</think> tags"
         )
+
+    def test_reasoning_only_streams_as_visible_message_text(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "<think>plan</think>"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == "plan"
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "message",
+        ]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
+        assert completed["response"]["output"][1]["content"][0]["text"] == "plan"
 
     def test_structured_reasoning_content_streams_as_reasoning(self, monkeypatch):
         chunks = [
