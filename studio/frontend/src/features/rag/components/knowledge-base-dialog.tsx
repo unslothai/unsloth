@@ -24,16 +24,20 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
 
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+
 import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   listKnowledgeBaseDocuments,
   listKnowledgeBases,
+  retryRagSetup,
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT, type KnowledgeBase } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
+import { useRagStatus } from "./use-rag-status";
 
 type View =
   | { kind: "list" }
@@ -57,11 +61,21 @@ export function KnowledgeBaseDialog({
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Poll RAG status while the dialog is open; this also triggers the one-time
+  // background install of the RAG deps when they are missing.
+  useRagStatus(open);
+  const ragAvailable = useChatRuntimeStore((s) => s.ragAvailable);
+  const ragInstalling = useChatRuntimeStore((s) => s.ragInstalling);
+  const ragSetupError = useChatRuntimeStore((s) => s.ragSetupError);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
       setKbs(await listKnowledgeBases());
     } catch (err) {
+      // While the deps are still installing the list endpoint 503s; the setup
+      // notice already explains that, so don't also toast.
+      if (useChatRuntimeStore.getState().ragAvailable === false) return;
       toast.error("Failed to load knowledge bases", {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -75,6 +89,11 @@ export function KnowledgeBaseDialog({
     setView({ kind: "list" });
     void refresh();
   }, [open, refresh]);
+
+  // Reload once the deps finish installing and RAG flips to available.
+  useEffect(() => {
+    if (open && ragAvailable === true) void refresh();
+  }, [open, ragAvailable, refresh]);
 
   function startCreate() {
     setName("");
@@ -162,6 +181,16 @@ export function KnowledgeBaseDialog({
 
         {view.kind === "documents" ? (
           <KnowledgeBaseDocuments kb={view.kb} onBack={backToList} />
+        ) : ragAvailable === false ? (
+          <RagSetupNotice
+            installing={ragInstalling}
+            error={ragSetupError}
+            onRetry={() => {
+              void retryRagSetup().then((s) =>
+                useChatRuntimeStore.getState().setRagStatus(s),
+              );
+            }}
+          />
         ) : showForm ? (
           <div className="flex flex-col gap-4">
             <div className="grid gap-2">
@@ -256,6 +285,38 @@ export function KnowledgeBaseDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RagSetupNotice({
+  installing,
+  error,
+  onRetry,
+}: {
+  installing: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  if (error && !installing) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-md border border-dashed py-10 text-center">
+        <p className="text-sm font-medium">RAG setup failed</p>
+        <p className="max-w-md text-xs text-muted-foreground">{error}</p>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed py-10 text-center">
+      <Spinner />
+      <p className="text-sm font-medium">Setting up RAG (installing dependencies)…</p>
+      <p className="max-w-md text-xs text-muted-foreground">
+        This runs once and takes a moment. This view updates automatically when
+        it is ready.
+      </p>
+    </div>
   );
 }
 

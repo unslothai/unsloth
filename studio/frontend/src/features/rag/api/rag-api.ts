@@ -52,6 +52,23 @@ async function ragUpload(path: string, file: File): Promise<DocumentUploadResult
   return json as DocumentUploadResult;
 }
 
+export interface RagStatus {
+  available: boolean;
+  installing: boolean;
+  missing: string[];
+  error: string | null;
+}
+
+// Always 200; reports RAG availability + on-demand dependency install state.
+export function getRagStatus(): Promise<RagStatus> {
+  return ragRequest<RagStatus>("/status");
+}
+
+// Force-retry the dependency install after a failure (the UI Retry button).
+export function retryRagSetup(): Promise<RagStatus> {
+  return ragRequest<RagStatus>("/install", { method: "POST" });
+}
+
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const data = await ragRequest<{ knowledgeBases: KnowledgeBase[] }>(
     "/knowledge-bases",

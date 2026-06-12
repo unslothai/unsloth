@@ -20,6 +20,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { listKnowledgeBases } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
+import { useRagStatus } from "./use-rag-status";
 
 // Matches the Thinking/MCP pill chevron.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -50,6 +51,11 @@ export function KnowledgeBaseComposerButton({
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+
+  // Enabling RAG starts the one-time background dep install (status poll is the
+  // trigger). When still unavailable the menu shows a "setting up" line.
+  useRagStatus(ragEnabled);
+  const ragAvailable = useChatRuntimeStore((s) => s.ragAvailable);
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [kbsLoaded, setKbsLoaded] = useState(false);
@@ -141,6 +147,11 @@ export function KnowledgeBaseComposerButton({
           avoidCollisions={true}
           className="unsloth-plus-menu mcp-menu w-[232px]"
         >
+          {ragAvailable === false ? (
+            <DropdownMenuLabel className="font-normal text-muted-foreground">
+              Setting up RAG (installing dependencies)…
+            </DropdownMenuLabel>
+          ) : null}
           <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
           <DropdownMenuItem
             onSelect={() => setRagSource({ type: "thread" })}

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.rag import config, ingestion, retrieval, store
+from core.rag import config, deps, ingestion, retrieval, store
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
@@ -34,11 +34,38 @@ router = APIRouter()
 
 
 def _require_rag() -> None:
-    if not rag_db.RAG_AVAILABLE:
-        raise HTTPException(
-            status_code = 503,
-            detail = "RAG is unavailable: the sqlite-vec extension could not be loaded.",
-        )
+    """Gate every RAG endpoint. When unavailable, start a one-time background
+    install of the RAG deps and 503 with the current state, so the UI can poll
+    /status and retry once it finishes."""
+    if rag_db.RAG_AVAILABLE or rag_db.refresh_rag_available():
+        return
+    deps.ensure_async()
+    st = deps.status()
+    if st["installing"]:
+        detail = "Setting up RAG (installing dependencies). Please retry shortly."
+    elif st["error"]:
+        detail = f"RAG setup failed: {st['error']}"
+    else:
+        detail = "RAG is unavailable: the sqlite-vec extension could not be loaded."
+    raise HTTPException(status_code = 503, detail = detail)
+
+
+@router.get("/status")
+def rag_status(subject: str = Depends(get_current_subject)) -> dict:
+    """RAG availability + dependency-install state for the UI to poll. Triggers
+    the background install when unavailable (idempotent)."""
+    if not (rag_db.RAG_AVAILABLE or rag_db.refresh_rag_available()):
+        deps.ensure_async()
+    return deps.status()
+
+
+@router.post("/install")
+def rag_install(subject: str = Depends(get_current_subject)) -> dict:
+    """Force a retry of the RAG dependency install (the UI Retry button),
+    clearing a prior sticky failure."""
+    if not (rag_db.RAG_AVAILABLE or rag_db.refresh_rag_available()):
+        deps.ensure_async(force = True)
+    return deps.status()
 
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")

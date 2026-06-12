@@ -397,6 +397,10 @@ type ChatRuntimeStore = {
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
+  // Backend RAG availability + on-demand dependency-install state (null = unknown).
+  ragAvailable: boolean | null;
+  ragInstalling: boolean;
+  ragSetupError: string | null;
   ragSource: RagSource;
   ragMode: RagMode;
   ragTopK: number;
@@ -522,6 +526,11 @@ type ChatRuntimeStore = {
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
+  setRagStatus: (s: {
+    available: boolean;
+    installing: boolean;
+    error: string | null;
+  }) => void;
   setRagSource: (source: RagSource) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
@@ -793,6 +802,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
+  ragAvailable: null,
+  ragInstalling: false,
+  ragSetupError: null,
   ragSource: loadRagSource(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
@@ -1159,6 +1171,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { webFetchToolsEnabled };
     }),
   setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagStatus: ({ available, installing, error }) =>
+    set(() => ({
+      ragAvailable: available,
+      ragInstalling: installing,
+      ragSetupError: error,
+    })),
   setRagSource: (ragSource) =>
     set(() => {
       saveRagSource(ragSource);

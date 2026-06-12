@@ -14,6 +14,7 @@ by ensure_vec once the embedding dim is known, since vec0 bakes the dim into the
 column type).
 """
 
+import importlib
 import logging
 import sqlite3
 import threading
@@ -22,14 +23,41 @@ logger = logging.getLogger(__name__)
 
 from utils.paths import rag_db_path, ensure_dir
 
-# Optional dep: import must never crash this module (imported unconditionally).
-try:
-    import sqlite_vec
-    RAG_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
-    sqlite_vec = None
-    RAG_AVAILABLE = False
-    logger.warning("RAG unavailable: sqlite-vec could not be imported (%s)", exc)
+# Optional dep: never crash on import. Module globals so a runtime install
+# (core/rag/deps.py) can re-enable RAG via refresh_rag_available(), no restart.
+sqlite_vec = None
+RAG_AVAILABLE = False
+_import_lock = threading.Lock()
+
+
+def _try_import_sqlite_vec() -> bool:
+    global sqlite_vec, RAG_AVAILABLE
+    try:
+        import sqlite_vec as _sv
+    except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
+        sqlite_vec, RAG_AVAILABLE = None, False
+        logger.warning("RAG unavailable: sqlite-vec could not be imported (%s)", exc)
+    else:
+        sqlite_vec, RAG_AVAILABLE = _sv, True
+    return RAG_AVAILABLE
+
+
+def refresh_rag_available() -> bool:
+    """Re-attempt the sqlite-vec import after a possible runtime install.
+
+    Fast no-op once available; otherwise invalidates import caches and retries
+    (a failed import is never cached in sys.modules). Thread-safe.
+    """
+    if RAG_AVAILABLE:
+        return True
+    with _import_lock:
+        if RAG_AVAILABLE:
+            return True
+        importlib.invalidate_caches()
+        return _try_import_sqlite_vec()
+
+
+_try_import_sqlite_vec()
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
