@@ -177,7 +177,8 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
   return (
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
-    providerType === "vllm"
+    providerType === "vllm" ||
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }
 
@@ -942,12 +943,17 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    // Hosted registry providers require keys. Local presets and generic
-    // OpenAI-compatible custom endpoints may be keyless.
+    if (provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
+      toast.info(
+        "Custom connections are checked when you send a chat message. Use Load available models if the server exposes /models.",
+      );
+      return;
+    }
+    // Hosted registry providers require keys. Local OpenAI-compatible presets
+    // may be keyless.
     if (
       !savedKey &&
-      !supportsRemoteModelCatalog(provider.providerType) &&
-      provider.providerType !== LEGACY_CUSTOM_PROVIDER_TYPE
+      !supportsRemoteModelCatalog(provider.providerType)
     ) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);

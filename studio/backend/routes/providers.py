@@ -190,7 +190,8 @@ async def test_provider(
     """
     Test connectivity to an external provider.
 
-    Makes a lightweight GET /models call to verify the API key works.
+    Makes a lightweight GET /models call to verify the API key works. Generic
+    custom chat endpoints skip that call because /models is optional there.
     encrypted_api_key is decrypted server-side and never stored.
     """
     info = get_provider_info(payload.provider_type)
@@ -212,6 +213,22 @@ async def test_provider(
             )
 
     base_url = payload.base_url or info["base_url"]
+    if payload.provider_type == "custom":
+        if not base_url:
+            return ProviderTestResult(
+                success = False,
+                message = "Connection failed: Base URL is required for custom providers.",
+                models_count = None,
+            )
+        return ProviderTestResult(
+            success = True,
+            message = (
+                "Custom connection saved. Model discovery is optional; "
+                "chat requests will validate the endpoint."
+            ),
+            models_count = None,
+        )
+
     client = ExternalProviderClient(
         provider_type = payload.provider_type,
         base_url = base_url,

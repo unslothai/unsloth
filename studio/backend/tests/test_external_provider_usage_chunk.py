@@ -144,6 +144,14 @@ def _make_openai_client() -> ExternalProviderClient:
     )
 
 
+def _make_custom_client() -> ExternalProviderClient:
+    return ExternalProviderClient(
+        provider_type = "custom",
+        base_url = "http://custom.example/v1",
+        api_key = "",
+    )
+
+
 def _anthropic_sse(events: list[dict]) -> bytes:
     chunks: list[str] = []
     for event in events:
@@ -178,6 +186,87 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
         if isinstance(parsed, dict) and "usage" in parsed and parsed.get("choices") == []:
             out.append(parsed["usage"])
     return out
+
+
+def test_custom_provider_registry_is_hidden():
+    from core.inference.providers import get_provider_info, list_available_providers
+
+    info = get_provider_info("custom")
+    assert info is not None
+    assert info["hidden"] is True
+    assert "custom" not in {p["provider_type"] for p in list_available_providers()}
+
+
+def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_custom_client()
+        lines = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "Qwen/Qwen3-0.6B",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    assert captured["url"] == "http://custom.example/v1/chat/completions"
+    assert "authorization" not in {k.lower() for k in captured["headers"]}
+    assert captured["body"]["model"] == "Qwen/Qwen3-0.6B"
+    assert any("ok" in line for line in lines)
+
+
+def test_custom_provider_test_endpoint_skips_models_call(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location(
+        "_providers_route_under_test", module_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    class _UnexpectedClient:
+        def __init__(self, **kwargs):
+            raise AssertionError("custom provider test must not call /models")
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _UnexpectedClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+            ),
+            current_subject = "unsloth",
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert result.models_count is None
+    assert "Model discovery is optional" in result.message
 
 
 def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
