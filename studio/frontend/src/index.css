@@ -598,7 +598,7 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[20px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -779,7 +779,7 @@
 		height: 36px;
 		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
-		border-radius: 9999px;
+		border-radius: 12px;
 		font-weight: 500;
 		font-size: 15px;
 		line-height: 20px;
@@ -1260,6 +1260,25 @@
 		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	}
 
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	button:focus:not(:focus-visible),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -1294,19 +1313,27 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark).
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 18px !important;
+		border-radius: 21px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
-	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
-	   the narrower + menu (18 * 232/212 ~= 20px). */
+	/* Width does not change the concentric radius; the MCP menu uses the same
+	   item radius + gutter, so it keeps the same container radius. */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 20px !important;
+		border-radius: 22px !important;
 	}
+
+	/* One-line menus keep the standard menu shape (same radius as multi-line),
+	   so a lone row doesn't balloon into a fully rounded pill. */
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
@@ -1319,14 +1346,15 @@
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		) {
-		@apply gap-3 pl-4 pr-3 py-2 text-[14px];
+		@apply gap-3 pl-3 pr-3 py-2 text-[14px];
 		cursor: pointer;
-		/* Pin hover-box radius so dark matches light (same as the container). */
-		border-radius: 1.1rem;
+		/* Pin hover-box radius so dark matches light (container radius minus the
+		   side gutter keeps the curves concentric). */
+		border-radius: 12px;
 	}
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
-		@apply pl-4 pr-3 py-1.5 text-[12px];
+		@apply pl-3 pr-3 py-1.5 text-[12px];
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
@@ -1370,8 +1398,8 @@
 			[data-slot="dropdown-menu-sub-trigger"]
 		)
 		svg {
-		width: 1.05rem;
-		height: 1.05rem;
+		width: 1.15rem;
+		height: 1.15rem;
 	}
 
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
@@ -1559,11 +1587,11 @@
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
-		@apply md:min-h-[470px];
+		@apply md:min-h-[520px];
 	}
 
 	.h-studio-config-column {
-		@apply md:h-[470px];
+		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {

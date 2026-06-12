@@ -1336,6 +1336,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
+    _stop_save = [True]
+    _stop_requested = [False]
+    _trainer_ref = [None]
+
+    def _is_stop_requested():
+        return _stop_requested[0]
+
+    def _poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout = 1.0)
+                if msg and msg.get("type") == "stop":
+                    _stop_save[0] = msg.get("save", True)
+                    _stop_requested[0] = True
+                    trainer = _trainer_ref[0]
+                    if trainer is not None:
+                        trainer.stop_requested = True
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+
+    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
+    stop_thread.start()
+
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
@@ -1515,6 +1541,26 @@ def _run_mlx_training(event_queue, stop_queue, config):
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
         dataset = _slice(dataset)
+    elif config.get("s3_config"):
+        from core.training.s3_dataset import (
+            S3DownloadCancelled,
+            prepare_s3_dataset_download,
+        )
+
+        _send("status", status_message = "Downloading dataset from S3...")
+        try:
+            s3_download = prepare_s3_dataset_download(
+                config["s3_config"],
+                cancel_callback = _is_stop_requested,
+            )
+            try:
+                dataset = _load_local(s3_download.files)
+            finally:
+                s3_download.cleanup()
+        except S3DownloadCancelled:
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+            return
+        dataset = _slice(dataset)
     else:
         raise ValueError("No dataset specified")
 
@@ -1693,6 +1739,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             eval_steps = eval_steps_val,
         ),
     )
+    _trainer_ref[0] = trainer
+    if _stop_requested[0]:
+        trainer.stop_requested = True
 
     # Tell the parent eval is configured so the frontend shows the eval chart
     if eval_dataset is not None and eval_steps_val > 0:
@@ -1733,7 +1782,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
-            _wandb_sensitive = {"hf_token", "wandb_token"}
+            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
                 config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
@@ -1834,26 +1883,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 pass
 
     trainer.add_eval_callback(_on_eval)
-
-    # ── 10. Stop signal polling ──
-    _stop_save = [True]  # mutable so thread can update; [save_flag]
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _stop_save[0] = msg.get("save", True)
-                    trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                # Safe: pipe permanently broken, no more messages can arrive.
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
 
     # ── 11. Run training ──
     gc.collect()
@@ -2462,7 +2491,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _on_progress(progress: TrainingProgress):
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if has_train_loss or has_eval_loss:
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
             event_queue.put(
                 {
                     "type": "progress",
@@ -2546,6 +2575,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
             is_cpt = _is_cpt_for_dataset,
+            s3_config = config.get("s3_config"),
         )
 
         if isinstance(dataset_result, tuple):
@@ -3010,20 +3040,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         subset = config.get("subset") or None
         train_split = config.get("train_split", "train") or "train"
 
-        if hf_dataset and hf_dataset.strip():
-            hf_token = config.get("hf_token", "")
-            hf_token = hf_token if hf_token and hf_token.strip() else None
-            dataset = load_dataset(
-                hf_dataset.strip(),
-                subset,
-                split = train_split,
-                token = hf_token,
-            )
-        elif local_datasets:
-            # Load local file(s) — mirrors the non-embedding pipeline's directory
-            # handling so recipe outputs (parquet-files/) work.
+        def _load_local_embedding_dataset(dataset_paths: list[str]):
             all_files: list[str] = []
-            for dataset_file in local_datasets:
+            for dataset_file in dataset_paths:
                 file_path = (
                     dataset_file
                     if os.path.isabs(dataset_file)
@@ -3053,17 +3072,58 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 else:
                     all_files.append(file_path)
 
-            if all_files:
-                first_ext = Path(all_files[0]).suffix.lower()
-                if first_ext in (".json", ".jsonl"):
-                    loader = "json"
-                elif first_ext == ".csv":
-                    loader = "csv"
-                elif first_ext == ".parquet":
-                    loader = "parquet"
-                else:
-                    raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-                dataset = load_dataset(loader, data_files = all_files, split = "train")
+            if not all_files:
+                raise ValueError("No local dataset files found")
+
+            first_ext = Path(all_files[0]).suffix.lower()
+            if first_ext in (".json", ".jsonl"):
+                loader = "json"
+            elif first_ext == ".csv":
+                loader = "csv"
+            elif first_ext == ".parquet":
+                loader = "parquet"
+            else:
+                raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
+            return load_dataset(loader, data_files = all_files, split = "train")
+
+        if hf_dataset and hf_dataset.strip():
+            hf_token = config.get("hf_token", "")
+            hf_token = hf_token if hf_token and hf_token.strip() else None
+            dataset = load_dataset(
+                hf_dataset.strip(),
+                subset,
+                split = train_split,
+                token = hf_token,
+            )
+        elif local_datasets:
+            dataset = _load_local_embedding_dataset(local_datasets)
+        elif config.get("s3_config"):
+            from core.training.s3_dataset import (
+                S3DownloadCancelled,
+                prepare_s3_dataset_download,
+            )
+
+            _send_status(event_queue, "Downloading dataset from S3...")
+            s3_download = None
+            try:
+                s3_download = prepare_s3_dataset_download(
+                    config["s3_config"],
+                    cancel_callback = lambda: _should_stop,
+                )
+                dataset = _load_local_embedding_dataset(s3_download.files)
+            except S3DownloadCancelled:
+                event_queue.put(
+                    {
+                        "type": "complete",
+                        "output_dir": None,
+                        "status_message": "Training cancelled",
+                        "ts": time.time(),
+                    }
+                )
+                return
+            finally:
+                if s3_download is not None:
+                    s3_download.cleanup()
         else:
             event_queue.put(
                 {

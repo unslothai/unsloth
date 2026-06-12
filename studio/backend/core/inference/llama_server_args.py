@@ -109,6 +109,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
         out.append(token)
     parse_ctx_override(out)
     parse_cache_override(out)
+    parse_split_mode_override(out)
     return out
 
 
@@ -157,8 +158,20 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
+# Multi-GPU split mode shadows the Tensor Parallelism toggle
+# (--split-mode tensor). Pass-through stays allowed so users keep the
+# row/none/layer modes the toggle doesn't expose, but it's stripped on
+# inherit and reconciled into the round-tripped tensor_parallel state.
+# --tensor-split is coupled to the split mode and is stripped with it: Studio
+# owns the tensor-mode split ratios, so an inherited/stale --tensor-split must
+# not last-wins-override Studio's computed asymmetric split.
+_SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
+_TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
+_SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
-_SHADOWING_FLAGS: frozenset[str] = _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
+_SHADOWING_FLAGS: frozenset[str] = (
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
+)
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
@@ -259,11 +272,12 @@ def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
     return override
 
 
-def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins cache type if extras pass cache flags.
+def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+    """Return the last-wins string value among ``flags`` in extras, or None.
 
-    Recognises -ctk (key) and -ctv (value); treats both as one setting,
-    since Studio's KV estimate has a single cache_type_kv knob.
+    Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
+    matched flag has no (or an empty) value. Shared by the single-knob
+    last-wins parsers (cache type, split mode).
     """
     if not args:
         return None
@@ -274,7 +288,7 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     while i < n:
         tok = tokens[i]
         flag = _flag_name(tok)
-        if flag is None or flag not in _CACHE_FLAGS:
+        if flag is None or flag not in flags:
             i += 1
             continue
 
@@ -295,6 +309,17 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return override
 
 
+def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins cache type if extras pass cache flags.
+
+    Mirrors parse_ctx_override but for cache type. Recognises both -ctk
+    (key) and -ctv (value). When both flags appear, returns the last-wins
+    value, treating key and value cache flags as the same setting because
+    Studio's KV estimate has a single cache_type_kv knob.
+    """
+    return _last_flag_value(args, _CACHE_FLAGS)
+
+
 def resolve_cache_type_kv(
     args: Optional[Iterable[str]], fallback_cache_type_kv: Optional[str]
 ) -> Optional[str]:
@@ -304,6 +329,30 @@ def resolve_cache_type_kv(
     """
     override = parse_cache_override(args)
     return override if override is not None else fallback_cache_type_kv
+
+
+def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins ``--split-mode`` / ``-sm`` value from extras.
+
+    Mirrors parse_cache_override for the multi-GPU split mode. Returns the
+    raw mode string (e.g. ``tensor`` / ``row`` / ``none`` / ``layer``), or
+    None when extras don't set it.
+    """
+    return _last_flag_value(args, _SPLIT_MODE_FLAGS)
+
+
+def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
+    """Return the tensor-parallel state load_model should treat as requested.
+
+    A user-supplied ``--split-mode`` in extras last-wins-overrides the
+    toggle, so reconcile it back into the boolean: any explicit split mode
+    means tensor-parallel is on iff that mode is ``tensor``. Falls back to
+    the toggle value when extras don't set it.
+    """
+    override = parse_split_mode_override(args)
+    if override is None:
+        return fallback_tensor_parallel
+    return override.strip().lower() == "tensor"
 
 
 _MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-auto"})
@@ -335,12 +384,15 @@ def strip_shadowing_flags(
     strip_cache: bool = True,
     strip_spec: bool = True,
     strip_template: bool = True,
+    strip_split_mode: bool = True,
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
-    inherited `-c 4096` can't override the current `max_seq_length` (same for
-    cache / spec / template). Each ``strip_*`` toggle controls one group.
+    inherited `-c 4096` can't override the current `max_seq_length`
+    (same for cache / spec / template / split-mode). Each ``strip_*``
+    toggle controls one group; the route only strips groups whose
+    first-class field the caller actually supplied.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -351,6 +403,8 @@ def strip_shadowing_flags(
         shadowing |= _SPEC_FLAGS
     if strip_template:
         shadowing |= _TEMPLATE_FLAGS
+    if strip_split_mode:
+        shadowing |= _SPLIT_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -371,3 +425,20 @@ def strip_shadowing_flags(
         else:
             i += 1
     return out
+
+
+def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the split-mode group (``--split-mode`` / ``-sm`` and the coupled
+    ``--tensor-split`` / ``-ts``) from ``args``, keeping every other shadow flag.
+    Preserves a None/empty input so the inherit-vs-explicit-empty distinction
+    survives. Used where tensor mode is being forced off (downgrade / fallback)."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )

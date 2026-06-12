@@ -21,7 +21,9 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { type KeyboardEvent, useMemo, useState } from "react";
+import { Input } from "../ui/input";
+import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -29,8 +31,6 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
-import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
-import { Input } from "../ui/input";
 
 const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   openai: "svg",
@@ -189,7 +189,7 @@ function ModelSelectorTrigger({
           <HugeiconsIcon
             icon={ArrowDown01Icon}
             strokeWidth={1.75}
-            className="relative top-0.5 size-3.5 text-muted-foreground"
+            className="size-3.5 text-muted-foreground"
           />
         </span>
       </button>
@@ -241,13 +241,57 @@ function ModelSelectorContent({
     return "hub";
   }, [externalModels, loraModels, value]);
 
+  function focusActiveModelOption(root: HTMLElement): boolean {
+    const option =
+      root.querySelector<HTMLElement>(
+        '[role="tabpanel"]:not([hidden]) [data-model-picker-active-option="true"]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        '[data-model-picker-active-option="true"]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        '[role="tabpanel"]:not([hidden]) [data-model-picker-option]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        "[data-model-picker-option]",
+      );
+    if (!option) {
+      return false;
+    }
+    option.focus();
+    return true;
+  }
+
+  function handlePickerEntryKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown") {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const isPickerSearchInput = target.matches(
+      "[data-model-picker-search-input]",
+    );
+    const isTabTrigger = Boolean(target.closest('[role="tab"]'));
+    if (!isPickerSearchInput && !isTabTrigger) {
+      return;
+    }
+
+    if (focusActiveModelOption(event.currentTarget)) {
+      event.preventDefault();
+    }
+  }
+
   return (
     <PopoverContent
       align="start"
       alignOffset={10}
       data-tour={dataTour}
+      onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-3",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
         className,
       )}
     >
@@ -307,7 +351,7 @@ function ModelSelectorContent({
       )}
 
       {onPickLocalModel ? (
-        <div className="mt-2 border-t border-border/70 pt-2">
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
           <button
             type="button"
             onClick={onPickLocalModel}
@@ -320,7 +364,7 @@ function ModelSelectorContent({
         </div>
       ) : null}
       {hasSelection && onEject ? (
-        <div className="mt-2 border-t border-border/70 pt-2">
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
           <button
             type="button"
             onClick={onEject}

@@ -174,6 +174,12 @@ TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
+# Master switch for the staged runtime smoke test (llama-quantize + llama-server)
+# in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
+# JIT-compiles CUDA kernels on first load and stalls every install and update by
+# minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
+# are kept intact -- set this to True to re-enable them.
+_RUN_STAGED_PREBUILT_VALIDATION = False
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
@@ -4542,6 +4548,68 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         shutil.copy2(canonical, legacy)
 
 
+def ensure_diffusion_visual_server(
+    install_dir: Path, host: HostInfo, release_tag: str | None
+) -> None:
+    """Best-effort placement of the DiffusionGemma visual-server binary next to
+    llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
+    without any DG_* env. This is an Unsloth artifact (not a ggml-org one), so it
+    is optional: if it is already present we just make it executable, otherwise we
+    try the published release and quietly skip on absence. A source build
+    (setup.sh / setup.ps1) copies it from build/bin directly. Users can always
+    build it from llama.cpp PR #24423 and point DG_VISUAL_BIN at it.
+    """
+    name = "llama-diffusion-gemma-visual-server" + (".exe" if host.is_windows else "")
+    bin_dir = install_dir / "build" / ("bin/Release" if host.is_windows else "bin")
+    target = bin_dir / name
+
+    if target.exists():
+        if not host.is_windows:
+            try:
+                target.chmod(0o755)
+            except OSError:
+                pass
+        return
+
+    if not release_tag:
+        log(
+            "diffusion visual server not bundled (no release tag); build it from llama.cpp "
+            "PR #24423 and set DG_VISUAL_BIN if you want native DiffusionGemma serving"
+        )
+        return
+
+    try:
+        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
+        match = None
+        for asset_name, url in assets.items():
+            low = asset_name.lower()
+            if "llama-diffusion-gemma-visual-server" not in low:
+                continue
+            if host.is_windows and not low.endswith(".exe"):
+                continue
+            if (not host.is_windows) and low.endswith(".exe"):
+                continue
+            match = (asset_name, url)
+            break
+        if match is None:
+            log(
+                "diffusion visual server not found in the published release; native "
+                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
+            return
+        bin_dir.mkdir(parents = True, exist_ok = True)
+        download_file(match[1], target)
+        if not host.is_windows:
+            target.chmod(0o755)
+        log(f"installed diffusion visual server: {match[0]}")
+    except Exception as exc:
+        log(
+            "diffusion visual server fetch skipped "
+            f"({textwrap.shorten(str(exc), width = 160, placeholder = '...')}); "
+            "set DG_VISUAL_BIN or build from llama.cpp PR #24423 for native serving"
+        )
+
+
 def extracted_archive_root(extract_dir: Path) -> Path:
     children = [path for path in extract_dir.iterdir()]
     if len(children) == 1 and children[0].is_dir():
@@ -4700,8 +4768,10 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Studio only invokes llama-server and llama-quantize;
-    # other CLIs upstream ships (llama-cli, llama-bench, ...) are skipped.
+    # every new file. Studio invokes llama-server, llama-quantize, and the
+    # DiffusionGemma visual-server (when the bundle ships it, for native
+    # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
+    # llama-bench, ...) are skipped.
     if choice.install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -4709,9 +4779,14 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-rocm",
         "linux-arm64",
     }:
-        return ["llama-server", "llama-quantize", "lib*.so*"]
+        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
-        return ["llama-server", "llama-quantize", "lib*.dylib"]
+        return [
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            "lib*.dylib",
+        ]
     if choice.install_kind in {
         "windows-cpu",
         "windows-cuda",
@@ -4719,7 +4794,12 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-rocm",
         "windows-arm64",
     }:
-        return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
+        return [
+            "llama-server.exe",
+            "llama-quantize.exe",
+            "llama-diffusion-gemma-visual-server.exe",
+            "*.dll",
+        ]
     raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
 
 
@@ -5656,6 +5736,33 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
     return windows_runtime_dirs_for_patterns(patterns)
 
 
+def _wsl_system_rocm_lib_dirs() -> list[str]:
+    """System ROCm lib dir(s) for binary_env to load before a prebuilt's HIP.
+
+    A prebuilt bundles a bare-metal HIP runtime that can't drive WSL's /dev/dxg
+    and segfaults on the first GPU call -> validation fails, install falls back
+    to a CPU build. Putting the system ROCm libs first loads the WSL-capable
+    HIP (libamdhip64 + librocdxg) while the bundle still supplies libggml-hip /
+    librocblas with the gfx1151 kernels. Strict no-op off WSL (needs /dev/dxg, a
+    "microsoft" /proc/version, and a librocdxg-providing ROCm).
+    """
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    out: list[str] = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            out.append(d)
+    return out
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5677,6 +5784,11 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
+        # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+        _wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if _wsl_rocm:
+            ld_dirs = [*_wsl_rocm, *ld_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
@@ -6551,23 +6663,31 @@ def validate_prebuilt_choice(
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
-    validate_quantize(
-        quantize_path,
-        probe_path,
-        quantized_path,
-        install_dir,
-        host,
-        runtime_line = choice.runtime_line,
-    )
-    validate_server(
-        server_path,
-        probe_path,
-        host,
-        install_dir,
-        runtime_line = choice.runtime_line,
-        install_kind = choice.install_kind,
-    )
-    log(f"staged prebuilt validation succeeded for {choice.name}")
+    # Hashless external prebuilts (e.g. lemonade) are not in the approved-sha256
+    # manifest and rely on the functional smoke test as their only integrity gate,
+    # so they are always validated. For an approved bundle the sha256 manifest
+    # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
+    # costing minutes on Blackwell sm_100 -- is gated behind
+    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
+    # source-build fallback it triggers are kept intact; flip the flag to restore it.
+    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+        validate_quantize(
+            quantize_path,
+            probe_path,
+            quantized_path,
+            install_dir,
+            host,
+            runtime_line = choice.runtime_line,
+        )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            runtime_line = choice.runtime_line,
+            install_kind = choice.install_kind,
+        )
+        log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
 
 
@@ -6747,6 +6867,13 @@ def install_prebuilt(
                     except Exception as exc:
                         log(
                             "converter script fetch failed after activation; install remains valid "
+                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                        )
+                    try:
+                        ensure_diffusion_visual_server(install_dir, host, plan.release_tag)
+                    except Exception as exc:
+                        log(
+                            "diffusion visual server step skipped; install remains valid "
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     return

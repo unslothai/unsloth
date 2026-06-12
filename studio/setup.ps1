@@ -3352,6 +3352,13 @@ if (-not $NeedLlamaSourceBuild) {
         }
     }
 
+    # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
+    # An example target present on llama.cpp PR #24423; lets Studio serve
+    # DiffusionGemma GGUFs without DG_VISUAL_BIN. No-op when not configured.
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
+    }
+
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
