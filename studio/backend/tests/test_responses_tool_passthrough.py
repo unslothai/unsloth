@@ -36,6 +36,7 @@ import json
 
 import httpx
 import pytest
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from models.inference import (
@@ -46,6 +47,7 @@ from models.inference import (
     ResponsesInputMessage,
     ResponsesOutputFunctionCall,
     ResponsesOutputMessage,
+    ResponsesOutputReasoning,
     ResponsesOutputTextContent,
     ResponsesOutputTextPart,
     ResponsesRequest,
@@ -59,6 +61,7 @@ from routes.inference import (
     _chat_tool_calls_to_responses_output,
     _normalise_responses_input,
     _responses_tool_output_text,
+    _responses_non_streaming,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
@@ -283,6 +286,59 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = True)
 
         assert chat_req.parallel_tool_calls is False
+
+    def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": True},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is True
+
+    def test_chat_template_kwargs_enable_thinking_false_is_lifted(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": False},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is False
+
+    def test_reasoning_effort_high_enables_local_thinking(self):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.reasoning_effort == "high"
+        assert chat_req.enable_thinking is True
+
+    def test_reasoning_effort_none_disables_local_thinking(self):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.reasoning_effort == "none"
+        assert chat_req.enable_thinking is False
+
+    def test_explicit_enable_thinking_wins_over_reasoning_effort(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            reasoning = {"effort": "high"},
+            chat_template_kwargs = {"enable_thinking": False},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.reasoning_effort == "high"
+        assert chat_req.enable_thinking is False
 
 
 # =====================================================================
@@ -545,6 +601,61 @@ class TestChatToolCallsToResponsesOutput:
 
 
 # =====================================================================
+# Non-streaming Responses adapter
+# =====================================================================
+
+
+class TestResponsesNonStreamingAdapter:
+    class _Request:
+        pass
+
+    @staticmethod
+    def _run_with_message(monkeypatch, message):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": message}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi")
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, TestResponsesNonStreamingAdapter._Request())
+            return json.loads(response.body.decode())
+
+        return asyncio.run(run())
+
+    def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
+        body = self._run_with_message(monkeypatch, {"content": "<think>plan</think>33"})
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][0]["summary"] == []
+        assert body["output"][1]["content"][0]["text"] == "33"
+        assert "<think>" not in body["output"][1]["content"][0]["text"]
+        assert "</think>" not in body["output"][1]["content"][0]["text"]
+
+    def test_plain_content_remains_message_only(self, monkeypatch):
+        body = self._run_with_message(monkeypatch, {"content": "33"})
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "33"
+
+    def test_reasoning_only_does_not_emit_empty_message(self, monkeypatch):
+        body = self._run_with_message(monkeypatch, {"content": "<think>plan</think>"})
+
+        assert [item["type"] for item in body["output"]] == ["reasoning"]
+        assert body["output"][0]["content"][0]["text"] == "plan"
+
+
+# =====================================================================
 # Streaming Responses adapter
 # =====================================================================
 
@@ -568,6 +679,137 @@ class TestResponsesStreamAdapter:
             json.loads(line.split("data: ", 1)[1].strip())
             for line in lines
             if line.startswith(prefix)
+        ]
+
+    @staticmethod
+    def _install_stream_mock(monkeypatch, chunks):
+        import routes.inference as inf_mod
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            content += "data: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(
+                transport = transport,
+                timeout = kwargs.get("timeout", 600),
+            )
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+
+    def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "<thi"}}]},
+            {"choices": [{"delta": {"content": "nk>pla"}}]},
+            {"choices": [{"delta": {"content": "n</th"}}]},
+            {"choices": [{"delta": {"content": "ink>33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == "33"
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "message",
+        ]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
+        assert completed["response"]["output"][1]["content"][0]["text"] == "33"
+
+    def test_structured_reasoning_content_streams_as_reasoning(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == "33"
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"][0]["type"] == "reasoning"
+        assert completed["response"]["output"][1]["type"] == "message"
+
+    def test_tool_first_stream_closes_items_in_output_index_order(self, monkeypatch):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "done"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        done_events = self._payloads(lines, "response.output_item.done")
+        assert [event["output_index"] for event in done_events] == [0, 1]
+        assert [event["item"]["type"] for event in done_events] == ["function_call", "message"]
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "function_call",
+            "message",
         ]
 
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
@@ -678,6 +920,15 @@ class TestResponsesStreamAdapter:
 
 
 class TestResponsesOutputFunctionCall:
+    def test_reasoning_output_item_serialises_full_reasoning_content(self):
+        item = ResponsesOutputReasoning(content = [{"type": "reasoning_text", "text": "plan"}])
+        d = item.model_dump()
+        assert d["type"] == "reasoning"
+        assert d["id"].startswith("rs_")
+        assert d["status"] == "completed"
+        assert d["summary"] == []
+        assert d["content"] == [{"type": "reasoning_text", "text": "plan"}]
+
     def test_direct_construction(self):
         fc = ResponsesOutputFunctionCall(
             call_id = "call_1",
@@ -777,6 +1028,26 @@ class TestCodexStyleRequestShapes:
         )
         assert len(req.input) == 3
         assert isinstance(req.input[1], ResponsesUnknownInputItem)
+
+    def test_emitted_reasoning_item_replay_is_dropped_for_local_chat(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Hi"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "plan"}],
+                },
+                {"role": "assistant", "content": "33"},
+                {"role": "user", "content": "Continue"},
+            ],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "user"]
+        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as

@@ -677,6 +677,8 @@ from models.inference import (
     ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputReasoningContent,
     ResponsesOutputFunctionCall,
     ResponsesUsage,
     ResponsesResponse,
@@ -4936,6 +4938,114 @@ def _responses_tool_output_text(output: Union[str, list]) -> str:
     return "(no output)"
 
 
+_RESPONSES_THINK_OPEN = "<think>"
+_RESPONSES_THINK_CLOSE = "</think>"
+_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _coerce_responses_reasoning_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value)
+
+
+def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
+    """Number of trailing chars to retain because they may start a marker."""
+    for size in range(min(len(text), max(len(m) for m in markers) - 1), 0, -1):
+        suffix = text[-size:]
+        if any(marker.startswith(suffix) for marker in markers):
+            return size
+    return 0
+
+
+class _ResponsesReasoningExtractor:
+    """Split local <think> markup into Responses reasoning and visible text."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_reasoning = False
+
+    def feed(self, text: str = "", reasoning_content: Any = None) -> tuple[str, str]:
+        reasoning_parts: list[str] = []
+        visible_parts: list[str] = []
+        structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
+        if structured_reasoning:
+            reasoning_parts.append(structured_reasoning)
+        if text:
+            self._buffer += text
+
+        while self._buffer:
+            if self._in_reasoning:
+                close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+                if close_idx != -1:
+                    reasoning_parts.append(self._buffer[:close_idx])
+                    self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    self._in_reasoning = False
+                    continue
+                keep = _responses_marker_holdback(self._buffer, (_RESPONSES_THINK_CLOSE,))
+                if keep == len(self._buffer):
+                    break
+                reasoning_parts.append(self._buffer[:-keep] if keep else self._buffer)
+                self._buffer = self._buffer[-keep:] if keep else ""
+                break
+
+            open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)
+            close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                visible_parts.append(self._buffer[:close_idx])
+                self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                continue
+            if open_idx != -1:
+                visible_parts.append(self._buffer[:open_idx])
+                self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
+                self._in_reasoning = True
+                continue
+
+            keep = _responses_marker_holdback(
+                self._buffer,
+                (_RESPONSES_THINK_OPEN, _RESPONSES_THINK_CLOSE),
+            )
+            if keep == len(self._buffer):
+                break
+            visible_parts.append(self._buffer[:-keep] if keep else self._buffer)
+            self._buffer = self._buffer[-keep:] if keep else ""
+            break
+
+        return "".join(reasoning_parts), "".join(visible_parts)
+
+    def finish(self) -> tuple[str, str]:
+        if not self._buffer:
+            return "", ""
+        remaining = self._buffer
+        self._buffer = ""
+        if self._in_reasoning:
+            self._in_reasoning = False
+            return remaining, ""
+        return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
+
+
+def _extract_responses_reasoning(
+    text: str = "", reasoning_content: Any = None
+) -> tuple[str, str]:
+    extractor = _ResponsesReasoningExtractor()
+    reasoning, visible = extractor.feed(text, reasoning_content)
+    final_reasoning, final_visible = extractor.finish()
+    return reasoning + final_reasoning, visible + final_visible
+
+
+def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+    kwargs: dict[str, Any] = {
+        "status": "completed",
+        "summary": [],
+        "content": [ResponsesOutputReasoningContent(text = reasoning_text)],
+    }
+    if item_id is not None:
+        kwargs["id"] = item_id
+    return ResponsesOutputReasoning(**kwargs).model_dump()
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
@@ -5102,11 +5212,20 @@ def _build_chat_request(
     # only when it is still ``None``, and the streaming pass-through reads
     # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
     # handler, to cover both Responses paths.
+    explicit_enable_thinking = False
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
         _tpl_kw = _extra.get("chat_template_kwargs")
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
+            explicit_enable_thinking = True
+
+    if isinstance(payload.reasoning, dict):
+        effort = payload.reasoning.get("effort")
+        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+            chat_kwargs["reasoning_effort"] = effort
+            if not explicit_enable_thinking:
+                chat_kwargs["enable_thinking"] = effort != "none"
 
     return ChatCompletionRequest(**chat_kwargs)
 
@@ -5151,10 +5270,16 @@ async def _responses_non_streaming(
 
     choices = body.get("choices", [])
     text = ""
+    reasoning_text = ""
     tool_calls: list[dict] = []
     if choices:
         msg = choices[0].get("message", {}) or {}
-        text = msg.get("content", "") or ""
+        raw_content = msg.get("content", "") or ""
+        raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+        reasoning_text, text = _extract_responses_reasoning(
+            raw_text,
+            msg.get("reasoning_content"),
+        )
         tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
@@ -5168,6 +5293,8 @@ async def _responses_non_streaming(
     # the model produced content, so clients expecting a pure tool-call turn
     # (finish_reason="tool_calls") don't see a spurious empty message item.
     output_items: list[dict] = []
+    if reasoning_text:
+        output_items.append(_responses_reasoning_output_item(reasoning_text))
     if text:
         msg_id = f"msg_{uuid.uuid4().hex[:12]}"
         output_items.append(
@@ -5215,16 +5342,15 @@ async def _responses_stream(
     avoids that. Non-GGUF falls back to the wrapper (which doesn't use httpx, so
     the issue doesn't apply).
 
-    Text deltas arrive as ``response.output_text.delta`` on a single
-    ``message`` output item at ``output_index=0``. Each tool call from
+    Output items are allocated as upstream deltas appear. Reasoning/text deltas
+    open top-level ``reasoning`` / ``message`` items; each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
-    output item (one per distinct ``tool_calls[].index``) and relayed as
+    item (one per distinct ``tool_calls[].index``) and relayed as
     ``response.function_call_arguments.delta`` / ``.done`` events so clients
     (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
     with a ``function_call_output`` item next turn.
     """
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
@@ -5264,61 +5390,164 @@ async def _responses_stream(
 
     async def event_generator():
         full_text = ""
+        full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
+        extractor = _ResponsesReasoningExtractor()
+        reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
+        message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
         # stable across chunks for the same call. Values:
         #   {output_index, item_id, call_id, name, arguments, opened}
         tool_call_state: dict[int, dict] = {}
-        # Text message lives at output_index 0; tool calls claim 1, 2, ...
-        next_output_index = 1
+        next_output_index = 0
+
+        def _sse(event_name: str, payload: dict) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+
+        def _claim_output_index() -> int:
+            nonlocal next_output_index
+            output_index = next_output_index
+            next_output_index += 1
+            return output_index
+
+        def _ensure_reasoning_open() -> list[str]:
+            if reasoning_state["opened"]:
+                return []
+            reasoning_state["output_index"] = _claim_output_index()
+            reasoning_state["item_id"] = f"rs_{uuid.uuid4().hex[:12]}"
+            reasoning_state["opened"] = True
+            output_index = reasoning_state["output_index"]
+            item_id = reasoning_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "reasoning",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "summary": [],
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": ""},
+                    },
+                ),
+            ]
+
+        def _ensure_message_open() -> list[str]:
+            if message_state["opened"]:
+                return []
+            message_state["output_index"] = _claim_output_index()
+            message_state["item_id"] = f"msg_{uuid.uuid4().hex[:12]}"
+            message_state["opened"] = True
+            output_index = message_state["output_index"]
+            item_id = message_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "message",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []},
+                    },
+                ),
+            ]
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
-            items: list[dict] = [
-                {
-                    "type": "message",
-                    "id": msg_id,
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [
+            indexed_items: list[tuple[int, dict]] = []
+            if reasoning_state["opened"]:
+                indexed_items.append(
+                    (
+                        reasoning_state["output_index"],
                         {
-                            "type": "output_text",
-                            "text": full_text,
-                            "annotations": [],
-                        }
-                    ],
-                }
-            ]
-            for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
-                items.append(
-                    {
-                        "type": "function_call",
-                        "id": st["item_id"],
-                        "status": "completed",
-                        "call_id": st["call_id"],
-                        "name": st["name"],
-                        "arguments": st["arguments"],
-                    }
+                            "type": "reasoning",
+                            "id": reasoning_state["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    )
                 )
-            return items
+            if message_state["opened"]:
+                indexed_items.append(
+                    (
+                        message_state["output_index"],
+                        {
+                            "type": "message",
+                            "id": message_state["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": full_text,
+                                    "annotations": [],
+                                }
+                            ],
+                        },
+                    )
+                )
+            for st in tool_call_state.values():
+                indexed_items.append(
+                    (
+                        st["output_index"],
+                        {
+                            "type": "function_call",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "call_id": st["call_id"],
+                            "name": st["name"],
+                            "arguments": st["arguments"],
+                        },
+                    )
+                )
+            return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
         # ── Preamble events ──
-        yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
-
-        # output_item.added (text message at output_index 0)
-        output_item = {
-            "type": "message",
-            "id": msg_id,
-            "status": "in_progress",
-            "role": "assistant",
-            "content": [],
-        }
-        yield f"event: response.output_item.added\ndata: {json.dumps({'type': 'response.output_item.added', 'output_index': 0, 'item': output_item})}\n\n"
-
-        # content_part.added
-        content_part = {"type": "output_text", "text": "", "annotations": []}
-        yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
+        yield _sse(
+            "response.created",
+            {
+                "type": "response.created",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "in_progress",
+                    "model": payload.model,
+                    "output": [],
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                },
+            },
+        )
 
         # ── Direct httpx lifecycle to llama-server ──
         # Full same-task open + close, same pattern as
@@ -5335,7 +5564,21 @@ async def _responses_stream(
                 resp = await client.send(req, stream = True)
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {"code": 502, "message": _friendly_error(e)},
+                        },
+                    },
+                )
                 return
 
             if resp.status_code != 200:
@@ -5346,7 +5589,24 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {
+                                "code": resp.status_code,
+                                "message": f"llama-server error: {err_text[:500]}",
+                            },
+                        },
+                    },
+                )
                 return
 
             lines_iter = resp.aiter_lines()
@@ -5376,17 +5636,38 @@ async def _responses_stream(
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
-                content = delta.get("content")
-                if content:
-                    full_text += content
-                    delta_event = {
-                        "type": "response.output_text.delta",
-                        "item_id": msg_id,
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": content,
-                    }
-                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+                reasoning_delta, visible_delta = extractor.feed(
+                    delta.get("content") or "",
+                    delta.get("reasoning_content"),
+                )
+                if reasoning_delta:
+                    for event in _ensure_reasoning_open():
+                        yield event
+                    full_reasoning += reasoning_delta
+                    yield _sse(
+                        "response.reasoning_text.delta",
+                        {
+                            "type": "response.reasoning_text.delta",
+                            "item_id": reasoning_state["item_id"],
+                            "output_index": reasoning_state["output_index"],
+                            "content_index": 0,
+                            "delta": reasoning_delta,
+                        },
+                    )
+                if visible_delta:
+                    for event in _ensure_message_open():
+                        yield event
+                    full_text += visible_delta
+                    yield _sse(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": message_state["item_id"],
+                            "output_index": message_state["output_index"],
+                            "content_index": 0,
+                            "delta": visible_delta,
+                        },
+                    )
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
@@ -5396,14 +5677,13 @@ async def _responses_stream(
                         # First chunk for this tool call -- allocate an
                         # output_index and emit output_item.added.
                         st = {
-                            "output_index": next_output_index,
+                            "output_index": _claim_output_index(),
                             "item_id": f"fc_{uuid.uuid4().hex[:12]}",
                             "call_id": tc.get("id") or "",
                             "name": fn.get("name") or "",
                             "arguments": "",
                             "opened": False,
                         }
-                        next_output_index += 1
                         tool_call_state[idx] = st
                     else:
                         # Later chunks sometimes carry id/name only once; merge
@@ -5426,7 +5706,7 @@ async def _responses_stream(
                                 "arguments": "",
                             },
                         }
-                        yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                        yield _sse("response.output_item.added", item_added)
                         st["opened"] = True
 
                     arg_delta = fn.get("arguments") or ""
@@ -5438,7 +5718,7 @@ async def _responses_stream(
                             "output_index": st["output_index"],
                             "delta": arg_delta,
                         }
-                        yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                        yield _sse("response.function_call_arguments.delta", args_delta_event)
                     elif arg_delta:
                         # Buffer args until we can open the item (some models
                         # send id/name in the same chunk as the first arg delta;
@@ -5467,8 +5747,123 @@ async def _responses_stream(
             except Exception:
                 pass
 
-        # ── Closing events for tool calls ──
-        for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+        final_reasoning, final_visible = extractor.finish()
+        if final_reasoning:
+            for event in _ensure_reasoning_open():
+                yield event
+            full_reasoning += final_reasoning
+            yield _sse(
+                "response.reasoning_text.delta",
+                {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_state["item_id"],
+                    "output_index": reasoning_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_reasoning,
+                },
+            )
+        if final_visible:
+            for event in _ensure_message_open():
+                yield event
+            full_text += final_visible
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_visible,
+                },
+            )
+
+        close_items: list[tuple[int, str, dict[str, Any]]] = []
+        if reasoning_state["opened"]:
+            close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
+        if message_state["opened"]:
+            close_items.append((message_state["output_index"], "message", message_state))
+        close_items.extend(
+            (st["output_index"], "tool", st)
+            for st in tool_call_state.values()
+        )
+
+        for _, kind, st in sorted(close_items, key = lambda item: item[0]):
+            if kind == "reasoning":
+                yield _sse(
+                    "response.reasoning_text.done",
+                    {
+                        "type": "response.reasoning_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_reasoning,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": full_reasoning},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "reasoning",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    },
+                )
+                continue
+
+            if kind == "message":
+                yield _sse(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_text,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": full_text, "annotations": []},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "message",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": full_text, "annotations": []}
+                            ],
+                        },
+                    },
+                )
+                continue
+
             # If id/name never arrived (malformed upstream), synthesise so the
             # client still sees a coherent frame sequence.
             if not st["opened"]:
@@ -5486,20 +5881,16 @@ async def _responses_stream(
                         "arguments": "",
                     },
                 }
-                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                yield _sse("response.output_item.added", item_added)
                 if st["arguments"]:
-                    yield (
-                        "event: response.function_call_arguments.delta\n"
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": st["item_id"],
-                                "output_index": st["output_index"],
-                                "delta": st["arguments"],
-                            }
-                        )
-                        + "\n\n"
+                    yield _sse(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": st["arguments"],
+                        },
                     )
                 st["opened"] = True
 
@@ -5510,7 +5901,7 @@ async def _responses_stream(
                 "name": st["name"],
                 "arguments": st["arguments"],
             }
-            yield f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done)}\n\n"
+            yield _sse("response.function_call_arguments.done", args_done)
 
             item_done = {
                 "type": "response.output_item.done",
@@ -5524,14 +5915,7 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
-            yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
-
-        # ── Closing events for text message ──
-        yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
-
-        yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
-
-        yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
+            yield _sse("response.output_item.done", item_done)
 
         # response.completed
         total_tokens = input_tokens + output_tokens
@@ -5551,7 +5935,7 @@ async def _responses_stream(
                 },
             },
         }
-        yield f"event: response.completed\ndata: {json.dumps(completed_response)}\n\n"
+        yield _sse("response.completed", completed_response)
 
     return StreamingResponse(
         event_generator(),
