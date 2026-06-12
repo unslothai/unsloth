@@ -2721,9 +2721,15 @@ async def get_gguf_variants(
                     updates_dict[path_info.path] = remote_blob_id not in cached_blob_ids
             return updates_dict
 
-        updates_dict: dict[str, bool] = await asyncio.to_thread(
-            _check_available_updates
-        )
+        # Update check is best-effort: a network/rate-limit/offline failure
+        # must not break variant listing (mirrors list_cached_models).
+        try:
+            updates_dict: dict[str, bool] = await asyncio.to_thread(
+                _check_available_updates
+            )
+        except Exception as e:
+            logger.warning(f"Skipping update check for GGUF repo '{repo_id}': {e}")
+            updates_dict = {}
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -3310,11 +3316,11 @@ async def update_hf_model(
                     if config.is_lora and config.base_model
                     else config.path
                 )
-                local_path = hf_repo.split("/")[-1]
+                local_dir = hf_repo.split("/")[-1]
                 model_path = await asyncio.to_thread(
                     snapshot_download,
                     repo_id = hf_repo,
-                    local_path = local_path,
+                    local_dir = local_dir,
                     token = request.hf_token,
                 )
             else:
