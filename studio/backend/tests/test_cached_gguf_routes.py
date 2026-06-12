@@ -515,7 +515,9 @@ def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
 
     result = asyncio.run(
         models_route.get_gguf_download_progress(
-            repo_id = "org/repo", variant = "F16", expected_bytes = 20_000,
+            repo_id = "org/repo",
+            variant = "F16",
+            expected_bytes = 20_000,
             current_subject = "test-user",
         )
     )
