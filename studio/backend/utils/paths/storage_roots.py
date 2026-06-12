@@ -60,6 +60,11 @@ def cache_root() -> Path:
     return studio_root() / "cache"
 
 
+def studio_bin_root() -> Path:
+    """Dir for Studio-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
+    return studio_root() / "bin"
+
+
 def assets_root() -> Path:
     return studio_root() / "assets"
 
