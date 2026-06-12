@@ -22,7 +22,7 @@ class Hit:
 
 def retrieve_lexical(
     conn: sqlite3.Connection,
-    scope: str,
+    scope: str | list[str],
     query: str,
     k: int | None = None,
 ) -> list[Hit]:
@@ -32,7 +32,7 @@ def retrieve_lexical(
 
 def retrieve_dense(
     conn: sqlite3.Connection,
-    scope: str,
+    scope: str | list[str],
     query: str,
     k: int | None = None,
     *,
@@ -69,7 +69,7 @@ def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:
 
 def retrieve_hybrid(
     conn: sqlite3.Connection,
-    scope: str,
+    scope: str | list[str],
     query: str,
     *,
     k: int | None = None,

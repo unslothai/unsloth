@@ -7,6 +7,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -46,7 +47,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";

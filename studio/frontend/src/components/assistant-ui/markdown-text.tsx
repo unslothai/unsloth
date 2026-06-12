@@ -8,7 +8,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -284,6 +285,9 @@ function CodeBlockActions({
   );
 }
 
+// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
+// thread.tsx), so it no longer forces HTML into an iframe artifact; it follows the
+// same artifact rules as every other model.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,

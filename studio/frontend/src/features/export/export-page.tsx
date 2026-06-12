@@ -587,7 +587,7 @@ export function ExportPage() {
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
             Export Model
           </h1>
           <p className="text-sm text-muted-foreground">

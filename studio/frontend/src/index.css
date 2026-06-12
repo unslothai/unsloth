@@ -1260,6 +1260,25 @@
 		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	}
 
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	button:focus:not(:focus-visible),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -1294,16 +1313,16 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes, like Gemini: container radius =
-		   item radius (12px) + side gutter (10px), so the curves run parallel.
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 22px !important;
+		border-radius: 21px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
-		/* Side gutter so item hover boxes sit inset from the menu edge, like
-		   Gemini's menus (more breathing room than a hairline gutter). */
-		padding-left: 10px;
-		padding-right: 10px;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -1568,11 +1587,11 @@
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
-		@apply md:min-h-[470px];
+		@apply md:min-h-[520px];
 	}
 
 	.h-studio-config-column {
-		@apply md:h-[470px];
+		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
