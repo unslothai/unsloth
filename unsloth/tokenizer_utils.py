@@ -552,8 +552,17 @@ def fix_sentencepiece_gguf(saved_location):
 # GGUF value/array element types we need to walk the metadata KV section.
 # Mirrors gguf.GGUFValueType so we don't add a hard dependency on the gguf package.
 _GGUF_SCALAR_FMT = {
-    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I",
-    5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
 }
 _GGUF_TYPE_STRING = 8
 _GGUF_TYPE_ARRAY = 9

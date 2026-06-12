@@ -43,7 +43,12 @@ def _kv_int32_array(key, values):
     return out
 
 
-def _write_gguf(path, tokens, token_types, trailing_merges=None):
+def _write_gguf(
+    path,
+    tokens,
+    token_types,
+    trailing_merges = None,
+):
     """Minimal GGUF v3 with tokens then token_type (mirrors llama.cpp ordering).
 
     A merges array is written *after* token_type so the test also exercises the
@@ -72,10 +77,22 @@ def _read_token_types(path):
     rd("<I")  # version
     rd("<Q")  # tensor count
     n_kv = rd("<Q")
-    scalar = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+    scalar = {
+        0: "<B",
+        1: "<b",
+        2: "<H",
+        3: "<h",
+        4: "<I",
+        5: "<i",
+        6: "<f",
+        7: "<?",
+        10: "<Q",
+        11: "<q",
+        12: "<d",
+    }
     for _ in range(n_kv):
         klen = rd("<Q")
-        key = buf[pos[0]:pos[0] + klen].decode()
+        key = buf[pos[0] : pos[0] + klen].decode()
         pos[0] += klen
         vt = rd("<I")
         if vt == _T_STRING:
@@ -98,7 +115,7 @@ def _read_token_types(path):
 
 
 def _write_tokenizer_json(path, added):
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding = "utf-8") as f:
         json.dump({"added_tokens": added}, f)
 
 
@@ -134,9 +151,9 @@ def test_already_control_and_plain_tokens_untouched(tmp_path):
     gguf = _gemma4_like(tmp_path)
     fix_gguf_special_token_types(str(gguf))
     types = _read_token_types(str(gguf))
-    assert types[0] == NORMAL    # "hello" plain text
-    assert types[1] == CONTROL   # already correct
-    assert types[4] == NORMAL    # "</s>" not in added_tokens -> left for llama.cpp
+    assert types[0] == NORMAL  # "hello" plain text
+    assert types[1] == CONTROL  # already correct
+    assert types[4] == NORMAL  # "</s>" not in added_tokens -> left for llama.cpp
 
 
 def test_idempotent_second_run_patches_nothing(tmp_path):
@@ -185,5 +202,5 @@ def test_explicit_tokenizer_json_path_is_used(tmp_path):
     tok = tmp_path / "src" / "tokenizer.json"
     tok.parent.mkdir()
     _write_tokenizer_json(str(tok), [{"id": 0, "content": "<|tool_call>", "special": True}])
-    assert fix_gguf_special_token_types(str(gguf), tokenizer_json=str(tok)) == 1
+    assert fix_gguf_special_token_types(str(gguf), tokenizer_json = str(tok)) == 1
     assert _read_token_types(str(gguf))[0] == CONTROL

@@ -2347,9 +2347,7 @@ def unsloth_save_pretrained_gguf(
         for gguf_file in all_file_locations or []:
             fix_gguf_special_token_types(gguf_file, tokenizer_json = tokenizer_json)
     except Exception as e:
-        logger.warning(
-            f"Unsloth: fix_gguf_special_token_types skipped ({type(e).__name__}): {e}"
-        )
+        logger.warning(f"Unsloth: fix_gguf_special_token_types skipped ({type(e).__name__}): {e}")
 
     # Step 9: Create Ollama modelfile
     gguf_directory = f"{save_directory}_gguf"
