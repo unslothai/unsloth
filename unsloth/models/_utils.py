@@ -69,6 +69,7 @@ __all__ = [
     "resolve_attention_implementation",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
+    "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -304,6 +305,28 @@ def _config_set(config, field_name, value):
         config[field_name] = value
     elif config is not None:
         setattr(config, field_name, value)
+
+
+def set_task_config_attr(config, field_name, value):
+    _config_set(config, field_name, value)
+    text_config = None
+    if isinstance(config, dict):
+        text_config = config.get("text_config", None)
+    elif config is not None:
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = None
+        if text_config is None:
+            text_config = getattr(config, "text_config", None)
+    if (
+        text_config is not None
+        and text_config is not config
+        and (isinstance(text_config, dict) or hasattr(text_config, "__dict__"))
+    ):
+        _config_set(text_config, field_name, value)
 
 
 def _iter_attention_configs(config, seen = None):
