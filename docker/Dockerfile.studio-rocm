@@ -1,0 +1,53 @@
+# Unsloth Studio variant of the ROCm image.
+#
+# Builds on top of unsloth-rocm:<tag> (default `test`) and runs
+# `install.sh --local` to lay down the Studio venv under $UNSLOTH_STUDIO_HOME.
+# SKIP_TORCH=true is set so install.sh does not re-install torch -- the base
+# image already ships ROCm torch and reinstalling from auto-detect would fail
+# at build time when no GPU is present.
+#
+# Build:
+#   docker buildx build \
+#     --build-arg BASE_TAG=test \
+#     -f docker/Dockerfile.studio-rocm \
+#     -t unsloth-rocm:studio docker/
+#
+# Run (RDNA2/3):
+#   docker run --rm \
+#     --device /dev/kfd --device /dev/dri --group-add video \
+#     -p 8888:8888 \
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface \
+#     unsloth-rocm:studio
+#
+# For RDNA4 / Strix Halo, set HSA_OVERRIDE_GFX_VERSION or UNSLOTH_ROCM_GFX_ARCH
+# as documented in docker/run.sh (--rocm).
+#
+# Open http://localhost:8888 . First-boot admin password is printed in the
+# container logs and persisted under /opt/unsloth-studio/auth/.bootstrap_password.
+
+ARG BASE_TAG=test
+FROM unsloth-rocm:${BASE_TAG}
+
+ARG UNSLOTH_STUDIO_REF=main
+
+USER root
+ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    DEBIAN_FRONTEND=noninteractive \
+    # torch is already installed in the base image (ROCm wheels).
+    # Prevent install.sh from re-running get_torch_index_url() which would
+    # probe the absent build-host GPU and silently install a CPU wheel on top.
+    SKIP_TORCH=true
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p "${UNSLOTH_STUDIO_HOME}" \
+ && git clone --depth 1 --branch "${UNSLOTH_STUDIO_REF}" https://github.com/unslothai/unsloth "${UNSLOTH_STUDIO_HOME}/src" \
+ && cd "${UNSLOTH_STUDIO_HOME}/src" \
+ && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" bash install.sh --local \
+ && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache
+
+EXPOSE 8888
+
+CMD ["sh", "-c", "${UNSLOTH_STUDIO_HOME}/bin/unsloth studio -H 0.0.0.0 -p 8888"]
