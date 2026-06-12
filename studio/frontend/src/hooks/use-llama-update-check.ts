@@ -11,8 +11,9 @@ const FIRST_CHECK_DELAY_MS = 1000;
 const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
 // "Remind me later" re-surfaces sooner than the hourly reminder.
 const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
-// While an update is applying, poll the job state at this cadence.
-const JOB_POLL_INTERVAL_MS = 1500;
+// Poll cadence while applying. Short so the installer's ~5% milestones are
+// observed instead of a fast download finishing between two slow polls.
+const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
@@ -149,7 +150,14 @@ export function useLlamaUpdateCheck({
   );
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Disabled mid-update: stop showing and tracking, and clear `applying`
+      // so the banner's animation loop stops too. Re-enabling re-detects a
+      // still-running job below and resumes tracking via surfaceIfAvailable.
+      setVisible(false);
+      setApplying(false);
+      return;
+    }
     let canceled = false;
 
     const firstTimer = setTimeout(() => {

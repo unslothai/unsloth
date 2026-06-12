@@ -433,7 +433,7 @@ def _detect_windows_gfx_arch() -> str | None:
 
 
 # GPU marketing-name → gfx arch table, mirroring setup.ps1's $nameArchTable.
-# Most-specific first; first match wins. Covers only arches the lemonade-sdk
+# Most-specific first; first match wins. Covers only arches the ROCm
 # prebuilts / AMD Windows torch indexes support; unknown names return None
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [

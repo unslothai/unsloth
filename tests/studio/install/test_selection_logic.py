@@ -2963,6 +2963,29 @@ class TestPublishedRocmGfxSelection:
                 is None
             ), unbuilt
 
+    def test_family_token_matches_family_bundle(self):
+        # The llama.cpp update path re-derives --rocm-gfx from the family-named
+        # marker asset, so it forwards a family token (gfx110X, lowercased to
+        # gfx110x by _normalize_forwarded_gfx), not a concrete arch. That must
+        # still select the family bundle instead of falling to a source build.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        for token in ("gfx110X", "gfx110x"):
+            choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                release, self._host(token), "linux-rocm"
+            )
+            assert choice is not None, token
+            assert choice.name == "app-b9457-linux-x64-rocm-gfx110X.tar.gz", token
+
+    def test_windows_family_token_matches_family_bundle(self):
+        # The Windows update path forwards the same family token (gfx120X) for a
+        # windows-rocm bundle, so the family-label match must cover it too.
+        release = self._release("windows-rocm", "app-b9457-windows-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx120x"), "windows-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
+
 
 class TestPublishedMacosForkSelection:
     """macOS now routes to the fork (setup.sh), which ships

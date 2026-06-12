@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  notifyChatHistoryUpdated,
+} from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useChatArtifactsStore } from "../artifacts/store";
 import type { ThreadRecord } from "../types";
@@ -13,11 +16,11 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearComposerDraft } from "../utils/composer-draft";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
-import { notifyChatHistoryUpdated } from "../api/chat-api";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -27,12 +30,20 @@ export interface SidebarItem {
   projectId?: string | null;
 }
 
-export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
+export function groupThreads(
+  threads: ThreadRecord[],
+  archived = false,
+): SidebarItem[] {
   const items: SidebarItem[] = [];
   const seenPairs = new Set<string>();
 
   for (const t of threads) {
-    if (t.archived) {
+    // Coerce archived to a boolean before comparing. Legacy threads (from the
+    // older browser-only Studio, or any record predating the archived field)
+    // can have archived === undefined or null; a raw `!== archived` comparison
+    // would drop those from BOTH the Recents (archived=false) and Archived
+    // (archived=true) lists, hiding existing chats. Treat missing as false.
+    if (Boolean(t.archived) !== archived) {
       continue;
     }
     if (t.pairId) {
@@ -88,8 +99,10 @@ export function useChatSidebarItems(options?: {
         const listThreads = requireMessages
           ? listStoredChatThreadsWithMessages
           : listStoredChatThreads;
+        // includeArchived: archived threads are filtered out of Recents by
+        // groupThreads, but the hook still needs them for archivedItems.
         const threads = await listThreads({
-          includeArchived: false,
+          includeArchived: true,
           projectId: options?.projectId,
         });
         // Discard the response if a newer request was scheduled while we
@@ -126,9 +139,10 @@ export function useChatSidebarItems(options?: {
   }, [enabled, options?.projectId, requireMessages]);
 
   const items = groupThreads(allThreads ?? []);
+  const archivedItems = groupThreads(allThreads ?? [], true);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
-  return { items, canCompare };
+  return { items, archivedItems, canCompare };
 }
 
 function cancelIfRunning(threadId: string): void {
@@ -160,6 +174,53 @@ export async function renameChatItem(
   );
 }
 
+export async function archiveChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<void> {
+  const threadIds: string[] =
+    item.type === "single"
+      ? [item.id]
+      : (
+          await listStoredChatThreads({
+            pairId: item.id,
+            includeArchived: true,
+          })
+        ).map((t) => t.id);
+
+  for (const id of threadIds) cancelIfRunning(id);
+
+  await Promise.all(
+    threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
+  );
+
+  if (activeId === item.id) {
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  notifyChatHistoryUpdated();
+}
+
+export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
+  const threadIds: string[] =
+    item.type === "single"
+      ? [item.id]
+      : (
+          await listStoredChatThreads({
+            pairId: item.id,
+            includeArchived: true,
+          })
+        ).map((t) => t.id);
+
+  await Promise.all(
+    threadIds.map((id) => updateStoredChatThread(id, { archived: false })),
+  );
+
+  notifyChatHistoryUpdated();
+}
+
 export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
@@ -173,6 +234,9 @@ export async function deleteChatItem(
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
+
+  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  for (const id of threadIds) clearComposerDraft(id);
 
   const artifactStore = useChatArtifactsStore.getState();
   for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
