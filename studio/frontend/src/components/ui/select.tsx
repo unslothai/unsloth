@@ -3,7 +3,6 @@
 
 "use client";
 
-import { Tick02Icon } from "@/lib/tick-icon";
 import { Select as SelectPrimitive } from "radix-ui";
 import type * as React from "react";
 import { createContext, useContext, useState } from "react";
@@ -13,6 +12,7 @@ import { useDialogPortalContainer } from "@/components/ui/dialog";
 import {
   ArrowDown01Icon,
   ArrowUp01Icon,
+  Tick02Icon,
   UnfoldMoreIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
