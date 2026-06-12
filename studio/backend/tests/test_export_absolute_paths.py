@@ -349,6 +349,25 @@ def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(tmp_pat
         storage_roots.resolve_export_dir(str(external))
 
 
+def test_export_write_dir_accepts_expanded_home_path(tmp_path, monkeypatch):
+    storage_roots = _load_module(
+        "test_storage_roots_accept_home_path",
+        "utils/paths/storage_roots.py",
+    )
+
+    export_root = tmp_path / "exports"
+    home = tmp_path / "home"
+    export_root.mkdir()
+    home.mkdir()
+    monkeypatch.setattr(storage_roots, "exports_root", lambda: export_root)
+    if storage_roots.os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(home))
+    else:
+        monkeypatch.setenv("HOME", str(home))
+
+    assert storage_roots.resolve_export_write_dir("~/exports/model") == home / "exports" / "model"
+
+
 def test_resolve_export_write_dir_rejects_backslash_parent_segment():
     storage_roots = _load_module(
         "test_storage_roots_reject_parent",

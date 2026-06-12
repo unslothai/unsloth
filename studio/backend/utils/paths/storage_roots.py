@@ -330,10 +330,11 @@ def _has_parent_segment(raw: str, path: Path) -> bool:
     return ".." in raw.replace("\\", "/").split("/")
 
 
-def _is_absolute_user_path(raw: str, path: Path) -> bool:
+def _is_absolute_user_path(path: Path) -> bool:
+    expanded = str(path)
     if os.name == "nt":
-        return path.is_absolute() and PureWindowsPath(raw).is_absolute()
-    return path.is_absolute() and PurePosixPath(raw).is_absolute()
+        return path.is_absolute() and PureWindowsPath(expanded).is_absolute()
+    return path.is_absolute() and PurePosixPath(expanded).is_absolute()
 
 
 def _assert_contained(resolved: Path, root: Path) -> None:
@@ -373,7 +374,7 @@ def resolve_under_root(
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
 
-    if _is_absolute_user_path(raw, path):
+    if _is_absolute_user_path(path):
         _assert_contained(path, root)
         return path
 
@@ -420,7 +421,7 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     path = Path(raw).expanduser()
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
-    if _is_absolute_user_path(raw, path):
+    if _is_absolute_user_path(path):
         return path
     return resolve_under_root(
         path_value,
