@@ -1627,10 +1627,10 @@ const Composer: FC<{
   }, []);
 
   const startQueue = useCallback(
-    (items: string[], waitForCurrentRun = false) => {
+    (items: string[], waitForCurrentRun = threadIsRunning) => {
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget],
+    [createPromptQueueTarget, threadIsRunning],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };

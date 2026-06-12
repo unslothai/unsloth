@@ -1080,18 +1080,20 @@ function ThreadNewChatSwitch({
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const mainThreadIdRef = useRef(mainThreadId);
+  mainThreadIdRef.current = mainThreadId;
 
   useEffect(() => {
     if (isLoading) {
       return;
     }
     requestPromptQueueStop();
-    stopChatRun(mainThreadId);
+    stopChatRun(mainThreadIdRef.current);
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, mainThreadId, nonce]);
+  }, [aui, isLoading, nonce]);
 
   return null;
 }
