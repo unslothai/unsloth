@@ -2388,7 +2388,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -2417,7 +2417,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? reasoningEnabled
                   ? { reasoning_effort: localReasoningEffort }
                   : {}
-                : { enable_thinking: reasoningEnabled }
+                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
