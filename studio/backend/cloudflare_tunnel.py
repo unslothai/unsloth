@@ -328,11 +328,16 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
         if url:
             return url
         saw_url = tunnel.url is not None
-        # Not ready: drop it unless a concurrent shutdown already replaced it.
+        # Not ready: drop it, but only if we are still the active tunnel.
         with _active_lock:
-            if _active_tunnel is tunnel:
+            was_active = _active_tunnel is tunnel
+            if was_active:
                 _active_tunnel = None
         tunnel.stop()
+        # A concurrent shutdown or start took over while we waited; retrying would
+        # spawn a tunnel nobody owns (orphaned after shutdown), so bail instead.
+        if not was_active:
+            return None
         # No URL at all is an API/network failure, not a protocol one; forcing
         # http2 will not help, so do not burn another window on it.
         if not saw_url:

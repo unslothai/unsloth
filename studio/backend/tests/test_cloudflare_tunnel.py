@@ -568,6 +568,41 @@ def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
     assert ct._active_tunnel is None
 
 
+def test_start_studio_tunnel_aborts_retry_on_concurrent_shutdown(monkeypatch):
+    # If a concurrent stop_studio_tunnel() clears _active_tunnel while we wait,
+    # the retry loop must NOT start a second (http2) tunnel: shutdown is already
+    # done, so nothing would ever stop it and it would be orphaned.
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL minted (saw_url True)
+
+        def wait_for_ready(self, timeout):
+            # Simulate stop_studio_tunnel() landing during the wait.
+            with ct._active_lock:
+                ct._active_tunnel = None
+            return None  # never registered
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]  # no http2 retry -> no orphaned second tunnel
+    assert ct._active_tunnel is None
+
+
 # ── run.py source-level pins (AST / source, no heavy import) ─────────
 
 
