@@ -1622,6 +1622,93 @@ def _get_rope_theta(config, default = 10000.0):
     return default
 
 
+def _rope_scaling_as_dict(rope_scaling):
+    """Normalize config.rope_scaling (dict or config object) to a dict; {} on failure."""
+    if isinstance(rope_scaling, dict):
+        return rope_scaling
+    for converter in ("to_dict", "dict"):
+        fn = getattr(rope_scaling, converter, None)
+        if callable(fn):
+            try:
+                d = fn()
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+    try:
+        return {k: v for k, v in vars(rope_scaling).items() if not k.startswith("_")}
+    except TypeError:
+        return {}
+
+
+def _llama3_inv_freq_from_config(
+    config,
+    rope_scaling,
+    device = "cpu",
+):
+    """llama3 inv_freq with factors from config; fallback when modeling_rope_utils is missing."""
+    base = _get_rope_theta(config, default = 10000.0)
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        dim = int(config.hidden_size // config.num_attention_heads)
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim)
+    )
+
+    scale_factor = rope_scaling.get("factor", 8.0)
+    low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
+    high_freq_factor = rope_scaling.get("high_freq_factor", 4.0)
+    old_context_len = rope_scaling.get("original_max_position_embeddings", 8192)
+
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+    assert low_freq_wavelen != high_freq_wavelen
+
+    # Vectorized meta-llama bands: high freqs kept, low divided by factor, medium blended.
+    wavelen = 2 * math.pi / inv_freq
+    scaled = torch.where(wavelen > low_freq_wavelen, inv_freq / scale_factor, inv_freq)
+    smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    smoothed = (1 - smooth) * inv_freq / scale_factor + smooth * inv_freq
+    is_medium = (wavelen >= high_freq_wavelen) & (wavelen <= low_freq_wavelen)
+    return torch.where(is_medium, smoothed, scaled)
+
+
+def _compute_config_rope_inv_freq(config, rope_scaling):
+    """(inv_freq, attention_scaling) per config.rope_scaling via transformers'
+    ROPE_INIT_FUNCTIONS, with an inline llama3 fallback; (None, 1.0) on failure."""
+    original_rope_scaling = rope_scaling
+    rope_scaling = _rope_scaling_as_dict(rope_scaling)
+    rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+        rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
+        try:
+            inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
+        except Exception:
+            # Object-style rope_scaling: retry with a config copy carrying the plain dict.
+            if isinstance(original_rope_scaling, dict):
+                raise
+            import copy as _copy
+
+            config_copy = _copy.copy(config)
+            config_copy.rope_scaling = rope_scaling
+            inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
+        return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
+    except Exception as exception:
+        if rope_type == "llama3":
+            try:
+                return _llama3_inv_freq_from_config(config, rope_scaling), 1.0
+            except Exception:
+                pass
+        logger.warning_once(
+            f"Unsloth: Could not apply RoPE scaling '{rope_type}' from config "
+            f"({type(exception).__name__}: {exception}); falling back to unscaled RoPE. "
+            "Long-context generation may degrade."
+        )
+        return None, 1.0
+
+
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
 # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
@@ -1640,6 +1727,12 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
+        self.attention_scaling = 1.0
+        # Base-class-from-config path (modern transformers): derive inv_freq like
+        # transformers so config.rope_scaling is not dropped (#2405). Scaled
+        # subclasses are excluded to avoid double-scaling.
+        config_inv_freq = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
@@ -1652,6 +1745,13 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 
+            rope_scaling = getattr(config, "rope_scaling", None)
+            if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
+                config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
+                    config,
+                    rope_scaling,
+                )
+
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
@@ -1660,12 +1760,17 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
-        # Normal Llama-3 RoPE
-        inv_freq = 1.0 / (
-            self.base
-            ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
-        )
-        inv_freq = self._apply_inv_freq_scaling(inv_freq)
+        if config_inv_freq is not None:
+            inv_freq = config_inv_freq  # already scaled; skip subclass scaling
+        else:
+            # Normal Llama-3 RoPE
+            inv_freq = 1.0 / (
+                self.base
+                ** (
+                    torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim
+                )
+            )
+            inv_freq = self._apply_inv_freq_scaling(inv_freq)
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
@@ -1704,8 +1809,10 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim = -1)
-        cos = emb.cos().to(dtype = dtype, device = device, non_blocking = True)
-        sin = emb.sin().to(dtype = dtype, device = device, non_blocking = True)
+        # Applied here so attention_scaling survives extend_rope_embedding rebuilds;
+        # default 1.0 keeps unscaled paths bit-identical.
+        cos = (emb.cos() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
+        sin = (emb.sin() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -3467,6 +3574,14 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = False
+
+        # Restore use_cache values that prepare_model_for_training disabled
+        # for gradient checkpointing (older unsloth_zoo has no restore helper)
+        try:
+            from unsloth_zoo.training_utils import restore_use_cache
+            restore_use_cache(model)
+        except ImportError:
+            pass
         return model
 
     @staticmethod
@@ -3514,6 +3629,18 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = True
+
+        # Re-disable use_cache if prepare_model_for_training had disabled it
+        # and for_inference restored it (record only exists after a disable)
+        if (
+            use_gradient_checkpointing
+            and getattr(model, "_unsloth_use_cache_originals", None) is not None
+        ):
+            try:
+                from unsloth_zoo.training_utils import disable_use_cache
+                disable_use_cache(model)
+            except ImportError:
+                pass
         return model
 
 

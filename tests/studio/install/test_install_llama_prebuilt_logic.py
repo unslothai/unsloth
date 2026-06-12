@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -28,6 +29,7 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
+activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
@@ -206,6 +208,110 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
 
 
+def test_release_asset_download_url():
+    fn = INSTALL_LLAMA_PREBUILT.release_asset_download_url
+    assert fn(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz"
+    ) == (
+        "https://github.com/unslothai/llama.cpp/releases/download/"
+        "b9000-mix-abc1234/llama.cpp-source-commit-deadbeef.tar.gz"
+    )
+    # Any missing component -> None (no asset url, caller falls back to codeload).
+    assert fn(None, "b9000", "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", None, "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", "b9000", None) is None
+
+
+def _mk_source_tarball(path: Path, tag: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        add_bytes_to_tar(
+            archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n"
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+
+
+def test_hydrate_source_tree_prefers_release_asset_for_mix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A mix build's merge commit is in no repo, so the codeload/archive URLs 404.
+    # hydrate must fetch the release asset and never touch codeload.
+    commit = "a" * 40
+    archive_path = tmp_path / "merged-source.tar.gz"
+    _mk_source_tarball(archive_path, f"b9000-mix-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = set(
+        INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+    )
+    seen = []
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        seen.append(url)
+        if url in codeload_urls:
+            raise AssertionError("codeload was hit even though the release asset was available")
+        assert url == asset_url
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert seen == [asset_url]
+    assert (install_dir / "CMakeLists.txt").exists()
+    assert (install_dir / "convert_hf_to_gguf.py").exists()
+
+
+def test_hydrate_source_tree_falls_back_to_codeload_when_asset_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # If the release asset 404s, fall back to codeload/archive (vanilla path).
+    commit = "b" * 40
+    archive_path = tmp_path / "vanilla-source.tar.gz"
+    _mk_source_tarball(archive_path, f"commit-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        if url == asset_url:
+            raise RuntimeError("404 Not Found")
+        assert url in codeload_urls
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert (install_dir / "CMakeLists.txt").exists()
+
+
 def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -336,336 +442,6 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
     assert (install_dir / "llama-quantize").exists()
     assert (install_dir / "UNSLOTH_PREBUILT_INFO.json").exists()
     assert (install_dir / "BUILD_INFO.txt").exists()
-
-
-def test_simple_linux_direct_release_uses_published_source_checksums_for_branch(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    source_commit = "25b1bc9c2f9aa0a390b968ee1ffd9ff01340a3fe"
-    release = {
-        "tag_name": "llama-prebuilt-master-3a92bc9",
-        "assets": [
-            {
-                "name": "app-master-linux-x64-cuda13-newer.tar.gz",
-                "browser_download_url": "https://example.test/app-master-linux-x64-cuda13-newer.tar.gz",
-            },
-            {
-                "name": "llama-prebuilt-sha256.json",
-                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
-            },
-        ],
-    }
-    checksums = ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = "llama-prebuilt-master-3a92bc9",
-        upstream_tag = "b9174",
-        source_commit = source_commit,
-        source_repo = "ggml-org/llama.cpp",
-        source_repo_url = "https://github.com/ggml-org/llama.cpp",
-        source_ref_kind = "branch",
-        requested_source_ref = "master",
-        resolved_source_ref = "master",
-        artifacts = {
-            "app-master-linux-x64-cuda13-newer.tar.gz": ApprovedArtifactHash(
-                asset_name = "app-master-linux-x64-cuda13-newer.tar.gz",
-                sha256 = "a" * 64,
-                repo = "unslothai/llama.cpp",
-                kind = "linux-cuda-app",
-            ),
-            INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
-                source_commit
-            ): ApprovedArtifactHash(
-                asset_name = INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(source_commit),
-                sha256 = "b" * 64,
-                repo = "ggml-org/llama.cpp",
-                kind = "exact-source",
-            ),
-        },
-    )
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "load_approved_release_checksums",
-        lambda repo, release_tag: checksums,
-    )
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "detected_linux_runtime_lines",
-        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-    )
-    host = HostInfo(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = (13, 1),
-        compute_caps = ["100"],
-        visible_cuda_devices = None,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
-    )
-
-    plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-        release,
-        host,
-        "unslothai/llama.cpp",
-        "latest",
-    )
-
-    assert plan is not None
-    assert plan.llama_tag == "master"
-    assert plan.approved_checksums.upstream_tag == "b9174"
-    assert plan.approved_checksums.source_commit == source_commit
-    assert plan.attempts[0].expected_sha256 == "a" * 64
-    source_repo, source_ref, _source_archive, exact_source = (
-        INSTALL_LLAMA_PREBUILT.preferred_source_archive(plan.approved_checksums, plan.llama_tag)
-    )
-    assert source_repo == "ggml-org/llama.cpp"
-    assert source_ref == source_commit
-    assert exact_source is True
-
-
-def test_simple_linux_direct_release_honors_torch_cudart_preference(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    # Regression: a Blackwell host (sm_120, driver 13.0) with BOTH cudart majors
-    # visible -- a stray cuda13 wheel plus torch's cuda12 -- must install the
-    # cuda12 build that matches the runtime torch, not the newest-major cuda13
-    # build (which loads no GPU and silently falls back to CPU).
-    release = {
-        "tag_name": "b9334",
-        "assets": [
-            {
-                "name": f"app-b9334-linux-x64-{profile}.tar.gz",
-                "browser_download_url": f"https://example.test/app-b9334-linux-x64-{profile}.tar.gz",
-            }
-            for profile in (
-                "cuda12-newer",
-                "cuda12-portable",
-                "cuda13-newer",
-                "cuda13-portable",
-            )
-        ],
-    }
-    # cuda13 detected first (newest-major order); both compatible with driver 13.0.
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "detected_linux_runtime_lines",
-        lambda: (
-            ["cuda13", "cuda12"],
-            {
-                "cuda13": ["/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib"],
-                "cuda12": ["/venv/lib/python3.13/site-packages/nvidia/cuda_runtime/lib"],
-            },
-        ),
-    )
-    host = HostInfo(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = "nvidia-smi",
-        driver_cuda_version = (13, 0),
-        compute_caps = ["120"],
-        visible_cuda_devices = None,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
-    )
-
-    def first_asset_for_torch(line):
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detect_torch_cuda_runtime_preference",
-            lambda h: INSTALL_LLAMA_PREBUILT.CudaRuntimePreference(
-                runtime_line = line, selection_log = []
-            ),
-        )
-        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-            release, host, "unslothai/llama.cpp", "latest"
-        )
-        return plan.attempts[0]
-
-    # torch reports cuda12 (the cu128 runtime) -> install the cuda12 build.
-    primary = first_asset_for_torch("cuda12")
-    assert primary.name == "app-b9334-linux-x64-cuda12-newer.tar.gz"
-    assert primary.runtime_line == "cuda12"
-
-    # torch unavailable -> unchanged newest-major fallback (documents the residual).
-    assert first_asset_for_torch(None).name == "app-b9334-linux-x64-cuda13-newer.tar.gz"
-
-
-@pytest.mark.parametrize(
-    "mutate, expected_match",
-    [
-        # Missing source_commit.
-        (
-            lambda c: setattr(c, "source_commit", None) or setattr(c, "source_commit_short", None),
-            "exact source provenance",
-        ),
-        # source_commit present, but no exact-source archive hash.
-        (
-            lambda c: c.artifacts.pop(
-                INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(c.source_commit),
-                None,
-            ),
-            "exact source provenance",
-        ),
-        # source_commit + exact-source archive present, but no source_repo.
-        (
-            lambda c: setattr(c, "source_repo", None) or setattr(c, "source_repo_url", None),
-            "exact source provenance",
-        ),
-    ],
-    ids = [
-        "missing_source_commit",
-        "missing_exact_source_artifact",
-        "missing_source_repo",
-    ],
-)
-def test_simple_linux_direct_release_rejects_branch_without_exact_source_metadata(
-    monkeypatch: pytest.MonkeyPatch, mutate, expected_match
-):
-    source_commit = "25b1bc9c2f9aa0a390b968ee1ffd9ff01340a3fe"
-    release = {
-        "tag_name": "llama-prebuilt-master-3a92bc9",
-        "assets": [
-            {
-                "name": "app-master-linux-x64-cuda13-newer.tar.gz",
-                "browser_download_url": "https://example.test/app-master-linux-x64-cuda13-newer.tar.gz",
-            },
-            {
-                "name": "llama-prebuilt-sha256.json",
-                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
-            },
-        ],
-    }
-    checksums = ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = "llama-prebuilt-master-3a92bc9",
-        upstream_tag = "b9174",
-        source_commit = source_commit,
-        source_repo = "ggml-org/llama.cpp",
-        source_repo_url = "https://github.com/ggml-org/llama.cpp",
-        source_ref_kind = "branch",
-        requested_source_ref = "master",
-        resolved_source_ref = "master",
-        artifacts = {
-            "app-master-linux-x64-cuda13-newer.tar.gz": ApprovedArtifactHash(
-                asset_name = "app-master-linux-x64-cuda13-newer.tar.gz",
-                sha256 = "a" * 64,
-                repo = "unslothai/llama.cpp",
-                kind = "linux-cuda-app",
-            ),
-            INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
-                source_commit
-            ): ApprovedArtifactHash(
-                asset_name = INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(source_commit),
-                sha256 = "b" * 64,
-                repo = "ggml-org/llama.cpp",
-                kind = "exact-source",
-            ),
-        },
-    )
-    mutate(checksums)
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "load_approved_release_checksums",
-        lambda repo, release_tag: checksums,
-    )
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "detected_linux_runtime_lines",
-        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-    )
-    host = HostInfo(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = (13, 1),
-        compute_caps = ["100"],
-        visible_cuda_devices = None,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
-    )
-
-    with pytest.raises(PrebuiltFallback, match = expected_match):
-        INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-            release,
-            host,
-            "unslothai/llama.cpp",
-            "latest",
-        )
-
-
-def test_simple_linux_direct_release_keeps_legacy_b_tag_path_without_checksums(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    release = {
-        "tag_name": "b9999",
-        "assets": [
-            {
-                "name": "app-b9999-linux-x64-cuda13-newer.tar.gz",
-                "browser_download_url": "https://example.test/app-b9999-linux-x64-cuda13-newer.tar.gz",
-            },
-            {
-                "name": "llama-prebuilt-sha256.json",
-                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
-            },
-        ],
-    }
-
-    def unexpected_checksum_load(repo: str, release_tag: str):
-        raise AssertionError("legacy b-tag direct releases should not require checksum metadata")
-
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "load_approved_release_checksums",
-        unexpected_checksum_load,
-    )
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT,
-        "detected_linux_runtime_lines",
-        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-    )
-    host = HostInfo(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = (13, 1),
-        compute_caps = ["100"],
-        visible_cuda_devices = None,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
-    )
-
-    plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-        release,
-        host,
-        "unslothai/llama.cpp",
-        "latest",
-    )
-
-    assert plan is not None
-    assert plan.llama_tag == "b9999"
-    assert plan.release_tag == "b9999"
-    assert plan.approved_checksums.source_commit is None
-    assert plan.attempts[0].expected_sha256 is None
 
 
 def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(
@@ -892,6 +668,48 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert "removing rollback path" in output
 
 
+def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    (staging_dir / "bin").mkdir(parents = True)
+    (staging_dir / "bin" / "ggml-base.dll").write_bytes(b"fake dll")
+    dst = tmp_path / "llama.cpp"
+
+    def denied_replace(src, dst_arg):
+        raise PermissionError(errno.EACCES, "Access is denied", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "bin" / "ggml-base.dll").read_bytes() == b"fake dll"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+def test_activate_staged_dir_reraises_non_busy_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    (staging_dir / "new.txt").write_text("new install\n")
+    dst = tmp_path / "llama.cpp"
+
+    def out_of_space_replace(src, dst_arg):
+        raise OSError(errno.ENOSPC, "No space left on device", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", out_of_space_replace)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        activate_staged_dir(staging_dir, dst)
+
+    assert not dst.exists()
+    assert (staging_dir / "new.txt").read_text() == "new install\n"
+
+
 def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -993,7 +811,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [first_plan, second_plan],
@@ -1921,7 +1739,7 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2011,7 +1829,7 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2139,7 +1957,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [latest_plan, fallback_plan],
@@ -2286,7 +2104,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2405,7 +2223,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [latest_plan, older_plan],
