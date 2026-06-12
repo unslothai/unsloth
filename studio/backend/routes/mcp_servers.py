@@ -10,12 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import get_current_subject
 from core.inference.mcp_client import (
+    TOOL_CACHE_INVALIDATING_FIELDS,
+    cache_tools,
     clear_oauth_tokens_async,
+    invalidate_tool_cache,
     is_stdio,
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    record_probe_failure,
     stdio_mcp_enabled,
 )
 from core.inference.mcp_config_import import parse_mcp_config
@@ -198,6 +202,11 @@ async def update_mcp_server(
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
+    # A new endpoint/auth makes cached tools wrong and disabling makes them
+    # unreachable, so drop them and let the next send re-probe; a rename
+    # leaves them valid.
+    if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
+        invalidate_tool_cache(server_id)
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
@@ -209,6 +218,7 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
+    invalidate_tool_cache(server_id)
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -238,8 +248,23 @@ async def refresh_mcp_server_tools(
             error = str(exc),
             exc_info = True,
         )
+        current = mcp_servers_db.get_server(server_id)
+        if current is not None and not any(
+            current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+        ):
+            # Start the cool-off so the next chat send doesn't immediately re-hang
+            # on this server's timeout. If the row changed while the probe was
+            # awaiting, the failure belongs to the old config and must not park
+            # the newly edited server.
+            record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
+    # Warm the chat-path cache so the next send skips re-probing.
+    current = mcp_servers_db.get_server(server_id)
+    if current is not None and not any(
+        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    ):
+        cache_tools(server_id, tools)
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
