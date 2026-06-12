@@ -200,6 +200,25 @@ fi
 hr
 
 # --------------------------------------------------------------------------- #
+# 5b. vLLM (GRPO fast_inference=True)
+# --------------------------------------------------------------------------- #
+bold "5b) vLLM (GRPO fast_inference=True)"
+if docker run --rm -e UNSLOTH_SKIP_GPU_CHECK=1 "$BASE_IMAGE" \
+     python -c 'import vllm; print("vllm", vllm.__version__)' \
+     >"$WORK/vllm_check.log" 2>&1; then
+  ok "vllm importable: $(grep -oE 'vllm [0-9][^ ]*' "$WORK/vllm_check.log" | head -1)"
+else
+  IMG_ARCH="$(docker run --rm -e UNSLOTH_SKIP_GPU_CHECK=1 "$BASE_IMAGE" uname -m 2>/dev/null || echo unknown)"
+  if [ "$IMG_ARCH" = "x86_64" ]; then
+    bad "vllm missing or broken on x86_64 image (see $WORK/vllm_check.log)"
+    tail -3 "$WORK/vllm_check.log" | sed 's/^/         /'
+  else
+    warn "vllm not available on $IMG_ARCH image; GRPO fast_inference=True unavailable (arm64 wheels are newer, fail-soft at image build)"
+  fi
+fi
+hr
+
+# --------------------------------------------------------------------------- #
 # 6. Full image: Studio + JupyterLab boot
 # --------------------------------------------------------------------------- #
 bold "6) Studio + JupyterLab (full image)"

@@ -165,19 +165,21 @@ RUN set -eux \
         "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
         "timm>=1.0.11" "addict"
 
-# vLLM nightly (amd64 only). Required by Unsloth's GRPO path when the
-# notebook sets fast_inference=True. We install it as a SECOND uv pass
-# rather than appending to the unified one because:
-#   * vLLM's nightly wheel typically pins a specific cu128 torch build;
-#     adding it to the unified resolve forces uv to consider whether to
-#     swap our pinned torch 2.10.0 for vLLM's choice. Splitting the
-#     install lets the unified pass settle on torch 2.10.0 first, then
-#     vLLM bolts on top.
-#   * --no-deps keeps vLLM from yanking torch / xformers / transformers
-#     out from under unsloth. Empirically vLLM's runtime deps overlap
-#     ~100% with what unsloth already installed, so we can drop them.
-#   * On arm64 vLLM does not publish wheels (vllm-project/vllm#31128 is
-#     open; source-build takes ~2-3h under QEMU and ~1h native). Skipped.
+# vLLM. Required by Unsloth's GRPO path when the notebook sets
+# fast_inference=True. We install it as a SECOND uv pass rather than
+# appending to the unified one because:
+#   * vLLM releases pin an exact torch (0.19.1 -> torch==2.10.0; 0.20+
+#     moved to torch==2.11.0). Adding it to the unified resolve forces uv
+#     to consider whether to swap our pinned torch 2.10.0 for vLLM's
+#     choice. Splitting the install lets the unified pass settle on torch
+#     2.10.0 first, then vLLM bolts on top: with torch held at 2.10.0 the
+#     resolver lands on the newest compatible vLLM (0.19.1) by itself, and
+#     moves forward automatically when we bump torch.
+#   * PyPI ships both x86_64 AND aarch64 abi3 wheels for every release
+#     since 0.17, so the SAME pass now runs on the arm64 leg (DGX Spark /
+#     GB10 class). amd64 failures abort the build; arm64 is fail-soft
+#     because aarch64 wheels are newer and the GPU-side kernels there are
+#     validated on Spark hardware via docker_confirm.sh, not in CI.
 #
 # https://docs.vllm.ai/en/latest/getting_started/installation/gpu/
 # https://wheels.vllm.ai/nightly
@@ -185,48 +187,65 @@ ARG INSTALL_VLLM=auto
 RUN set -eux \
  && WANT_VLLM=0 \
  && case "${INSTALL_VLLM}" in \
-        auto) if [ "${TARGETARCH:-amd64}" = "amd64" ]; then WANT_VLLM=1; fi ;; \
-        1|true|yes) WANT_VLLM=1 ;; \
+        auto|1|true|yes) WANT_VLLM=1 ;; \
         0|false|no) WANT_VLLM=0 ;; \
         *) echo "ERROR: invalid INSTALL_VLLM=${INSTALL_VLLM}" >&2; exit 1 ;; \
     esac \
  && if [ "${WANT_VLLM}" = "1" ]; then \
-        echo ">> installing vLLM nightly (TARGETARCH=${TARGETARCH:-amd64})"; \
-        # Let uv resolve vLLM's transitive deps. We pin torch==2.10.0 so
-        # uv MUST hold our torch fixed; if vLLM nightly wants a different
-        # torch the build will fail loudly and we revisit. `unsafe-best-
-        # match` lets uv pull from whichever of the three indexes has a
-        # better wheel for each package.
-        ${VENV}/bin/uv pip install \
+        echo ">> installing vLLM (TARGETARCH=${TARGETARCH:-amd64})"; \
+        # NOTE: an explicit && chain, not `set -e` -- POSIX shells disable
+        # errexit inside any condition context (verified on dash), so a
+        # (set -e; ...) subshell here would mask install failures.
+        # Step 1: let uv resolve vLLM's transitive deps. We pin
+        # torch==2.10.0 so uv MUST hold our torch fixed; with torch held,
+        # the resolver lands on the newest vLLM whose pin matches and the
+        # build fails loudly if none does. `unsafe-best-match` lets uv
+        # pull from whichever of the three indexes has a better wheel.
+        # Step 2: vLLM pulls numpy down to 2.2.6 whose wheel ships a
+        # broken numpy.testing (`from numpy._core.tests._natype import
+        # pd_NA` -- tests/ is stripped from the wheel). Any path that hits
+        # `from numpy import *` (e.g. scipy.optimize) then crashes, taking
+        # `import unsloth` with it. Upgrade numpy back to a release with a
+        # self-consistent testing module.
+        # Step 3: vLLM pins numba==0.61.2, which hard-refuses numpy >= 2.3
+        # at import time -- and the stack needs numpy >= 2.3, so the numpy
+        # ceiling cannot move down. Lift numba to a release that supports
+        # numpy 2.4 (verified: numba 0.65 imports cleanly, vllm still
+        # imports). Same intentional-override class as the numpy bump.
+        { ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
             --pre \
             --index-strategy unsafe-best-match \
             --extra-index-url https://wheels.vllm.ai/nightly \
             --extra-index-url https://download.pytorch.org/whl/cu128 \
             "torch==2.10.0" \
-            vllm; \
-        # vLLM nightly pulls numpy down to 2.2.6 whose wheel ships a broken
-        # numpy.testing (`from numpy._core.tests._natype import pd_NA` -- the
-        # tests/ directory is stripped from the wheel). Any path that hits
-        # `from numpy import *` (e.g. scipy.optimize -> scipy._lib.array_api)
-        # then crashes, taking `import unsloth` with it via unsloth_zoo's
-        # `from transformers.processing_utils import Unpack`. Upgrade numpy
-        # back to a release that has a self-consistent testing module.
-        ${VENV}/bin/uv pip install \
+            vllm \
+       && ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
-            --upgrade "numpy>=2.4"; \
-        # vLLM pins numba==0.61.2, which hard-refuses numpy >= 2.3 at import
-        # time -- and the rest of the stack needs numpy >= 2.3, so the numpy
-        # ceiling cannot move down. Lift numba to a release that supports
-        # numpy 2.4 (verified: numba 0.65 imports cleanly and vllm still
-        # imports). Same intentional-override class as the numpy bump above.
-        ${VENV}/bin/uv pip install \
+            --upgrade "numpy>=2.4" \
+       && ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
-            --upgrade "numba>=0.62"; \
-        echo ">> vLLM installed (numpy + numba re-upgraded post-vllm):"; \
-        ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)"; \
-        ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')"; \
-        ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')"; \
+            --upgrade "numba>=0.62" \
+       && ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)" \
+       && ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')" \
+       && ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')" \
+       && echo ">> vLLM installed (numpy + numba re-upgraded post-vllm)"; \
+        } || { \
+            if [ "${TARGETARCH:-amd64}" != "amd64" ]; then \
+                echo ">> vLLM skipped on ${TARGETARCH}: install or import check failed (fail-soft on non-amd64)"; \
+                # A partial install must not poison the base stack: drop
+                # vllm and restore the numpy/numba floor it may have moved
+                # (numpy 2.2.6's broken numpy.testing breaks `import
+                # unsloth` outright). The arm64 staging CI contract probe
+                # re-verifies `import unsloth` after this.
+                ${VENV}/bin/uv pip uninstall --python ${VENV}/bin/python vllm || true; \
+                ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
+                    --upgrade "numpy>=2.4" "numba>=0.62"; \
+                ${VENV}/bin/python -c "import numpy.testing, numba; print('numpy/numba restored')"; \
+            else \
+                echo "ERROR: vLLM install failed on amd64" >&2; exit 1; \
+            fi; \
+        }; \
     else \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi

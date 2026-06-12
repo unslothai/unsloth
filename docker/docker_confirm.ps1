@@ -171,6 +171,23 @@ if ($LASTEXITCODE -eq 0) {
 }
 Hr
 
+# 5b) vLLM (GRPO fast_inference=True) -----------------------------------------
+Bold "5b) vLLM (GRPO fast_inference=True)"
+$log = Join-Path $WORK "vllm_check.log"
+docker run --rm -e UNSLOTH_SKIP_GPU_CHECK=1 $BASE_IMAGE python -c 'import vllm; print("vllm", vllm.__version__)' *> $log
+if ($LASTEXITCODE -eq 0) {
+  Ok ("vllm importable: " + (Get-Content $log -Tail 1))
+} else {
+  $imgArch = docker run --rm -e UNSLOTH_SKIP_GPU_CHECK=1 $BASE_IMAGE uname -m 2>$null
+  if ($imgArch -eq "x86_64") {
+    Bad "vllm missing or broken on x86_64 image (see $log)"
+    Get-Content $log -Tail 3 | ForEach-Object { Info $_ }
+  } else {
+    Warn "vllm not available on $imgArch image; GRPO fast_inference=True unavailable (arm64 wheels are newer, fail-soft at image build)"
+  }
+}
+Hr
+
 # 6) Studio + JupyterLab ------------------------------------------------------
 Bold "6) Studio + JupyterLab (full image)"
 $runArgs = @("-d", "-p", "${PORT_STUDIO}:8000", "-p", "${PORT_JUPYTER}:8888")
