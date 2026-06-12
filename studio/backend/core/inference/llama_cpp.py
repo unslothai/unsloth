@@ -1105,39 +1105,52 @@ class LlamaCppBackend:
         def _is_file(p: Path) -> bool:
             return _file_status(p) == "file"
 
+        def _layout_candidates(d: Path) -> list:
+            # build layouts probed under a llama.cpp dir, highest priority first
+            cands = [d / binary_name, d / "build" / "bin" / binary_name]
+            if sys.platform == "win32":
+                cands.append(d / "build" / "bin" / "Release" / binary_name)
+            return cands
+
+        def _unavailable(p: object) -> None:
+            # a pinned or managed binary that exists but is access-denied: report
+            # it instead of silently downgrading to a lower-priority llama-server
+            logger.warning(
+                f"llama-server at {p} exists but is access-denied (antivirus or "
+                "an in-flight install); not falling back to another binary, "
+                "retry once it is released"
+            )
+            return None
+
+        def _scan_pinned(paths: list):
+            # first existing candidate wins -> (path, None); a present-but-denied
+            # one -> (None, denied_path) so the caller reports it rather than
+            # skipping to a lower-priority location
+            for p in paths:
+                st = _file_status(p)
+                if st == "file":
+                    return str(p), None
+                if st == "denied":
+                    return None, p
+            return None, None
+
         # 1. Env var: direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
         if env_path:
-            status = _file_status(Path(env_path))
-            if status == "file":
-                return env_path
-            if status == "denied":
-                # an explicit pin that exists but is locked: report it instead
-                # of silently falling back to a different llama-server
-                logger.warning(
-                    f"LLAMA_SERVER_PATH={env_path} exists but is access-denied "
-                    "(antivirus or an in-flight install); not falling back to "
-                    "another binary, retry once it is released"
-                )
-                return None
+            hit, locked = _scan_pinned([Path(env_path)])
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         if custom_llama_cpp:
-            custom_dir = Path(custom_llama_cpp)
-            # Root dir (make builds)
-            root_bin = custom_dir / binary_name
-            if _is_file(root_bin):
-                return str(root_bin)
-            # build/bin/ (cmake on Linux)
-            cmake_bin = custom_dir / "build" / "bin" / binary_name
-            if _is_file(cmake_bin):
-                return str(cmake_bin)
-            # build/bin/Release/ (cmake on Windows)
-            if sys.platform == "win32":
-                win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
-                if _is_file(win_bin):
-                    return str(win_bin)
+            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
         # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
@@ -1169,31 +1182,18 @@ class LlamaCppBackend:
                 _seen_roots.add(k)
                 _unique_roots.append(r)
         for unsloth_home in _unique_roots:
-            home_root = unsloth_home / binary_name
-            if _is_file(home_root):
-                return str(home_root)
-            home_linux = unsloth_home / "build" / "bin" / binary_name
-            if _is_file(home_linux):
-                return str(home_linux)
-            if sys.platform == "win32":
-                home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-                if _is_file(home_win):
-                    return str(home_win)
+            hit, locked = _scan_pinned(_layout_candidates(unsloth_home))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
-        # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1)
+        # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
+        # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        # Root dir (make builds)
-        root_path = project_root / "llama.cpp" / binary_name
-        if _is_file(root_path):
-            return str(root_path)
-        # build/bin/ (cmake builds)
-        build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
-        if _is_file(build_path):
-            return str(build_path)
-        if sys.platform == "win32":
-            win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
-            if _is_file(win_path):
-                return str(win_path)
+        for p in _layout_candidates(project_root / "llama.cpp"):
+            if _is_file(p):
+                return str(p)
 
         # 7. System PATH
         system_path = shutil.which("llama-server")
