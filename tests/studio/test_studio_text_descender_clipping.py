@@ -37,7 +37,7 @@ def test_model_selector_trigger_label_uses_leading_tight():
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
     pattern = re.compile(
-        r'<div\s+className="flex\s+flex-col\s+gap-0\.5\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
+        r'<div\s+className="flex\s+flex-col\s+gap-px\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
     )
     matches = pattern.findall(src)
     assert matches, "could not find sidebar account-block parent div"
