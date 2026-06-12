@@ -2,3 +2,6 @@
 !Dockerfile
 !entrypoint.sh
 !smoke_test.py
+!fetch_llama_prebuilt.py
+!supervisord.conf
+!studio_launch.sh
