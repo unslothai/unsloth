@@ -714,6 +714,7 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import safe_error_detail, log_and_http_error
 
@@ -1180,9 +1181,19 @@ def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[
     )
 
 
-def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
+def _request_matches_loaded_settings(
+    request: LoadRequest,
+    llama_backend: LlamaCppBackend,
+    effective_chat_template_override: Optional[str] = None,
+) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
-    Caller has already checked model+variant+is_loaded. See #5401."""
+    Caller has already checked model+variant+is_loaded. See #5401.
+
+    ``effective_chat_template_override`` is the resolved template that will be
+    launched (user override, else a bundled family template such as the
+    gemma-4 override), so the dedup compares against what the backend actually
+    holds rather than the raw request field. Defaults to the request field for
+    callers that do not resolve a bundled override."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
@@ -1222,7 +1233,12 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
             return False
-    if (request.chat_template_override or None) != (llama_backend.chat_template_override or None):
+    _effective_cto = (
+        effective_chat_template_override
+        if effective_chat_template_override is not None
+        else request.chat_template_override
+    )
+    if (_effective_cto or None) != (llama_backend.chat_template_override or None):
         return False
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
@@ -1348,6 +1364,17 @@ async def load_model(
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
+        # Resolve the effective chat-template override once, up front: an
+        # explicit user override, else a bundled family template (e.g. the
+        # gemma-4 override that ships preserve_thinking without re-downloading
+        # quants), else None. Used for both the reload-dedup check below and the
+        # load_model calls, so the live backend state and the incoming request
+        # compare against the same template text.
+        effective_chat_template_override = resolve_effective_chat_template_override(
+            model_identifier = model_identifier,
+            user_override = request.chat_template_override,
+        )
+
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
@@ -1365,7 +1392,9 @@ async def load_model(
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
-                and _request_matches_loaded_settings(request, llama_backend)
+                and _request_matches_loaded_settings(
+                    request, llama_backend, effective_chat_template_override
+                )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
@@ -1530,7 +1559,13 @@ async def load_model(
                 else:
                     # Strip only the groups whose first-class field was set by
                     # the caller, so an inherited --chat-template-file survives
-                    # an Apply that omits chat_template_override.
+                    # an Apply that omits chat_template_override. A bundled family
+                    # template (e.g. the gemma-4 override) is an effective
+                    # first-class template setting even when the raw request
+                    # omits chat_template_override, so strip the inherited
+                    # --chat-template-file in that case too -- otherwise the stale
+                    # extra arg (appended last) shadows the bundled template while
+                    # Studio reports the bundled template's capabilities.
                     fields_set = getattr(request, "model_fields_set", set())
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
@@ -1539,7 +1574,10 @@ async def load_model(
                         strip_spec = (
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
-                        strip_template = "chat_template_override" in fields_set,
+                        strip_template = (
+                            "chat_template_override" in fields_set
+                            or effective_chat_template_override is not None
+                        ),
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
@@ -1573,7 +1611,7 @@ async def load_model(
                 model_identifier = config.identifier,
                 is_vision = config.is_vision,
                 n_ctx = request.max_seq_length,
-                chat_template_override = request.chat_template_override,
+                chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
@@ -2148,6 +2186,21 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
+            # Don't surface Studio's auto-applied bundled family template (e.g. the
+            # gemma-4 override) as a user-authored override: the frontend adopts
+            # status.chat_template_override as editable state and would otherwise
+            # re-send it as an explicit override for a later, unrelated model. Only
+            # expose a genuine user override.
+            _reported_chat_template_override = llama_backend.chat_template_override
+            _auto_chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = _model_id,
+                user_override = None,
+            )
+            if (
+                _auto_chat_template_override is not None
+                and _reported_chat_template_override == _auto_chat_template_override
+            ):
+                _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
@@ -2174,7 +2227,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
-                chat_template_override = llama_backend.chat_template_override,
+                chat_template_override = _reported_chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
