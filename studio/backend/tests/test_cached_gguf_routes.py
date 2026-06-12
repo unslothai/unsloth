@@ -473,11 +473,13 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
-    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)   # real weight, fully present
-    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)     # mmproj adapter, label "F16"
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
 
     result = asyncio.run(
-        models_route.get_gguf_variants(repo_id = "org/repo", hf_token = None, current_subject = "test-user")
+        models_route.get_gguf_variants(
+            repo_id = "org/repo", hf_token = None, current_subject = "test-user"
+        )
     )
 
     flags = {v.quant: v.downloaded for v in result.variants}
