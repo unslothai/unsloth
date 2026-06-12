@@ -574,9 +574,7 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
 
-_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset(
-    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
-)
+_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 
 
@@ -589,8 +587,7 @@ def _extra_arg_flag_name(token: str) -> Optional[str]:
 
 
 def _extra_args_set_any_flag(
-    extra_args: Optional[Iterable[str]],
-    flags: set[str] | frozenset[str],
+    extra_args: Optional[Iterable[str]], flags: set[str] | frozenset[str]
 ) -> bool:
     if not extra_args:
         return False
@@ -3921,12 +3918,8 @@ class LlamaCppBackend:
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
                 )
-                threads_overridden = _extra_args_set_any_flag(
-                    extra_args, _THREAD_OVERRIDE_FLAGS
-                )
-                full_offload_tuning_active = (
-                    fully_gpu_offloaded and not offload_overridden
-                )
+                threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
+                full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
                 # -1 = llama.cpp auto-detect (physical cores). Windows +
                 # full offload caps at 2 to stop OpenMP spin-wait burning
