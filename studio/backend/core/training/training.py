@@ -67,13 +67,9 @@ def _coerce_optional_nonneg_float(name: str, value):
     try:
         coerced = float(value)
     except (TypeError, ValueError):
-        raise ValueError(
-            f"Unsloth: {name}={value!r} must be a non-negative float or None."
-        )
+        raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
     if coerced < 0:
-        raise ValueError(
-            f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable)."
-        )
+        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
     return coerced
 
 

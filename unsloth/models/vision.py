@@ -1398,11 +1398,7 @@ class FastBaseModel:
                 finetune_mlp_modules = finetune_mlp_modules,
             )
         else:
-            assert type(target_modules) in (
-                list,
-                tuple,
-                str,
-            )
+            assert type(target_modules) in (list, tuple, str)
             if type(target_modules) in (list, tuple) and (
                 not finetune_vision_layers
                 or not finetune_language_layers

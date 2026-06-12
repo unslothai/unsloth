@@ -334,8 +334,7 @@ def cmd_train(args) -> int:
     ), f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
     if "train_steps" in train_result:
         assert int(train_result["train_steps"]) == expected_logged_steps, (
-            f"expected train_steps={expected_logged_steps}, got "
-            f"{train_result['train_steps']}"
+            f"expected train_steps={expected_logged_steps}, got " f"{train_result['train_steps']}"
         )
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
