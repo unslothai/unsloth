@@ -188,7 +188,12 @@ class CloudflareTunnel:
     upstream stays local-only.
     """
 
-    def __init__(self, port: int, binary: str, protocol: Optional[str] = None):
+    def __init__(
+        self,
+        port: int,
+        binary: str,
+        protocol: Optional[str] = None,
+    ):
         self.port = port
         self.binary = binary
         # None lets cloudflared pick its default (quic, with its own http2

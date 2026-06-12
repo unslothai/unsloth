@@ -370,7 +370,7 @@ def test_reader_ignores_api_endpoint_failure_line():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
     t._reader(
         _fake_proc(
-            'ERR failed to request quick Tunnel: Post '
+            "ERR failed to request quick Tunnel: Post "
             '"https://api.trycloudflare.com/tunnel": context deadline exceeded\n'
         )
     )
@@ -390,7 +390,12 @@ def test_start_studio_tunnel_registers_before_wait(monkeypatch):
     seen = {}
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
@@ -417,7 +422,12 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
     seen = {}
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
@@ -438,7 +448,12 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
 
 def test_start_studio_tunnel_returns_url(monkeypatch):
     class _StubTunnel:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
@@ -464,7 +479,12 @@ def test_start_studio_tunnel_falls_back_to_http2(monkeypatch):
     attempts = []
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.protocol = protocol
             self.url = None
             attempts.append(protocol)
@@ -493,7 +513,12 @@ def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
     attempts = []
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
             attempts.append(protocol)
 
@@ -518,7 +543,12 @@ def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
     attempts = []
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
             attempts.append(protocol)
 
