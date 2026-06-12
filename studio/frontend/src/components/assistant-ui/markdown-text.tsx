@@ -284,6 +284,9 @@ function CodeBlockActions({
   );
 }
 
+// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
+// thread.tsx), so it no longer forces HTML into an iframe artifact; it follows the
+// same artifact rules as every other model.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,

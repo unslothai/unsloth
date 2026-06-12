@@ -652,7 +652,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
-                   r.loss_sparkline, r.display_name,
+                   r.loss_sparkline, r.display_name, r.config_json,
                    CASE
                        WHEN r.status = 'stopped'
                             AND r.output_dir IS NOT NULL

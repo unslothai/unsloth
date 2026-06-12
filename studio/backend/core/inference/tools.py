@@ -24,11 +24,16 @@ import urllib.request
 
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    TOOL_CACHE_INVALIDATING_FIELDS,
+    cache_tools,
     call_tool_sync,
+    get_cached_tools,
+    in_failure_cooloff,
     is_stdio,
     list_tools_async,
     parse_server_headers,
     probe_timeout,
+    record_probe_failure,
     stdio_mcp_enabled,
 )
 from storage import mcp_servers_db
@@ -634,28 +639,56 @@ async def get_enabled_mcp_tools() -> list[dict]:
     if not servers:
         return []
 
-    results = await asyncio.gather(
-        *(
-            list_tools_async(
-                url = s["url"],
-                headers = parse_server_headers(s),
-                timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                use_oauth = bool(s.get("use_oauth")),
-            )
-            for s in servers
-        ),
-        return_exceptions = True,
-    )
+    # Skip servers still in their post-failure cool-off, otherwise a down
+    # server gets re-probed -- and blocks the send for the full timeout -- on
+    # every message.
+    uncached = [
+        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+    ]
+    if uncached:
+        results = await asyncio.gather(
+            *(
+                list_tools_async(
+                    url = s["url"],
+                    headers = parse_server_headers(s),
+                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
+                    use_oauth = bool(s.get("use_oauth")),
+                )
+                for s in uncached
+            ),
+            return_exceptions = True,
+        )
+        # An edit/delete can land while we await a probe (up to 305 s for
+        # OAuth); its cache eviction is a no-op against an entry we haven't
+        # written yet. Re-read and drop a result whose server changed or
+        # was removed mid-probe, else a stale tool list caches indefinitely.
+        current = {s["id"]: s for s in mcp_servers_db.list_servers()}
+        for server, payload in zip(uncached, results):
+            # Guard the failure branch too: a stale failure must not park a
+            # cool-off on the fresh config, or the server the user just fixed
+            # is skipped for the whole window.
+            fresh = current.get(server["id"])
+            if fresh is None or any(
+                fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+            ):
+                continue
+            if isinstance(payload, BaseException):
+                logger.warning(
+                    "MCP server '%s' (%s) discovery failed: %s",
+                    server.get("display_name") or server["id"],
+                    server.get("url"),
+                    payload,
+                )
+                # Failures aren't cached, but record one so a down server
+                # isn't re-probed every send during the cool-off.
+                record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
+                continue
+            cache_tools(server["id"], payload)
 
     specs: list[dict] = []
-    for server, payload in zip(servers, results):
-        if isinstance(payload, BaseException):
-            logger.warning(
-                "MCP server '%s' (%s) discovery failed: %s",
-                server.get("display_name") or server["id"],
-                server.get("url"),
-                payload,
-            )
+    for server in servers:
+        payload = get_cached_tools(server["id"])
+        if payload is None:
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
     return specs
