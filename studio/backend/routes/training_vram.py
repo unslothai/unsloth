@@ -45,7 +45,6 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
     try:
         from core.inference import get_inference_backend
-
         inf = get_inference_backend()
         # active_model_name is set only on a *successful* load; a model mid-load
         # sits in loading_models (set in the parent before the load) while
@@ -59,7 +58,6 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama = get_llama_cpp_backend()
         # is_active (process exists) rather than is_loaded (process exists AND
         # healthy) -- a server mid-start is already allocating VRAM.
@@ -146,9 +144,7 @@ def can_keep_chat_during_training(
 
             # A requested GPU missing from the device list contributes 0.
             frees = sorted((free_by_index.get(i, 0.0) for i in resolved), reverse = True)
-            usable_gb = (
-                frees[0] + sum(f * _MULTI_GPU_OVERHEAD for f in frees[1:]) if frees else 0.0
-            )
+            usable_gb = frees[0] + sum(f * _MULTI_GPU_OVERHEAD for f in frees[1:]) if frees else 0.0
             keep = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
             return keep, {
                 "mode": "explicit",
@@ -190,7 +186,6 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
     try:
         from core.inference import get_inference_backend
-
         inf = get_inference_backend()
         if inf.active_model_name or inf.loading_models:
             name = inf.active_model_name or next(iter(inf.loading_models), None)
@@ -209,7 +204,6 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama = get_llama_cpp_backend()
         if llama.is_active:
             name = llama.model_identifier or "gguf"

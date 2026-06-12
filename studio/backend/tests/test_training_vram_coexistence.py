@@ -37,7 +37,12 @@ class _GpuCacheResetMixin:
         _hw_module._visible_gpu_count = None
 
 
-def _fake_inference_backend(*, active = None, loading = None, alive = False):
+def _fake_inference_backend(
+    *,
+    active = None,
+    loading = None,
+    alive = False,
+):
     inf = SimpleNamespace(
         active_model_name = active,
         loading_models = set(loading or []),
@@ -72,9 +77,7 @@ def _patch_backends(inf, llama):
 class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_nothing_resident(self):
         with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active = False)):
-            self.assertEqual(
-                tv.summarize_resident_chat(), {"hf": None, "gguf": None, "any": False}
-            )
+            self.assertEqual(tv.summarize_resident_chat(), {"hf": None, "gguf": None, "any": False})
 
     def test_hf_resident_via_active_model(self):
         with _patch_backends(
@@ -139,13 +142,17 @@ _BASE_KW = dict(
 
 
 class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, auto_return, *, device = DeviceType.CUDA, **overrides):
+    def _run(
+        self,
+        auto_return,
+        *,
+        device = DeviceType.CUDA,
+        **overrides,
+    ):
         kw = {**_BASE_KW, **overrides}
         with (
             patch("utils.hardware.get_device", return_value = device),
-            patch(
-                "utils.hardware.auto_select_gpu_ids", return_value = auto_return
-            ) as auto_mock,
+            patch("utils.hardware.auto_select_gpu_ids", return_value = auto_return) as auto_mock,
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
         return keep, info, auto_mock
@@ -226,9 +233,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_keep_when_chosen_gpu_has_room(self):
         devices = [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 20.0}]
-        keep, info, auto_mock = self._run(
-            required = 30.0, devices = devices, resolved = [0], gpu_ids = [0]
-        )
+        keep, info, auto_mock = self._run(required = 30.0, devices = devices, resolved = [0], gpu_ids = [0])
         # free 60 >= 30*1.15+4 = 38.5
         self.assertTrue(keep)
         self.assertEqual(info["mode"], "explicit")
@@ -248,9 +253,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0},
             {"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 14.0},
         ]
-        keep, info, _ = self._run(
-            required = 22.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1]
-        )
+        keep, info, _ = self._run(required = 22.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1])
         self.assertFalse(keep)
         self.assertAlmostEqual(info["usable_gb"], 28.5, places = 3)
 
@@ -263,9 +266,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
     def test_unload_when_estimate_none(self):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch(
-                "utils.hardware.estimate_required_model_memory_gb", return_value = (None, {})
-            ),
+            patch("utils.hardware.estimate_required_model_memory_gb", return_value = (None, {})),
             patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
         ):
             keep, info = tv.can_keep_chat_during_training(**{**_BASE_KW, "gpu_ids": [0]})
