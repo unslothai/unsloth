@@ -34,6 +34,7 @@ from core.inference.llama_server_args import (
     resolve_cache_type_kv,
     resolve_requested_ctx,
     resolve_tensor_parallel,
+    strip_shadowing_flags,
     strip_split_mode_only,
 )
 from core.tool_healing import (
@@ -1522,6 +1523,10 @@ class LlamaCppBackend:
     # large-vocab model OOMs at load.
     _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
 
+    # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
+    # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
+    _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -2744,12 +2749,15 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         n_parallel: int = 1,
         mtp_engaged: bool = False,
+        max_target_ctx: Optional[int] = None,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
         ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
         weight size in bytes; ``target_ctx`` is the context to fit (the explicit
-        request, or the model's native length for auto). Returns
+        request, or the model's native length for auto). ``max_target_ctx`` is
+        the native/hardware ceiling used only for the UI bound (defaults to
+        ``target_ctx``). Returns
         ``(effective_ctx, max_available_ctx, gpu_indices, tensor_split)``.
 
         Policy (assumes >= 2 GPUs; the caller drops the toggle below that):
@@ -2787,26 +2795,28 @@ class LlamaCppBackend:
             # MTP keeps a draft model + its own KV cache on GPU.
             kv_budget_b -= 2 * 1024**3
 
-        if self._can_estimate_kv() and target_ctx > 0:
-            # The floor must never exceed an explicitly requested context: a
-            # caller asking for e.g. 1024 should not have KV sized for 2048.
-            ctx_floor = min(2048, target_ctx)
-            if kv_budget_b <= 0:
-                # Weights + buffers exceed the pool -> no context fits; floor and
-                # let the load fall back to layer split.
-                effective_ctx = ctx_floor
-            else:
-                kv_at_target = self._estimate_kv_cache_bytes(
-                    target_ctx, cache_type_kv, n_parallel = n_parallel
-                )
-                if kv_at_target <= kv_budget_b:
-                    effective_ctx = target_ctx
-                else:
-                    effective_ctx = max(ctx_floor, int(target_ctx * kv_budget_b / kv_at_target))
-        else:
+        def _fit_ctx(ctx: int) -> int:
+            # Largest context whose KV fits the pooled budget. Floors small, but
+            # never raises an explicit ctx above what was asked.
+            if self._can_estimate_kv() and ctx > 0:
+                ctx_floor = min(2048, ctx)
+                if kv_budget_b <= 0:
+                    # Weights + buffers exceed the pool -> floor; the load then
+                    # falls back to layer split.
+                    return ctx_floor
+                kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel)
+                if kv_at <= kv_budget_b:
+                    return ctx
+                return max(ctx_floor, int(ctx * kv_budget_b / kv_at))
             # KV size unknown -> can't prove a safe cap; floor.
-            effective_ctx = min(4096, target_ctx) if target_ctx > 0 else 4096
-        max_available_ctx = effective_ctx
+            return min(4096, ctx) if ctx > 0 else 4096
+
+        # max_available_ctx is the hardware ceiling for the UI bound, sized from
+        # the native context independent of an explicit small -c (which only
+        # caps effective_ctx).
+        max_ctx_target = max_target_ctx if (max_target_ctx and max_target_ctx > 0) else target_ctx
+        max_available_ctx = _fit_ctx(max_ctx_target)
+        effective_ctx = min(_fit_ctx(target_ctx), max_available_ctx)
 
         min_free_mib = min(free_by_idx.values())
         kv_bytes = (
@@ -3120,6 +3130,30 @@ class LlamaCppBackend:
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
+                # Tensor mode aborts on a quantized KV cache, so drop it for the
+                # tensor attempt (and strip any inherited/explicit --cache-type
+                # that would re-impose it when appended last). The layer-split
+                # fallback re-runs with tensor_parallel False and keeps the type.
+                if (
+                    tensor_parallel
+                    and cache_type_kv
+                    and cache_type_kv.strip().lower() not in self._TENSOR_PARALLEL_KV_TYPES
+                ):
+                    logger.info(
+                        "Tensor parallelism requires a non-quantized KV cache; "
+                        "ignoring cache type %s for the tensor attempt.",
+                        cache_type_kv,
+                    )
+                    cache_type_kv = None
+                    if extra_args:
+                        extra_args = strip_shadowing_flags(
+                            extra_args,
+                            strip_context = False,
+                            strip_cache = True,
+                            strip_spec = False,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
@@ -3251,6 +3285,9 @@ class LlamaCppBackend:
                             cache_type_kv = cache_type_kv,
                             n_parallel = n_parallel,
                             mtp_engaged = _mtp_will_engage,
+                            # Report the UI ceiling from native ctx, not the
+                            # explicit small request.
+                            max_target_ctx = self._context_length or target_ctx,
                         )
                         use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:

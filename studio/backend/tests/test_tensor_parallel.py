@@ -392,6 +392,18 @@ def test_tp_plan_explicit_context_capped_when_too_large():
     assert 2048 <= ec < 131072
 
 
+def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
+    # An explicit small ctx caps effective_ctx but the UI ceiling
+    # (max_available_ctx) must reflect the native/hardware cap, not the request.
+    b = _kv_seeded_backend()
+    ec, mac, _gi, _ts = b._plan_tensor_parallel(
+        _ASYM, int(50 * _GB), 8192, max_target_ctx = 131072
+    )
+    _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
+    assert ec == 8192       # explicit request honored for the load
+    assert mac == native_mac > ec  # ceiling reflects the hardware cap
+
+
 def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
     _, (ec_no, *_rest) = _plan(50)
     _, (ec_mtp, *_rest) = _plan(50, mtp = True)
