@@ -297,8 +297,9 @@ class SyntheticDataKit:
         ready = False
         deadline = time.monotonic() + (timeout or 1200)
         while time.monotonic() < deadline:
-            if self.stdout_capture.wait_for_ready(timeout = 1) or \
-               self.stderr_capture.wait_for_ready(timeout = 0):
+            if self.stdout_capture.wait_for_ready(timeout = 1) or self.stderr_capture.wait_for_ready(
+                timeout = 0
+            ):
                 ready = True
                 break
             if self.vllm_process.poll() is not None:
