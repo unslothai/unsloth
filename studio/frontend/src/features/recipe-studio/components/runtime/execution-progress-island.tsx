@@ -68,7 +68,7 @@ function formatGitHubSourceSummary(
       typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
         ? ` ~${formatMetricValue(source.retry_after_sec)}s`
         : "";
-    return `Waiting for GitHub rate limit${wait}. Studio will resume automatically.`;
+    return `Waiting for GitHub rate limit${wait}. Unsloth will resume automatically.`;
   }
   if (source.status === "retrying") {
     return source.message ?? "GitHub request failed; retrying automatically.";

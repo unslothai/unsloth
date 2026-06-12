@@ -12,6 +12,7 @@ import math
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from typing import Any, Optional
@@ -33,24 +34,85 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
+def _hip_sdk_present() -> bool:
+    """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
+    ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated."""
+    if shutil.which("hipinfo"):
+        return True
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        root = os.environ.get(var)
+        if root and os.path.exists(os.path.join(root, "bin", "hipinfo.exe")):
+            return True
+    return False
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi here.
+
+    On Windows without a working HIP runtime, amd-smi elevates a child at
+    runtime -- popping a UAC/DiskPart prompt that RunAsInvoker can't suppress
+    (its manifest is asInvoker). So only call it on Windows with a HIP SDK
+    present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    return _hip_sdk_present()
+
+
 def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
     """Run amd-smi with the given args and return parsed JSON, or None."""
     global _amd_smi_consecutive_failures, _amd_smi_disabled
     if _amd_smi_disabled:
         return None
+    if not _amd_smi_allowed():
+        # Permanently skip amd-smi on Windows w/o a HIP SDK: every call would
+        # pop a UAC/DiskPart prompt (see _amd_smi_allowed). VRAM polling is then
+        # unavailable, but that beats the prompt. Opt back in with
+        # UNSLOTH_ENABLE_AMD_SMI=1.
+        if not _amd_smi_disabled:
+            logger.info(
+                "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
+                "UAC/DiskPart elevation prompt; GPU VRAM polling unavailable. "
+                "Set UNSLOTH_ENABLE_AMD_SMI=1 to force amd-smi."
+            )
+            _amd_smi_disabled = True
+        return None
+    if shutil.which("amd-smi") is None:
+        # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
+        # ship a CLI) and can be absent on minimal Linux installs. Disable the
+        # poller in one step instead of burning the 3-strike circuit breaker
+        # on guaranteed FileNotFoundError spawns. Studio's VRAM display falls
+        # back to torch mem_get_info.
+        if not _amd_smi_disabled:
+            logger.info(
+                "amd-smi not found on PATH; GPU utilization polling via "
+                "amd-smi unavailable (VRAM falls back to torch mem_get_info)."
+            )
+            _amd_smi_disabled = True
+        return None
+    _amd_env = child_env_without_native_path_secret()
+    if platform.system() == "Windows":
+        # RunAsInvoker belt-and-suspenders for any manifest-elevating helper;
+        # the real guard is _amd_smi_allowed() above. Mirrors install scripts.
+        _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
             capture_output = True,
             text = True,
             timeout = timeout,
-            env = child_env_without_native_path_secret(),
+            env = _amd_env,
             **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
-            # amd-smi ships with Adrenalin, not the HIP SDK; absence is expected
-            # on HIP SDK-only Windows setups.
+            # Raced a PATH change after the which() check above; absence is
+            # expected on Windows (no AMD product ships an amd-smi CLI there).
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)

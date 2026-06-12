@@ -333,6 +333,17 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
+      - name: generation correctness guards (HARD GATE)
+        # Deterministic CPU guards, each validated to fail on its pre-fix code:
+        # leftpad = batched left-padded generation (#1066/#3699, fixed by
+        # #2216 + #4100; staging proof: unsloth-staging-2 PRs 170/172);
+        # rope_scaling_drift = config.rope_scaling dropped by replaced rotary
+        # classes (#2405). AST checks run first so import breakage cannot mask them.
+        run: |
+          python -m pytest -v --tb=short \
+            tests/utils/test_prepare_inputs_leftpad.py \
+            tests/utils/test_rope_scaling_drift.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
         # that Repo tests (CPU) --ignores. AST/protobuf/regex plus tiny CPU model

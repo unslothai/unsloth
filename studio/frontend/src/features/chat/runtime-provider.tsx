@@ -51,6 +51,7 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
@@ -983,6 +984,7 @@ function useStudioRuntimeAdapters(
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
+        new AudioAttachmentAdapter(),
         new TextAttachmentAdapter(),
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),

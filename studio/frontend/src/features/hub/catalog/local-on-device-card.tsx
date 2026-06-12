@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TrainIcon } from "../components/train-icon";
-import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
+import {
+  HUB_GGUF_RUN_ACTIONS_VISIBLE,
+  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
+} from "../lib/hub-feature-flags";
 import {
   Popover,
   PopoverContent,
@@ -295,6 +298,9 @@ export function LocalOnDeviceCard({
   const formatTone =
     modelFormat === "adapter" ? "adapter" : isGguf ? "gguf" : "checkpoint";
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
+  const runActionsVisible = isGguf
+    ? HUB_GGUF_RUN_ACTIONS_VISIBLE
+    : HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -352,7 +358,7 @@ export function LocalOnDeviceCard({
                   <PopoverContent
                     align="start"
                     side="bottom"
-                    sideOffset={8}
+                    sideOffset={0}
                     avoidCollisions={false}
                     className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[220px] gap-0 overflow-hidden p-0 py-2 ring-0"
                   >
@@ -440,11 +446,10 @@ export function LocalOnDeviceCard({
               className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
             />
           )}
-          {/* Run + Train pair hidden until Hub->chat/train pickers ship. */}
           <div
             className={cn(
               "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
+              !runActionsVisible && "hidden",
             )}
           >
             {onTrain && (
