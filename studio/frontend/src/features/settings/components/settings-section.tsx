@@ -9,7 +9,7 @@ export function SettingsSection({
   children,
 }: {
   title: string;
-  description?: string;
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (
