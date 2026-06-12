@@ -239,9 +239,12 @@ RUN set -eux \
 # nbclient, ipykernel, ...) and never names torch, so uv cannot disturb the
 # cu128 pin set here. Naming torch in this pass would be actively dangerous:
 # without the cu128 extra index uv could swap in the PyPI CPU wheel.
+# matplotlib rides along for the notebook crowd: plotting is table stakes in
+# a Jupyter image, and several model repos' trust_remote_code modeling files
+# (e.g. DeepSeek-OCR) import it unconditionally.
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        jupyterlab notebook ipywidgets
+        jupyterlab notebook ipywidgets matplotlib
 
 # 5) Emit an informational pin record so downstream consumers can see exactly
 #    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
@@ -360,9 +363,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # blob that covers every supported arch.
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX"
 
+# zstd: the official Ollama notebooks run `curl ollama.com/install.sh | sh`
+# inside the container, and that installer extracts a zstd tarball -- without
+# it the Llama3 Ollama-export notebook dies at the install cell.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git libgomp1 \
-        gcc g++ \
+        gcc g++ zstd \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
