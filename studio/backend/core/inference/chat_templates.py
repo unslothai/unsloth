@@ -40,18 +40,31 @@ _GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"            # 12b / 26B-A4B / 31B
 _GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"  # E2B / E4B
 
 
+def _canonical_repo_id(model_identifier: str) -> str:
+    """Mirror ``ModelConfig.from_identifier``: a bare HF shorthand with no owner
+    (e.g. ``gemma-4-E2B-it-GGUF``) defaults to the ``unsloth/`` org. The resolver
+    runs on the raw ``request.model_path`` (before that canonicalization), so apply
+    the same rule here, otherwise shorthand loads would skip the override.
+    """
+    mid = model_identifier.strip()
+    if mid and "/" not in mid:
+        mid = f"unsloth/{mid}"
+    return mid
+
+
 def is_unsloth_gemma4_gguf(model_identifier: Optional[str]) -> bool:
-    """True for canonical ``unsloth/gemma-4-*-GGUF`` repo identifiers."""
+    """True for canonical ``unsloth/gemma-4-*-GGUF`` repo identifiers (and the
+    owner-less shorthand that resolves to the same Unsloth repo)."""
     if not model_identifier:
         return False
-    return bool(_GEMMA4_GGUF_RE.match(model_identifier.strip()))
+    return bool(_GEMMA4_GGUF_RE.match(_canonical_repo_id(model_identifier)))
 
 
 def is_unsloth_gemma4_edge_gguf(model_identifier: Optional[str]) -> bool:
     """True for the E2B / E4B GGUF repos, which use the edge-variant template."""
     if not model_identifier:
         return False
-    return bool(_GEMMA4_EDGE_GGUF_RE.match(model_identifier.strip()))
+    return bool(_GEMMA4_EDGE_GGUF_RE.match(_canonical_repo_id(model_identifier)))
 
 
 def _gemma4_template_file(model_identifier: Optional[str]) -> Optional[str]:

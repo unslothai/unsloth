@@ -42,14 +42,18 @@ BUNDLED = load_bundled_chat_template("gemma-4.jinja")        # 12b / 26B-A4B / 3
 EDGE = load_bundled_chat_template("gemma-4-edge.jinja")      # E2B / E4B
 
 
-# ── Stubs so detect_reasoning_flags imports without the full studio venv ──
-def _detect_reasoning_flags():
+# ── Stubs so core.inference.llama_cpp imports without the full studio venv ──
+def _stub_modules_ctx():
+    """patch.dict context that stubs the heavy deps llama_cpp pulls in at import,
+    but only those NOT already importable (real httpx / structlog are kept when
+    present, e.g. in CI), and removes the stubs on exit so other tests are not
+    polluted."""
+    from unittest.mock import patch
+
     _loggers_stub = _types.ModuleType("loggers")
     _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-    sys.modules.setdefault("loggers", _loggers_stub)
     _structlog_stub = _types.ModuleType("structlog")
     _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-    sys.modules.setdefault("structlog", _structlog_stub)
     _httpx_stub = _types.ModuleType("httpx")
     for _exc in (
         "ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
@@ -61,8 +65,19 @@ def _detect_reasoning_flags():
         "C", (), {"__init__": lambda s, **kw: None,
                   "__enter__": lambda s: s, "__exit__": lambda s, *a: None},
     )
-    sys.modules.setdefault("httpx", _httpx_stub)
-    from core.inference.llama_cpp import detect_reasoning_flags
+    overrides = {
+        name: stub
+        for name, stub in (("loggers", _loggers_stub),
+                           ("structlog", _structlog_stub),
+                           ("httpx", _httpx_stub))
+        if name not in sys.modules
+    }
+    return patch.dict(sys.modules, overrides)
+
+
+def _detect_reasoning_flags():
+    with _stub_modules_ctx():
+        from core.inference.llama_cpp import detect_reasoning_flags
     return detect_reasoning_flags
 
 
@@ -77,6 +92,8 @@ def _detect_reasoning_flags():
         ("unsloth/gemma-4-31B-it-GGUF", True),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", True),
         ("UNSLOTH/GEMMA-4-E2B-IT-GGUF", True),  # case-insensitive
+        ("gemma-4-E2B-it-GGUF", True),           # owner-less shorthand -> unsloth/
+        ("gemma-4-31B-it-GGUF", True),           # owner-less shorthand -> unsloth/
         ("unsloth/gemma-4-E2B-it", False),       # bf16, not GGUF
         ("unsloth/gemma-3-4b-it-GGUF", False),   # gemma 3
         ("google/gemma-4-31B-it-GGUF", False),   # not unsloth
@@ -114,6 +131,15 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
         out = resolve_effective_chat_template_override(model_identifier=mid, user_override=None)
         assert out == EDGE
         assert out != BUNDLED
+
+
+def test_resolver_handles_owner_less_shorthand():
+    # ModelConfig.from_identifier prefixes unsloth/ for bare ids; the resolver
+    # runs before that, so it must apply the same normalization.
+    assert resolve_effective_chat_template_override(
+        model_identifier="gemma-4-E2B-it-GGUF", user_override=None) == EDGE
+    assert resolve_effective_chat_template_override(
+        model_identifier="gemma-4-31B-it-GGUF", user_override=None) == BUNDLED
 
 
 def test_resolver_returns_standard_template_for_larger_models():
@@ -185,6 +211,7 @@ def test_edge_template_omits_empty_thought_block_on_thinking_off():
 
 
 def _render_with(tpl, messages, **kw):
+    pytest.importorskip("jinja2")  # transitive via transformers; skip in minimal envs
     from jinja2 import Environment, BaseLoader
 
     def raise_exception(msg):
@@ -279,6 +306,6 @@ def test_already_in_target_state_consistent_with_bundled_override():
 
 
 def _import_backend():
-    _detect_reasoning_flags()  # installs the lightweight stubs first
-    from core.inference.llama_cpp import LlamaCppBackend
+    with _stub_modules_ctx():
+        from core.inference.llama_cpp import LlamaCppBackend
     return LlamaCppBackend
