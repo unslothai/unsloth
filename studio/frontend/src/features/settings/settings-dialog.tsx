@@ -188,7 +188,7 @@ export function SettingsDialog() {
                       {t(tab.labelKey)}
                     </span>
                     {tab.badgeKey ? (
-                      <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      <span className="relative z-10 ml-auto rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                         {t(tab.badgeKey)}
                       </span>
                     ) : null}
