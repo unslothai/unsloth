@@ -1,16 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { db, useLiveQuery } from "../db";
+import { useEffect, useState } from "react";
+import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useChatArtifactsStore } from "../artifacts/store";
 import type { ThreadRecord } from "../types";
-import { markChatThreadDeleted } from "../utils/chat-thread-tombstones";
+import {
+  deleteStoredChatThreads,
+  isExpectedBackgroundChatStorageError,
+  listStoredChatThreads,
+  listStoredChatThreadsWithMessages,
+  updateStoredChatThread,
+} from "../utils/chat-history-storage";
+import {
+  markChatThreadsDeleted,
+  removeChatThreadTombstones,
+} from "../utils/chat-thread-tombstones";
+import { notifyChatHistoryUpdated } from "../api/chat-api";
 
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
   title: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
@@ -31,6 +45,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         id: t.pairId,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     } else if (!t.pairId) {
       items.push({
@@ -38,6 +53,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     }
   }
@@ -45,14 +61,70 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
   return items.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export function useChatSidebarItems() {
-  const allThreads = useLiveQuery(async () => {
-    const threadIdsWithMessage = new Set(
-      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
-    );
-    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
-    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
-  }, []);
+// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
+// window produces at most one O(N) fetch; requestSeq discards stale responses.
+const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
+
+export function useChatSidebarItems(options?: {
+  projectId?: string | null;
+  enabled?: boolean;
+  requireMessages?: boolean;
+}) {
+  const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const enabled = options?.enabled ?? true;
+  const requireMessages = options?.requireMessages ?? true;
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    let cancelled = false;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    let requestSeq = 0;
+
+    async function doLoad(seq: number) {
+      try {
+        const listThreads = requireMessages
+          ? listStoredChatThreadsWithMessages
+          : listStoredChatThreads;
+        const threads = await listThreads({
+          includeArchived: false,
+          projectId: options?.projectId,
+        });
+        // Discard the response if a newer request was scheduled while we
+        // were in flight, or if the effect was torn down.
+        if (cancelled || seq !== requestSeq) return;
+        setAllThreads(threads);
+      } catch (error) {
+        if (isExpectedBackgroundChatStorageError(error)) {
+          return;
+        }
+        if (!cancelled) throw error;
+      }
+    }
+
+    function load() {
+      if (pendingTimer !== null) clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        requestSeq += 1;
+        void doLoad(requestSeq);
+      }, SIDEBAR_REFRESH_DEBOUNCE_MS);
+    }
+
+    // Initial load fires immediately (no debounce) so the sidebar isn't
+    // blank for 300ms on mount.
+    requestSeq += 1;
+    void doLoad(requestSeq);
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
+    return () => {
+      cancelled = true;
+      if (pendingTimer !== null) clearTimeout(pendingTimer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
+    };
+  }, [enabled, options?.projectId, requireMessages]);
+
   const items = groupThreads(allThreads ?? []);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
@@ -74,19 +146,18 @@ export async function renameChatItem(
   if (!trimmed || trimmed === item.title) return;
 
   if (item.type === "single") {
-    await db.threads.update(item.id, { title: trimmed });
+    await updateStoredChatThread(item.id, { title: trimmed });
     return;
   }
 
-  const pairThreads = await db.threads
-    .where("pairId")
-    .equals(item.id)
-    .toArray();
-  await db.transaction("rw", db.threads, async () => {
-    for (const t of pairThreads) {
-      await db.threads.update(t.id, { title: trimmed });
-    }
+  const threads = await listStoredChatThreads({
+    pairId: item.id,
+    includeArchived: true,
   });
+  const threadIds = Array.from(new Set(threads.map((thread) => thread.id)));
+  await Promise.all(
+    threadIds.map((id) => updateStoredChatThread(id, { title: trimmed })),
+  );
 }
 
 export async function deleteChatItem(
@@ -97,24 +168,30 @@ export async function deleteChatItem(
   const threadIds: string[] =
     item.type === "single"
       ? [item.id]
-      : (await db.threads.where("pairId").equals(item.id).toArray()).map(
-          (t) => t.id,
-        );
+      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
 
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
-  for (const id of threadIds) markChatThreadDeleted(id);
 
-  await db.transaction("rw", db.threads, db.messages, async () => {
-    for (const id of threadIds) {
-      await db.messages.where("threadId").equals(id).delete();
-      await db.threads.delete(id);
-    }
-  });
+  const artifactStore = useChatArtifactsStore.getState();
+  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
+  artifactStore.clearOrphanedArtifacts();
+
+  // Optimistic tombstone: hide immediately; roll back on backend error.
+  markChatThreadsDeleted(threadIds);
+  notifyChatHistoryUpdated();
 
   if (activeId === item.id) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  try {
+    await deleteStoredChatThreads(threadIds);
+  } catch (error) {
+    removeChatThreadTombstones(threadIds);
+    notifyChatHistoryUpdated();
+    throw error;
   }
 }

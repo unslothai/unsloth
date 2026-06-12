@@ -74,7 +74,7 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
 ];
 const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
-  "No API key found, please make sure API key is added and valid for this provider.";
+  "No API key found. Add a valid API key for this connection.";
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
@@ -166,9 +166,17 @@ function emptyCatalogHint(providerType: string): {
 } {
   return (
     EMPTY_CATALOG_HINTS[providerType] ?? {
-      title: "No models returned by this provider.",
+      title: "No models returned by this connection.",
       description: "Enter model IDs manually below, or check the server.",
     }
+  );
+}
+
+function shouldAppendOpenAiVersionPath(providerType: string): boolean {
+  return (
+    providerType === "ollama" ||
+    providerType === "llama_cpp" ||
+    providerType === "vllm"
   );
 }
 
@@ -204,6 +212,7 @@ export function ChatProvidersSettings({
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  const seededProviderTypeRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -268,6 +277,26 @@ export function ChatProvidersSettings({
     isManualModelList ||
     remoteAllowsManual ||
     availableModels.length > 0;
+  const missingModelCatalogBaseUrl =
+    supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
+  const missingModelCatalogApiKey =
+    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+  const loadModelsDisabled =
+    modelsLoading ||
+    mutatingProvider ||
+    isManualModelList ||
+    missingModelCatalogBaseUrl ||
+    missingModelCatalogApiKey;
+  const loadModelsTitle =
+    isManualModelList && isCustomProvider
+      ? "This connection uses manual model IDs"
+      : isCuratedModelList
+        ? "Full catalog is not fetched for this connection"
+        : missingModelCatalogBaseUrl
+          ? "Enter a Base URL before loading models"
+          : missingModelCatalogApiKey
+            ? "Enter an API key before loading models"
+            : undefined;
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
     if (!query) {
@@ -289,22 +318,25 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
+    if (seededProviderTypeRef.current === providerType) return;
+    seededProviderTypeRef.current = providerType;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
+        setBaseUrlDraft("");
       }
       return;
     }
     // Seed default_models only for curated providers (catalog too large to
-    // enumerate — defaults are the suggestion shortlist). Remote-mode cloud
-    // providers and local OpenAI-compat presets stay empty until the user
-    // clicks "Load available models".
+    // enumerate). Remote cloud providers and local OpenAI-compat presets stay
+    // empty until the user clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setBaseUrlDraft("");
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -315,20 +347,27 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     let isMounted = true;
-    const syncFromBackend = async () => {
-      setRegistryLoading(true);
-      setSyncingProviders(true);
+    const syncFromBackend = async ({
+      showSpinner = true,
+    }: { showSpinner?: boolean } = {}) => {
+      if (showSpinner) {
+        setRegistryLoading(true);
+        setSyncingProviders(true);
+      }
+      let syncSucceeded = false;
       try {
         const [registryRows, configRows] = await Promise.all([
           listProviderRegistry(),
           listProviderConfigs(),
         ]);
         if (!isMounted) return;
+        syncSucceeded = true;
         setRegistry(registryRows);
         setProviderType((current) => {
           if (
             current &&
-            registryRows.some((entry) => entry.provider_type === current)
+            (isCustomProviderType(current) ||
+              registryRows.some((entry) => entry.provider_type === current))
           ) {
             return current;
           }
@@ -355,9 +394,22 @@ export function ChatProvidersSettings({
             const updatedAt = Number.isFinite(Date.parse(config.updated_at))
               ? Date.parse(config.updated_at)
               : Date.now();
+            const registryEntry =
+              registryRows.find((entry) => entry.provider_type === uiProviderType) ??
+              registryRows.find((entry) => entry.provider_type === config.provider_type);
+            const defaultModels = pruneProviderModelIds(
+              uiProviderType,
+              registryEntry?.default_models ?? [],
+            );
+            const savedModels = existing?.models ?? [];
+            const savedAvailableModels = existing?.availableModels ?? [];
             const existingModels = pruneProviderModelIds(
               uiProviderType,
-              existing?.models ?? [],
+              savedModels.length > 0 ? savedModels : defaultModels,
+            );
+            const existingAvailableModels = pruneProviderModelIds(
+              uiProviderType,
+              savedAvailableModels.length > 0 ? savedAvailableModels : defaultModels,
             );
             return {
               id: config.id,
@@ -365,7 +417,7 @@ export function ChatProvidersSettings({
               name: config.display_name,
               baseUrl: config.base_url ?? "",
               models: existingModels,
-              availableModels: existing?.availableModels ?? [],
+              availableModels: existingAvailableModels,
               enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
                 ? (existing?.enablePromptCaching ?? true)
                 : undefined,
@@ -376,25 +428,44 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
-        // Don't wipe localStorage providers when the server has no rows.
-        if (syncedProviders.length === 0 && providersRef.current.length > 0) {
-          return;
-        }
+        // Trust the backend response. An empty array means every connection was
+        // removed (often from another tab); mirror that locally, else stale
+        // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-        toast.error(`Failed to load providers: ${message}`);
+        // Only surface a toast for real failures, not for the silent
+        // background re-sync on tab focus.
+        if (showSpinner) {
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          toast.error(`Failed to load connections: ${message}`);
+        }
       } finally {
-        if (isMounted) {
+        if (isMounted && showSpinner) {
           setRegistryLoading(false);
           setSyncingProviders(false);
         }
       }
+      return syncSucceeded;
     };
     void syncFromBackend();
+    // Re-sync silently when the tab regains focus so deletes made in
+    // another browser propagate without forcing the user to reopen the
+    // dialog. Skip when the document is hidden to avoid background work.
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.hidden) return;
+      void syncFromBackend({ showSpinner: false });
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleVisibilityChange);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleVisibilityChange);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
     };
   }, [onProvidersChange]);
 
@@ -441,7 +512,10 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
   }
 
-  function parseOptionalBaseUrl(input: string): string | null {
+  function parseOptionalBaseUrl(
+    input: string,
+    options: { appendOpenAiVersionPath?: boolean } = {},
+  ): string | null {
     const trimmed = input.trim();
     if (!trimmed) return null;
     let parsed: URL;
@@ -453,12 +527,19 @@ export function ChatProvidersSettings({
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("Base URL must use http or https.");
     }
+    if (options.appendOpenAiVersionPath) {
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      if (!pathname) {
+        parsed.pathname = "/v1";
+      }
+    }
     return parsed.toString().replace(/\/+$/, "");
   }
 
   function parseBaseUrlForProvider(
     input: string,
     required: boolean,
+    providerTypeForUrl: string,
   ): string | null {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -467,12 +548,14 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    return parseOptionalBaseUrl(trimmed);
+    return parseOptionalBaseUrl(trimmed, {
+      appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
+    });
   }
 
   async function loadModels() {
     if (!providerType) {
-      toast.error("Choose a provider first.");
+      toast.error("Choose a connection first.");
       return;
     }
     if (isCustomProvider && !supportsRemoteModelCatalog(providerType)) {
@@ -481,7 +564,7 @@ export function ChatProvidersSettings({
     }
     if (isCuratedModelList) {
       toast.info(
-        "This provider has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
+        "This connection has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
       );
       return;
     }
@@ -494,6 +577,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         supportsRemoteModelCatalog(providerType),
+        providerType,
       );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
@@ -548,7 +632,7 @@ export function ChatProvidersSettings({
 
   async function addProvider() {
     if (!providerType) {
-      toast.error("Choose a provider first.");
+      toast.error("Choose a connection first.");
       return;
     }
     const backendProviderType = toExternalBackendProviderType(providerType);
@@ -602,7 +686,11 @@ export function ChatProvidersSettings({
     }
     setMutatingProvider(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
+      const baseUrl = parseBaseUrlForProvider(
+        baseUrlDraft,
+        isCustomProvider,
+        providerType,
+      );
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -641,10 +729,10 @@ export function ChatProvidersSettings({
       ]);
       resetForm();
       setPage("list");
-      toast.success("Provider added.");
+      toast.success("Connection added.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Failed to add provider: ${message}`);
+      toast.error(`Failed to add connection: ${message}`);
     } finally {
       setMutatingProvider(false);
     }
@@ -656,7 +744,7 @@ export function ChatProvidersSettings({
       (provider) => provider.id === editingProviderId,
     );
     if (!existing) {
-      toast.error("Provider not found.");
+      toast.error("Connection not found.");
       return;
     }
     const isEditingCustomProvider =
@@ -714,6 +802,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         isEditingCustomProvider,
+        existing.providerType,
       );
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -751,12 +840,12 @@ export function ChatProvidersSettings({
             : provider,
         ),
       );
-      toast.success("Provider updated.");
+      toast.success("Connection updated.");
       resetForm();
       setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Failed to update provider: ${message}`);
+      toast.error(`Failed to update connection: ${message}`);
     } finally {
       setMutatingProvider(false);
     }
@@ -842,7 +931,7 @@ export function ChatProvidersSettings({
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Failed to delete provider: ${message}`);
+      toast.error(`Failed to delete connection: ${message}`);
     } finally {
       setMutatingProvider(false);
     }
@@ -858,7 +947,7 @@ export function ChatProvidersSettings({
         return;
       }
       await editProvider(provider);
-      toast.info(`No API key found for ${provider.name}. Add one and save.`);
+      toast.info(`No API key for ${provider.name}. Add one in Connections and save.`);
       return;
     }
     try {
@@ -904,8 +993,8 @@ export function ChatProvidersSettings({
             size="icon-sm"
             className="size-8 rounded-[8px]"
             onClick={closeForm}
-            aria-label="Back to providers"
-            title="Back to providers"
+            aria-label="Back to connections"
+            title="Back to connections"
           >
             <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
           </Button>
@@ -929,10 +1018,10 @@ export function ChatProvidersSettings({
                     htmlFor="provider-preset"
                     className="text-sm font-medium"
                   >
-                    Provider
+                    Connection
                   </Label>
                   <p className="text-xs leading-snug text-muted-foreground">
-                    Supported registry or local OpenAI-compatible connection.
+                    OpenAI, Anthropic, or a compatible local endpoint.
                   </p>
                 </div>
                 <Select
@@ -954,7 +1043,7 @@ export function ChatProvidersSettings({
                     className="h-9 w-full text-sm"
                     disabled={editingProviderId != null}
                   >
-                    <SelectValue placeholder="Choose a provider" />
+                    <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
@@ -1046,7 +1135,7 @@ export function ChatProvidersSettings({
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
                   >
-                    Provider name
+                    Connection name
                   </Label>
                   <Input
                     id="provider-custom-name"
@@ -1148,16 +1237,8 @@ export function ChatProvidersSettings({
                         ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
                         : "h-8 shrink-0 px-3"
                     }
-                    disabled={
-                      modelsLoading || mutatingProvider || isManualModelList
-                    }
-                    title={
-                      isManualModelList && isCustomProvider
-                        ? "This connection uses manual model IDs"
-                        : isCuratedModelList
-                          ? "Full catalog is not fetched for this provider"
-                          : undefined
-                    }
+                    disabled={loadModelsDisabled}
+                    title={loadModelsTitle}
                     onClick={() => void loadModels()}
                   >
                     {modelsLoading ? (
@@ -1406,7 +1487,7 @@ export function ChatProvidersSettings({
                     : void addProvider()
                 }
               >
-                {editingProviderId ? "Save provider" : "Add provider"}
+                {editingProviderId ? "Save connection" : "Add connection"}
               </Button>
               <Button
                 type="button"
@@ -1430,7 +1511,7 @@ export function ChatProvidersSettings({
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model provider connections for chat through the Studio proxy.
+            Manage model connections for chat.
           </p>
         </div>
       </header>
@@ -1455,7 +1536,7 @@ export function ChatProvidersSettings({
           id="chat-connections-description"
           className="max-w-md text-[11px] leading-snug text-muted-foreground/65 sm:text-right"
         >
-          When off, all provider connections are disabled.
+          When off, all connections are disabled.
         </p>
       </div>
 
@@ -1468,20 +1549,20 @@ export function ChatProvidersSettings({
           >
             <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-emerald-500/25 group-hover/add:text-emerald-700 dark:group-hover/add:text-emerald-300">
               <HugeiconsIcon icon={PlusSignIcon} className="size-4 shrink-0" />
-              <span>Add Provider</span>
+              <span>Add connection</span>
             </span>
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
-              {providers.length} providers · {totalModels} models
+              {providers.length} connections · {totalModels} models
             </span>
           </button>
           {providers.length === 0 ? (
             <div className="px-3 py-4">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm font-medium text-foreground">
-                  No providers yet
+                  No connections yet
                 </span>
                 <span className="text-xs leading-snug text-muted-foreground">
-                  Add an external provider to use hosted models from chat.
+                  Add a connection to use hosted models from chat.
                 </span>
               </div>
             </div>
@@ -1543,7 +1624,7 @@ export function ChatProvidersSettings({
                         className="size-7 rounded-[8px] hover:text-foreground"
                         disabled={mutatingProvider}
                         onClick={() => editProvider(provider)}
-                        title="Edit provider"
+                        title="Edit connection"
                         aria-label={`Edit ${provider.name}`}
                       >
                         <HugeiconsIcon icon={Edit03Icon} className="size-4" />
@@ -1567,7 +1648,7 @@ export function ChatProvidersSettings({
                         className="size-7 rounded-[8px] hover:text-destructive"
                         disabled={mutatingProvider}
                         onClick={() => void deleteProvider(provider.id)}
-                        title="Delete provider"
+                        title="Delete connection"
                         aria-label={`Delete ${provider.name}`}
                       >
                         <HugeiconsIcon icon={Delete02Icon} className="size-4" />
@@ -1604,7 +1685,7 @@ export function ChatProvidersDialog({
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>
           <DialogDescription>
-            Manage external model connections for chat.
+            Manage model connections for chat.
           </DialogDescription>
         </DialogHeader>
         <ChatProvidersSettings
