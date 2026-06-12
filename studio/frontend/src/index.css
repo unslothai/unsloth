@@ -1313,15 +1313,8 @@
 		border-radius: 22px !important;
 	}
 
-	/* One-line menus (a single item, e.g. "All saved prompts…" with nothing
-	   pinned, or a lone "Export as Markdown") read as fully rounded pills. */
-	.unsloth-plus-menu[data-slot]:not(:has(> :nth-child(2))) {
-		border-radius: 9999px !important;
-	}
-	.unsloth-plus-menu[data-slot]:not(:has(> :nth-child(2)))
-		:is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
-		border-radius: 9999px;
-	}
+	/* One-line menus keep the standard menu shape (same radius as multi-line),
+	   so a lone row doesn't balloon into a fully rounded pill. */
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
