@@ -178,6 +178,26 @@ def test_duplicate_resolve_after_completion_returns_false():
     assert resolve_tool_decision(aid, "deny") is False
 
 
+def test_first_decision_is_immutable():
+    """A second confirmation cannot flip an already-recorded decision.
+
+    The waiter reads ``slot["decision"]`` outside the lock and then cleans up,
+    so a duplicate or out-of-order POST that lands in that window must be
+    rejected and must not overwrite the first decision -- an Allow can never
+    become a Deny. Distinct from the after-completion case above: here the slot
+    is still pending (no waiter has consumed it yet).
+    """
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    # Second decision, same id, before any waiter consumes/cleans the slot.
+    assert resolve_tool_decision(aid, "deny", session_id = "sess") is False
+    assert slot["decision"] == "allow"
+    # The waiter still observes the first (immutable) decision.
+    assert wait_tool_decision(slot, aid) == "allow"
+    assert not _has_pending(aid)
+
+
 # ── Cancellation and timeout ─────────────────────────────────────────
 
 

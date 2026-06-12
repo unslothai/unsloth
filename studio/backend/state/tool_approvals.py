@@ -118,6 +118,11 @@ def resolve_tool_decision(
 
     Returns ``True`` if a pending call matched, ``False`` otherwise (e.g. a
     stale or duplicate confirmation, or a session-scope mismatch).
+
+    The first decision wins: once a slot's event is set, a later (duplicate or
+    out-of-order) confirmation for the same id is rejected without mutating the
+    recorded decision, so an Allow can never be flipped to Deny in the window
+    before the waiter reads ``slot["decision"]`` and pops the slot.
     """
     if not approval_id:
         return False
@@ -126,6 +131,8 @@ def resolve_tool_decision(
         if not slot:
             return False
         if session_id is not None and slot["session"] != (session_id or ""):
+            return False
+        if slot["event"].is_set():
             return False
         slot["decision"] = decision
         slot["event"].set()
