@@ -1673,12 +1673,26 @@ def _llama3_inv_freq_from_config(
     return torch.where(is_medium, smoothed, scaled)
 
 
+def _vanilla_inv_freq_from_config(config, device = "cpu"):
+    """Unscaled RoPE inv_freq (rope_type 'default'/None), matching the constructor's fallback."""
+    base = _get_rope_theta(config, default = 10000.0)
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        dim = int(config.hidden_size // config.num_attention_heads)
+    return 1.0 / (base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim))
+
+
 def _compute_config_rope_inv_freq(config, rope_scaling):
     """(inv_freq, attention_scaling) per config.rope_scaling via transformers'
     ROPE_INIT_FUNCTIONS, with an inline llama3 fallback; (None, 1.0) on failure."""
     original_rope_scaling = rope_scaling
     rope_scaling = _rope_scaling_as_dict(rope_scaling)
     rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
+    # "default"/unset means unscaled RoPE. transformers >=5 reports
+    # rope_type="default" for every plain config and dropped "default" from
+    # ROPE_INIT_FUNCTIONS, so compute it directly instead of warning per load.
+    if rope_type in (None, "default"):
+        return _vanilla_inv_freq_from_config(config).to(dtype = torch.float32, device = "cpu"), 1.0
     try:
         from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
