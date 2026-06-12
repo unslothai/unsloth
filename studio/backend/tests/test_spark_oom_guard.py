@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for _nvidia_classify_spark_unified_memory (Spark OOM-guard classifier).
+"""Tests for _nvidia_classify_spark_unified_memory (Spark OOM-guard classifier).
 
-Two paths: (1) ``is_integrated`` device property (authoritative on native Linux),
-(2) device-name token match -- needed because WSL2's GPU paravirtualization masks
+Two paths: (1) ``is_integrated`` property (authoritative on native Linux),
+(2) name-token match -- needed because WSL2 GPU paravirtualization masks
 ``is_integrated`` to 0 and renames the device (N1X reports ``JMJWOA-Generic-GPU``;
-verified on hardware). Mirrors test_rocm_oom_guard.py for the ROCm/Strix-Halo
-classifier the NVIDIA guard was modeled on.
+verified live). Mirrors test_rocm_oom_guard.py, which the NVIDIA guard models.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from core.training.worker import _nvidia_classify_spark_unified_memory
 
 
 def _props(**kwargs) -> SimpleNamespace:
-    """Build a fake device-properties object with the given attributes."""
+    """Fake device-properties object with the given attributes."""
     return SimpleNamespace(**kwargs)
 
 

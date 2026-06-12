@@ -992,15 +992,14 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
-# ---- NVIDIA DGX Spark (GB10) / N1X "RTX Spark" unified-memory support ----
-# Device names vary ("NVIDIA GB10", "JMJWOA-Generic-GPU" on N1X); the
-# aarch64 + CUDA gate keeps every Spark workaround a no-op elsewhere.
+# NVIDIA DGX Spark (GB10) / N1X "RTX Spark" unified-memory support.
+# Names vary ("NVIDIA GB10", "JMJWOA-Generic-GPU" on N1X); the aarch64 + CUDA
+# gate keeps every Spark workaround a no-op elsewhere.
 _DGX_SPARK_DEVICE_TOKENS = ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
 
 
 def _name_has_spark_token(names_upper):
-    # Whole-token match so "GB10" does NOT match "GB100"/"GB10X" -- a discrete
-    # Grace+Blackwell datacenter GPU must not be misread as a unified-memory Spark.
+    # Whole-token match so "GB10" doesn't match discrete "GB100"/"GB10X".
     import re
     return any(
         re.search(r"(?<![A-Z0-9])" + re.escape(tok) + r"(?![A-Z0-9])", names_upper)
@@ -1010,8 +1009,8 @@ def _name_has_spark_token(names_upper):
 
 @functools.lru_cache(maxsize = None)
 def is_dgx_spark():
-    """True only on DGX Spark / N1X Spark-class machines (gate: aarch64 + NVIDIA
-    CUDA + known device-name token). UNSLOTH_FORCE_DGX_SPARK=1/0 forces on/off."""
+    """True only on DGX Spark / N1X (gate: aarch64 + CUDA + device-name token).
+    UNSLOTH_FORCE_DGX_SPARK=1/0 forces on/off."""
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True
@@ -1034,8 +1033,8 @@ def is_dgx_spark():
 
 @functools.lru_cache(maxsize = None)
 def _is_dgx_spark_no_cuda_init():
-    """Spark detection that never inits CUDA: reads device names via `nvidia-smi`,
-    not torch, so PYTORCH_CUDA_ALLOC_CONF can still be set afterwards. Same
+    """Spark detection that never inits CUDA: reads names via `nvidia-smi`, not
+    torch, so PYTORCH_CUDA_ALLOC_CONF can still be set afterwards. Same
     UNSLOTH_FORCE_DGX_SPARK override; False on any error."""
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
@@ -1062,12 +1061,12 @@ def _is_dgx_spark_no_cuda_init():
 
 
 def patch_dgx_spark_caching_allocator_warmup():
-    """No-op `transformers.modeling_utils.caching_allocator_warmup` on Spark UMA.
+    """No-op `caching_allocator_warmup` on Spark UMA.
 
     `cudaMemGetInfo()` undercounts free UMA memory, so HF's warmup
-    `torch.empty(...)` raises `AcceleratorError: invalid argument` and aborts
+    `torch.empty(...)` raises `AcceleratorError: invalid argument`, aborting
     bitsandbytes 4/8-bit loads. The warmup is only a speed hint, so skip it.
-    Gated by `is_dgx_spark()`; idempotent (`_unsloth_spark_noop` marker).
+    Gated by `is_dgx_spark()`; idempotent via `_unsloth_spark_noop` marker.
     """
     if not is_dgx_spark():
         return
@@ -1089,7 +1088,7 @@ def patch_dgx_spark_caching_allocator_warmup():
 
 def patch_dgx_spark_memory_config():
     """Enable allocator `expandable_segments` on Spark UMA to cut fragmentation
-    OOMs (accuracy-neutral; strict no-op off-Spark).
+    OOMs (no-op off-Spark).
 
     Appends to PYTORCH_CUDA_ALLOC_CONF only when absent; opt out with
     UNSLOTH_NO_EXPANDABLE_SEGMENTS=1. Must run before the first CUDA allocation,
@@ -1124,7 +1123,7 @@ def patch_dgx_spark_runtime_defaults():
     _frac = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")
     if _frac:
         try:
-            # 0 would OOM every allocation; torch rejects > 1. Out-of-range = no cap.
+            # Out-of-range = no cap (0 OOMs everything; torch rejects > 1).
             _frac_val = float(_frac)
             if 0.0 < _frac_val <= 1.0:
                 torch.cuda.set_per_process_memory_fraction(_frac_val)
@@ -1133,10 +1132,10 @@ def patch_dgx_spark_runtime_defaults():
 
 
 def patch_dgx_spark_dataloader_defaults():
-    """Default `dataloader_pin_memory` to False on Spark UMA (accuracy-neutral).
+    """Default `dataloader_pin_memory` to False on Spark UMA.
 
     On one shared pool, pinning only reserves non-pageable RAM and adds a staging
-    copy (mirrors transformers' own use_cpu precedent). Wrapping the base
+    copy (mirrors transformers' use_cpu precedent). Wrapping the base
     `TrainingArguments.__post_init__` covers SFT + every TRL trainer in one
     idempotent patch. Opt out: UNSLOTH_SPARK_KEEP_PIN_MEMORY=1. No-op off-Spark.
     """
@@ -1153,7 +1152,7 @@ def patch_dgx_spark_dataloader_defaults():
         return
     _orig_post_init = Base.__post_init__
 
-    # *args/**kwargs: tolerate future InitVar parameters in __post_init__.
+    # *args/**kwargs: tolerate future InitVar params in __post_init__.
     def __post_init__(self, *args, **kwargs):
         _orig_post_init(self, *args, **kwargs)
         if getattr(self, "dataloader_pin_memory", None) is True:
@@ -1731,7 +1730,7 @@ torch_compile_options = {
     "trace.enabled": UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs": False,
 }
-# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune would only waste search time.
+# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune just wastes search time.
 if is_dgx_spark():
     torch_compile_options["max_autotune"] = False
 

@@ -341,8 +341,8 @@ function Uninstall-UnslothStudio {
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
-    # Canonical name is "Unsloth Studio.lnk"; also sweep legacy distro-suffixed
-    # names ("Unsloth Studio (WSL - <distro>).lnk") left by pre-release dev builds.
+    # Canonical name is "Unsloth Studio.lnk"; also sweep legacy distro-suffixed names
+    # ("Unsloth Studio (WSL - <distro>).lnk") left by pre-release dev builds.
     _Step "Removing desktop and Start Menu shortcuts..."
     $shortcutDirs = @()
     try { $d = [Environment]::GetFolderPath("Desktop"); if ($d) { $shortcutDirs += $d } } catch { }
@@ -423,11 +423,11 @@ function Uninstall-UnslothStudio {
 
     # ── Windows-on-Arm WSL-fallback artifacts ──
     # The ARM64+NVIDIA fallback puts Studio in WSL plus a native shim + launcher under
-    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- all missed above.
+    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- none caught above.
     _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
     $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
-    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without the
-    # env var set; read it BEFORE the directory is removed below.
+    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without the env
+    # var set; read it BEFORE the directory is removed below.
     $_recordedDistro = $null
     if ($unslothDir) {
         try {
@@ -466,17 +466,17 @@ function Uninstall-UnslothStudio {
         try {
             # Probe candidates by exit code ('' = default distro) since `wsl --list` emits UTF-16 PS
             # mis-parses. rm runs FIRST (the kills could SIGKILL this shell) and drops the dangling
-            # /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (where the fallback installs);
+            # /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (the fallback's install dir);
             # /home/*/.unsloth may be another user's. The 8888 kill is gated on an Unsloth install
-            # existing (checked BEFORE rm deletes the marker) so an unrelated listener survives; pkill
+            # existing (checked BEFORE rm deletes the marker) so an unrelated listener survives. pkill
             # matches argv containing /root/.unsloth/ (not bare names that would hit a user's own
-            # llama-server), and the backslash + [h]-bracket in '/root/\.unslot[h]/' keep it from
-            # matching this command's own argv.
+            # llama-server); the backslash + [h]-bracket in '/root/\.unslot[h]/' keep it from matching
+            # this command's own argv.
             $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
             # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker or an
             # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy marker-less
-            # installs, which exist only on ARM64 -- on x86 it would delete distros this installer
-            # never touched (e.g. a ROCm-on-WSL Studio under /root).
+            # installs (ARM64 only); on x86 it would delete distros this installer never touched
+            # (e.g. a ROCm-on-WSL Studio under /root).
             $_cands = @()
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
             if ($_recordedDistro) { $_cands += $_recordedDistro }

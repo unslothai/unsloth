@@ -736,15 +736,15 @@ def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify an NVIDIA device as Spark-class unified-memory or discrete.
 
     Returns ``(marker, is_unified)``; marker is ``"is_integrated"`` or the matched
-    device-name token, else ``""``. Spark-class parts (DGX Spark / GB10, N1X "RTX
-    Spark") share one memory pool with the OS, so like the ROCm APUs they need a
+    name token, else ``""``. Spark-class parts (DGX Spark / GB10, N1X "RTX Spark")
+    share one memory pool with the OS, so like the ROCm APUs they need a
     ``set_per_process_memory_fraction`` cap -- exhausting the pool can stall the box.
 
     ``is_integrated`` is authoritative on native Linux, but WSL2 paravirtualization
     masks it to 0 and renames the device (N1X reports ``JMJWOA-Generic-GPU``,
-    verified on hardware) -- hence the name-token fallback. Tokens mirror
-    ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated
-    because this guard runs before any ML import).
+    verified live) -- hence the name-token fallback. Tokens mirror
+    ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated since
+    this guard runs before any ML import).
     """
     if getattr(props, "is_integrated", 0):
         return "is_integrated", True
@@ -752,7 +752,7 @@ def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
     import re
 
     for token in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK"):
-        # Whole-token match so "GB10" does not match a discrete "GB100"/"GB10X".
+        # Whole-token match so "GB10" doesn't match discrete "GB100"/"GB10X".
         if re.search(r"(?<![A-Z0-9])" + re.escape(token) + r"(?![A-Z0-9])", name_upper):
             return token, True
     return "", False
@@ -2441,11 +2441,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Discrete NVIDIA GPUs untouched.
     else:
         try:
-            # Set PYTORCH_CUDA_ALLOC_CONF before get_device_properties below inits the
-            # CUDA allocator -- the later `import unsloth` patch is too late for THIS
-            # worker process. CUDA-free nvidia-smi sniff (mirrors
-            # _is_dgx_spark_no_cuda_init), same append-don't-override and
-            # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out as the library patch.
+            # Set PYTORCH_CUDA_ALLOC_CONF before get_device_properties below inits
+            # the allocator -- the later `import unsloth` patch is too late for THIS
+            # worker. CUDA-free nvidia-smi sniff (mirrors _is_dgx_spark_no_cuda_init),
+            # same append-don't-override and UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out.
             try:
                 import platform as _plat
 

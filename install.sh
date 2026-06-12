@@ -2648,10 +2648,9 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
-        # Pre-merge testing: install unsloth from a git ref (install.ps1 sets
-        # UNSLOTH_INSTALL_REF) so the branch's setup.sh + patches run. Name
-        # unsloth-zoo explicitly: it's not a base dep and SKIP_STUDIO_BASE skips
-        # base.txt, so otherwise it never installs.
+        # Pre-merge testing: install unsloth from a git ref (set by install.ps1)
+        # so the branch's setup.sh + patches run. Name unsloth-zoo explicitly --
+        # not a base dep, and SKIP_STUDIO_BASE skips base.txt, so it never installs.
         substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
         run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
@@ -2660,11 +2659,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
-    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X): unsloth's cuXXX extras are
-    # x86_64-oriented, so 4-bit QLoRA fails out of the box. aarch64 manylinux
-    # wheels work (verified on sm_121 via PTX JIT); best-effort, no wheel just
-    # keeps 16-bit LoRA / full finetuning. SKIP_TORCH gate: a --no-torch
-    # (GGUF-only) install must not let bitsandbytes drag torch back in.
+    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X): unsloth's x86_64-oriented cuXXX
+    # extras break 4-bit QLoRA, but aarch64 manylinux wheels work (verified on
+    # sm_121 via PTX JIT). Best-effort: no wheel keeps 16-bit LoRA / full finetuning.
+    # SKIP_TORCH gate stops a --no-torch (GGUF-only) install dragging torch back in.
     if [ "$SKIP_TORCH" = false ] \
             && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
             && command -v nvidia-smi >/dev/null 2>&1 \

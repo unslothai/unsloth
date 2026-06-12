@@ -216,8 +216,7 @@ _remove_path "$HOME/.unsloth/studio"
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
-# provision_llama_cuda.sh fetched by the WoA/Spark CUDA-build path (install.ps1
-# background build + direct-WSL setup.sh). No-op when absent.
+# provision_llama_cuda.sh fetched by the WoA/Spark CUDA-build path. No-op when absent.
 _remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
 _remove_path "$HOME/.unsloth/.cache"
 # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
@@ -278,7 +277,7 @@ case "$_os" in
                 # receive trailing tokens as $args. WSL distro names are safe to
                 # embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
-                # $env:APPDATA/$distro are PowerShell-side; $_wsl_distro is injected from shell.
+                # $env:APPDATA/$distro are PowerShell-side; $_wsl_distro is shell-injected.
                 powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),

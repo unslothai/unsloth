@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build CUDA llama.cpp for Studio GGUF *inference* into ~/.unsloth/llama.cpp
-# (resolver checks <dir>/build/bin/llama-server). Idempotent, best-effort, always
-# exits 0. Exists because no aarch64+CUDA prebuilt covers NVIDIA ARM hosts
-# (DGX Spark / GB10, N1X "RTX" laptops). Platform gotchas handled:
+# (resolver checks <dir>/build/bin/llama-server). Idempotent, best-effort, exits
+# 0. Exists because no aarch64+CUDA prebuilt covers NVIDIA ARM hosts (DGX Spark /
+# GB10, N1X "RTX" laptops). Platform gotchas handled:
 #   * nvcc rejects gcc-15          -> force gcc-14 / g++-14 host compiler
 #   * glibc >= 2.41 vs CUDA < 13.3 -> install CUDA 13.3 (rsqrt header clash)
 #   * sm_121 (Blackwell)           -> derive arch from the GPU's compute_cap
@@ -13,7 +13,7 @@ LLAMA_DIR="${UNSLOTH_LLAMA_CPP_PATH:-$HOME/.unsloth/llama.cpp}"
 SERVER="$LLAMA_DIR/build/bin/llama-server"
 log() { printf '  - %s\n' "$*"; }
 
-# CUDA shows up two ways: monolithic (libggml-cuda in ldd) or split (dlopen-ed
+# Detect CUDA two ways: monolithic (libggml-cuda in ldd) or split (dlopen-ed
 # libggml-cuda.so* beside the binary, missed by ldd). CPU-only builds ship no
 # libggml-cuda.so, so its presence is the reliable signal.
 is_cuda_server() {
@@ -39,12 +39,12 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 HAVE_APT=0; command -v apt-get >/dev/null 2>&1 && HAVE_APT=1
 
 # 2. Base toolchain first, then gcc-14 (nvcc rejects gcc-15) in a SEPARATE apt
-# transaction: gcc-14 is absent from default Ubuntu 22.04 / Debian 12 sources,
-# which would abort a combined transaction and lose the base build tools too.
+# transaction: gcc-14 is absent from default Ubuntu 22.04 / Debian 12 sources, so
+# a combined transaction would abort and lose the base build tools too.
 if [ "$HAVE_APT" -eq 1 ]; then
     $SUDO apt-get update -y >/dev/null 2>&1 || true
-    # libcurl4-openssl-dev: -DLLAMA_CURL=ON needs it, and on the WSL deferred path
-    # setup.sh's GGUF dep install (which covers libcurl) was skipped.
+    # libcurl4-openssl-dev: -DLLAMA_CURL=ON needs it, and the WSL deferred path
+    # skips setup.sh's GGUF dep install that would otherwise provide libcurl.
     $SUDO apt-get install -y --no-install-recommends \
         build-essential cmake git curl ca-certificates libcurl4-openssl-dev >/dev/null 2>&1 || true
     $SUDO apt-get install -y --no-install-recommends gcc-14 g++-14 >/dev/null 2>&1 || true
@@ -89,7 +89,7 @@ fi
 
 CUDA_HOME="$(dirname "$(dirname "$NVCC")")"
 # CUDA + Linux dirs FIRST so the build uses Linux cmake/gcc/git, not Windows tools
-# leaked in via WSL interop (/mnt/c); original PATH kept so nvidia-smi resolves.
+# leaked in via WSL interop (/mnt/c). Keep original PATH so nvidia-smi resolves.
 export PATH="$CUDA_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export CUDAToolkit_ROOT="$CUDA_HOME"
 
@@ -158,7 +158,7 @@ _cmake_configure() {
         -DLLAMA_CURL=ON >/dev/null 2>&1
 }
 # A pre-existing build/ may carry a stale CMake cache (relocated dir: bad absolute
-# paths + GGML_CUDA=OFF). Reuse it first (fast incremental); wipe only on failure.
+# paths + GGML_CUDA=OFF). Reuse first (fast incremental); wipe only on failure.
 if ! _cmake_configure; then
     log "stale/incompatible CMake cache detected; wiping build dir for a clean CUDA configure"
     rm -rf build
@@ -166,10 +166,10 @@ if ! _cmake_configure; then
 fi
 # Also builds the targets unsloth-zoo's GGUF exporter needs (llama-mtmd-cli,
 # llama-gguf-split). Jobs default to ~half the cores (full -j(nproc) CUDA builds
-# trip thermal shutdowns on NVIDIA-ARM laptops like the N1X "RTX Spark") and are
-# RAM-capped (~1.5 GB/nvcc job). Tune: UNSLOTH_LLAMA_BUILD_JOBS=N; re-runs resume.
+# trip thermal shutdowns on NVIDIA-ARM laptops like the N1X "RTX Spark"), capped
+# at ~1.5 GB/nvcc job. Tune: UNSLOTH_LLAMA_BUILD_JOBS=N; re-runs resume.
 _ncpu="$(nproc 2>/dev/null || echo 4)"
-# Honor a valid positive-int override; ignore junk/0 (cmake reads -j0 as "all cores").
+# Honor a valid positive-int override; ignore junk/0 (cmake treats -j0 as all cores).
 if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ] && [ "${UNSLOTH_LLAMA_BUILD_JOBS}" -ge 1 ] 2>/dev/null; then
     JOBS="$UNSLOTH_LLAMA_BUILD_JOBS"
 else
@@ -188,7 +188,7 @@ command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
 command -v ionice >/dev/null 2>&1 && _NICE="$_NICE ionice -c 3"
 _cmake_build() {
     # Only llama-server is REQUIRED: an old UNSLOTH_LLAMA_TAG pin may predate the
-    # helper targets, and those missing must not fail the whole provision.
+    # helper targets, whose absence must not fail the whole provision.
     $_NICE cmake --build build -j"$JOBS" --target llama-server >/dev/null 2>&1
 }
 _cmake_build_extras() {
@@ -200,7 +200,7 @@ _cmake_build_extras() {
 if ! _cmake_build; then
     # An interrupted build (thermal/power shutdown, common on this machine class)
     # can leave a half-linked libggml-cuda.so that breaks the resume link
-    # (undefined ggml_cuda_op_* refs); wipe and rebuild clean once.
+    # (undefined ggml_cuda_op_* refs); wipe and rebuild clean.
     log "build failed (likely interrupted/partial); wiping build dir and rebuilding clean"
     rm -rf build
     _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }

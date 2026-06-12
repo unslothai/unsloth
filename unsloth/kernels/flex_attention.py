@@ -27,9 +27,9 @@ torch_compile_options = {
 
 
 def _flex_is_dgx_spark():
-    # CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids a circular import).
-    # Runs at module import, before ._utils -- touching torch.cuda here would init the
-    # allocator before patch_dgx_spark_memory_config() can set PYTORCH_CUDA_ALLOC_CONF.
+    # CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids circular import).
+    # Runs at module import, before ._utils -- touching torch.cuda here would init
+    # the allocator before patch_dgx_spark_memory_config() sets PYTORCH_CUDA_ALLOC_CONF.
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True
@@ -49,7 +49,7 @@ def _flex_is_dgx_spark():
             timeout = 5,
         )
         names = (out.stdout or "").upper()
-        # Whole-token match so "GB10" does not match a discrete "GB100"/"GB10X".
+        # Whole-token match so "GB10" doesn't match discrete "GB100"/"GB10X".
         import re
 
         return any(
@@ -60,7 +60,7 @@ def _flex_is_dgx_spark():
         return False
 
 
-# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune would only waste search time.
+# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune just wastes search time.
 if _flex_is_dgx_spark():
     torch_compile_options["max_autotune"] = False
 
