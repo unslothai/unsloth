@@ -527,6 +527,34 @@ def test_start_studio_tunnel_falls_back_to_http2(monkeypatch):
         ct.stop_studio_tunnel()
 
 
+def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch):
+    # A stop() landing in the gap AFTER the failed first attempt is cleaned up but
+    # BEFORE the http2 retry registers must abort the loop -- not start a second
+    # tunnel that nobody will ever stop (Codex review). Simulated by having the
+    # first attempt's stop() (called during cleanup) trigger the shutdown.
+    attempts = []
+
+    class _Stub:
+        def __init__(self, port, binary, protocol = None):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL minted, never ready
+
+        def wait_for_ready(self, timeout):
+            return None
+
+        def stop(self):
+            ct.stop_studio_tunnel()  # a concurrent shutdown lands in the gap
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]  # http2 retry aborted after shutdown
+    assert ct._active_tunnel is None
+
+
 def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
     # No URL at all is an API/network failure; the http2 fallback would not help,
     # so it must be skipped (don't burn a second timeout window).

@@ -302,6 +302,9 @@ class CloudflareTunnel:
 # enough; the lock guards the start/stop/shutdown races.
 _active_tunnel: Optional[CloudflareTunnel] = None
 _active_lock = threading.Lock()
+# Latched by stop_studio_tunnel so a shutdown landing *between* a start's retry
+# attempts aborts the loop instead of starting a tunnel nobody will ever stop.
+_shutdown_requested = False
 
 
 def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[str]:
@@ -314,17 +317,24 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
     the window (e.g. quic is blocked on this network), retries once forcing the
     http2 protocol. On any failure the tunnel is stopped and None is returned.
     """
-    global _active_tunnel
+    global _active_tunnel, _shutdown_requested
     binary = ensure_cloudflared()
     if not binary:
         return None
+    with _active_lock:
+        _shutdown_requested = False  # fresh session
     # Default protocol first (quic, with cloudflared's own http2 fallback); if a
     # URL appears but no connection registers, quic is likely blocked -> retry
     # once forcing http2.
     for protocol in (None, "http2"):
-        tunnel = CloudflareTunnel(port, binary, protocol = protocol)
-        # Register before start/wait so a shutdown during the wait can stop it.
+        # Create + register under the lock, and bail if a stop already landed
+        # (e.g. between this and the previous attempt) so we never start a tunnel
+        # after shutdown has run.
         with _active_lock:
+            if _shutdown_requested:
+                _active_tunnel = None
+                return None
+            tunnel = CloudflareTunnel(port, binary, protocol = protocol)
             prior, _active_tunnel = _active_tunnel, tunnel
         if prior is not None:
             prior.stop()
@@ -355,8 +365,11 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
 
 def stop_studio_tunnel() -> None:
     """Terminate the active tunnel, if any. Idempotent."""
-    global _active_tunnel
+    global _active_tunnel, _shutdown_requested
     with _active_lock:
+        # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel
+        # (e.g. its http2 retry) after we have already torn down.
+        _shutdown_requested = True
         tunnel, _active_tunnel = _active_tunnel, None
     if tunnel is not None:
         tunnel.stop()
