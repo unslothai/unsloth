@@ -77,6 +77,38 @@ import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+function buildRelativeSaveDirectory(
+  exportMethod: ExportMethod | null,
+  sourceBaseModelName: string,
+  selectedModelIdx: string | null,
+  checkpoint: string | null,
+): string {
+  if (exportMethod === "gguf") {
+    return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
+      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
+  }
+  return `${selectedModelIdx ?? "model"}/${checkpoint}`;
+}
+
+function siblingGgufDirectory(sourcePath: string): string | null {
+  const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return null;
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (slash < 0) return `${trimmed}_gguf`;
+  const parent =
+    slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
+      ? trimmed.slice(0, slash + 1)
+      : trimmed.slice(0, slash);
+  const name = trimmed.slice(slash + 1);
+  if (!name) return null;
+  const sep = parent.endsWith("/") || parent.endsWith("\\")
+    ? ""
+    : trimmed.includes("\\")
+      ? "\\"
+      : "/";
+  return `${parent}${sep}${name}_gguf`;
+}
+
 export function ExportPage() {
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -114,6 +146,9 @@ export function ExportPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
+  const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
+    null,
+  );
   const [hfUsername, setHfUsername] = useState("");
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
@@ -121,6 +156,9 @@ export function ExportPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
+  // On-disk path of the last successful export, shown on the Export Complete
+  // screen so the user can find their model. Null for Hub-only pushes.
+  const [exportOutputPath, setExportOutputPath] = useState<string | null>(null);
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -333,6 +371,36 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  const defaultSaveDirectory = useMemo(() => {
+    const relative = buildRelativeSaveDirectory(
+      exportMethod,
+      sourceBaseModelName,
+      selectedModelIdx,
+      checkpoint,
+    );
+    if (
+      exportMethod === "gguf" &&
+      sourceMode === "model" &&
+      modelSource === "local" &&
+      selectedSourceModel
+    ) {
+      const localModel = localMetaById.get(selectedSourceModel);
+      if (localModel && (localModel.source === "models_dir" || localModel.source === "custom")) {
+        return siblingGgufDirectory(localModel.path) ?? relative;
+      }
+    }
+    return relative;
+  }, [
+    checkpoint,
+    exportMethod,
+    localMetaById,
+    modelSource,
+    selectedModelIdx,
+    selectedSourceModel,
+    sourceBaseModelName,
+    sourceMode,
+  ]);
+  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
@@ -377,6 +445,10 @@ export function ExportPage() {
     setSelectedSourceModel(next || null);
   }, []);
 
+  useEffect(() => {
+    setCustomSaveDirectory(null);
+  }, [checkpoint, exportMethod, modelSource, selectedModelIdx, selectedSourceModel, sourceMode]);
+
   const handleLocalSourceInputChange = useCallback(
     (value: string, eventDetails?: { reason?: string }) => {
       localModelInputRef.current = value;
@@ -405,14 +477,8 @@ export function ExportPage() {
     setExporting(true);
     setExportError(null);
     setExportSuccess(false);
+    setExportOutputPath(null);
 
-    // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
-    // For other formats, nest under training-run/checkpoint
-    const saveDir =
-      exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
-        : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
@@ -433,46 +499,54 @@ export function ExportPage() {
         });
       }
 
-      // 2. Run export based on method
+      // 2. Run export. Capture the resolved output_path (when the backend
+      // wrote a local copy) for the success screen. Multi-quant GGUF runs
+      // share one directory, so we just keep the last response.
+      let lastOutputPath: string | null = null;
       if (exportMethod === "merged") {
         if (isAdapter) {
-          await exportMerged({
-            save_directory: saveDir,
+          const resp = await exportMerged({
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
             private: privateRepo,
           });
+          lastOutputPath = resp.details?.output_path ?? null;
         } else {
-          await exportBase({
-            save_directory: saveDir,
+          const resp = await exportBase({
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
             private: privateRepo,
             base_model_id: selectedModelData?.base_model,
           });
+          lastOutputPath = resp.details?.output_path ?? null;
         }
       } else if (exportMethod === "gguf") {
         for (const quant of quantLevels) {
-          await exportGGUF({
-            save_directory: saveDir,
+          const resp = await exportGGUF({
+            save_directory: saveDirectory,
             quantization_method: quant,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
           });
+          lastOutputPath = resp.details?.output_path ?? lastOutputPath;
         }
       } else if (exportMethod === "lora") {
-        await exportLoRA({
-          save_directory: saveDir,
+        const resp = await exportLoRA({
+          save_directory: saveDirectory,
           push_to_hub: pushToHub,
           repo_id: repoId,
           hf_token: token,
           private: privateRepo,
         });
+        lastOutputPath = resp.details?.output_path ?? null;
       }
 
+      setExportOutputPath(lastOutputPath);
       setExportSuccess(true);
     } catch (err) {
       setExportError(
@@ -495,9 +569,9 @@ export function ExportPage() {
     selectedModelData,
     exportMethod,
     isAdapter,
-    sourceBaseModelName,
     quantLevels,
     destination,
+    saveDirectory,
     hfUsername,
     modelName,
     hfToken,
@@ -508,12 +582,12 @@ export function ExportPage() {
 
   // ---- Render ----
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
             Export Model
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -527,7 +601,7 @@ export function ExportPage() {
           description="Select source, method, and quantization"
           accent="emerald"
           featured={true}
-          className="shadow-border ring-1 ring-border"
+          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           {/* Loading / error states */}
           {loadingCheckpoints && (
@@ -943,7 +1017,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-muted/50 p-3">
+                      <div className="rounded-xl bg-foreground/[0.04] p-3">
                         <p className="text-[11px] text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -953,7 +1027,7 @@ export function ExportPage() {
                   </AnimatePresence>
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-muted/50 p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
                       <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -995,7 +1069,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold">
                           {i + 1}
                         </span>
                         {step}
@@ -1068,6 +1142,10 @@ export function ExportPage() {
         isAdapter={sourceMode === "checkpoint" && isAdapter}
         destination={destination}
         onDestinationChange={setDestination}
+        saveDirectory={saveDirectory}
+        defaultSaveDirectory={defaultSaveDirectory}
+        saveDirectoryOverridden={!!customSaveDirectory}
+        onSaveDirectoryChange={setCustomSaveDirectory}
         hfUsername={hfUsername}
         onHfUsernameChange={setHfUsername}
         modelName={modelName}
@@ -1080,6 +1158,7 @@ export function ExportPage() {
         exporting={exporting}
         exportError={exportError}
         exportSuccess={exportSuccess}
+        exportOutputPath={exportOutputPath}
       />
     </div>
   );

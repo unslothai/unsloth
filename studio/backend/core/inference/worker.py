@@ -4,14 +4,10 @@
 """
 Inference subprocess entry point.
 
-Each inference session runs in a persistent subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
-solving the transformers version-switching problem completely.
-
-The subprocess stays alive while a model is loaded, accepting commands
-(generate, load, unload) via mp.Queue. It exits on shutdown or unload.
-
-Pattern follows core/training/worker.py.
+Each session runs in a persistent spawn subprocess, giving a clean interpreter
+with no stale module state (solves transformers version-switching). It stays
+alive while a model is loaded, taking commands (generate, load, unload) via
+mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.py.
 """
 
 from __future__ import annotations
@@ -34,37 +30,15 @@ from utils.hardware import apply_gpu_ids
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
-    # Ensure backend is on path for utils imports
+    """Activate the correct transformers version BEFORE any ML imports."""
+    # Ensure backend is on path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def _decode_image(image_base64: str):
@@ -115,23 +89,13 @@ def _build_model_config(config: dict):
     return mc
 
 
-def _get_hf_download_state(
-    model_names: list[str] | None = None,
-) -> tuple[int, bool] | None:
+def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, bool] | None:
     """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
 
-    When *model_names* is provided, only those models' ``blobs/``
-    directories are checked instead of scanning every cached model --
-    much faster on systems with many models. Accepts multiple names so
-    that LoRA loads can watch both the adapter repo and the base model
-    repo simultaneously.
-
-    *has_incomplete* is True when any ``*.incomplete`` files exist in the
-    watched blobs directories, indicating that ``huggingface_hub`` is
-    actively downloading.
-
-    Returns None if the state cannot be determined (import error,
-    permission error, etc.) so callers can skip stall logic.
+    With *model_names*, only those models' ``blobs/`` dirs are checked (faster);
+    accepts multiple names so LoRA loads can watch adapter + base repos at once.
+    *has_incomplete* is True when any ``*.incomplete`` files exist (download
+    active). None means state could not be determined, so callers skip stall logic.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -146,18 +110,15 @@ def _get_hf_download_state(
 
         if model_names:
             from utils.paths import resolve_cached_repo_id_case
-
             for name in model_names:
                 if not name:
                     continue
-                # Skip local filesystem paths -- HF model IDs use forward
-                # slashes (org/model) but never start with / . ~ or contain
-                # backslashes. This distinguishes them from absolute paths,
-                # relative paths, and Windows paths.
+                # Skip local filesystem paths -- HF IDs (org/model) never start
+                # with / . ~ or contain backslashes.
                 if name.startswith(("/", ".", "~")) or "\\" in name:
                     continue
                 name = resolve_cached_repo_id_case(name)
-                # HF cache dir format: models--org--name (slashes -> --)
+                # HF cache dir format: models--org--name (slashes -> --).
                 cache_dir_name = "models--" + name.replace("/", "--")
                 blobs_dir = cache / cache_dir_name / "blobs"
                 if blobs_dir.exists():
@@ -190,16 +151,10 @@ def _start_heartbeat(
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
-    Monitors the HF Hub cache directory for download activity. A stall
-    is only reported when ``*.incomplete`` files are present (indicating
-    ``huggingface_hub`` is actively downloading) **and** the total cache
-    size has not changed for *stall_timeout* seconds.
-
-    Once the download finishes (no more ``.incomplete`` files), the stall
-    timer resets, so post-download initialization (quantization, GPU
-    weight loading) is never misclassified as a stalled download.
-
-    Returns a stop event -- set it to terminate the heartbeat thread.
+    A stall is reported only when ``*.incomplete`` files are present (download
+    active) AND cache size hasn't changed for *stall_timeout* seconds. When the
+    download finishes the timer resets, so post-download init (quantization, GPU
+    weight load) isn't misclassified as a stall. Returns a stop event.
     """
     stop = threading.Event()
     transport = "https" if xet_disabled else "xet"
@@ -213,7 +168,7 @@ def _start_heartbeat(
             state = _get_hf_download_state(model_names)
             now = time.monotonic()
 
-            # Skip stall logic if we cannot measure the cache
+            # Skip stall logic if we cannot measure the cache.
             if state is None:
                 _send_response(
                     resp_queue,
@@ -231,10 +186,8 @@ def _start_heartbeat(
                 last_size = current_size
                 last_change = now
 
-            # Only fire stall when .incomplete files are present,
-            # confirming a download is actively in progress.
-            # Once downloads finish (no .incomplete), reset the timer
-            # so model init time is not counted as a stall.
+            # Only fire stall while .incomplete files confirm an active download;
+            # reset the timer otherwise so model init isn't counted as a stall.
             if not has_incomplete:
                 last_change = now
             elif now - last_change >= stall_timeout:
@@ -249,7 +202,7 @@ def _start_heartbeat(
                         "ts": time.time(),
                     },
                 )
-                # Only fire once -- the orchestrator will kill us
+                # fire once -- the orchestrator will kill us
                 return
 
             _send_response(
@@ -274,7 +227,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = config.get("hf_token")
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
-        # Auto-detect quantization for LoRA adapters
+        # Auto-detect quantization for LoRA adapters.
         load_in_4bit = config.get("load_in_4bit", True)
         if mc.is_lora and mc.path:
             import json
@@ -287,14 +240,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         adapter_cfg = json.load(f)
                     training_method = adapter_cfg.get("unsloth_training_method")
                     if training_method == "lora" and load_in_4bit:
-                        logger.info(
-                            "adapter_config.json says lora — setting load_in_4bit=False"
-                        )
+                        logger.info("adapter_config.json says lora — setting load_in_4bit=False")
                         load_in_4bit = False
                     elif training_method == "qlora" and not load_in_4bit:
-                        logger.info(
-                            "adapter_config.json says qlora — setting load_in_4bit=True"
-                        )
+                        logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
                         load_in_4bit = True
                     elif not training_method:
                         if (
@@ -309,28 +258,26 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for unsloth/* transformers 5.x models
-        # (matches the training worker logic in core/training/worker.py)
+        # Auto-enable trust_remote_code only for NemotronH/Nano (config parsing
+        # bugs require it). Must NOT match Llama-Nemotron (standard Llama arch).
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
-            from utils.transformers_version import needs_transformers_5
-
             model_name = config["model_name"]
-            if needs_transformers_5(model_name) and model_name.lower().startswith(
-                "unsloth/"
+            _mn_lower = model_name.lower()
+            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
             ):
                 trust_remote_code = True
                 logger.info(
-                    "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+                    "Auto-enabled trust_remote_code for Nemotron model: %s",
                     model_name,
                 )
 
-        # Send heartbeats every 30s so the orchestrator knows we're still alive
-        # (download / weight loading can take a long time on slow connections)
+        # Heartbeat every 30s so the orchestrator knows we're alive during slow loads.
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
 
-        # Watch both the model repo and base model repo (for LoRA loads
-        # where the base model download is the actual bottleneck)
+        # Watch model + base repos (base download is the LoRA bottleneck).
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
@@ -355,17 +302,50 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             heartbeat_stop.set()
 
         if success:
-            # Build model_info for the parent to mirror
+            # Build model_info for the parent to mirror.
             model_info = {
                 "identifier": mc.identifier,
                 "display_name": mc.display_name,
                 "is_vision": mc.is_vision,
                 "is_lora": mc.is_lora,
                 "is_gguf": False,
+                # MLX backend sets device="mlx"; lets the UI tag MLX models.
+                "is_mlx": getattr(backend, "device", None) == "mlx",
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
+            try:
+                _bm = getattr(backend, "models", {}) or {}
+                _entry = (
+                    _bm.get(mc.identifier)
+                    or _bm.get(getattr(backend, "active_model_name", None))
+                    or {}
+                )
+                _context_length = _entry.get("context_length")
+                if _context_length is not None:
+                    model_info["context_length"] = int(_context_length)
+            except Exception as _ctx_exc:
+                logger.warning("context_length forward failed: %s", _ctx_exc)
+            # Forward chat_template_info so the parent can classify capabilities.
+            try:
+                _bm = getattr(backend, "models", {}) or {}
+                _entry = (
+                    _bm.get(mc.identifier)
+                    or _bm.get(getattr(backend, "active_model_name", None))
+                    or {}
+                )
+                _tpl_info = _entry.get("chat_template_info")
+                if isinstance(_tpl_info, dict):
+                    model_info["chat_template_info"] = {
+                        "has_template": bool(_tpl_info.get("has_template", False)),
+                        "template": _tpl_info.get("template"),
+                        "format_type": _tpl_info.get("format_type", "generic"),
+                        "template_name": _tpl_info.get("template_name"),
+                        "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                    }
+            except Exception as _tpl_exc:
+                logger.warning("chat_template_info forward failed: %s", _tpl_exc)
             _send_response(
                 resp_queue,
                 {
@@ -399,30 +379,21 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_generate(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-    cancel_event,
-) -> None:
+def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
-    cancel_event is an mp.Event shared with the parent process.
-    The parent can set it at any time (e.g. user stops generation,
-    or user loads a new model while generating) and generation
-    stops within 1-2 tokens.
+    cancel_event is an mp.Event the parent can set anytime (user stop, or new
+    model load mid-generate); generation stops within 1-2 tokens.
     """
     request_id = cmd.get("request_id", "")
 
     try:
-        # Decode image if provided
         image = None
         image_b64 = cmd.get("image_base64")
         if image_b64:
             image = _decode_image(image_b64)
             image = _resize_image(image)
 
-        # Build generation kwargs
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
@@ -436,7 +407,16 @@ def _handle_generate(
             "cancel_event": cancel_event,
         }
 
-        # Choose generation path
+        # Forward only present optional keys so the backend signature can evolve.
+        for opt_key in (
+            "tools",
+            "enable_thinking",
+            "reasoning_effort",
+            "preserve_thinking",
+        ):
+            if opt_key in cmd:
+                gen_kwargs[opt_key] = cmd[opt_key]
+
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
             generator = backend.generate_with_adapter_control(
@@ -449,7 +429,7 @@ def _handle_generate(
         logger.info("Starting text generation for request_id=%s", request_id)
 
         for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling
+            # cancel_event is an mp.Event — checked instantly, no queue polling.
             if cancel_event.is_set():
                 logger.info("Generation cancelled for request %s", request_id)
                 break
@@ -469,6 +449,8 @@ def _handle_generate(
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # usage/timings from the MLX backend (None elsewhere).
+                "stats": getattr(backend, "last_generation_stats", None),
                 "ts": time.time(),
             },
         )
@@ -488,11 +470,7 @@ def _handle_generate(
         )
 
 
-def _handle_generate_audio(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-) -> None:
+def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
@@ -508,7 +486,7 @@ def _handle_generate_audio(
             use_adapter = cmd.get("use_adapter"),
         )
 
-        # Send WAV bytes as base64 (bytes can't go through mp.Queue directly)
+        # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
         _send_response(
             resp_queue,
             {
@@ -535,19 +513,14 @@ def _handle_generate_audio(
         )
 
 
-def _handle_generate_audio_input(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-    cancel_event,
-) -> None:
+def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle audio input generation (ASR/Whisper) — streams text tokens back."""
     request_id = cmd.get("request_id", "")
 
     try:
         import numpy as np
 
-        # Decode audio array from list (numpy arrays can't go through mp.Queue)
+        # numpy arrays can't go through mp.Queue, so decode from list.
         audio_array = np.array(cmd["audio_data"], dtype = np.float32)
 
         audio_type = cmd.get("audio_type")
@@ -575,9 +548,7 @@ def _handle_generate_audio_input(
 
         for text_chunk in generator:
             if cancel_event.is_set():
-                logger.info(
-                    "Audio input generation cancelled for request %s", request_id
-                )
+                logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
             _send_response(
@@ -644,25 +615,17 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def run_inference_process(
-    *,
-    cmd_queue: Any,
-    resp_queue: Any,
-    cancel_event,
-    config: dict,
-) -> None:
-    """Subprocess entrypoint. Persistent — runs command loop until shutdown.
+def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, config: dict) -> None:
+    """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
     Args:
         cmd_queue: mp.Queue for receiving commands from parent.
         resp_queue: mp.Queue for sending responses to parent.
-        cancel_event: mp.Event shared with parent — set by parent to cancel generation.
+        cancel_event: mp.Event the parent sets to cancel generation.
         config: Initial configuration dict with model info.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
     if config.get("disable_xet"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
@@ -683,7 +646,99 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
-    # ── 1. Activate correct transformers version BEFORE any ML imports ──
+    # ── 0. MLX fast-path — skip torch/transformers ──
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
+        try:
+            _activate_transformers_version(model_name)
+        except Exception:
+            pass
+        try:
+            from core.inference.mlx_inference import MLXInferenceBackend
+
+            backend = MLXInferenceBackend()
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Loading model...", "ts": time.time()},
+            )
+            _handle_load(backend, config, resp_queue)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"MLX inference init failed: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
+            )
+            return
+
+        # Enter the same command loop as the GPU path.
+        logger.info("MLX inference subprocess ready, entering command loop")
+        while True:
+            try:
+                cmd = cmd_queue.get(timeout = 1.0)
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+            if cmd is None:
+                continue
+            cmd_type = cmd.get("type", "")
+            try:
+                if cmd_type == "generate":
+                    cancel_event.clear()
+                    _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "load":
+                    if backend.active_model_name:
+                        backend.unload_model(backend.active_model_name)
+                    _handle_load(backend, cmd, resp_queue)
+                elif cmd_type == "unload":
+                    _handle_unload(backend, cmd, resp_queue)
+                elif cmd_type == "cancel":
+                    cancel_event.set()
+                elif cmd_type == "reset":
+                    cancel_event.set()
+                    backend.reset_generation_state()
+                    _send_response(resp_queue, {"type": "reset_ack", "ts": time.time()})
+                elif cmd_type == "status":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "status_response",
+                            "active_model": backend.active_model_name,
+                            "models": {
+                                k: {kk: vv for kk, vv in v.items() if kk != "model"}
+                                for k, v in backend.models.items()
+                            },
+                            "loading": list(backend.loading_models),
+                            "ts": time.time(),
+                        },
+                    )
+                elif cmd_type == "shutdown":
+                    return
+            except Exception as exc:
+                logger.error("MLX command error (%s): %s", cmd_type, exc)
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gen_error" if cmd_type == "generate" else "error",
+                        "request_id": cmd.get("request_id"),
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    },
+                )
+        return
+
+    # ── 1. Activate transformers version BEFORE any ML imports ──
     try:
         _activate_transformers_version(model_name)
     except Exception as exc:
@@ -698,11 +753,10 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1b. Windows: check Triton availability (must precede import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -772,8 +826,8 @@ def run_inference_process(
         return
 
     # ── 4. Command loop — process commands until shutdown ──
-    # cancel_event is an mp.Event shared with parent — parent can set it
-    # at any time to cancel generation instantly (no queue polling needed).
+    # cancel_event is an mp.Event the parent can set anytime to cancel
+    # generation instantly (no queue polling needed).
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:
@@ -797,8 +851,7 @@ def run_inference_process(
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
-                # Load a new model (reusing this subprocess)
-                # First unload current model
+                # Unload the current model before loading the new one.
                 if backend.active_model_name:
                     backend.unload_model(backend.active_model_name)
                 _handle_load(backend, cmd, resp_queue)
@@ -815,7 +868,7 @@ def run_inference_process(
                 _handle_unload(backend, cmd, resp_queue)
 
             elif cmd_type == "cancel":
-                # Redundant with mp.Event but handle gracefully
+                # Redundant with mp.Event but handle gracefully.
                 cancel_event.set()
                 logger.info("Cancel command received")
 
@@ -831,7 +884,6 @@ def run_inference_process(
                 )
 
             elif cmd_type == "status":
-                # Return current status
                 _send_response(
                     resp_queue,
                     {
@@ -841,6 +893,7 @@ def run_inference_process(
                             name: {
                                 "is_vision": info.get("is_vision", False),
                                 "is_lora": info.get("is_lora", False),
+                                "context_length": info.get("context_length"),
                             }
                             for name, info in backend.models.items()
                         },
@@ -851,7 +904,6 @@ def run_inference_process(
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
-                # Unload all models
                 for model_name in list(backend.models.keys()):
                     try:
                         backend.unload_model(model_name)
@@ -878,9 +930,7 @@ def run_inference_process(
                 )
 
         except Exception as exc:
-            logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
-            )
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {

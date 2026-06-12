@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-LLM-assisted dataset analysis using an ephemeral GGUF helper model.
+"""LLM-assisted dataset analysis using an ephemeral GGUF helper model.
 
-Complements heuristic-based detection in format_detection.py and
-vlm_processing.py.  Only invoked when heuristics are uncertain.
-
-Architecture:
-  - Instantiates LlamaCppBackend, loads model, runs completion(s), unloads.
-  - Not kept warm — VRAM is freed immediately after use.
-  - Gracefully degrades: returns None when unavailable (no binary, OOM, disabled).
+Complements heuristic detection (format_detection.py, vlm_processing.py); only
+invoked when heuristics are uncertain. Loads LlamaCppBackend, runs completion(s),
+unloads (VRAM freed immediately). Degrades gracefully to None when unavailable.
 """
 
 import json
@@ -26,29 +21,22 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_HELPER_MODEL_REPO = "unsloth/Qwen3.5-4B-GGUF"
+DEFAULT_HELPER_MODEL_REPO = "unsloth/Qwen3.5-4B-MTP-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
 
 
 def _strip_think_tags(text: str) -> str:
-    """Strip <think>...</think> reasoning blocks emitted by some models.
-
-    If the model places its actual answer OUTSIDE the think block, we
-    discard the think block and keep the rest.  If the entire response
-    is INSIDE a think block (nothing useful outside), we extract and
-    return the inner content instead of discarding everything.
-    """
+    """Strip <think>...</think> blocks, keeping content outside; if all inside, return the inner."""
     if "<think>" not in text:
         return text
 
-    # Try stripping think blocks — keep content outside them
     stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
     if stripped:
         return stripped
 
-    # Everything was inside <think> tags — extract the inner content of the last block
+    # Everything was inside <think> tags: return the last block's inner content.
     matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if matches:
         return matches[-1].strip()
@@ -57,20 +45,15 @@ def _strip_think_tags(text: str) -> str:
 
 
 def precache_helper_gguf():
-    """
-    Pre-download the helper GGUF to HF cache.
+    """Pre-download the helper GGUF to HF cache (on startup, background thread).
 
-    Called on FastAPI startup in a background thread so subsequent
-    ``_run_with_helper()`` calls skip the download and only pay for
-    llama-server startup.  No-op if already cached or disabled.
+    Lets later ``_run_with_helper()`` calls skip the download. No-op if cached or disabled.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get(
-        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
-    )
+    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
@@ -79,16 +62,13 @@ def precache_helper_gguf():
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
-        # Find the GGUF file matching the variant
         api = HfApi()
         files = api.list_repo_files(repo, repo_type = "model")
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
-        # Find all GGUF files matching the variant (may be split into shards)
+        # GGUF files matching the variant (may be split into shards).
         variant_lower = variant.lower().replace("-", "_")
-        matching = sorted(
-            f for f in gguf_files if variant_lower in f.lower().replace("-", "_")
-        )
+        matching = sorted(f for f in gguf_files if variant_lower in f.lower().replace("-", "_"))
 
         if matching:
             logger.info(
@@ -110,18 +90,12 @@ def precache_helper_gguf():
 
 
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
-    """
-    Load helper model, run one chat completion, unload.
-
-    Returns the completion text, or None on any failure.
-    """
+    """Load helper model, run one chat completion, unload. Returns text or None on failure."""
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get(
-        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
-    )
+    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
 
     backend = None
     try:
@@ -143,9 +117,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             return None
 
         messages = [{"role": "user", "content": prompt}]
-        logger.info(
-            "Helper model request: enable_thinking=False (per-request override)"
-        )
+        logger.info("Helper model request: enable_thinking=False (per-request override)")
         cumulative = ""
         for chunk in backend.generate_chat_completion(
             messages = messages,
@@ -158,7 +130,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         ):
             if isinstance(chunk, dict):
                 continue  # skip metadata events
-            cumulative = chunk  # cumulative — last value is full text
+            cumulative = chunk  # last value is full text
 
         result = cumulative.strip()
         result = _strip_think_tags(result)
@@ -186,21 +158,10 @@ def llm_generate_vlm_instruction(
     samples: list[dict],
     dataset_name: Optional[str] = None,
 ) -> Optional[dict]:
+    """Ask a helper LLM for a task-specific VLM instruction (when heuristics are low-confidence).
+
+    Returns {"instruction": str, "confidence": 0.85} or None.
     """
-    Ask a helper LLM to generate a task-specific VLM instruction.
-
-    Called when heuristic instruction generation returns low confidence
-    or falls back to generic.
-
-    Args:
-        column_names: Column names in the dataset.
-        samples: 3-5 sample rows with text values (images replaced by "<image>").
-        dataset_name: Optional HF dataset identifier for context.
-
-    Returns:
-        {"instruction": str, "confidence": 0.85} or None.
-    """
-    # Format samples for the prompt
     formatted = ""
     for i, row in enumerate(samples[:5], 1):
         parts = []
@@ -226,9 +187,8 @@ def llm_generate_vlm_instruction(
     if not result:
         return None
 
-    # Clean up: strip quotes, ensure it's a single sentence
     instruction = result.strip().strip('"').strip("'").strip()
-    # Reject obviously bad outputs (too short, too long, or multi-line)
+    # Reject bad outputs (too short, too long, or multi-line).
     if len(instruction) < 10 or len(instruction) > 200 or "\n" in instruction:
         logger.warning(f"Helper model returned unusable instruction: {instruction!r}")
         return None
@@ -240,22 +200,10 @@ def llm_generate_vlm_instruction(
     }
 
 
-def llm_classify_columns(
-    column_names: list[str],
-    samples: list[dict],
-) -> Optional[dict[str, str]]:
-    """
-    Ask a helper LLM to classify dataset columns into roles.
+def llm_classify_columns(column_names: list[str], samples: list[dict]) -> Optional[dict[str, str]]:
+    """Ask a helper LLM to classify columns into roles (when heuristic detection fails).
 
-    Called when heuristic column detection fails (returns None).
-
-    Args:
-        column_names: Column names in the dataset.
-        samples: 3-5 sample rows with values truncated to 200 chars.
-
-    Returns:
-        Dict mapping column_name → role ("user"|"assistant"|"system"|"metadata"),
-        or None on failure.
+    Returns {column_name: role} for roles user|assistant|system|metadata, or None.
     """
     formatted = ""
     for i, row in enumerate(samples[:5], 1):
@@ -281,10 +229,9 @@ def llm_classify_columns(
     if not result:
         return None
 
-    # Parse JSON from response (may have markdown fences)
+    # Parse JSON from response (may have markdown fences).
     text = result.strip()
     if text.startswith("```"):
-        # Strip markdown code fence
         lines = text.split("\n")
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
         text = text.strip()
@@ -292,9 +239,7 @@ def llm_classify_columns(
     try:
         mapping = json.loads(text)
     except json.JSONDecodeError:
-        # Try to find JSON object in the response
         import re
-
         match = re.search(r"\{[^}]+\}", text)
         if match:
             try:
@@ -309,21 +254,17 @@ def llm_classify_columns(
     if not isinstance(mapping, dict):
         return None
 
-    # Validate: all values must be valid roles
+    # Keep only valid roles.
     valid_roles = {"user", "assistant", "system", "metadata"}
     cleaned = {}
     for col, role in mapping.items():
-        if (
-            col in column_names
-            and isinstance(role, str)
-            and role.lower() in valid_roles
-        ):
+        if col in column_names and isinstance(role, str) and role.lower() in valid_roles:
             cleaned[col] = role.lower()
 
     if not cleaned:
         return None
 
-    # Must have at least user + assistant
+    # Must have at least user + assistant.
     roles_present = set(cleaned.values())
     if "user" not in roles_present or "assistant" not in roles_present:
         logger.warning(f"Helper model mapping missing user/assistant: {cleaned}")
@@ -339,19 +280,9 @@ def llm_generate_dataset_warning(
     modality: str = "text",
     column_names: Optional[list[str]] = None,
 ) -> Optional[str]:
-    """
-    Ask the helper LLM to turn technical dataset issues into a user-friendly warning.
+    """Ask the helper LLM to turn technical dataset issues into a friendly warning (any modality).
 
-    Works for all modalities (text, vision, audio).
-
-    Args:
-        issues: List of technical issue descriptions found during analysis.
-        dataset_name: Optional HF dataset name.
-        modality: "text", "vision", or "audio".
-        column_names: Optional list of column names for context.
-
-    Returns:
-        A human-friendly warning string, or None on failure.
+    Returns a human-friendly warning string, or None on failure.
     """
     if not issues:
         return None
@@ -375,7 +306,6 @@ def llm_generate_dataset_warning(
         return None
 
     warning = result.strip()
-    # Reject obviously bad outputs
     if len(warning) < 10 or len(warning) > 500:
         return None
 
@@ -420,7 +350,11 @@ def _parse_json_response(text: str) -> Optional[dict]:
     return None
 
 
-def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512) -> str:
+def _generate_with_backend(
+    backend,
+    messages: list[dict],
+    max_tokens: int = 512,
+) -> str:
     """Run one chat completion on an already-loaded backend. Returns raw text."""
     logger.info("Advisor request: enable_thinking=False (per-request override)")
     cumulative = ""
@@ -431,7 +365,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         top_k = 20,
         max_tokens = max_tokens,
         repetition_penalty = 1.0,
-        enable_thinking = False,  # Always disable thinking for AI Assist
+        enable_thinking = False,  # disable thinking for AI Assist
     ):
         if isinstance(chunk, dict):
             continue  # skip metadata events
@@ -444,12 +378,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
 def fetch_hf_dataset_card(
     dataset_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[str], Optional[dict]]:
-    """
-    Fetch HF dataset card (README) and metadata.
-
-    Returns:
-        (readme_text, metadata_dict) or (None, None) on failure.
-    """
+    """Fetch HF dataset card (README) and metadata. Returns (readme, metadata) or (None, None)."""
     try:
         from huggingface_hub import DatasetCard
 
@@ -464,7 +393,7 @@ def fetch_hf_dataset_card(
             else:
                 readme = readme[:README_MAX_CHARS] + "\n[...truncated]"
 
-        # Extract metadata from YAML frontmatter
+        # Extract metadata from YAML frontmatter.
         metadata = {}
         if card.data:
             for key in (
@@ -480,9 +409,7 @@ def fetch_hf_dataset_card(
                 if val is not None:
                     metadata[key] = val
 
-        logger.info(
-            f"Fetched dataset card: {len(readme)} chars, {len(metadata)} metadata fields"
-        )
+        logger.info(f"Fetched dataset card: {len(readme)} chars, {len(metadata)} metadata fields")
         return readme, metadata
 
     except Exception as e:
@@ -500,18 +427,15 @@ def _run_multi_pass_advisor(
     model_type: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """
-    Multi-pass LLM analysis: classify → convert → validate.
+    """Multi-pass LLM analysis (classify -> convert -> validate), model loaded across passes.
 
-    Keeps model loaded across all passes. Returns combined result dict or None.
+    Returns combined result dict or None.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get(
-        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
-    )
+    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
 
     backend = None
     try:
@@ -541,9 +465,7 @@ def _run_multi_pass_advisor(
             samples_text += f"Row {i}:\n" + "\n".join(parts) + "\n"
 
         metadata_str = (
-            json.dumps(dataset_metadata, indent = 2, default = str)[:500]
-            if dataset_metadata
-            else "N/A"
+            json.dumps(dataset_metadata, indent = 2, default = str)[:500] if dataset_metadata else "N/A"
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
 
@@ -637,7 +559,7 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
             return None
 
-        # If dataset is already conversational, skip passes 2-3
+        # Already conversational: skip passes 2-3.
         if pass1.get("is_conversational") and not pass1.get("needs_conversion"):
             return {
                 "success": True,
@@ -742,13 +664,11 @@ def _run_multi_pass_advisor(
         column_roles = pass2.get("column_roles", {})
         label_map = pass2.get("label_mapping") or {}  # may be null
 
-        # Validate: must have at least one user AND one assistant
+        # Must have at least one user AND one assistant
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
-            logger.warning(
-                f"Pass 2 sanity fail: missing user or assistant role: {column_roles}"
-            )
-            return None  # triggers fallback to simple classification
+            logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
+            return None  # falls back to simple classification
 
         # ── Pass 3: System prompt (non-conversational datasets only) ──
         sys_prompt = ""
@@ -759,7 +679,7 @@ def _run_multi_pass_advisor(
             logger.info("Pass 3: Generating system prompt...")
             t3 = time.monotonic()
 
-            # Format label mapping info for the prompt
+            # Format label mapping for the prompt.
             label_info = ""
             if label_map:
                 for col, mapping in label_map.items():
@@ -767,7 +687,6 @@ def _run_multi_pass_advisor(
                         pairs = ", ".join(f"{k} = {v}" for k, v in mapping.items())
                         label_info += f"\nLabel mapping for '{col}': {pairs}"
 
-            # Describe the role assignments for context
             user_cols = [c for c, r in column_roles.items() if r == "user"]
             asst_cols = [c for c, r in column_roles.items() if r == "assistant"]
             task_desc = pass1.get("task_description") or pass1.get("description", "")
@@ -802,18 +721,18 @@ def _run_multi_pass_advisor(
             )
 
             if raw3:
-                # Pass 3 returns raw text, not JSON — clean it up
+                # Pass 3 returns raw text, not JSON.
                 cleaned = raw3.strip().strip('"').strip("'").strip()
                 if len(cleaned) >= 20 and cleaned.lower() not in ("null", "none", ""):
                     sys_prompt = cleaned
 
-        # Build suggested_mapping (column → role, for the frontend dropdowns)
+        # Build suggested_mapping (column -> role) for the frontend dropdowns.
         suggested_mapping = {}
         for col, role in column_roles.items():
             if col in columns and role in ("user", "assistant", "system"):
                 suggested_mapping[col] = role
 
-        # Build user notification from Pass 1 classification
+        # Build user notification from Pass 1 classification.
         desc = pass1.get("task_description") or pass1.get("description", "")
         note_parts = [f"This is a {dtype} dataset (not conversational)."]
         if desc:
@@ -859,23 +778,18 @@ def llm_conversion_advisor(
     model_name: Optional[str] = None,
     model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """
-    Full conversion advisor: fetch HF card → multi-pass LLM analysis.
+    """Full conversion advisor: fetch HF card -> multi-pass LLM analysis.
 
     Falls back to simple llm_classify_columns() if the multi-pass advisor fails.
-
-    Returns:
-        Dict with keys: success, suggested_mapping, system_prompt, user_template,
-        assistant_template, label_mapping, dataset_type, is_conversational,
-        user_notification. Or None on complete failure.
+    Returns a result dict (success, suggested_mapping, system_prompt, label_mapping,
+    dataset_type, is_conversational, user_notification, ...) or None.
     """
-    # Fetch HF dataset card if this looks like a HF dataset (has a slash)
+    # Fetch HF dataset card if this looks like a HF dataset (has a slash).
     dataset_card = None
     dataset_metadata = None
     if dataset_name and "/" in dataset_name:
         dataset_card, dataset_metadata = fetch_hf_dataset_card(dataset_name, hf_token)
 
-    # Try multi-pass advisor
     result = _run_multi_pass_advisor(
         columns = column_names,
         samples = samples,
@@ -891,7 +805,7 @@ def llm_conversion_advisor(
         logger.info(f"Conversion advisor succeeded: type={result.get('dataset_type')}")
         return result
 
-    # Fallback: simple column classification
+    # Fallback: simple column classification.
     logger.info("Advisor failed, falling back to simple column classification")
     simple_mapping = llm_classify_columns(column_names, samples)
     if simple_mapping:

@@ -1,6 +1,14 @@
 {
   "_comment": "Per-model-family inference parameter defaults. Sources: (1) Ollama params blobs, (2) Existing Unsloth Studio YAML configs. Patterns ordered longest-match-first.",
   "families": {
+    "qwen3.6": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5
+    },
     "qwen3.5": {
       "temperature": 0.7,
       "top_p": 0.8,
@@ -369,7 +377,7 @@
     }
   },
   "patterns": [
-    "qwen3.5",
+    "qwen3.6", "qwen3.5",
     "qwen3-coder", "qwen3-next", "qwen3-vl", "qwen3",
     "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",
     "qwen2-vl", "qwen2",

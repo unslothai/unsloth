@@ -1,26 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Export subprocess entry point.
+"""Export subprocess entry point.
 
-Each export session runs in a persistent subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
-solving the transformers version-switching problem completely.
-
-The subprocess stays alive while a model is loaded, accepting commands
-(load, export_merged, export_base, export_gguf, export_lora, cleanup,
-shutdown) via mp.Queue.
+Each export session runs in a persistent subprocess (mp spawn), giving a clean
+interpreter with no stale module state, which solves transformers version
+switching. The subprocess stays alive while a model is loaded, accepting commands
+(load, export_*, cleanup, shutdown) via mp.Queue.
 
 Pattern follows core/inference/worker.py and core/training/worker.py.
 """
 
 from __future__ import annotations
 
+import errno
 import structlog
 from loggers import get_logger
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -29,38 +27,148 @@ from typing import Any
 logger = get_logger(__name__)
 
 
-def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
+# Gate controlling whether captured stdout/stderr lines are forwarded to the
+# parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
+# so the noisy bootstrap phase (imports, model resolution, loading bars) is
+# suppressed in the UI; _handle_export() opens it when export work starts. The
+# orchestrator spawns a fresh subprocess per checkpoint load, resetting this.
+# Dropped lines are still echoed to the saved fds so the server log keeps them.
+_log_forward_gate = threading.Event()
 
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
+
+def _setup_log_capture(resp_queue: Any) -> None:
+    """Redirect fds 1 and 2 through pipes so every line printed by this worker
+    and any child it spawns is forwarded to the parent via resp_queue as
+    {"type": "log", ...} messages.
+
+    Must run BEFORE LogConfig.setup_logging and any ML imports, else library
+    handlers may capture the original stderr reference and bypass the pipe.
+    Lines are also echoed back to the original fds so the server console keeps
+    the full output even while ``_log_forward_gate`` is closed.
     """
-    # Ensure backend is on path for utils imports
+
+    try:
+        saved_out_fd = os.dup(1)
+        saved_err_fd = os.dup(2)
+    except OSError:
+        # dup failed; give up quietly (export still works, no live streaming).
+        return
+
+    try:
+        r_out, w_out = os.pipe()
+        r_err, w_err = os.pipe()
+    except OSError:
+        os.close(saved_out_fd)
+        os.close(saved_err_fd)
+        return
+
+    try:
+        os.dup2(w_out, 1)
+        os.dup2(w_err, 2)
+    except OSError:
+        for fd in (saved_out_fd, saved_err_fd, r_out, w_out, r_err, w_err):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return
+
+    # Close the write ends we just dup2'd (fds 1 and 2 are the real write ends).
+    os.close(w_out)
+    os.close(w_err)
+
+    # Replace sys.stdout/sys.stderr with line-buffered writers on fds 1 and 2.
+    try:
+        sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+        sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+    except Exception:
+        pass
+
+    def _reader(read_fd: int, stream_name: str, echo_fd: int) -> None:
+        buf = bytearray()
+        while True:
+            try:
+                chunk = os.read(read_fd, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EBADF:
+                    break
+                continue
+            if not chunk:
+                break
+            # Echo to the original fd so the server console keeps the full output.
+            try:
+                os.write(echo_fd, chunk)
+            except OSError:
+                pass
+            buf.extend(chunk)
+            # Split on \n OR \r so tqdm-style progress bars update.
+            while True:
+                nl = -1
+                for i, b in enumerate(buf):
+                    if b == 0x0A or b == 0x0D:
+                        nl = i
+                        break
+                if nl < 0:
+                    break
+                line = bytes(buf[:nl]).decode("utf-8", errors = "replace")
+                del buf[: nl + 1]
+                if not line:
+                    continue
+                if not _log_forward_gate.is_set():
+                    # Gate closed (bootstrap): already echoed above; drop the
+                    # line so the export dialog skips import noise.
+                    continue
+                try:
+                    resp_queue.put_nowait(
+                        {
+                            "type": "log",
+                            "stream": stream_name,
+                            "line": line,
+                            "ts": time.time(),
+                        }
+                    )
+                except Exception:
+                    # Queue put failed; drop the line rather than crash the thread.
+                    pass
+        if buf and _log_forward_gate.is_set():
+            try:
+                resp_queue.put_nowait(
+                    {
+                        "type": "log",
+                        "stream": stream_name,
+                        "line": bytes(buf).decode("utf-8", errors = "replace"),
+                        "ts": time.time(),
+                    }
+                )
+            except Exception:
+                pass
+
+    t_out = threading.Thread(
+        target = _reader,
+        args = (r_out, "stdout", saved_out_fd),
+        daemon = True,
+        name = "export-log-stdout",
+    )
+    t_err = threading.Thread(
+        target = _reader,
+        args = (r_err, "stderr", saved_err_fd),
+        daemon = True,
+        name = "export-log-stderr",
+    )
+    t_out.start()
+    t_err.start()
+
+
+def _activate_transformers_version(model_name: str) -> None:
+    """Activate the correct transformers version BEFORE any ML imports."""
+    # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -77,6 +185,19 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     trust_remote_code = cmd.get("trust_remote_code", False)
+
+    # Auto-enable trust_remote_code for NemotronH/Nano models.
+    if not trust_remote_code:
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+        _cp_lower = checkpoint_path.lower()
+        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        ):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s",
+                checkpoint_path,
+            )
 
     try:
         _send_response(
@@ -126,9 +247,15 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
+    # Open the log forwarding gate so the user sees export progress in the live
+    # log panel. Stays open for the rest of this subprocess's life; the
+    # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
+    _log_forward_gate.set()
+
+    output_path: Any = None
     try:
         if export_type == "merged":
-            success, message = backend.export_merged_model(
+            success, message, output_path = backend.export_merged_model(
                 save_directory = cmd.get("save_directory", ""),
                 format_type = cmd.get("format_type", "16-bit (FP16)"),
                 push_to_hub = cmd.get("push_to_hub", False),
@@ -137,7 +264,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
             )
         elif export_type == "base":
-            success, message = backend.export_base_model(
+            success, message, output_path = backend.export_base_model(
                 save_directory = cmd.get("save_directory", ""),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
@@ -146,7 +273,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 base_model_id = cmd.get("base_model_id"),
             )
         elif export_type == "gguf":
-            success, message = backend.export_gguf(
+            success, message, output_path = backend.export_gguf(
                 save_directory = cmd.get("save_directory", ""),
                 quantization_method = cmd.get("quantization_method", "Q4_K_M"),
                 push_to_hub = cmd.get("push_to_hub", False),
@@ -154,7 +281,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
             )
         elif export_type == "lora":
-            success, message = backend.export_lora_adapter(
+            success, message, output_path = backend.export_lora_adapter(
                 save_directory = cmd.get("save_directory", ""),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
@@ -170,6 +297,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": response_type,
                 "success": success,
                 "message": message,
+                "output_path": output_path,
                 "ts": time.time(),
             },
         )
@@ -181,6 +309,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": response_type,
                 "success": False,
                 "message": str(exc),
+                "output_path": None,
                 "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
@@ -211,12 +340,7 @@ def _handle_cleanup(backend, resp_queue: Any) -> None:
         )
 
 
-def run_export_process(
-    *,
-    cmd_queue: Any,
-    resp_queue: Any,
-    config: dict,
-) -> None:
+def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Persistent — runs command loop until shutdown.
 
     Args:
@@ -226,10 +350,17 @@ def run_export_process(
     """
     import queue as _queue
 
+    # Install fd-level stdout/stderr capture FIRST so every subsequent print and
+    # every child process inherits the redirected fds (powers the live log stream).
+    _setup_log_capture(resp_queue)
+
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
+    # Unbuffered output from child Python (e.g. GGUF converter) so prints surface live.
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    # tqdm defaults to a 10s mininterval when stdout isn't a tty (we redirected
+    # fd 1/2 to a pipe), making multi-step bars look frozen; force frequent flushes.
+    os.environ.setdefault("TQDM_MININTERVAL", "0.5")
 
     import warnings
     from loggers.config import LogConfig
@@ -259,11 +390,10 @@ def run_export_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1b. Check Triton on Windows (must precede import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -271,6 +401,13 @@ def run_export_process(
                 "Triton not found on Windows — torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
+
+    # ── 1c. Stub torchao on Windows ROCm ──
+    # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).
+    # No-op off Windows ROCm. Must run before importing transformers / unsloth_zoo.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
 
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
@@ -291,9 +428,7 @@ def run_export_process(
 
         import transformers
 
-        logger.info(
-            "Export subprocess loaded transformers %s", transformers.__version__
-        )
+        logger.info("Export subprocess loaded transformers %s", transformers.__version__)
 
     except Exception as exc:
         _send_response(
@@ -345,7 +480,7 @@ def run_export_process(
 
         try:
             if cmd_type == "load":
-                # Load a new checkpoint (reusing this subprocess)
+                # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
                 _handle_load(backend, cmd, resp_queue)
 
@@ -394,9 +529,7 @@ def run_export_process(
                 )
 
         except Exception as exc:
-            logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
-            )
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {

@@ -4,18 +4,16 @@
 """
 Unified core module for Unsloth backend
 
-Imports are LAZY (via __getattr__) so that training subprocesses can
-import core.training.worker without pulling in heavy ML dependencies
-like unsloth, transformers, or torch before the version activation
-code has a chance to run.
+Imports are LAZY (via __getattr__) so training subprocesses can import
+core.training.worker without pulling in heavy ML deps (unsloth, transformers,
+torch) before the version-activation code runs.
 """
 
 import sys
 from pathlib import Path
 
-# Ensure the backend directory is on sys.path so that bare "from utils.*"
-# imports used throughout the backend work when core is imported as a package
-# (e.g. from the CLI: "from studio.backend.core import ModelConfig").
+# Add backend dir to sys.path so bare "from utils.*" imports work when core
+# is imported as a package.
 _backend_dir = str(Path(__file__).resolve().parent.parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
@@ -31,6 +29,7 @@ __all__ = [
     # Config
     "ModelConfig",
     "is_vision_model",
+    "scan_trained_models",
     "scan_trained_loras",
     "load_model_defaults",
     "get_base_model_from_lora",
@@ -68,10 +67,11 @@ def __getattr__(name):
         globals()["TrainingProgress"] = TrainingProgress
         return globals()[name]
 
-    # Config (from utils.models)
+    # Config (utils.models)
     if name in (
         "is_vision_model",
         "ModelConfig",
+        "scan_trained_models",
         "scan_trained_loras",
         "load_model_defaults",
         "get_base_model_from_lora",
@@ -79,14 +79,15 @@ def __getattr__(name):
         from utils.models import (
             is_vision_model,
             ModelConfig,
-            scan_trained_loras,
+            scan_trained_models,
             load_model_defaults,
             get_base_model_from_lora,
         )
 
         globals()["is_vision_model"] = is_vision_model
         globals()["ModelConfig"] = ModelConfig
-        globals()["scan_trained_loras"] = scan_trained_loras
+        globals()["scan_trained_models"] = scan_trained_models
+        globals()["scan_trained_loras"] = scan_trained_models
         globals()["load_model_defaults"] = load_model_defaults
         globals()["get_base_model_from_lora"] = get_base_model_from_lora
         return globals()[name]
@@ -137,7 +138,6 @@ def __getattr__(name):
     # Datasets
     if name == "format_and_template_dataset":
         from utils.datasets import format_and_template_dataset
-
         globals()["format_and_template_dataset"] = format_and_template_dataset
         return format_and_template_dataset
 

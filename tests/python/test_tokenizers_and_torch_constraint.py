@@ -1,7 +1,6 @@
-"""
-Tests for two install fixes:
-  1. tokenizers added to no-torch-runtime.txt  (prevents AutoConfig crash)
-  2. TORCH_CONSTRAINT variable in install.sh    (arm64 macOS + py313+ -> torch>=2.6)
+"""Tests for two install fixes:
+1. tokenizers in no-torch-runtime.txt (prevents AutoConfig crash)
+2. TORCH_CONSTRAINT in install.sh (arm64 macOS + py313+ -> torch>=2.6)
 """
 
 from __future__ import annotations
@@ -18,9 +17,7 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
-_NO_TORCH_RT = (
-    _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
-)
+_NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
 
 def _read(path: pathlib.Path) -> str:
@@ -45,30 +42,23 @@ class TestStructuralTokenizers:
     def test_tokenizers_present(self):
         """tokenizers must be a standalone package line."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [
-            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
-        ]
+        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
         assert "tokenizers" in bare_names
 
     def test_tokenizers_before_transformers(self):
         """tokenizers should appear before transformers (install order intent)."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [
-            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
-        ]
+        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
         idx_tok = bare_names.index("tokenizers")
         idx_tf = bare_names.index("transformers")
         assert idx_tok < idx_tf, (
-            f"tokenizers at index {idx_tok} should appear before "
-            f"transformers at index {idx_tf}"
+            f"tokenizers at index {idx_tok} should appear before " f"transformers at index {idx_tf}"
         )
 
     def test_torch_not_in_no_torch_file(self):
         """torch itself must NOT be listed in the no-torch requirements."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [
-            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
-        ]
+        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
         assert "torch" not in bare_names
 
 
@@ -409,9 +399,7 @@ class TestE2ETokenizersFix:
         r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
 
-        result = self._run_python(
-            venv, "from transformers import AutoConfig; print('OK')"
-        )
+        result = self._run_python(venv, "from transformers import AutoConfig; print('OK')")
         assert (
             result.returncode == 0
         ), f"AutoConfig import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -441,22 +429,15 @@ class TestE2ETokenizersFix:
         req_no_tokenizers = tmp_path / "no-tokenizers.txt"
         req_no_tokenizers.write_text(
             "\n".join(
-                line
-                for line in _read(_NO_TORCH_RT).splitlines()
-                if line.strip() != "tokenizers"
+                line for line in _read(_NO_TORCH_RT).splitlines() if line.strip() != "tokenizers"
             ),
             encoding = "utf-8",
         )
         r = self._pip_install(venv, "--no-deps", "-r", str(req_no_tokenizers))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(venv, "from transformers import AutoConfig")
-        assert (
-            result.returncode != 0
-        ), "AutoConfig should fail without tokenizers installed"
-        assert (
-            "tokenizers" in result.stderr.lower()
-            or "ModuleNotFoundError" in result.stderr
-        )
+        assert result.returncode != 0, "AutoConfig should fail without tokenizers installed"
+        assert "tokenizers" in result.stderr.lower() or "ModuleNotFoundError" in result.stderr
 
 
 # ======================================================================
@@ -535,9 +516,7 @@ class TestE2EFullNoTorchSandbox:
         venv = self._create_venv(tmp_path, "full-no-torch")
         r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
-        result = self._run_python(
-            venv, "from transformers import AutoConfig; print('OK')"
-        )
+        result = self._run_python(venv, "from transformers import AutoConfig; print('OK')")
         assert (
             result.returncode == 0
         ), f"AutoConfig failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"

@@ -1,33 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Export orchestrator — subprocess-based.
+"""Export orchestrator — subprocess-based.
 
-Provides the same API as ExportBackend, but delegates all ML work
-to a persistent subprocess. The subprocess is spawned on first checkpoint
-load and stays alive for subsequent export operations.
+Same API as ExportBackend, but delegates all ML work to a persistent
+subprocess spawned on first checkpoint load and reused for later exports.
 
-When switching between checkpoints that need different transformers versions,
-the old subprocess is killed and a new one is spawned with the correct version.
+When switching between checkpoints needing different transformers
+versions, the old subprocess is killed and a new one spawned.
 
 Pattern follows core/inference/orchestrator.py.
 """
 
 import atexit
 import structlog
+from collections import deque
 from loggers import get_logger
 import multiprocessing as mp
 import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 from utils.paths import outputs_root
 
 logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
+
+# Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
+_LOG_BUFFER_MAXLEN = 4000
 
 
 class ExportOrchestrator:
@@ -35,24 +37,87 @@ class ExportOrchestrator:
     Export backend orchestrator — subprocess-based.
 
     Exposes the same API surface as ExportBackend so routes/export.py
-    needs minimal changes. Internally, all heavy ML operations happen in
-    a persistent subprocess.
+    needs minimal changes. All heavy ML work happens in a persistent
+    subprocess.
     """
 
     def __init__(self):
-        # Subprocess state
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
-        # Local state mirrors (updated from subprocess responses)
+        # Local state mirrors (updated from subprocess responses).
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
 
+        # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
+        self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
+        self._log_lock = threading.Lock()
+        # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
+        self._log_seq: int = 0
+        # _log_seq snapshot at the current run's start; SSE defaults its cursor here so a
+        # late-connecting client still sees the full run. Current run has seq > this.
+        self._run_start_seq: int = 0
+        # True while an export op runs; SSE ends the stream 1s after this flips False.
+        self._export_active: bool = False
+
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
+
+    # ------------------------------------------------------------------
+    # Live log capture helpers
+    # ------------------------------------------------------------------
+
+    def _append_log(self, entry: Dict[str, Any]) -> None:
+        """Append a worker log line to the buffer, stamped with a monotonic seq."""
+        line = entry.get("line")
+        if not line:
+            return
+        with self._log_lock:
+            self._log_seq += 1
+            self._log_buffer.append(
+                {
+                    "seq": self._log_seq,
+                    "stream": entry.get("stream", "stdout"),
+                    "line": line,
+                    "ts": entry.get("ts", time.time()),
+                }
+            )
+
+    def clear_logs(self) -> None:
+        """Drop buffered log lines from a previous op so the UI shows only this run.
+
+        The seq counter is NOT reset (clients keep a stable cursor); the current seq
+        is snapshotted into ``_run_start_seq`` to anchor the SSE default cursor.
+        """
+        with self._log_lock:
+            self._log_buffer.clear()
+            self._run_start_seq = self._log_seq
+
+    def get_logs_since(self, cursor: int) -> Tuple[List[Dict[str, Any]], int]:
+        """Return log entries with seq > cursor, plus the new cursor."""
+        with self._log_lock:
+            new_entries = [entry for entry in self._log_buffer if entry["seq"] > cursor]
+        if new_entries:
+            return new_entries, new_entries[-1]["seq"]
+        return [], cursor
+
+    def get_current_log_seq(self) -> int:
+        """Return the current seq counter without reading any entries."""
+        with self._log_lock:
+            return self._log_seq
+
+    def get_run_start_seq(self) -> int:
+        """Return the seq captured at the current run's start (SSE default cursor)."""
+        with self._log_lock:
+            return self._run_start_seq
+
+    def is_export_active(self) -> bool:
+        """True while an export / load / cleanup command is running."""
+        return self._export_active
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -60,21 +125,28 @@ class ExportOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+
         from .worker import run_export_process
 
-        self._cmd_queue = _CTX.Queue()
-        self._resp_queue = _CTX.Queue()
+        with native_path_secret_removed_for_child_start():
+            self._cmd_queue = _CTX.Queue()
+            self._resp_queue = _CTX.Queue()
 
-        self._proc = _CTX.Process(
-            target = run_export_process,
-            kwargs = {
-                "cmd_queue": self._cmd_queue,
-                "resp_queue": self._resp_queue,
-                "config": config,
-            },
-            daemon = True,
-        )
-        self._proc.start()
+            self._proc = _CTX.Process(
+                target = run_without_native_path_secret,
+                args = (run_export_process,),
+                kwargs = {
+                    "cmd_queue": self._cmd_queue,
+                    "resp_queue": self._resp_queue,
+                    "config": config,
+                },
+                daemon = True,
+            )
+            self._proc.start()
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
@@ -83,22 +155,19 @@ class ExportOrchestrator:
             self._proc = None
             return
 
-        # 1. Drain stale responses
         self._drain_queue()
 
-        # 2. Send shutdown command
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             pass
 
-        # 3. Wait for graceful shutdown
         try:
             self._proc.join(timeout = timeout)
         except Exception:
             pass
 
-        # 4. Force kill if still alive
+        # Force kill if still alive.
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
@@ -151,12 +220,15 @@ class ExportOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 3600.0) -> dict:
+    def _wait_response(
+        self,
+        expected_type: str,
+        timeout: float = 3600.0,
+    ) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export operations can take a very long time — GGUF conversion for
-        large models (30B+) easily takes 20-30 minutes. Default timeout
-        is 1 hour.
+        Export ops can take a long time — GGUF conversion for large
+        models (30B+) easily takes 20-30 minutes. Default timeout 1 hour.
         """
         deadline = time.monotonic() + timeout
 
@@ -165,7 +237,6 @@ class ExportOrchestrator:
             resp = self._read_resp(timeout = min(remaining, 2.0))
 
             if resp is None:
-                # Check subprocess health
                 if not self._ensure_subprocess_alive():
                     raise RuntimeError("Export subprocess crashed during wait")
                 continue
@@ -179,20 +250,33 @@ class ExportOrchestrator:
                 error_msg = resp.get("error", "Unknown error")
                 raise RuntimeError(f"Subprocess error: {error_msg}")
 
-            if rtype == "status":
-                logger.info("Export subprocess status: %s", resp.get("message", ""))
+            if rtype == "log":
+                # Forwarded stdout/stderr line from the worker.
+                self._append_log(resp)
                 continue
 
-            # Other response types during wait — skip
+            if rtype == "status":
+                message = resp.get("message", "")
+                logger.info("Export subprocess status: %s", message)
+                # Surface status in the live log panel for high-level progress.
+                if message:
+                    self._append_log(
+                        {
+                            "stream": "status",
+                            "line": message,
+                            "ts": resp.get("ts", time.time()),
+                        }
+                    )
+                continue
+
+            # Other response types during wait — skip.
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
                 rtype,
                 expected_type,
             )
 
-        raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
-        )
+        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -231,37 +315,44 @@ class ExportOrchestrator:
             "hf_token": hf_token,
         }
 
-        # Always kill existing subprocess and spawn fresh.
-        if self._ensure_subprocess_alive():
-            self._shutdown_subprocess()
-        elif self._proc is not None:
-            self._shutdown_subprocess(timeout = 2)
+        with self._lock:
+            # Fresh log buffer so the UI sees only this run's output.
+            self.clear_logs()
+            self._export_active = True
+            try:
+                # Always kill any existing subprocess and spawn fresh.
+                if self._ensure_subprocess_alive():
+                    self._shutdown_subprocess()
+                elif self._proc is not None:
+                    self._shutdown_subprocess(timeout = 2)
 
-        logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
-        self._spawn_subprocess(sub_config)
+                logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
+                self._spawn_subprocess(sub_config)
 
-        try:
-            resp = self._wait_response("loaded", timeout = 300)
-        except RuntimeError as exc:
-            self._shutdown_subprocess(timeout = 5)
-            self.current_checkpoint = None
-            self.is_vision = False
-            self.is_peft = False
-            return False, str(exc)
+                try:
+                    resp = self._wait_response("loaded")
+                except RuntimeError as exc:
+                    self._shutdown_subprocess(timeout = 5)
+                    self.current_checkpoint = None
+                    self.is_vision = False
+                    self.is_peft = False
+                    return False, str(exc)
 
-        if resp.get("success"):
-            self.current_checkpoint = resp.get("checkpoint")
-            self.is_vision = resp.get("is_vision", False)
-            self.is_peft = resp.get("is_peft", False)
-            logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
-            return True, resp.get("message", "Loaded successfully")
-        else:
-            error = resp.get("message", "Failed to load checkpoint")
-            logger.error("Failed to load checkpoint: %s", error)
-            self.current_checkpoint = None
-            self.is_vision = False
-            self.is_peft = False
-            return False, error
+                if resp.get("success"):
+                    self.current_checkpoint = resp.get("checkpoint")
+                    self.is_vision = resp.get("is_vision", False)
+                    self.is_peft = resp.get("is_peft", False)
+                    logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
+                    return True, resp.get("message", "Loaded successfully")
+                else:
+                    error = resp.get("message", "Failed to load checkpoint")
+                    logger.error("Failed to load checkpoint: %s", error)
+                    self.current_checkpoint = None
+                    self.is_vision = False
+                    self.is_peft = False
+                    return False, error
+            finally:
+                self._export_active = False
 
     def export_merged_model(
         self,
@@ -271,7 +362,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
             "merged",
@@ -293,7 +384,7 @@ class ExportOrchestrator:
         hf_token: Optional[str] = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export base model (non-PEFT)."""
         return self._run_export(
             "base",
@@ -314,7 +405,7 @@ class ExportOrchestrator:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format."""
         return self._run_export(
             "gguf",
@@ -334,7 +425,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only."""
         return self._run_export(
             "lora",
@@ -347,53 +438,71 @@ class ExportOrchestrator:
             },
         )
 
-    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str]:
-        """Send an export command to the subprocess and wait for result."""
-        if not self._ensure_subprocess_alive():
-            return False, "No export subprocess running. Load a checkpoint first."
+    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
+        """Send an export command and wait for the result.
 
-        cmd = {"type": "export", "export_type": export_type, **params}
+        Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
+        dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
+        """
+        with self._lock:
+            if not self._ensure_subprocess_alive():
+                return (
+                    False,
+                    "No export subprocess running. Load a checkpoint first.",
+                    None,
+                )
 
-        try:
-            self._send_cmd(cmd)
-            resp = self._wait_response(
-                f"export_{export_type}_done",
-                timeout = 3600,  # GGUF for 30B+ models can take 30+ min
-            )
-            return resp.get("success", False), resp.get("message", "")
-        except RuntimeError as exc:
-            return False, str(exc)
+            self.clear_logs()
+            self._export_active = True
+            try:
+                cmd = {"type": "export", "export_type": export_type, **params}
+                try:
+                    self._send_cmd(cmd)
+                    resp = self._wait_response(
+                        f"export_{export_type}_done",
+                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
+                    )
+                    return (
+                        resp.get("success", False),
+                        resp.get("message", ""),
+                        resp.get("output_path"),
+                    )
+                except RuntimeError as exc:
+                    return False, str(exc), None
+            finally:
+                self._export_active = False
 
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
-        if not self._ensure_subprocess_alive():
-            # No subprocess — just clear local state
-            self.current_checkpoint = None
-            self.is_vision = False
-            self.is_peft = False
-            return True
+        with self._lock:
+            if not self._ensure_subprocess_alive():
+                self.current_checkpoint = None
+                self.is_vision = False
+                self.is_peft = False
+                return True
 
-        try:
-            self._send_cmd({"type": "cleanup"})
-            resp = self._wait_response("cleanup_done", timeout = 30)
-            success = resp.get("success", False)
-        except RuntimeError:
-            success = False
+            self._export_active = True
+            try:
+                try:
+                    self._send_cmd({"type": "cleanup"})
+                    resp = self._wait_response("cleanup_done", timeout = 30)
+                    success = resp.get("success", False)
+                except RuntimeError:
+                    success = False
 
-        # Shut down subprocess after cleanup — no model loaded
-        self._shutdown_subprocess()
+                # Shut down subprocess after cleanup — no model loaded.
+                self._shutdown_subprocess()
 
-        self.current_checkpoint = None
-        self.is_vision = False
-        self.is_peft = False
-        return success
+                self.current_checkpoint = None
+                self.is_vision = False
+                self.is_peft = False
+                return success
+            finally:
+                self._export_active = False
 
-    def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
-    ) -> List[Tuple[str, list]]:
-        """Scan for checkpoints — no ML imports needed, runs locally."""
+    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+        """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
-
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

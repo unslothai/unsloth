@@ -41,6 +41,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
+import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
   type TrainingMethod as VramTrainingMethod,
@@ -57,13 +58,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
-function extractParamLabel(id: string): string | null {
-  const name = id.split("/").pop() ?? id;
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
-  return match ? `${match[1]}B` : null;
-}
 
 export function ModelSelectionStep() {
   const gpu = useGpuInfo();
@@ -115,7 +109,7 @@ export function ModelSelectionStep() {
     return applyPriorityOrdering(ids);
   }, [hfResults]);
 
-  // Match Studio behavior: only show exception signals (OOM/TIGHT) in training flows.
+  // Match Studio: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,
@@ -366,6 +360,7 @@ export function ModelSelectionStep() {
                 <SelectItem value="qlora">QLoRA (4-bit)</SelectItem>
                 <SelectItem value="lora">LoRA (16-bit)</SelectItem>
                 <SelectItem value="full">Full Fine-tune</SelectItem>
+                <SelectItem value="cpt">Continued Pretraining</SelectItem>
               </SelectContent>
             </Select>
           </div>
