@@ -1075,9 +1075,7 @@ class TestGuardrails:
             rag_scope = {"thread_id": "t1"},
         )
         events = _collect_events(loop)
-        assert any(
-            e.get("type") == "content" and e.get("text") == "plain answer" for e in events
-        )
+        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
         assert exec_fn.calls == []
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
