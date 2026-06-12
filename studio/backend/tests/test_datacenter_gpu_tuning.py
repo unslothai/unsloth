@@ -132,9 +132,7 @@ def test_is_datacenter_gpu_masked_host_physical_ids(monkeypatch):
 def test_is_datacenter_gpu_masked_host_reordered(monkeypatch):
     # A reordered mask must preserve order: ordinal 0 -> physical 7, 1 -> 4, ...
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,4,5,6")
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4))
     assert LlamaCppBackend._is_datacenter_gpu([7, 4]) is True
 
 
