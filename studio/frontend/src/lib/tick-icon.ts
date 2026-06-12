@@ -13,7 +13,9 @@ export const Tick02Icon: IconSvgElement = [
       stroke: "currentColor",
       strokeLinecap: "round",
       strokeLinejoin: "round",
-      strokeWidth: "2",
+      // Fallback weight, matching the icon set; call sites with a
+      // strokeWidth prop override this.
+      strokeWidth: "1.5",
       key: "0",
     },
   ],
