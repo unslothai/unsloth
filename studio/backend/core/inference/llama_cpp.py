@@ -1089,18 +1089,19 @@ class LlamaCppBackend:
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         def _is_file(p: Path) -> bool:
-            # is_file() returns False for an absent path but *raises*
-            # PermissionError (WinError 5) when the path exists yet is momentarily
-            # inaccessible -- an antivirus lock, an install replace in flight, or
-            # an elevated-install ACL. Treat that as present so discovery returns
-            # the real binary (the caller retries the exec) instead of skipping it
-            # and reporting "not found". Other stat errors fall back to "not here".
-            try:
-                return p.is_file()
-            except PermissionError:
-                return True
-            except OSError:
-                return False
+            # is_file() returns False for an absent path but raises
+            # PermissionError (WinError 5) when the path exists yet is briefly
+            # locked (antivirus, or an install replace in flight). Retry so a
+            # transient lock clears; never return a path we still cannot stat so
+            # downstream probes do not hit the same error.
+            for _ in range(5):
+                try:
+                    return p.is_file()
+                except PermissionError:
+                    time.sleep(0.2)
+                except OSError:
+                    return False
+            return False
 
         # 1. Env var: direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
