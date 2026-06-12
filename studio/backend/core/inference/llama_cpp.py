@@ -2533,6 +2533,10 @@ class LlamaCppBackend:
         ]
 
         env = child_env_without_native_path_secret()
+        # `python -m unsloth_zoo.diffusion_studio.shim` imports unsloth_zoo, which
+        # refuses to load unless UNSLOTH_IS_PRESENT is set (normally by `import
+        # unsloth`). The shim never imports unsloth, so set it here as unsloth does.
+        env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
