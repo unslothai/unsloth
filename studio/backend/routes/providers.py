@@ -191,7 +191,7 @@ async def test_provider(
     Test connectivity to an external provider.
 
     Makes a lightweight GET /models call to verify the API key works. Generic
-    custom chat endpoints skip that call because /models is optional there.
+    custom endpoints use a chat-completions probe because /models is optional.
     encrypted_api_key is decrypted server-side and never stored.
     """
     info = get_provider_info(payload.provider_type)
@@ -220,14 +220,6 @@ async def test_provider(
                 message = "Connection failed: Base URL is required for custom providers.",
                 models_count = None,
             )
-        return ProviderTestResult(
-            success = True,
-            message = (
-                "Custom connection saved. Model discovery is optional; "
-                "chat requests will validate the endpoint."
-            ),
-            models_count = None,
-        )
 
     client = ExternalProviderClient(
         provider_type = payload.provider_type,
@@ -237,6 +229,26 @@ async def test_provider(
     )
 
     try:
+        if payload.provider_type == "custom":
+            model_id = (payload.model_id or "").strip()
+            if not model_id:
+                return ProviderTestResult(
+                    success = False,
+                    message = "Connection failed: add a model ID to test custom providers.",
+                    models_count = None,
+                )
+            await client.chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = model_id,
+                temperature = 0.0,
+                top_p = 1.0,
+                max_tokens = 1,
+            )
+            return ProviderTestResult(
+                success = True,
+                message = "Connected successfully. Chat completions endpoint responded.",
+                models_count = None,
+            )
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(

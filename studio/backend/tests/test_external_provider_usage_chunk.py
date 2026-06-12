@@ -233,7 +233,7 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
     assert any("ok" in line for line in lines)
 
 
-def test_custom_provider_test_endpoint_skips_models_call(monkeypatch):
+def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
     import importlib.util
     import sys
     from pathlib import Path
@@ -246,11 +246,64 @@ def test_custom_provider_test_endpoint_skips_models_call(monkeypatch):
     sys.modules[spec.name] = providers_route
     spec.loader.exec_module(providers_route)
 
-    class _UnexpectedClient:
+    captured: dict = {}
+
+    class _FakeClient:
         def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def chat_completion(self, **kwargs):
+            captured["chat_completion"] = kwargs
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        async def list_models(self):
             raise AssertionError("custom provider test must not call /models")
 
-    monkeypatch.setattr(providers_route, "ExternalProviderClient", _UnexpectedClient)
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+                model_id = "Qwen/Qwen3-0.6B",
+            ),
+            current_subject = "unsloth",
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert result.models_count is None
+    assert captured["init"]["provider_type"] == "custom"
+    assert captured["chat_completion"]["model"] == "Qwen/Qwen3-0.6B"
+    assert captured["chat_completion"]["max_tokens"] == 1
+    assert captured["closed"] is True
+
+
+def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
 
     async def run():
         return await providers_route.test_provider(
@@ -262,9 +315,8 @@ def test_custom_provider_test_endpoint_skips_models_call(monkeypatch):
         )
 
     result = _drive(run())
-    assert result.success is True
-    assert result.models_count is None
-    assert "Model discovery is optional" in result.message
+    assert result.success is False
+    assert "model ID" in result.message
 
 
 def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
