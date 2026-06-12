@@ -169,8 +169,11 @@ def main() -> None:
             timeout = 120,
         )
         banner = (out.stdout + out.stderr).strip()
-        print(os.path.relpath(binary, install_dir), "->",
-              banner.splitlines()[0] if banner else "(no output)")
+        print(
+            os.path.relpath(binary, install_dir),
+            "->",
+            banner.splitlines()[0] if banner else "(no output)",
+        )
         if expect not in banner:
             raise SystemExit(
                 f"FAIL: {binary} did not print '{expect}': rc={out.returncode}\n{banner[:400]}"
