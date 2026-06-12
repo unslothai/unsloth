@@ -469,9 +469,24 @@ def _apply_mistral_reasoning_controls(
 
 
 # Shared client reused across all requests for HTTP connection pooling.
-# Auth headers and timeouts are per-request, so one client handles every
-# provider without storing credentials.
-_http_client = httpx.AsyncClient()
+# Auth headers and timeouts are passed per-request, so a single client
+# handles every provider without storing credentials.
+def _create_shared_http_client() -> httpx.AsyncClient:
+    # Unsupported env proxy schemes (socks:// etc) raise at construction and
+    # would crash Studio startup (#6090); retry ignoring env proxies instead.
+    try:
+        return httpx.AsyncClient()
+    except (ImportError, ValueError) as exc:
+        exc_str = str(exc)
+        if "Unknown scheme for proxy URL" not in exc_str and "socksio" not in exc_str:
+            raise
+        logger.warning(
+            "Ignoring unsupported environment proxy for the shared HTTP client: %s", exc_str
+        )
+        return httpx.AsyncClient(trust_env = False)
+
+
+_http_client = _create_shared_http_client()
 
 
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.

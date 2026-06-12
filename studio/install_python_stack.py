@@ -90,6 +90,18 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
+# CUDA torch repair specs (see _ensure_cuda_torch). torchvision/torchaudio are
+# pinned to the torch<2.11 family rather than left bare: the install uses an
+# exclusive --index-url (no PyPI fallback), so a bare name could resolve a
+# torchvision built against a different torch major (e.g. 0.27 for torch 2.12)
+# and fail at runtime with an ABI mismatch. Same bounds as the _default ROCm
+# spec above, which targets the same torch family.
+_CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.4,<2.11.0",
+    "torchvision>=0.19,<0.26.0",
+    "torchaudio>=2.4,<2.11.0",
+)
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
@@ -557,7 +569,15 @@ def _persist_bnb_rocm_version(version: str) -> bool:
 
 
 def _has_rocm_gpu() -> bool:
-    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
+    """Return True only if an actual AMD GPU is visible (not just ROCm tools installed).
+
+    Always returns False when an NVIDIA GPU is present -- NVIDIA takes
+    priority on mixed hosts and prevents every detection path below
+    (rocminfo, amd-smi, KFD sysfs) from producing a false positive even
+    if ROCm tools are installed alongside the NVIDIA driver.
+    """
+    if _has_usable_nvidia_gpu():
+        return False
     for cmd, check_fn in (
         # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
         # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -598,6 +618,13 @@ def _has_rocm_gpu() -> bool:
     # runtime-only detection. On minimal package-managed installs (no
     # rocminfo / no amd-smi tools), the kernel exposes AMD GPUs via
     # /sys/class/kfd so `studio update` can still detect and repair.
+    #
+    # Guard: reject any KFD node whose properties file reports a non-AMD
+    # vendor. With the NVIDIA open kernel module (driver 560+), NVIDIA GPUs
+    # can register KFD topology nodes with a non-zero gpu_id; those nodes
+    # have vendor_id 4318 (0x10DE) rather than the AMD value 4098 (0x1002).
+    # Without this check the fallback returns True on NVIDIA-only systems,
+    # causing _ensure_rocm_torch to install ROCm wheels on NVIDIA hardware.
     if sys.platform != "win32":
         try:
             kfd_nodes = "/sys/class/kfd/kfd/topology/nodes"
@@ -609,29 +636,69 @@ def _has_rocm_gpu() -> bool:
                             gpu_id = fh.read().strip()
                     except OSError:
                         continue
-                    if gpu_id and gpu_id != "0":  # gpu_id 0 = CPU node
-                        return True
+                    if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
+                        continue
+                    # Require AMD vendor_id 4098 (0x1002) in the properties file.
+                    # KFD properties files exist on every kernel that exposes
+                    # /sys/class/kfd, so absence of the file means we cannot
+                    # confirm AMD ownership -- skip the node rather than risk a
+                    # false positive (e.g. NVIDIA open driver KFD nodes that
+                    # lack a properties file on some kernel versions).
+                    props_path = os.path.join(kfd_nodes, entry, "properties")
+                    try:
+                        with open(props_path) as fh:
+                            props = fh.read()
+                    except OSError:
+                        continue  # can't confirm vendor -- skip
+                    if not re.search(r"\bvendor_id\s+4098\b", props):
+                        continue
+                    return True
         except OSError:
             pass
     return False
 
 
 def _has_usable_nvidia_gpu() -> bool:
-    """Return True only when nvidia-smi exists AND reports at least one GPU."""
+    """Return True when an NVIDIA GPU is present and usable.
+
+    Primary probe: nvidia-smi -L (subprocess).
+    Fallback: /proc/driver/nvidia/gpus/ sysfs (Linux only) -- handles the
+    case where nvidia-smi is present but the subprocess fails (PATH gap,
+    timeout, driver initialisation race). If either probe confirms an
+    NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
+
+    CUDA_VISIBLE_DEVICES set to "" or "-1" hides every NVIDIA device (mixed
+    AMD+NVIDIA hosts steering work to the AMD card); neither probe honours
+    that env var, so check it first and report the GPU as not usable. Unset
+    means all devices visible.
+    """
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None and cvd.strip() in ("", "-1"):
+        return False
     exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "-L"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0 and "GPU " in result.stdout
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "-L"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0 and "GPU " in result.stdout:
+                return True
+        except Exception:
+            pass
+    # Fallback: the NVIDIA driver exposes one subdirectory per GPU under
+    # /proc/driver/nvidia/gpus/ on Linux regardless of nvidia-smi state.
+    if sys.platform != "win32":
+        try:
+            gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(gpu_dir) and os.listdir(gpu_dir):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _detect_amd_gfx_codes() -> list[str]:
@@ -739,6 +806,139 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
+def _detect_cuda_torch_index_url() -> str:
+    """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
+
+    Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update`
+    repairs to the same wheel family a fresh `curl | sh` install would pick.
+    Probes nvidia-smi (PATH, then /usr/bin/nvidia-smi) and parses both the
+    legacy "CUDA Version:" and the newer "CUDA UMD Version:" spellings.
+    Defaults to cu126 when nvidia-smi is missing or the version is unreadable
+    (e.g. NVIDIA detected only via the /proc/driver/nvidia/gpus fallback).
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
+        exe = "/usr/bin/nvidia-smi"
+    tag = "cu126"  # default when the driver CUDA version cannot be read
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0:
+                m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+                if m:
+                    major, minor = int(m.group(1)), int(m.group(2))
+                    if major >= 13:
+                        tag = "cu130"
+                    elif major == 12 and minor >= 8:
+                        tag = "cu128"
+                    elif major == 12 and minor >= 6:
+                        tag = "cu126"
+                    elif major >= 12:
+                        tag = "cu124"
+                    elif major >= 11:
+                        tag = "cu118"
+                    else:
+                        tag = "cpu"  # ancient driver: no usable CUDA wheels
+        except Exception:
+            pass
+    return f"{_PYTORCH_WHL_BASE}/{tag}"
+
+
+def _ensure_cuda_torch() -> None:
+    """Repair a venv whose torch is a ROCm build on an NVIDIA host.
+
+    Counterpart to _ensure_rocm_torch. A venv poisoned by the pre-fix KFD
+    gpu_id false positive (ROCm torch installed on an NVIDIA-only machine)
+    keeps that broken torch on `studio update`, because a torch+rocm wheel
+    satisfies the version constraint and nothing force-reinstalls it. This
+    detects that exact case and reinstalls CUDA torch.
+
+    Only repairs when torch actually links against HIP/ROCm. Healthy CUDA
+    torch and deliberate CPU-only torch are left untouched.
+    """
+    # Respect an explicit backend choice from install.sh: only "" (standalone
+    # `studio update`) or "cuda" should ever force CUDA wheels. "rocm"/"cpu"
+    # (or any unrecognised value) are deliberate and must not be overridden.
+    if _TORCH_BACKEND not in ("", "cuda"):
+        return
+    # No CUDA torch on macOS; Windows venv/torch lifecycle is owned by
+    # install.ps1 (and the KFD poisoning bug is Linux-only), so skip both.
+    if IS_MACOS or IS_WINDOWS or NO_TORCH:
+        return
+    # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
+    if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
+        return
+    # CUDA_VISIBLE_DEVICES="" / "-1" deliberately hides the NVIDIA GPU (for
+    # example a mixed AMD+NVIDIA host that runs ROCm torch on the AMD card);
+    # never force CUDA wheels over that choice.
+    _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if _cvd is not None and _cvd.strip() in ("", "-1"):
+        return
+    # Only NVIDIA hosts should carry CUDA torch. _has_usable_nvidia_gpu()
+    # covers the /proc/driver/nvidia/gpus fallback when nvidia-smi is absent.
+    if not _has_usable_nvidia_gpu():
+        return
+
+    # Classify the installed torch: "hip" (ROCm build -- the poisoning
+    # signature), "cuda" (healthy), or "cpu" (deliberate CPU wheel). A
+    # non-zero exit means torch is missing or un-importable; the base install
+    # step handles that, so leave it alone.
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch; "
+                    "hip = getattr(torch.version, 'hip', '') or ''; "
+                    "cuda = getattr(torch.version, 'cuda', '') or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "print('hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'))"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if probe.returncode != 0:
+        return
+    # Take the last non-empty stdout line: stray output from sitecustomize or
+    # an import hook must not mask the marker (fail-closed either way).
+    _marker_lines = [
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+    ]
+    if not _marker_lines or _marker_lines[-1] != "hip":
+        return  # healthy CUDA torch, or a deliberate CPU wheel -- leave as-is
+
+    index_url = _detect_cuda_torch_index_url()
+    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    print(
+        f"   torch is a ROCm build on an NVIDIA host -- reinstalling "
+        f"CUDA torch from {index_url}\n"
+        f"   (set UNSLOTH_TORCH_BACKEND=rocm to keep a deliberate ROCm torch "
+        f"on a mixed AMD+NVIDIA host)"
+    )
+    pip_install(
+        "CUDA torch repair",
+        "--force-reinstall",
+        "--no-cache-dir",
+        _torch_pkg,
+        _vision_pkg,
+        _audio_pkg,
+        "--index-url",
+        index_url,
+        constrain = False,
+    )
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -749,6 +949,13 @@ def _ensure_rocm_torch() -> None:
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     global _rocm_windows_torch_installed
+    # install.sh sets UNSLOTH_TORCH_BACKEND to the resolved wheel family
+    # ("cuda", "rocm", "cpu"). Skip ROCm operations entirely when install.sh
+    # already selected a non-ROCm backend -- this is the authoritative signal
+    # and avoids re-running GPU detection in a subprocess that may see a
+    # different environment (different PATH, CUDA_VISIBLE_DEVICES, etc.).
+    if _TORCH_BACKEND in ("cuda", "cpu"):
+        return
     # setup.ps1 sets this after installing AMD wheels; skip the probe only when
     # torch is actually importable as ROCm. If the venv was wiped between runs,
     # the stale env-var would suppress a needed reinstall.
@@ -1087,6 +1294,29 @@ def _infer_no_torch() -> bool:
 
 
 NO_TORCH = _infer_no_torch()
+
+# UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() so
+# that this script knows which torch variant was selected without re-running
+# GPU detection. Values: "cuda", "rocm", or "cpu". Empty means unknown
+# (standalone `unsloth studio update` runs, where we re-detect normally).
+_TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
+
+
+def _torch_step_label(suffix: str) -> str:
+    """Return a progress label like 'torch check (cuda)' using the known backend.
+
+    Falls back to GPU detection when UNSLOTH_TORCH_BACKEND is not set (e.g.
+    standalone `unsloth studio update` runs that bypass install.sh).
+    """
+    backend = _TORCH_BACKEND
+    if not backend:
+        if _has_usable_nvidia_gpu():
+            backend = "cuda"
+        elif _has_rocm_gpu():
+            backend = "rocm"
+        else:
+            backend = "cpu"
+    return f"torch {suffix} ({backend})"
 
 
 # -- Verbosity control ----------------------------------------------------------
@@ -1770,7 +2000,8 @@ def install_python_stack() -> int:
     #     venv got CPU-only torch (common when pip resolves torch from PyPI).
     #     Must follow base packages so torch is present for inspection.
     if not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch check")
+        _progress(_torch_step_label("check"))
+        _ensure_cuda_torch()
         _ensure_rocm_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
@@ -1955,7 +2186,8 @@ def install_python_stack() -> int:
     #     Running the repair last ensures ROCm torch is in place at runtime,
     #     whichever intermediate step clobbered it.
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch (final)")
+        _progress(_torch_step_label("final"))
+        _ensure_cuda_torch()
         _ensure_rocm_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)

@@ -13,6 +13,7 @@ never blocks on a missing marker / offline GitHub.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -30,6 +31,7 @@ class LlamaUpdateJob(BaseModel):
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
     error: Optional[str] = None
+    progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
@@ -48,6 +50,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     published_repo: Optional[str] = None
     installed_at_utc: Optional[str] = None
     age_days: Optional[int] = None
+    source_build: bool = Field(
+        False, description = "True when there is no marker (source build) but a prebuilt is offered."
+    )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
@@ -65,11 +70,14 @@ async def llama_update_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateStatusResponse:
-    return LlamaUpdateStatusResponse(**get_update_status(force_refresh = force_refresh))
+    # Off the event loop: detection may probe the host and read GitHub.
+    status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
+    return LlamaUpdateStatusResponse(**status)
 
 
 @router.post("/update", response_model = LlamaUpdateActionResponse)
 async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:
-    return LlamaUpdateActionResponse(**start_update())
+    action = await asyncio.to_thread(start_update)
+    return LlamaUpdateActionResponse(**action)
