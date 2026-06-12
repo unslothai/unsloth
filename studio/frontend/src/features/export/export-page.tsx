@@ -118,6 +118,9 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
+  const [ggufShardSize, setGgufShardSize] = useState("");
+  const [ggufSaveDir, setGgufSaveDir] = useState("");
+
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
@@ -410,12 +413,13 @@ export function ExportPage() {
     setExportSuccess(false);
     setExportOutputPath(null);
 
-    // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
-    // For other formats, nest under training-run/checkpoint
+    // For GGUF, use user-provided name or auto-derive from model name.
+    // For other formats, nest under training-run/checkpoint.
+    const autoGgufDir = `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
+      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
     const saveDir =
       exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
+        ? (ggufSaveDir.trim() || autoGgufDir)
         : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
@@ -470,6 +474,8 @@ export function ExportPage() {
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
+            private: privateRepo,
+            gguf_shard_size: ggufShardSize.trim() || null,
           });
           lastOutputPath = resp.details?.output_path ?? lastOutputPath;
         }
@@ -516,6 +522,8 @@ export function ExportPage() {
     privateRepo,
     modelSource,
     hfExportTrustRemoteCode,
+    ggufShardSize,
+    ggufSaveDir,
   ]);
 
   // ---- Render ----
@@ -1088,6 +1096,10 @@ export function ExportPage() {
         onHfTokenChange={setHfToken}
         privateRepo={privateRepo}
         onPrivateRepoChange={setPrivateRepo}
+        ggufShardSize={ggufShardSize}
+        onGgufShardSizeChange={setGgufShardSize}
+        ggufSaveDir={ggufSaveDir}
+        onGgufSaveDirChange={setGgufSaveDir}
         onExport={handleExport}
         exporting={exporting}
         exportError={exportError}

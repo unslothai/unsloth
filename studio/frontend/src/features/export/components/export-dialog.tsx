@@ -221,6 +221,10 @@ interface ExportDialogProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  ggufShardSize: string;
+  onGgufShardSizeChange: (v: string) => void;
+  ggufSaveDir: string;
+  onGgufSaveDirChange: (v: string) => void;
   onExport: () => void;
   exporting: boolean;
   exportError: string | null;
@@ -251,6 +255,10 @@ export function ExportDialog({
   onHfTokenChange,
   privateRepo,
   onPrivateRepoChange,
+  ggufShardSize,
+  onGgufShardSizeChange,
+  ggufSaveDir,
+  onGgufSaveDirChange,
   onExport,
   exporting,
   exportError,
@@ -471,6 +479,47 @@ export function ExportDialog({
                 <span>{exportError}</span>
               </div>
             )}
+
+            {/* GGUF-specific options — sits alongside hub fields, before the summary */}
+            <AnimatePresence>
+              {exportMethod === "gguf" && (
+                <motion.div {...collapseAnim} className="overflow-hidden">
+                  <div className="flex flex-col gap-3 px-0.5">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Output folder name
+                      </label>
+                      <Input
+                        placeholder="Auto-derived from model name"
+                        value={ggufSaveDir}
+                        onChange={(e) => onGgufSaveDirChange(e.target.value)}
+                        disabled={exporting}
+                      />
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Leave blank to use the auto-generated name.
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Shard size
+                      </label>
+                      <Input
+                        placeholder="Default — 50 GB (one file for most models)"
+                        value={ggufShardSize}
+                        onChange={(e) => onGgufShardSizeChange(e.target.value)}
+                        disabled={exporting}
+                      />
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Split the base conversion into smaller files (e.g.{" "}
+                        <code className="font-mono">2GB</code>,{" "}
+                        <code className="font-mono">4GB</code>). Leave blank for the
+                        50 GB default. Quantized outputs are always a single file.
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Summary */}
             <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
