@@ -998,6 +998,16 @@ from transformers.modeling_utils import logger as transformers_logger
 _DGX_SPARK_DEVICE_TOKENS = ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
 
 
+def _name_has_spark_token(names_upper):
+    # Whole-token match so "GB10" does NOT match "GB100"/"GB10X" -- a discrete
+    # Grace+Blackwell datacenter GPU must not be misread as a unified-memory Spark.
+    import re
+    return any(
+        re.search(r"(?<![A-Z0-9])" + re.escape(tok) + r"(?![A-Z0-9])", names_upper)
+        for tok in _DGX_SPARK_DEVICE_TOKENS
+    )
+
+
 @functools.lru_cache(maxsize = None)
 def is_dgx_spark():
     """True only on DGX Spark / N1X Spark-class machines (gate: aarch64 + NVIDIA
@@ -1017,7 +1027,7 @@ def is_dgx_spark():
         names = " ".join(
             str(torch.cuda.get_device_name(i)).upper() for i in range(torch.cuda.device_count())
         )
-        return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
+        return _name_has_spark_token(names)
     except Exception:
         return False
 
@@ -1046,7 +1056,7 @@ def _is_dgx_spark_no_cuda_init():
             timeout = 5,
         )
         names = (out.stdout or "").upper()
-        return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
+        return _name_has_spark_token(names)
     except Exception:
         return False
 
