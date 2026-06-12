@@ -644,6 +644,22 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": "33",
+                "reasoning_content": [
+                    {"type": "reasoning_text", "text": "plan"},
+                    {"type": "reasoning_text", "text": " next"},
+                ],
+            },
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan next"}]
+        assert body["output"][1]["content"][0]["text"] == "33"
+
     def test_plain_content_remains_message_only(self, monkeypatch):
         body = self._run_with_message(monkeypatch, {"content": "33"})
 
@@ -773,6 +789,44 @@ class TestResponsesStreamAdapter:
         completed = self._payloads(lines, "response.completed")[0]
         assert completed["response"]["output"][0]["type"] == "reasoning"
         assert completed["response"]["output"][1]["type"] == "message"
+
+    def test_structured_reasoning_content_parts_stream_as_reasoning(self, monkeypatch):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "reasoning_content": {
+                                "content": [
+                                    {"type": "reasoning_text", "text": "plan"},
+                                    {"type": "reasoning_text", "text": " next"},
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
+        assert "".join(event["delta"] for event in text_deltas) == "33"
+        assert "reasoning_text" not in "".join(event["delta"] for event in reasoning_deltas)
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan next"
+        assert completed["response"]["output"][1]["content"][0]["text"] == "33"
 
     def test_tool_first_stream_closes_items_in_output_index_order(self, monkeypatch):
         chunks = [

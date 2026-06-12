@@ -4948,6 +4948,14 @@ def _coerce_responses_reasoning_text(value: Any) -> str:
         return ""
     if isinstance(value, str):
         return value
+    if isinstance(value, list):
+        return "".join(_coerce_responses_reasoning_text(part) for part in value)
+    if isinstance(value, dict):
+        for key in ("text", "reasoning_text", "content"):
+            text = _coerce_responses_reasoning_text(value.get(key))
+            if text:
+                return text
+        return ""
     return json.dumps(value)
 
 
