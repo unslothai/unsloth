@@ -356,7 +356,6 @@ export function AppSidebar() {
 
   function openNewChat(projectId = activeProjectId) {
     if (chatDisabled) return;
-    // Drop the shared new-chat draft so the fresh chat opens empty.
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
@@ -1054,6 +1053,10 @@ export function AppSidebar() {
                             sideOffset={0}
                             className="unsloth-plus-menu menu-flat-destructive w-52"
                           >
+                            <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                              <span>Rename</span>
+                            </DropdownMenuItem>
                             <DropdownMenuItem onSelect={() => void handleUnarchiveThread(item)}>
                               <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-icon" />
                               <span>Unarchive</span>

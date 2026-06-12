@@ -945,17 +945,25 @@ const Composer: FC<{
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
-  // navigation or reload. Cleared once empty (i.e. after a send).
+  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
+  // text even when no draft exists keeps a thread from inheriting the
+  // previous thread's composer contents.
   const draftKey = composerDraftKey(activeThreadId);
+  const lastDraftKeyRef = useRef(draftKey);
   useEffect(() => {
-    const draft = readComposerDraft(draftKey);
-    if (!draft) return;
+    const draft = readComposerDraft(draftKey) ?? "";
     const composer = aui.composer();
     if (composer.getState().isEditing) {
       composer.setText(draft);
     }
   }, [draftKey, aui]);
   useEffect(() => {
+    // After a thread switch composerText can still hold the previous
+    // thread's text; skip that cycle so it isn't saved under the new key.
+    if (lastDraftKeyRef.current !== draftKey) {
+      lastDraftKeyRef.current = draftKey;
+      return;
+    }
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
