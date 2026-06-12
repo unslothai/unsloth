@@ -264,6 +264,8 @@ async function loadLocalModelSelection(
       cache_type_kv: null,
       // biome-ignore lint/style/useNamingConvention: api schema
       speculative_type: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      tensor_parallel: false,
     });
     toast.success(`Loaded ${modelLabel}`, { id: toastId, duration: 2000 });
     return null;

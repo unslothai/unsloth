@@ -325,6 +325,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
+  // Allow/Deny confirmation controls are rendered uniformly for every tool
+  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
+  // thread.tsx, so this renderer stays purely presentational.
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 

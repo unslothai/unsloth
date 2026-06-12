@@ -170,6 +170,11 @@ export function applyActiveModelStatusToStore(
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
+    ...(status.tensor_parallel !== undefined &&
+      prevState.loadedTensorParallel === null && {
+        tensorParallel: status.tensor_parallel,
+        loadedTensorParallel: status.tensor_parallel,
+      }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {
