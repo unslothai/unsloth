@@ -243,7 +243,7 @@ function MenubarSubTrigger({
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
-        className="ml-auto size-[13px]"
+        className="ml-auto size-[12px]"
       />
     </MenubarPrimitive.SubTrigger>
   );
