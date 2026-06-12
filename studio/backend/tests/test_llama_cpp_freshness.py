@@ -433,3 +433,90 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
     ]
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"
+
+
+# reset_caches(drop_disk=...) -- post-update stale same-base mix disk cache.
+
+
+def _seed_disk_cache(tmp_path: Path, latest_tag: str) -> Path:
+    # Matches _cache_path_for under the fixture's stubbed _cache_dir.
+    cache_dir = tmp_path / ".freshness"
+    cache_dir.mkdir(exist_ok = True)
+    cache_file = cache_dir / "unslothai__llama.cpp.json"
+    cache_file.write_text(json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}))
+    return cache_file
+
+
+def test_reset_caches_drop_disk_removes_disk_cache(tmp_path):
+    cache_file = _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    assert cache_file.exists()
+    fr.reset_caches(drop_disk = True)
+    assert not cache_file.exists()
+
+
+def test_reset_caches_default_keeps_disk_cache(tmp_path):
+    # The no-arg form is in-memory only (its existing test-only contract); it
+    # must not delete the on-disk cache.
+    cache_file = _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    fr.reset_caches()
+    assert cache_file.exists()
+
+
+def test_reset_caches_drop_disk_on_missing_dir_is_noop(tmp_path):
+    # Fresh machine, no cache dir yet: drop_disk must be a quiet no-op.
+    assert not (tmp_path / ".freshness").exists()
+    fr.reset_caches(drop_disk = True)  # must not raise
+
+
+def test_drop_disk_lets_banner_fail_open_after_same_base_mix_swap(monkeypatch, tmp_path):
+    # P2 #2: the disk cache holds a still-fresh same-base mix (b9596-mix-aaa)
+    # from before an update to a *different* same-base mix (b9596-mix-bbb).
+    # The post-install path drops the disk cache; if the forced refresh is then
+    # offline, latest reads as None and the banner fails open -- instead of
+    # replaying the stale b9596-mix-aaa and falsely reading "behind".
+    _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(
+        install_dir,
+        tag = "b9596",
+        release_tag = "b9596-mix-bbb",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    bin_path = _fake_binary(install_dir, layout = "root")
+    # GitHub unreachable for the rest of the test (the offline post-install
+    # refresh, and the later status check).
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+
+    fr.reset_caches(drop_disk = True)  # exactly what the apply path now does
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["latest_tag"] is None
+    assert info["behind"] is False
+    assert info["stale"] is False
+
+
+def test_in_memory_only_reset_replays_stale_same_base_mix(monkeypatch, tmp_path):
+    # Contrast/guard for the case above: an in-memory-only reset leaves the
+    # stale same-base mix on disk, so an offline check replays it and falsely
+    # reads behind/stale. This is exactly the failure drop_disk removes; if a
+    # future change makes the no-arg reset also clear disk, the apply-path call
+    # and this guard should be revisited together.
+    _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(
+        install_dir,
+        tag = "b9596",
+        release_tag = "b9596-mix-bbb",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+
+    fr.reset_caches()  # in-memory only -> stale disk value survives
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["latest_tag"] == "b9596-mix-aaa"
+    assert info["behind"] is True
+    assert info["stale"] is True
