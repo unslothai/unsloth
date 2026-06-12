@@ -2441,9 +2441,11 @@ class LlamaCppBackend:
             base = self._find_llama_server_binary()
             if base:
                 base_dir = Path(base).parent
-                for cand in (base_dir / name,
-                             base_dir / "build" / "bin" / name,
-                             base_dir / "build" / "bin" / "Release" / name):
+                for cand in (
+                    base_dir / name,
+                    base_dir / "build" / "bin" / name,
+                    base_dir / "build" / "bin" / "Release" / name,
+                ):
                     if cand.is_file():
                         visual_bin = str(cand)
                         break
@@ -2527,7 +2529,9 @@ class LlamaCppBackend:
         # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
         if extra_pythonpath:
             existing = env.get("PYTHONPATH")
-            env["PYTHONPATH"] = (extra_pythonpath + os.pathsep + existing) if existing else extra_pythonpath
+            env["PYTHONPATH"] = (
+                (extra_pythonpath + os.pathsep + existing) if existing else extra_pythonpath
+            )
 
         logger.info(f"Starting DiffusionGemma runner: {' '.join(cmd)}")
         self._stdout_lines = []
