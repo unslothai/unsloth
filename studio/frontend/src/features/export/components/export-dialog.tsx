@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +19,12 @@ import {
 } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, FolderSearchIcon, Key01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
@@ -200,6 +206,10 @@ function formatLogLine(entry: ExportLogEntry): string {
   return entry.line.replace(/\r+$/g, "");
 }
 
+function isAbsoluteFolderPath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:([\\/]|$)/.test(path) || /^\\\\/.test(path);
+}
+
 type Destination = "local" | "hub";
 
 interface ExportDialogProps {
@@ -213,6 +223,10 @@ interface ExportDialogProps {
   isAdapter: boolean;
   destination: Destination;
   onDestinationChange: (v: Destination) => void;
+  saveDirectory: string;
+  defaultSaveDirectory: string;
+  saveDirectoryOverridden: boolean;
+  onSaveDirectoryChange: (v: string | null) => void;
   hfUsername: string;
   onHfUsernameChange: (v: string) => void;
   modelName: string;
@@ -243,6 +257,10 @@ export function ExportDialog({
   isAdapter,
   destination,
   onDestinationChange,
+  saveDirectory,
+  defaultSaveDirectory,
+  saveDirectoryOverridden,
+  onSaveDirectoryChange,
   hfUsername,
   onHfUsernameChange,
   modelName,
@@ -263,6 +281,7 @@ export function ExportDialog({
     exportMethod === "gguf" ||
     exportMethod === "lora";
   const showCompletionScreen = exportSuccess && !showLogPanel;
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
 
   const { lines: logLines, connected: logConnected, error: logError } =
     useExportLogs(exporting && showLogPanel, exportMethod, open);
@@ -287,17 +306,18 @@ export function ExportDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (exporting) return;
-        onOpenChange(v);
-      }}
-    >
-      <DialogContent
-        className={showLogPanel ? "sm:max-w-2xl" : "sm:max-w-lg"}
-        onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          if (exporting) return;
+          onOpenChange(v);
+        }}
       >
+        <DialogContent
+          className={showLogPanel ? "sm:max-w-2xl" : "sm:max-w-lg"}
+          onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}
+        >
         {showCompletionScreen ? (
           <>
             <div className="flex flex-col items-center gap-3 py-6">
@@ -357,6 +377,66 @@ export function ExportDialog({
                 Push to Hub
               </Button>
             </div>
+
+            {destination === "local" && (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Save folder
+                  </label>
+                  {saveDirectoryOverridden && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => onSaveDirectoryChange(null)}
+                      disabled={exporting}
+                    >
+                      Use default
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-stretch gap-2">
+                  <Input
+                    className="min-w-0 flex-1 font-mono text-[12px]"
+                    value={saveDirectory}
+                    onChange={(e) => onSaveDirectoryChange(e.target.value)}
+                    disabled={exporting}
+                    spellCheck={false}
+                    title={saveDirectory}
+                    placeholder={defaultSaveDirectory}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setFolderBrowserOpen(true)}
+                        disabled={exporting}
+                        aria-label="Browse save folder"
+                      >
+                        <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Browse
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <p className="text-[11px] text-muted-foreground/70">
+                  {saveDirectory !== defaultSaveDirectory ? (
+                    <>
+                      Default: {defaultSaveDirectory}
+                    </>
+                  ) : (
+                    <>
+                      Paste an absolute path if the folder browser cannot reach the drive.
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
 
             <AnimatePresence>
               {destination === "hub" && (
@@ -598,7 +678,14 @@ export function ExportDialog({
             </DialogFooter>
           </>
         )}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <FolderBrowser
+        open={folderBrowserOpen}
+        onOpenChange={setFolderBrowserOpen}
+        initialPath={isAbsoluteFolderPath(saveDirectory) ? saveDirectory : undefined}
+        onSelect={(path) => onSaveDirectoryChange(path)}
+      />
+    </>
   );
 }

@@ -50,6 +50,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -62,7 +63,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
@@ -324,6 +325,7 @@ function CollapsibleSection({
   label,
   labelHref,
   headerAction,
+  onLabelClick,
   children,
   defaultOpen = false,
   first = false,
@@ -341,6 +343,8 @@ function CollapsibleSection({
    * nested in a button.
    */
   headerAction?: ReactNode;
+  /** When set, clicking the label runs this instead of toggling collapse. */
+  onLabelClick?: () => void;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -394,7 +398,7 @@ function CollapsibleSection({
         <div className={headerClasses}>
           <button
             type="button"
-            onClick={toggle}
+            onClick={onLabelClick ?? toggle}
             className="flex min-w-0 flex-1 cursor-pointer items-center text-left leading-none transition-colors hover:text-nav-fg"
           >
             <span className="leading-none">{label}</span>
@@ -487,6 +491,27 @@ export function ChatSettingsPanel({
   const loadedSpeculativeType = useChatRuntimeStore(
     (s) => s.loadedSpeculativeType,
   );
+  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
+  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  const mtpUpdatable =
+    specFallbackReason === "binary_no_mtp" ||
+    specFallbackReason === "binary_outdated";
+  const {
+    status: llamaUpdateStatus,
+    applying: llamaUpdating,
+    apply: applyLlamaUpdate,
+  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  const handleMtpUpdate = useCallback(async () => {
+    const result = await applyLlamaUpdate();
+    if (result.ok) {
+      toast.success(
+        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+      );
+    } else {
+      toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
+    }
+  }, [applyLlamaUpdate]);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
   const loadedSpecDraftNMax = useChatRuntimeStore(
@@ -506,6 +531,11 @@ export function ChatSettingsPanel({
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
+  const loadedTensorParallel = useChatRuntimeStore(
+    (s) => s.loadedTensorParallel,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -526,7 +556,9 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
+  const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  const modelSettingsDirty =
+    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
@@ -536,6 +568,9 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  // When the prompt overflows the inline box, clicking opens the popup editor.
+  const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
+  const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
     return getOrderedPresets(customPresets);
@@ -740,6 +775,16 @@ export function ChatSettingsPanel({
     }
   }, [open]);
 
+  useEffect(() => {
+    const el = systemPromptBoxRef.current;
+    setSystemPromptOverflows(
+      params.systemPrompt.length > 0 &&
+        el != null &&
+        el.clientHeight > 0 &&
+        el.scrollHeight > el.clientHeight + 1,
+    );
+  }, [params.systemPrompt, open]);
+
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
   const settingsContent = (
@@ -923,6 +968,32 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {specFallbackReason &&
+                  (speculativeType === "auto" ||
+                    speculativeType === "mtp" ||
+                    speculativeType === "mtp+ngram") && (
+                    <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                      <p>
+                        {specFallbackReason === "runtime_error"
+                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                            (llamaUpdateStatus?.update_available
+                              ? " Update llama.cpp to enable it."
+                              : "")}
+                      </p>
+                      {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                        <Button
+                          size="sm"
+                          className="corner-squircle mt-2 h-7 text-[12px]"
+                          onClick={handleMtpUpdate}
+                          disabled={llamaUpdating}
+                          data-test-id="mtp-update-button"
+                        >
+                          {llamaUpdating ? "Updating..." : "Update llama.cpp"}
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 {(speculativeType === "mtp" ||
                   speculativeType === "mtp+ngram") && (
                   <div className="flex items-center justify-between gap-3">
@@ -963,6 +1034,24 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Tensor Parallelism
+                    </span>
+                    <InfoHint>
+                      No effect on a single GPU. On multi-GPU setups, improves
+                      tokens/sec during generation when using dense models. MoE
+                      models don't benefit and can be much slower.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={tensorParallel}
+                    onCheckedChange={setTensorParallel}
+                    data-test-id="tensor-parallel-switch"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -997,9 +1086,12 @@ export function ChatSettingsPanel({
                 )}
               </>
             )}
-            <ChatTemplateFields />
+            {/* Apply/Reset belongs to the model-reload settings above (context
+                length, KV cache, speculative decoding). Render it here, before
+                the Chat Template row, so it never reads as attached to Chat
+                Template (which is edited via its own dialog). */}
             {modelSettingsDirty && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
                   onClick={() => onReloadModel?.()}
@@ -1017,6 +1109,7 @@ export function ChatSettingsPanel({
                     setKvCacheDtype(loadedKvCacheDtype);
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
+                    setTensorParallel(loadedTensorParallel ?? false);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
@@ -1025,6 +1118,7 @@ export function ChatSettingsPanel({
                 </Button>
               </div>
             )}
+            <ChatTemplateFields />
           </div>
         </CollapsibleSection>
         )}
@@ -1071,7 +1165,7 @@ export function ChatSettingsPanel({
                     />
                     <InputGroupAddon
                       align="inline-end"
-                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0 !cursor-pointer"
                     >
                       <span
                         className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
@@ -1252,6 +1346,7 @@ export function ChatSettingsPanel({
         <CollapsibleSection
           label="System Prompt"
           defaultOpen={true}
+          onLabelClick={openSystemPromptEditor}
           headerAction={
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -1278,22 +1373,36 @@ export function ChatSettingsPanel({
             </Tooltip>
           }
         >
-          <button
-            type="button"
-            onClick={openSystemPromptEditor}
-            aria-label="Edit system prompt"
+          {/* Rounded wrapper clips overflowing text and the scrollbar. */}
+          <div
             className={cn(
-              "panel-text-surface -mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
-              params.systemPrompt
-                ? "text-nav-fg"
-                : "text-muted-foreground",
+              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+              systemPromptOverflows && "cursor-pointer",
             )}
           >
-            <span className="block line-clamp-3 whitespace-pre-wrap break-words">
-              {params.systemPrompt ||
-                "Example: You are a helpful assistant..."}
-            </span>
-          </button>
+            <textarea
+              ref={systemPromptBoxRef}
+              value={params.systemPrompt}
+              onChange={(e) => set("systemPrompt")(e.target.value)}
+              onMouseDown={(e) => {
+                // Overflowing prompt: click opens the popup editor instead.
+                // While focused, clicks still move the caret normally.
+                if (
+                  systemPromptOverflows &&
+                  document.activeElement !== e.currentTarget
+                ) {
+                  e.preventDefault();
+                  openSystemPromptEditor();
+                }
+              }}
+              placeholder="Example: You are a helpful assistant..."
+              aria-label="System prompt"
+              className={cn(
+                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                systemPromptOverflows && "cursor-pointer",
+              )}
+            />
+          </div>
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
@@ -1417,6 +1526,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <ConfirmToolCallsToggle />
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
@@ -1598,6 +1708,30 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function ConfirmToolCallsToggle() {
+  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
+  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Confirm tool calls
+        </span>
+        <InfoHint>
+          When on, local Studio tool calls pause for your approval before they
+          run. Provider-hosted tools are not gated here.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={confirmToolCalls}
+        onCheckedChange={setConfirmToolCalls}
       />
     </div>
   );

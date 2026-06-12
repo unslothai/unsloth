@@ -584,3 +584,212 @@ def test_accelerate_utils_imports_module_present():
         "accelerate.utils.imports.is_wandb_available is gone; "
         "disable_broken_wandb cannot patch the source module."
     )
+
+
+def test_accelerate_recursively_apply_empty_logits_patch():
+    """Verify patch_accelerate_recursively_apply overrides recursively_apply to bypass EmptyLogits."""
+    pytest.importorskip("accelerate")
+
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    class EmptyLogits:
+        pass
+
+    e = EmptyLogits()
+    patch_accelerate_recursively_apply()
+
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
+    assert res is e
+
+
+def test_accelerate_gather_empty_logits_debug_mode_patch():
+    """Verify gather and broadcast bypass EmptyLogits when debug mode is enabled."""
+    pytest.importorskip("accelerate")
+    from accelerate.state import PartialState, DistributedType
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+    import unittest.mock as mock
+    import torch
+
+    class EmptyLogits:
+        pass
+
+    e = EmptyLogits()
+    patch_accelerate_recursively_apply()
+
+    # Enable debug mode and mock distributed state
+    state = PartialState()
+    orig_debug = state.debug
+    orig_dist_type = state.distributed_type
+    orig_num_processes = state.num_processes
+
+    state.debug = True
+    state.distributed_type = DistributedType.MULTI_GPU
+    state.num_processes = 2
+
+    # Mock gather_object to return [obj] * num_processes
+    def mock_gather_object(obj, *args, **kwargs):
+        return [obj] * state.num_processes
+
+    # Mock _gpu_gather to recursively apply replication of tensors
+    def mock_gpu_gather(tensor, *args, **kwargs):
+        def _gather_one(t):
+            if t.ndim == 0:
+                t = t.clone()[None]
+            return torch.cat([t] * state.num_processes, dim = 0)
+
+        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type = True)
+
+    # Mock _gpu_broadcast to return data unchanged
+    def mock_gpu_broadcast(data, *args, **kwargs):
+        return data
+
+    try:
+        with (
+            mock.patch(
+                "accelerate.utils.operations.gather_object",
+                side_effect = mock_gather_object,
+            ),
+            mock.patch("accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather),
+            mock.patch(
+                "accelerate.utils.operations._gpu_broadcast",
+                side_effect = mock_gpu_broadcast,
+            ),
+        ):
+            # 1. Top-level EmptyLogits should gather correctly (returns e)
+            res = acc_ops.gather(e)
+            assert res is e
+
+            # 2. Nested EmptyLogits alone
+            res_nested = acc_ops.gather([e])
+            assert isinstance(res_nested, list) and res_nested[0] is e
+
+            # 3. Mixed payload with real tensor and EmptyLogits
+            # Real tensor should be gathered (concatenated across processes).
+            # Tensors must live on state.device or the debug-mode device
+            # check fails on GPU machines.
+            real_tensor = torch.tensor([42], device = state.device)
+            payload = {"labels": real_tensor, "logits": e}
+            res_mixed = acc_ops.gather(payload)
+
+            assert isinstance(res_mixed, dict)
+            assert res_mixed["logits"] is e
+            # Since num_processes = 2, it should be gathered to [42, 42]
+            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
+
+            # 4. Broadcast with EmptyLogits
+            res_broadcast = acc_ops.broadcast(e)
+            assert res_broadcast is e
+
+            # 5. Mixed payload with broadcast
+            res_broadcast_mixed = acc_ops.broadcast(payload)
+            assert isinstance(res_broadcast_mixed, dict)
+            assert res_broadcast_mixed["logits"] is e
+            assert torch.equal(res_broadcast_mixed["labels"], real_tensor)
+    finally:
+        state.debug = orig_debug
+        state.distributed_type = orig_dist_type
+        state.num_processes = orig_num_processes
+
+
+def test_accelerate_patch_is_idempotent():
+    """Calling patch_accelerate_recursively_apply twice must not stack wrappers."""
+    pytest.importorskip("accelerate")
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    patch_accelerate_recursively_apply()
+    recursively_apply = acc_ops.recursively_apply
+    find_device = acc_ops.find_device
+    patch_accelerate_recursively_apply()
+    assert (
+        acc_ops.recursively_apply is recursively_apply
+    ), "DRIFT DETECTED: recursively_apply was wrapped twice."
+    assert acc_ops.find_device is find_device, "DRIFT DETECTED: find_device was wrapped twice."
+
+
+def test_accelerate_find_device_skips_empty_logits():
+    """find_device must search past EmptyLogits and keep None for tensor-free data."""
+    pytest.importorskip("accelerate")
+    import torch
+    import accelerate.utils.operations as acc_ops
+    from accelerate.state import PartialState
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    class EmptyLogits:
+        pass
+
+    patch_accelerate_recursively_apply()
+    tensor = torch.tensor([1.0])
+    # Sentinel first must not stop the search before the real tensor
+    assert acc_ops.find_device({"logits": EmptyLogits(), "labels": tensor}) == tensor.device
+    # Tensor-free payloads without the sentinel keep returning None
+    # (AlignDevicesHook relies on None to skip output device moves)
+    assert acc_ops.find_device({"a": 1}) is None
+    # Sentinel-only payloads fall back to the current device so that
+    # debug mode find_device(...).type does not raise AttributeError
+    assert acc_ops.find_device(EmptyLogits()) == PartialState().device
+
+
+def test_accelerate_patch_wired_into_gpu_init():
+    """The patch must be installed at startup, not only importable."""
+    import pathlib
+    import unsloth.import_fixes as import_fixes
+
+    source = pathlib.Path(import_fixes.__file__).with_name("_gpu_init.py").read_text()
+    assert "patch_accelerate_recursively_apply()" in source, (
+        "DRIFT DETECTED: patch_accelerate_recursively_apply is defined but "
+        "never called in _gpu_init.py, so real imports never install it."
+    )
+
+
+# ===========================================================================
+# bitsandbytes -- ROCm arch / warp-size detection shape
+# ===========================================================================
+
+
+def test_bitsandbytes_rocm_detection_helpers_recognizable():
+    """``fix_bitsandbytes_rocm_arch_detection`` swaps bnb's ROCm helpers
+    only when they shell out via subprocess and never consult torch device
+    props; a third shape is declined by design, silently restoring Windows
+    ROCm noise. Fail so the sniff gets updated. Reads source, no import."""
+    spec = importlib.util.find_spec("bitsandbytes")
+    if spec is None:
+        pytest.skip("bitsandbytes not installed -- nothing to drift-check.")
+    cuda_specs_path = None
+    for location in spec.submodule_search_locations or []:
+        candidate = os.path.join(location, "cuda_specs.py")
+        if os.path.isfile(candidate):
+            cuda_specs_path = candidate
+            break
+    if cuda_specs_path is None:
+        pytest.skip("bitsandbytes has no cuda_specs.py (pre-ROCm version).")
+
+    import ast
+
+    with open(cuda_specs_path, "r", encoding = "utf-8") as f:
+        source = f.read()
+    helpers = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("get_rocm_gpu_arch", "get_rocm_warpsize")
+    ]
+    if not helpers:
+        pytest.skip("bitsandbytes cuda_specs has no ROCm detection helpers.")
+    for node in helpers:
+        segment = ast.get_source_segment(source, node) or ""
+        recognized = (
+            "subprocess" in segment
+            or "get_device_properties" in segment
+            or "gcnArchName" in segment
+        )
+        if not recognized:
+            pytest.fail(
+                f"DRIFT DETECTED: bitsandbytes.cuda_specs.{node.name} uses "
+                "neither subprocess nor torch device properties; "
+                "fix_bitsandbytes_rocm_arch_detection's shape sniff will "
+                "decline to patch it and Windows ROCm import-time noise / "
+                "wrong ROCM_GPU_ARCH may return."
+            )

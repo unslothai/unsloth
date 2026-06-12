@@ -86,7 +86,7 @@ export function ApiKeysTab() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}
         </h1>
         <p className="text-xs text-muted-foreground">

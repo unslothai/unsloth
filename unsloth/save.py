@@ -186,6 +186,8 @@ def _quantize_q2_k_l(
                 command,
                 shell = False,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
                 bufsize = 1,
@@ -206,6 +208,8 @@ def _quantize_q2_k_l(
                 check = True,
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
             )
     except subprocess.CalledProcessError as e:
         if print_output and hasattr(e, "stdout") and e.stdout:
@@ -1092,7 +1096,6 @@ def unsloth_save_model(
     gc.collect()
 
     # Remove temporary location
-    import shutil
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
@@ -1224,7 +1227,6 @@ def install_llama_cpp_old(version = -10):
         for i in range(30):
             print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
             time.sleep(1)
-        import shutil
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
 
@@ -1991,6 +1993,8 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             ["curl", "http://localhost:11434"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 3,
         )
         if init_check.returncode == 0:
@@ -2013,6 +2017,8 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
         text = True,
         bufsize = 1,
         universal_newlines = True,
+        encoding = "utf-8",
+        errors = "replace",
     )
 
     for line in iter(process.stdout.readline, ""):
@@ -2033,6 +2039,8 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
             ["curl", "http://localhost:11434"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 3,
         )
         if init_check.returncode == 0:
@@ -2049,6 +2057,8 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
         text = True,
         bufsize = 1,
         universal_newlines = True,
+        encoding = "utf-8",
+        errors = "replace",
     )
 
     for line in iter(process.stdout.readline, ""):
@@ -2494,7 +2504,6 @@ def unsloth_push_to_hub_gguf(
 
     except Exception as e:
         if cleanup_temp:
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 try:
                     shutil.rmtree(d)
@@ -2681,7 +2690,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         # Clean up temporary directory
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 if os.path.exists(d):
                     try:
@@ -2762,6 +2770,8 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
             stderr = subprocess.PIPE,
             bufsize = 1,
             universal_newlines = True,
+            encoding = "utf-8",
+            errors = "replace",
         ) as sp:
             for line in sp.stdout:
                 print(line, end = "", flush = True)
@@ -2842,6 +2852,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
             stderr = subprocess.PIPE,
             bufsize = 1,
             universal_newlines = True,
+            encoding = "utf-8",
+            errors = "replace",
         ) as sp:
             for line in sp.stdout:
                 print(line, end = "", flush = True)

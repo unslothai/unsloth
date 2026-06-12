@@ -18,7 +18,12 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
+from utils.paths import (
+    ensure_dir,
+    outputs_root,
+    resolve_export_write_dir,
+    resolve_output_dir,
+)
 from core.inference import get_inference_backend
 
 # GPU-only imports — guarded for Apple Silicon where these aren't needed
@@ -336,7 +341,7 @@ class ExportBackend:
                     save_method = "merged_16bit"
 
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -436,7 +441,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         try:
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -563,6 +568,7 @@ class ExportBackend:
             return False, "No model loaded. Please select a checkpoint first.", None
 
         output_path: Optional[str] = None
+        model_tmp_to_cleanup: Optional[str] = None
         try:
             # unsloth expects lowercase quant method
             quant_method = quantization_method.lower()
@@ -588,9 +594,8 @@ class ExportBackend:
                     _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
 
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
-                # Absolute path so unsloth's relative-path internals resolve
-                # against the repo root cwd, not the export directory.
+                save_directory = str(resolve_export_write_dir(save_directory))
+                # Keep unsloth relative-path internals anchored to the repo cwd.
                 abs_save_dir = os.path.abspath(save_directory)
                 logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
@@ -604,9 +609,15 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                model_save_path = os.path.join(abs_save_dir, "model")
+                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
+
+                # Avoid clobbering an existing user-owned model/ directory.
+                import uuid
+
+                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
+                model_tmp_to_cleanup = _model_tmp
                 self.current_model.save_pretrained_gguf(
-                    model_save_path,
+                    _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
                 )
@@ -618,9 +629,11 @@ class ExportBackend:
                     shutil.move(src, dest)
                     logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
 
-                # Flatten any .gguf from subdirs (e.g. model_gguf/) into abs_save_dir.
+                # Flatten GGUF files from subdirs created during this export.
                 for sub in list(Path(abs_save_dir).iterdir()):
                     if not sub.is_dir():
+                        continue
+                    if sub.name in pre_existing_subs:
                         continue
                     for src in sub.glob("*.gguf"):
                         dest = os.path.join(abs_save_dir, src.name)
@@ -634,7 +647,7 @@ class ExportBackend:
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir():
+                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
@@ -683,6 +696,8 @@ class ExportBackend:
             )
 
         except Exception as e:
+            if model_tmp_to_cleanup:
+                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
@@ -712,7 +727,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         try:
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 

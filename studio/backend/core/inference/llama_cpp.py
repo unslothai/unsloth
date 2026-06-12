@@ -28,10 +28,15 @@ from typing import Callable, Generator, Iterable, List, Optional
 import httpx
 
 from core.inference.llama_server_args import (
+    extra_args_disable_mmproj,
     parse_cache_override,
     parse_ctx_override,
+    parse_split_mode_override,
     resolve_cache_type_kv,
     resolve_requested_ctx,
+    resolve_tensor_parallel,
+    strip_shadowing_flags,
+    strip_split_mode_only,
 )
 from core.tool_healing import (
     _TC_END_TAG_RE,
@@ -59,8 +64,42 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
 )
+from state.tool_approvals import (
+    TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
+    begin_tool_decision,
+    new_approval_id,
+    wait_tool_decision,
+)
 
 logger = get_logger(__name__)
+
+
+def _wsl_system_rocm_lib_dirs() -> "list[str]":
+    """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
+
+    The bundled bare-metal HIP can't drive WSL's /dev/dxg and segfaults on the
+    first GPU call; the system ROCm libs (libamdhip64 + librocdxg) can, while
+    the bundle still supplies libggml-hip / librocblas (gfx1151 kernels).
+    Mirrors install_llama_prebuilt._wsl_system_rocm_lib_dirs so a prebuilt that
+    passed install validation runs the same at serve time. No-op off a ROCDXG
+    WSL host (needs /dev/dxg, "microsoft" /proc/version, librocdxg in /opt/rocm).
+    """
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    out: "list[str]" = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            out.append(d)
+    return out
 
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
@@ -519,9 +558,18 @@ _CTX_FIT_VRAM_FRACTION = 0.90
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
-def _auto_mode_drops_mtp(req_mode: Optional[str], size_b: Optional[float]) -> bool:
-    """Auto mode drops MTP below _MTP_MIN_SIZE_B (draft-mtp regresses there);
-    forced mtp / mtp+ngram engage regardless of size."""
+def _auto_mode_drops_mtp(
+    req_mode: Optional[str],
+    size_b: Optional[float],
+    *,
+    has_separate_drafter: bool = False,
+) -> bool:
+    """Auto mode drops MTP below _MTP_MIN_SIZE_B for an embedded draft head
+    (its per-token cost regresses there); a separate drafter (Gemma) is a tiny
+    standalone model that still speeds up below 3B, so it never drops. Forced
+    mtp / mtp+ngram engage regardless of size."""
+    if has_separate_drafter:
+        return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
@@ -672,6 +720,11 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
+        # Why MTP was disabled on the last load that asked for it (auto on an
+        # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
+        # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
+        # a newer prebuilt would help; "runtime_error" -> it may not.
+        self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
@@ -688,6 +741,8 @@ class LlamaCppBackend:
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
+        # Whether --split-mode tensor was applied on the active load.
+        self._tensor_parallel: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested
@@ -789,6 +844,11 @@ class LlamaCppBackend:
     @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
+
+    @property
+    def spec_fallback_reason(self) -> Optional[str]:
+        """Why MTP was disabled on the last MTP-requesting load, else None."""
+        return self._spec_fallback_reason
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -962,8 +1022,10 @@ class LlamaCppBackend:
         # enable_thinking / reasoning_effort -- skip.
         if self._supports_reasoning and not self._reasoning_always_on:
             if self._reasoning_style == "reasoning_effort":
-                if reasoning_effort in ("low", "medium", "high"):
+                if reasoning_effort in ("none", "low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
+                elif reasoning_effort == "minimal":
+                    kwargs["reasoning_effort"] = "low"
                 elif enable_thinking is not None:
                     kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
             else:
@@ -980,6 +1042,11 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def tensor_parallel(self) -> bool:
+        """Whether --split-mode tensor is active on the loaded server."""
+        return self._tensor_parallel
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -1139,6 +1206,8 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "supports_kv_unified": False,
+                "supports_fit_ctx": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1152,6 +1221,8 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        supports_kv_unified = False
+        supports_fit_ctx = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1239,6 +1310,9 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+
+            supports_kv_unified = _is_real("--kv-unified")
+            supports_fit_ctx = _is_real("--fit-ctx")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1249,6 +1323,8 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "supports_kv_unified": supports_kv_unified,
+            "supports_fit_ctx": supports_fit_ctx,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -1297,6 +1373,105 @@ class LlamaCppBackend:
         except Exception:
             return False
         return False
+
+    # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
+    # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
+    # workstation parts as substrings: "a100" must not fire on "RTX A1000".
+    _DATACENTER_GPU_RE = re.compile(
+        r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|"
+        r"l40s?|l4|rtx pro 6000|rtx 6000 ada)\b"
+    )
+
+    @staticmethod
+    def _is_datacenter_gpu(gpu_indices = None) -> bool:
+        """True iff every selected NVIDIA GPU is a datacenter/professional part.
+        NVIDIA-only, fails open to False (consumer GeForce, ROCm, CPU and errors
+        are left untouched); a mixed DC+consumer selection counts as non-DC.
+
+        gpu_indices are PHYSICAL ids (see _get_gpu_free_memory), but
+        get_device_properties wants mask-relative ordinals, so we rebuild the
+        ordinal->physical map from CUDA_VISIBLE_DEVICES and key names by physical
+        id. Otherwise a masked host (CUDA_VISIBLE_DEVICES=4,5,6,7, selection [4,5])
+        would drop the tuning or probe the wrong GPU."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return False  # ROCm reuses torch.cuda.*; not a CUDA part
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            count = torch.cuda.device_count()
+
+            # Mirror _get_gpu_free_memory: map visible ordinal -> physical id via
+            # CUDA_VISIBLE_DEVICES; unset/unparsable leaves physical id == ordinal.
+            physical_ids: Optional[list[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+
+            pattern = LlamaCppBackend._DATACENTER_GPU_RE
+            names_by_id: dict[int, str] = {}
+            for ordinal in range(count):
+                try:
+                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
+                except Exception:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names_by_id[pid] = name
+
+            indices = list(gpu_indices) if gpu_indices else list(names_by_id)
+            saw = False
+            for _i in indices:
+                name = names_by_id.get(_i)
+                if name is None:
+                    continue  # not visible -> skip (fail conservative)
+                saw = True
+                if not pattern.search(name):
+                    return False
+            return saw
+        except Exception:
+            return False
+
+    @staticmethod
+    def _effective_gpu_count(gpu_indices = None) -> int:
+        """GPUs llama-server will use: len(selection), else the visible CUDA
+        device count (None = every visible GPU). 0 on error so multi-GPU tuning
+        stays off when the count is unknown."""
+        if gpu_indices is not None:
+            return len(gpu_indices)
+        try:
+            import torch
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                return torch.cuda.device_count()
+        except Exception:
+            return 0
+        return 0
+
+    @staticmethod
+    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
+        """Inject DC llama.cpp tuning into env in place via setdefault (user
+        values win); return whether the box qualified. Opt out with
+        UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
+        (consumer/ROCm/CPU/error are a no-op). Sets GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F
+        for any qualifying GPU (FP32 accum: ~0% cost on B200, real cost on GeForce),
+        plus GGML_CUDA_P2P + CUDA_SCALE_LAUNCH_QUEUES=4x for multi-GPU (+33-51% pp
+        tensor-split, +8-16% pipeline split on B200)."""
+        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+            return False
+        if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
+            return False
+        env.setdefault("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")
+        if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
+            env.setdefault("GGML_CUDA_P2P", "1")
+            env.setdefault("CUDA_SCALE_LAUNCH_QUEUES", "4x")
+        return True
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
@@ -1475,6 +1650,23 @@ class LlamaCppBackend:
     # deferring to ``--fit on``. 5% headroom covers CUDA context + compute
     # buffers; 0.90 dropped 91-94% fits to CPU offload (#5106).
     _GPU_PIN_VRAM_FRACTION = 0.95
+
+    # Per-GPU compute-graph buffer to reserve in tensor mode (MiB). This is the
+    # logits buffer (n_batch x vocab) + activation scratch that llama.cpp sizes
+    # via graph_reserve -- it is roughly EQUAL on every device (not proportional
+    # to the tensor split) and independent of context. Measured ~2.3 GB
+    # (gemma-3-27B) to ~3.8 GB (gemma-4-31B) on a 256k-vocab model; we reserve a
+    # conservative headroom above that. It is (a) subtracted from each GPU's free
+    # VRAM before computing --tensor-split, so the roomier GPU absorbs more
+    # weight and the smallest GPU keeps room for KV, and (b) reserved per device
+    # when capping context. The auto-fallback to layer split covers any
+    # underestimate. NOTE: scales with the model's vocab / batch size; tune if a
+    # large-vocab model OOMs at load.
+    _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
+
+    # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
+    # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
+    _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
@@ -1778,6 +1970,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
+        budget_frac: Optional[float] = None,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -1811,8 +2004,11 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP engaged: carve the drafter's reserve out of the fit budget.
-        budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
+        # MTP engaged: carve the drafter's reserve out of the fit budget. Callers
+        # can override outright (tensor-parallel mode passes a fatter margin), so
+        # only compute a default when none was supplied.
+        if budget_frac is None:
+            budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
@@ -2168,8 +2364,9 @@ class LlamaCppBackend:
                         else None
                     ),
                     (
-                        f"{general['general.organization']}/"
-                        f"{general['general.basename']}".replace(" ", "-")
+                        f"{general['general.organization']}/{general['general.basename']}".replace(
+                            " ", "-"
+                        )
                         if general.get("general.organization") and general.get("general.basename")
                         else None
                     ),
@@ -2620,6 +2817,16 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
+        # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
+        # unsupported architectures abort the load with this marker. Point the
+        # user at the toggle instead of a generic invalid-GGUF/OOM message.
+        if "split_mode_tensor not implemented" in lowered:
+            return (
+                "Tensor parallelism is not supported for this model's "
+                "architecture. Turn off Tensor Parallelism in the model "
+                "settings and reload."
+            )
+
         # Detect Ollama source up front so the arch branch can keep the
         # Ollama hint instead of the generic "unsupported arch" message.
         gguf = gguf_path or ""
@@ -2675,6 +2882,97 @@ class LlamaCppBackend:
             "llama-server failed to start. "
             "Check that the GGUF file is valid and you have enough memory."
         )
+
+    def _plan_tensor_parallel(
+        self,
+        gpus: list[tuple[int, int]],
+        model_size: int,
+        target_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        n_parallel: int = 1,
+        mtp_engaged: bool = False,
+        max_target_ctx: Optional[int] = None,
+    ) -> tuple[int, int, list[int], Optional[list[int]]]:
+        """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
+
+        ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
+        weight size in bytes; ``target_ctx`` is the context to fit (the explicit
+        request, or the model's native length for auto). ``max_target_ctx`` is
+        the native/hardware ceiling used only for the UI bound (defaults to
+        ``target_ctx``). Returns
+        ``(effective_ctx, max_available_ctx, gpu_indices, tensor_split)``.
+
+        Policy (assumes >= 2 GPUs; the caller drops the toggle below that):
+        - Cap context to the KV that fits the pooled VRAM after the weights and
+          one per-device compute-graph buffer (``_TENSOR_PARALLEL_BUFFER_RESERVE_MIB``).
+          llama.cpp's ``--fit`` is a no-op in tensor mode, so this is the only
+          cap, honored even for an explicit ``-c``. It is more accurate than the
+          0.80 whole-pool heuristic, which over-reserves and leaves VRAM unused.
+        - ``tensor_split`` is None (llama.cpp's even default, safe for every arch
+          incl. Gemma 3n which GGML_ASSERTs on a weighted split) when an even
+          share fits the smallest GPU; otherwise it is weighted by
+          ``(free - buffer)`` so the roomier GPU absorbs more weight and the
+          smallest GPU keeps room for KV.
+        """
+        # Drop GPUs that can't hold the per-device compute-graph buffer; they'd
+        # OOM in tensor mode. load_model already filters before calling, so this
+        # is defense-in-depth that also keeps the pure function self-contained
+        # (and unit-testable without a GPU).
+        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        usable_gpus = [g for g in gpus if g[1] >= reserve_mib]
+        gpu_indices = sorted(idx for idx, _ in usable_gpus)
+        if len(gpu_indices) < 2:
+            # Tensor parallelism is meaningless on <2 GPUs (the caller drops the
+            # toggle before this); be defensive and never emit a split here.
+            return (
+                target_ctx if target_ctx > 0 else 4096,
+                target_ctx if target_ctx > 0 else 4096,
+                gpu_indices,
+                None,
+            )
+        free_by_idx = {idx: free for idx, free in usable_gpus}
+        pool_mib = sum(free_by_idx.values())
+        kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
+        if mtp_engaged:
+            # MTP keeps a draft model + its own KV cache on GPU.
+            kv_budget_b -= 2 * 1024**3
+
+        def _fit_ctx(ctx: int) -> int:
+            # Largest context whose KV fits the pooled budget. Floors small, but
+            # never raises an explicit ctx above what was asked.
+            if self._can_estimate_kv() and ctx > 0:
+                ctx_floor = min(2048, ctx)
+                if kv_budget_b <= 0:
+                    # Weights + buffers exceed the pool -> floor; the load then
+                    # falls back to layer split.
+                    return ctx_floor
+                kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel)
+                if kv_at <= kv_budget_b:
+                    return ctx
+                return max(ctx_floor, int(ctx * kv_budget_b / kv_at))
+            # KV size unknown -> can't prove a safe cap; floor.
+            return min(4096, ctx) if ctx > 0 else 4096
+
+        # max_available_ctx is the hardware ceiling for the UI bound, sized from
+        # the native context independent of an explicit small -c (which only
+        # caps effective_ctx).
+        max_ctx_target = max_target_ctx if (max_target_ctx and max_target_ctx > 0) else target_ctx
+        max_available_ctx = _fit_ctx(max_ctx_target)
+        effective_ctx = min(_fit_ctx(target_ctx), max_available_ctx)
+
+        min_free_mib = min(free_by_idx.values())
+        kv_bytes = (
+            self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel)
+            if (self._can_estimate_kv() and effective_ctx > 0)
+            else 0
+        )
+        even_share_mib = (model_size + kv_bytes) / len(gpu_indices) / (1024 * 1024)
+        tensor_split: Optional[list[int]] = None
+        if even_share_mib > (min_free_mib - reserve_mib):
+            adj = [max(0, int(free_by_idx[i] - reserve_mib)) for i in gpu_indices]
+            if sum(adj) > 0:
+                tensor_split = adj
+        return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
     @staticmethod
     def _is_projector_incompatibility(output: str) -> bool:
@@ -2798,6 +3096,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        tensor_parallel: bool = False,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
@@ -2829,6 +3128,7 @@ class LlamaCppBackend:
                 cache_type_kv = cache_type_kv,
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
+                tensor_parallel = tensor_parallel,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -2906,8 +3206,8 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
+                    # Auto-download mmproj for vision models unless opted out.
+                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -2915,19 +3215,14 @@ class LlamaCppBackend:
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
                     # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops. Skipped when the user disabled MTP, drives
-                    # --spec-type manually via extra_args, or in auto mode on a
-                    # sub-3B model (e.g. Gemma E2B) where the resolver drops
-                    # MTP anyway -- no point fetching a drafter it never uses.
-                    # Forced mtp / mtp+ngram still download (user override).
+                    # this no-ops, so the size gate stays out of it: a separate
+                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
+                    # below decides the final emission. Skipped only when the
+                    # user disabled MTP or drives --spec-type manually.
                     _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-                    _auto_drops_mtp = _auto_mode_drops_mtp(
-                        _spec_canon, _extract_model_size_b(model_identifier)
-                    )
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _auto_drops_mtp
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         mtp_draft_path = self._download_mtp(
@@ -2973,10 +3268,43 @@ class LlamaCppBackend:
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 cache_override = parse_cache_override(extra_args)
                 cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                # A user --split-mode in extras last-wins-overrides the
+                # toggle, so reconcile it back into tensor_parallel state.
+                split_mode_override = parse_split_mode_override(extra_args)
+                tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
+                # Tensor mode aborts on a quantized KV cache, so drop it for the
+                # tensor attempt (and strip any inherited/explicit --cache-type
+                # that would re-impose it when appended last). The layer-split
+                # fallback re-runs with tensor_parallel False and keeps the type.
+                if (
+                    tensor_parallel
+                    and cache_type_kv
+                    and cache_type_kv.strip().lower() not in self._TENSOR_PARALLEL_KV_TYPES
+                ):
+                    logger.info(
+                        "Tensor parallelism requires a non-quantized KV cache; "
+                        "ignoring cache type %s for the tensor attempt.",
+                        cache_type_kv,
+                    )
+                    cache_type_kv = None
+                    if extra_args:
+                        extra_args = strip_shadowing_flags(
+                            extra_args,
+                            strip_context = False,
+                            strip_cache = True,
+                            strip_spec = False,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
                     logger.info(f"User --cache-type-k/-v {cache_override} honored for KV estimate")
+                if split_mode_override is not None:
+                    logger.info(
+                        f"User --split-mode {split_mode_override} honored; "
+                        "reconciled into tensor_parallel state"
+                    )
                 effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
@@ -3007,8 +3335,12 @@ class LlamaCppBackend:
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
+                    # Sub-3B drops MTP only for an embedded head; a separate
+                    # drafter (Gemma) engages and needs its VRAM reserved.
                     _mtp_sub_3b_for_fit = (
-                        _mtp_size_for_fit is not None and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        _mtp_size_for_fit is not None
+                        and _mtp_size_for_fit < _MTP_MIN_SIZE_B
+                        and not bool(mtp_draft_path)
                     )
                     _mtp_will_engage = bool(
                         not _extra_args_set_spec_type(extra_args)
@@ -3034,6 +3366,8 @@ class LlamaCppBackend:
                     #   Auto n_ctx=0 (native): prefer fewer GPUs with reduced
                     #     context, since multi-GPU is slower.
                     gpu_indices, use_fit = None, True
+                    # Per-GPU weight proportions for tensor mode (None = even).
+                    tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
                     # MTP draft model lives outside the main estimates; carve
                     # its reserve out of every fit budget and pin threshold so
@@ -3041,10 +3375,67 @@ class LlamaCppBackend:
                     _mtp_reserve = _MTP_VRAM_RESERVE_FRAC if _mtp_will_engage else 0.0
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _mtp_reserve
 
-                    if gpus and self._can_estimate_kv() and effective_ctx > 0:
-                        # Largest hardware-aware cap from the native context
-                        # across all usable GPU subsets (for UI bounds),
-                        # independent of the requested context.
+                    # Tensor mode allocates a compute-graph buffer on every
+                    # participating GPU, so a GPU with less free VRAM than that
+                    # reserve can't host it and would OOM at load. Drop those
+                    # from the tensor-parallel set up front (gpu_indices below
+                    # becomes the CUDA_VISIBLE_DEVICES mask, so they're excluded
+                    # from llama-server entirely, not just given zero weight).
+                    tp_gpus = gpus
+                    if tensor_parallel:
+                        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+                        tp_gpus = [g for g in gpus if g[1] >= reserve_mib]
+
+                    if tensor_parallel and len(tp_gpus) < 2:
+                        # Tensor parallelism needs >= 2 usable GPUs. On a single
+                        # GPU --split-mode tensor is a no-op; with 0 GPUs (CPU-only
+                        # or probe failed) it must not reach llama-server; and a
+                        # GPU below the buffer reserve can't participate. Drop the
+                        # flag and fall through to normal layer/CPU allocation.
+                        logger.info(
+                            "Tensor parallelism requested but only %d of %d GPU(s) "
+                            "have enough free VRAM for the compute buffer; "
+                            "ignoring (needs >= 2).",
+                            len(tp_gpus),
+                            len(gpus),
+                        )
+                        tensor_parallel = False
+                        # A user --split-mode tensor in extras is appended after
+                        # Studio's flags, so it would still reach llama-server and
+                        # fail here; strip it so the downgrade actually applies.
+                        extra_args = strip_split_mode_only(extra_args)
+
+                    if tensor_parallel and tp_gpus:
+                        # Tensor-parallel allocation: use all usable GPUs, weight
+                        # the split by (free - buffer), and cap context to the
+                        # pooled VRAM after weights + per-device compute-graph
+                        # buffers. See _plan_tensor_parallel for the policy.
+                        target_ctx = (
+                            effective_ctx
+                            if explicit_ctx
+                            else (self._context_length or effective_ctx)
+                        )
+                        (
+                            effective_ctx,
+                            max_available_ctx,
+                            gpu_indices,
+                            tp_tensor_split,
+                        ) = self._plan_tensor_parallel(
+                            tp_gpus,
+                            model_size,
+                            target_ctx,
+                            cache_type_kv = cache_type_kv,
+                            n_parallel = n_parallel,
+                            mtp_engaged = _mtp_will_engage,
+                            # Report the UI ceiling from native ctx, not the
+                            # explicit small request.
+                            max_target_ctx = self._context_length or target_ctx,
+                        )
+                        use_fit = False
+                    elif gpus and self._can_estimate_kv() and effective_ctx > 0:
+                        # Compute the largest hardware-aware cap from the model's
+                        # native context across all usable GPU subsets (for UI
+                        # bounds), independent of the currently requested context.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -3167,12 +3558,15 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
+                    tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
-                launch_mmproj_path = self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
-                )
+                launch_mmproj_path = None
+                if not extra_args_disable_mmproj(extra_args):
+                    launch_mmproj_path = self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
@@ -3219,6 +3613,16 @@ class LlamaCppBackend:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
 
+                cmd.extend(
+                    self._ctx_integrity_flags(
+                        n_parallel,
+                        use_fit,
+                        requested_ctx,
+                        effective_ctx,
+                        self.probe_server_capabilities(binary),
+                    )
+                )
+
                 # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
                 # so we don't inherit llama-server's internal default, which
                 # has varied (hardware concurrency incl. hyperthreads on some
@@ -3253,6 +3657,27 @@ class LlamaCppBackend:
                     logger.info(f"KV cache type: {cache_type_kv}")
                 else:
                     self._cache_type_kv = None
+
+                # Tensor parallelism: split the model across GPUs by tensor
+                # rather than by layer. Multi-GPU only -- a no-op on a single
+                # GPU. Default (layer split) is left implicit by omitting the
+                # flag. See llama.cpp --split-mode.
+                if tensor_parallel:
+                    cmd.extend(["--split-mode", "tensor"])
+                    if tp_tensor_split and len(tp_tensor_split) > 1:
+                        cmd.extend(
+                            [
+                                "--tensor-split",
+                                ",".join(str(int(x)) for x in tp_tensor_split),
+                            ]
+                        )
+                    self._tensor_parallel = True
+                    logger.info(
+                        "Tensor parallelism: --split-mode tensor, --tensor-split %s",
+                        tp_tensor_split,
+                    )
+                else:
+                    self._tensor_parallel = False
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
@@ -3363,6 +3788,14 @@ class LlamaCppBackend:
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
+                # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
+                # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
+                if self._apply_datacenter_env(env, gpu_indices):
+                    multi_gpu = self._effective_gpu_count(gpu_indices) > 1
+                    logger.info(
+                        f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
+                    )
+
                 if sys.platform == "win32":
                     # Ordering: see _build_windows_path_dirs. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3388,7 +3821,15 @@ class LlamaCppBackend:
                     # plus CUDA runtime libs (libcudart, libcublas, etc.)
                     import platform
 
-                    lib_dirs = [binary_dir]
+                    lib_dirs = []
+                    # WSL: system HIP before the bundle's (which segfaults on
+                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
+                    # validates the prebuilt with this same ordering.
+                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                        lib_dirs.append(_wsl_rocm)
+                    if lib_dirs:
+                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+                    lib_dirs.append(binary_dir)
                     _arch = platform.machine()  # x86_64, aarch64, etc.
 
                     # Pip-installed nvidia CUDA runtime libs. The prebuilt
@@ -3447,7 +3888,7 @@ class LlamaCppBackend:
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # HIP/ROCR set, so set those too.
+                # set, so set HIP_VISIBLE_DEVICES too.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -3455,7 +3896,19 @@ class LlamaCppBackend:
                         import torch as _torch
                         if getattr(_torch.version, "hip", None) is not None:
                             env["HIP_VISIBLE_DEVICES"] = pinned
-                            env["ROCR_VISIBLE_DEVICES"] = pinned
+                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
+                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
+                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
+                            # setting both with the same physical indices applies
+                            # the mask twice: ROCR reduces the visible set and
+                            # re-indexes it from 0, then HIP indexes into the
+                            # already-reduced set. A single non-zero pin (e.g.
+                            # "1") then points out of range at the HIP layer, HIP
+                            # enumerates 0 devices, and llama.cpp falls back to
+                            # CPU ("ggml_cuda_init: no ROCm-capable device is
+                            # detected"). The HIP mask alone narrows correctly;
+                            # clear any inherited ROCR mask so it can't double up.
+                            env.pop("ROCR_VISIBLE_DEVICES", None)
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -3572,6 +4025,7 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
+                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
@@ -3591,8 +4045,13 @@ class LlamaCppBackend:
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
                     _lo = "\n".join(self._stdout_lines).lower()
+                    # Only an unknown architecture proves the prebuilt predates
+                    # this MTP model (an update fixes it). The memory/context
+                    # build failures are generic (VRAM / ctx pressure), where an
+                    # update may not help, so classify those as runtime_error.
+                    _arch_unsupported = "unknown model architecture" in _lo
                     if (
-                        "unknown model architecture" in _lo
+                        _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
                         or "failed to create llama_context" in _lo
@@ -3602,10 +4061,14 @@ class LlamaCppBackend:
                             "speculative decoding -- run `unsloth studio "
                             "update` for MTP"
                         )
+                        self._spec_fallback_reason = (
+                            "binary_outdated" if _arch_unsupported else "runtime_error"
+                        )
                     else:
                         _retry_reason = (
                             "retrying without speculative decoding in case MTP is the cause"
                         )
+                        self._spec_fallback_reason = "runtime_error"
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -3691,7 +4154,7 @@ class LlamaCppBackend:
                     )
 
                 logger.info(
-                    f"llama-server ready on port {self._port} " f"for model '{model_identifier}'"
+                    f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
 
             # Probe outside _lock (interruptible by /unload); init inside.
@@ -3776,23 +4239,32 @@ class LlamaCppBackend:
               https://github.com/ggml-org/llama.cpp/pull/18471
               MTP guide: unsloth.ai/docs/models/qwen3.6#mtp-guide
 
-        Sub-3B dense MTP regresses vs spec-off: the draft head's per-token
-        cost exceeds the acceptance savings at this scale. Q4_K_XL clean
-        bench (each prompt once after an unrelated warmup) on B200 + x86 CPU:
+        Sub-3B dense MTP regresses vs spec-off when the head is baked into the
+        main GGUF (Qwen): the draft head's per-token cost exceeds the
+        acceptance savings at this scale. Q4_K_XL clean bench (each prompt once
+        after an unrelated warmup) on B200 + x86 CPU:
           0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
           2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
           0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
           2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
           4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
+        A separate drafter (Gemma's root mtp-*.gguf) is a different, cheaper
+        mechanism that wins even below 3B, so it is exempt from the sub-3B drop
+        (``mtp_draft_path`` set -> not too small). B200 Q4_K_XL bench, draft-mtp
+        n=2 vs OFF: gemma-4-E2B (2B) = 1.21x, accept ~0.65 (vs ngram = 1.00x);
+        gemma-4-E4B (4B) and 12B engage as usual.
         Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
-        diverse content); forced MTP on a model with no head/drafter defaults
-        back (mtp -> spec-default, mtp+ngram -> ngram-mod) since llama-server
-        aborts otherwise; sub-3B real-MTP engages with a warning.
+        diverse content) for an embedded sub-3B head; forced MTP on a model
+        with no head/drafter defaults back (mtp -> spec-default, mtp+ngram ->
+        ngram-mod) since llama-server aborts otherwise; a drafter the binary
+        cannot build (older prebuilt, or a CUDA kernel limit) aborts the spawn
+        and the load retries once without speculative decoding.
         """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
+        self._spec_fallback_reason = None
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -3806,7 +4278,11 @@ class LlamaCppBackend:
         )
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
-        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B
+        # The sub-3B regression is an embedded-head cost; a separate drafter
+        # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        _mtp_too_small = (
+            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -3838,6 +4314,7 @@ class LlamaCppBackend:
                     "run `unsloth studio update`. Loading without "
                     "speculative decoding."
                 )
+                self._spec_fallback_reason = "binary_no_mtp"
                 return False
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -3986,6 +4463,7 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        tensor_parallel: bool = False,
         mtp_draft_path: Optional[str] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -4020,6 +4498,12 @@ class LlamaCppBackend:
             return value
 
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
+            return False
+
+        # Reconcile a user --split-mode in extras (load_model does the same), so
+        # an extras-driven tensor load isn't seen as a mismatch that needlessly
+        # kills/reloads a healthy server.
+        if self._tensor_parallel != resolve_tensor_parallel(extra_args, tensor_parallel):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
@@ -4093,6 +4577,12 @@ class LlamaCppBackend:
             return None
         return saw_gpu_buffer
 
+    def load_cancelled(self) -> bool:
+        """True if a load was cancelled (e.g. via unload/_cancel_event) and not
+        yet consumed by the next load_model. Lets the tensor->layer fallback
+        avoid restarting a load the user just cancelled."""
+        return self._cancel_event.is_set()
+
     def unload_model(self) -> bool:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
@@ -4103,6 +4593,7 @@ class LlamaCppBackend:
             self._gguf_path = None
             self._hf_repo = None
             self._mtp_draft_path = None
+            self._spec_fallback_reason = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False
@@ -4124,6 +4615,7 @@ class LlamaCppBackend:
             self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._tensor_parallel = False
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
@@ -4301,7 +4793,7 @@ class LlamaCppBackend:
 
                         proc.kill()
                         logger.info(
-                            f"Killed orphaned llama-server process " f"(pid={proc.info['pid']})"
+                            f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
                     except (
                         psutil.NoSuchProcess,
@@ -4430,6 +4922,64 @@ class LlamaCppBackend:
 
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
+
+    @staticmethod
+    def _ctx_integrity_flags(
+        n_parallel: int, use_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict
+    ) -> list[str]:
+        """Flags that keep the per-request window equal to the advertised ctx.
+
+        Explicit ``--parallel`` disables llama-server's auto-slots
+        ``--kv-unified`` default, silently splitting ``-c`` into per-slot
+        windows of ``-c / N``; restore the shared pool so one request can use
+        the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
+        at an explicitly requested ctx (default floor is 4096) so it offloads
+        or fails instead of silently shrinking the window.
+        """
+        flags: list[str] = []
+        if n_parallel > 1 and caps.get("supports_kv_unified"):
+            flags.append("--kv-unified")
+        if use_fit and requested_ctx > 0 and effective_ctx > 0 and caps.get("supports_fit_ctx"):
+            flags.extend(["--fit-ctx", str(effective_ctx)])
+        return flags
+
+    def _query_server_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated, from ``/props``.
+
+        The memory-fit step or ``--parallel`` slot split can leave this below
+        the requested ``-c``; requests are validated against this value.
+        """
+        url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(url, timeout = 5.0)
+            if resp.status_code != 200:
+                return None
+            settings = resp.json().get("default_generation_settings") or {}
+            n_ctx = settings.get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except Exception:
+            return None
+
+    def _reconcile_effective_ctx_with_server(self) -> None:
+        """Adopt the server's real ``n_ctx`` when it is below Studio's value.
+
+        Keeps ``context_length`` (load response, status route, passthrough
+        ``max_tokens`` ceiling) honest; clients sized to the requested value
+        would otherwise hit ``exceed_context_size_error`` 400s early.
+        """
+        actual_n_ctx = self._query_server_n_ctx()
+        if not actual_n_ctx or actual_n_ctx <= 0:
+            return
+        if self._effective_context_length and actual_n_ctx < self._effective_context_length:
+            logger.warning(
+                "llama-server allocated a smaller per-request context than "
+                f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
+                "memory fit or --parallel slot split); clients must treat "
+                f"{actual_n_ctx} as the real context window."
+            )
+            self._effective_context_length = actual_n_ctx
+        elif not self._effective_context_length:
+            self._effective_context_length = actual_n_ctx
 
     # ── Message building (OpenAI format) ──────────────────────────
 
@@ -4849,6 +5399,7 @@ class LlamaCppBackend:
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
+        confirm_tool_calls: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4867,7 +5418,7 @@ class LlamaCppBackend:
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
         # the same tool card + citations a real call would.
-        _auto = build_rag_autoinject(conversation, rag_scope)
+        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
@@ -5015,7 +5566,7 @@ class LlamaCppBackend:
                         if response.status_code != 200:
                             error_body = response.read().decode()
                             raise RuntimeError(
-                                f"llama-server returned {response.status_code}: " f"{error_body}"
+                                f"llama-server returned {response.status_code}: {error_body}"
                             )
 
                         raw_buf = ""
@@ -5426,8 +5977,7 @@ class LlamaCppBackend:
                         force = True,
                     )
                     logger.info(
-                        f"Safety net: parsed {len(tool_calls)} tool call(s) "
-                        f"from streamed content"
+                        f"Safety net: parsed {len(tool_calls)} tool call(s) from streamed content"
                     )
                 else:
                     # ── DRAINING path: assemble tool_calls ──
@@ -5547,8 +6097,51 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    yield {"type": "status", "text": decision.status_text}
-                    yield decision.tool_start_event()
+                    needs_confirm = bool(confirm_tool_calls)
+                    approval_id = new_approval_id() if needs_confirm else ""
+                    decision_slot = (
+                        begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    start_event = decision.tool_start_event()
+                    start_event["approval_id"] = approval_id
+                    start_event["awaiting_confirmation"] = needs_confirm
+
+                    try:
+                        yield {"type": "status", "text": decision.status_text}
+                        yield start_event
+
+                        if (
+                            decision_slot is not None
+                            and wait_tool_decision(
+                                decision_slot,
+                                approval_id,
+                                cancel_event = cancel_event,
+                            )
+                            == "deny"
+                        ):
+                            decision_slot = None
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": TOOL_REJECTED_MESSAGE,
+                                "provenance": decision.provenance,
+                            }
+                            denied_message = {
+                                "role": "tool",
+                                "name": decision.tool_name,
+                                "content": TOOL_REJECTED_MESSAGE,
+                            }
+                            if decision.tool_call_id:
+                                denied_message["tool_call_id"] = decision.tool_call_id
+                            conversation.append(denied_message)
+                            if _forced_tool_call_pending:
+                                _forced_tool_call_pending = False
+                            continue
+                        decision_slot = None
+                    finally:
+                        if decision_slot is not None:
+                            abort_tool_decision(decision_slot, approval_id)
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     # RAG: cap paraphrased KB re-searches that slip past the dup guard.

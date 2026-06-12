@@ -714,17 +714,19 @@ def get_gpu_utilization() -> Dict[str, Any]:
         except Exception:
             pass
 
+        from . import apple
+
         return {
             "available": True,
             "backend": device.value,
             "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
-            "temperature_c": None,
+            "temperature_c": apple.read_gpu_temperature_c(),
             "vram_used_gb": round(vram_used_gb, 2),
             "vram_total_gb": round(total_gb, 2),
             "vram_utilization_pct": (
                 round((vram_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
             ),
-            "power_draw_w": None,
+            "power_draw_w": apple.read_gpu_power_w(),
             "power_limit_w": None,
             "power_utilization_pct": None,
         }
@@ -1818,7 +1820,13 @@ def apply_gpu_ids(gpu_ids) -> None:
             )
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
-        os.environ["ROCR_VISIBLE_DEVICES"] = value
+        # ROCR_VISIBLE_DEVICES operates at the HSA agent level and uses
+        # different indexing semantics to HIP_VISIBLE_DEVICES. Setting it
+        # to a physical GPU index breaks multi-GPU ROCm systems where the
+        # parent already set ROCR_VISIBLE_DEVICES (e.g. "0,1"): narrowing
+        # to "1" causes torch.cuda.is_available() to return False in the
+        # worker subprocess. HIP_VISIBLE_DEVICES is sufficient for GPU
+        # selection on ROCm -- leave ROCR_VISIBLE_DEVICES inherited.
     _visible_gpu_count = None
     if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
