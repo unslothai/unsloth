@@ -614,6 +614,7 @@ class TestResponsesNonStreamingAdapter:
         monkeypatch,
         message,
         payload = None,
+        llama_backend = None,
     ):
         import routes.inference as inf_mod
 
@@ -627,6 +628,8 @@ class TestResponsesNonStreamingAdapter:
             )
 
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        if llama_backend is not None:
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: llama_backend)
         payload = payload or ResponsesRequest(input = "hi")
         messages = [ChatMessage(role = "user", content = "hi")]
 
@@ -655,6 +658,22 @@ class TestResponsesNonStreamingAdapter:
 
     def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
         body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
+
+    def test_non_reasoning_gguf_keeps_literal_think_tags_visible(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "show <think>x</think> tags"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = False,
+            ),
+        )
 
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
@@ -721,7 +740,13 @@ class TestResponsesStreamAdapter:
         ]
 
     @staticmethod
-    def _install_stream_mock(monkeypatch, chunks):
+    def _install_stream_mock(
+        monkeypatch,
+        chunks,
+        *,
+        supports_reasoning = True,
+        reasoning_always_on = False,
+    ):
         import routes.inference as inf_mod
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -751,6 +776,8 @@ class TestResponsesStreamAdapter:
                 is_vision = False,
                 context_length = 4096,
                 base_url = "http://llama.test",
+                supports_reasoning = supports_reasoning,
+                reasoning_always_on = reasoning_always_on,
                 _request_reasoning_kwargs = (
                     lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
                 ),
@@ -795,6 +822,32 @@ class TestResponsesStreamAdapter:
         ]
         self._install_stream_mock(monkeypatch, chunks)
         payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert reasoning_deltas == []
+        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == ["message"]
+        assert completed["response"]["output"][0]["content"][0]["text"] == (
+            "show <think>x</think> tags"
+        )
+
+    def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "show <thi"}}]},
+            {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks, supports_reasoning = False)
+        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():

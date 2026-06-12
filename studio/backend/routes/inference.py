@@ -5125,12 +5125,11 @@ def _extract_responses_reasoning(
 def _responses_should_parse_think_markers(
     chat_req: ChatCompletionRequest, llama_backend: Any = None
 ) -> bool:
-    if (
-        llama_backend is not None
-        and getattr(llama_backend, "is_loaded", False)
-        and getattr(llama_backend, "reasoning_always_on", False)
-    ):
-        return True
+    if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
+        if getattr(llama_backend, "reasoning_always_on", False):
+            return True
+        if not getattr(llama_backend, "supports_reasoning", False):
+            return False
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
