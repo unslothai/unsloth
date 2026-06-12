@@ -127,7 +127,7 @@ export function WebUpdateBanner({
               </div>
             </div>
 
-            <div className="mt-4 flex items-center justify-between">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
               <a
                 href={RELEASE_NOTES_URL}
                 target="_blank"

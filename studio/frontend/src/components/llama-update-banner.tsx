@@ -203,7 +203,7 @@ export function LlamaUpdateBanner({
                 />
               </div>
             ) : (
-              <div className="mt-4 flex items-center justify-between">
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
                 <Button
                   size="sm"
                   variant="ghost"
