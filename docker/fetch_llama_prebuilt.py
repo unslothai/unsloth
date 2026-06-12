@@ -126,13 +126,22 @@ def main() -> None:
     # backend is a dlopen'd plugin, so --version works anywhere).
     out = subprocess.run(
         [os.path.join(install_dir, "llama-server"), "--version"],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     banner = (out.stdout + out.stderr).strip()
     print(banner.splitlines()[0] if banner else "(no version banner)")
     if "version" not in banner:
-        raise SystemExit(f"FAIL: llama-server --version did not report a version: rc={out.returncode}")
-    for required in ("llama-quantize", "convert_hf_to_gguf.py", "gguf-py", "UNSLOTH_PREBUILT_INFO.json"):
+        raise SystemExit(
+            f"FAIL: llama-server --version did not report a version: rc={out.returncode}"
+        )
+    for required in (
+        "llama-quantize",
+        "convert_hf_to_gguf.py",
+        "gguf-py",
+        "UNSLOTH_PREBUILT_INFO.json",
+    ):
         if not os.path.exists(os.path.join(install_dir, required)):
             raise SystemExit(f"FAIL: {required} missing from {install_dir}")
     print(f"OK: llama.cpp {tag} ({bundle_name}) installed at {install_dir}")
