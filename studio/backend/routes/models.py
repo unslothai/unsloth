@@ -2505,6 +2505,15 @@ def _repo_has_gguf_files(repo_info) -> bool:
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
+def _repo_has_mmproj(repo_info) -> bool:
+    """True when any revision ships an mmproj vision-adapter GGUF."""
+    return any(
+        _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
+    )
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -2530,6 +2539,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
+                            "has_mmproj": _repo_has_mmproj(repo_info),
                         }
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")

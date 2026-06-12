@@ -485,17 +485,24 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
+  visionOnly = false,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
+  /** OCR picker: scope hub search to vision models and hide local entries
+   *  whose vision capability is unknown (mmproj-less caches, LM Studio,
+   *  custom folders). The orchestrator still validates at selection time. */
+  visionOnly?: boolean;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
-  const { results, isLoading, isLoadingMore, fetchMore } =
-    useHfModelSearch(debouncedQuery);
+  const { results, isLoading, isLoadingMore, fetchMore } = useHfModelSearch(
+    debouncedQuery,
+    visionOnly ? { task: "image-text-to-text" } : undefined,
+  );
 
   // Lowercased repo ids confirmed GGUF by the store or HF search.
   // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
@@ -682,12 +689,22 @@ export function HubModelPicker({
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
+  // visionOnly keeps only known vision-capable local entries: GGUF repos
+  // with an mmproj adapter. Safetensors/LM Studio/folder caches carry no
+  // capability metadata, so they are hidden rather than mislisted.
+  const visibleCachedGguf = useMemo(
+    () => (visionOnly ? cachedGguf.filter((c) => c.has_mmproj) : cachedGguf),
+    [visionOnly, cachedGguf],
+  );
+  const visibleCachedModels = visionOnly ? [] : cachedModels;
+  const visibleLmStudioModels = visionOnly ? [] : lmStudioModels;
+  const visibleCustomFolderModels = visionOnly ? [] : customFolderModels;
   const downloadedSet = useMemo(() => {
     const s = new Set<string>();
-    for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
-    for (const c of cachedModels) s.add(c.repo_id.toLowerCase());
+    for (const c of visibleCachedGguf) s.add(c.repo_id.toLowerCase());
+    for (const c of visibleCachedModels) s.add(c.repo_id.toLowerCase());
     return s;
-  }, [cachedGguf, cachedModels]);
+  }, [visibleCachedGguf, visibleCachedModels]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
@@ -905,15 +922,15 @@ export function HubModelPicker({
               </span>
             </div>
           ) : !showHfSection &&
-            (cachedGguf.length > 0 ||
-              (!chatOnly && cachedModels.length > 0)) ? (
+            (visibleCachedGguf.length > 0 ||
+              (!chatOnly && visibleCachedModels.length > 0)) ? (
             <>
               <ListLabel
                 icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
               >Downloaded</ListLabel>
-              {!downloadedCollapsed && cachedGguf.map((c) => (
+              {!downloadedCollapsed && visibleCachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
                     label={c.repo_id}
@@ -943,7 +960,7 @@ export function HubModelPicker({
                 </div>
               ))}
               {!downloadedCollapsed && !chatOnly &&
-                cachedModels.map((c) => (
+                visibleCachedModels.map((c) => (
                   <div key={c.repo_id} className="flex items-center gap-0.5">
                     <div className="min-w-0 flex-1">
                       <ModelRow
@@ -981,10 +998,10 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
+          {!showHfSection && chatOnly && visibleLmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
-              {lmStudioModels.map((m) => {
+              {visibleLmStudioModels.map((m) => {
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 return (
                   <div key={m.id}>
@@ -1025,7 +1042,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection ? (
+          {!showHfSection && !visionOnly ? (
             <>
               <div className="flex items-center gap-1 px-2.5 py-1.5">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1176,7 +1193,7 @@ export function HubModelPicker({
 
 
               {/* Models from custom folders */}
-              {!customFoldersCollapsed && customFolderModels.map((m) => {
+              {!customFoldersCollapsed && visibleCustomFolderModels.map((m) => {
                 const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf =
                   isGgufFile ||

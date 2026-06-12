@@ -124,6 +124,8 @@ export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
+  /** Repo ships an mmproj vision adapter (known vision-capable). */
+  has_mmproj?: boolean;
 }
 
 export async function getGgufDownloadProgress(

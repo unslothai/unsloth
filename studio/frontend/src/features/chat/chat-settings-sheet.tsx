@@ -2321,6 +2321,7 @@ function DocumentExtractionSection() {
                   models={ocrPickerModels}
                   value={ocrModelId}
                   onSelect={handleOcrSelect}
+                  visionOnly
                 />
               </div>
               {!defaultOcrSelected && (
