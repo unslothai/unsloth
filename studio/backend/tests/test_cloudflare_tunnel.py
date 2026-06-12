@@ -535,7 +535,12 @@ def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch
     attempts = []
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
             attempts.append(protocol)
 
