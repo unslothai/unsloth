@@ -259,7 +259,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <>
         {children}
         <DownloadManagerPanel />
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[340px] flex-col items-stretch gap-2">
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}

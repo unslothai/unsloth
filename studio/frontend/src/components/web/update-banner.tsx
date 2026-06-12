@@ -7,6 +7,7 @@ import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
@@ -78,12 +79,12 @@ export function WebUpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[340px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
               : "pointer-events-auto w-full",
           )}
           data-testid="web-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-4 pb-[22px] pl-6 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={dismiss}
@@ -107,46 +108,52 @@ export function WebUpdateBanner({
               </svg>
             </button>
 
-            <div className="min-w-0 pr-6">
-              <p className="font-heading text-base font-medium text-foreground">
-                New Unsloth version
-              </p>
-              <div className="mt-0.5 flex items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">
+            <div className="flex min-w-0 items-start gap-4 pr-6">
+              <Download
+                aria-hidden="true"
+                className="mt-1 size-5 shrink-0 text-foreground"
+                strokeWidth={1.75}
+              />
+              <div className="min-w-0">
+                <p className="font-heading text-base font-medium text-foreground">
+                  New Unsloth version
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   {status.currentVersion} &rarr;{" "}
                   <span className="font-medium text-foreground">
                     {status.latestVersion}
                   </span>
                 </p>
-                <a
-                  href={RELEASE_NOTES_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                  data-testid="web-update-release-notes-link"
-                >
-                  Release notes
-                </a>
               </div>
             </div>
 
-            <div className="mt-3 flex items-center gap-2">
-              <Button
-                size="sm"
-                className="h-auto rounded-full px-3.5 py-2 text-[13px]"
-                onClick={handleCopyCommand}
-                data-testid="web-update-copy-button"
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
+              <a
+                href={RELEASE_NOTES_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="-ml-2 whitespace-nowrap rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
+                data-testid="web-update-release-notes-link"
               >
-                {copied ? "Copied" : "Copy command"}
-              </Button>
+                Release notes
+              </a>
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-auto rounded-full px-2.5 py-2 text-[13px] text-muted-foreground hover:text-foreground"
+                className="h-auto rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground"
                 onClick={snooze}
                 data-testid="web-update-snooze-button"
               >
                 Remind me later
+              </Button>
+              <Button
+                size="sm"
+                // ml offsets the pill's filled edge so visual gaps stay equal
+                className="ml-2.5 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                onClick={handleCopyCommand}
+                data-testid="web-update-copy-button"
+              >
+                {copied ? "Copied" : "Copy command"}
               </Button>
             </div>
           </div>
