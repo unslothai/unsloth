@@ -966,6 +966,7 @@ async def get_hardware_info(current_subject: str = Depends(get_current_subject))
     """
     from utils.hardware import get_gpu_summary, get_package_versions
     from utils.llama_cpp_update import get_installed_llama_version
+
     # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
     # hosts list every device -- get_gpu_summary alone reports only the primary.
     gpus = [
