@@ -1329,6 +1329,105 @@ class LlamaCppBackend:
             return False
         return False
 
+    # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
+    # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
+    # workstation parts as substrings: "a100" must not fire on "RTX A1000".
+    _DATACENTER_GPU_RE = re.compile(
+        r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|"
+        r"l40s?|l4|rtx pro 6000|rtx 6000 ada)\b"
+    )
+
+    @staticmethod
+    def _is_datacenter_gpu(gpu_indices = None) -> bool:
+        """True iff every selected NVIDIA GPU is a datacenter/professional part.
+        NVIDIA-only, fails open to False (consumer GeForce, ROCm, CPU and errors
+        are left untouched); a mixed DC+consumer selection counts as non-DC.
+
+        gpu_indices are PHYSICAL ids (see _get_gpu_free_memory), but
+        get_device_properties wants mask-relative ordinals, so we rebuild the
+        ordinal->physical map from CUDA_VISIBLE_DEVICES and key names by physical
+        id. Otherwise a masked host (CUDA_VISIBLE_DEVICES=4,5,6,7, selection [4,5])
+        would drop the tuning or probe the wrong GPU."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return False  # ROCm reuses torch.cuda.*; not a CUDA part
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            count = torch.cuda.device_count()
+
+            # Mirror _get_gpu_free_memory: map visible ordinal -> physical id via
+            # CUDA_VISIBLE_DEVICES; unset/unparsable leaves physical id == ordinal.
+            physical_ids: Optional[list[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+
+            pattern = LlamaCppBackend._DATACENTER_GPU_RE
+            names_by_id: dict[int, str] = {}
+            for ordinal in range(count):
+                try:
+                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
+                except Exception:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names_by_id[pid] = name
+
+            indices = list(gpu_indices) if gpu_indices else list(names_by_id)
+            saw = False
+            for _i in indices:
+                name = names_by_id.get(_i)
+                if name is None:
+                    continue  # not visible -> skip (fail conservative)
+                saw = True
+                if not pattern.search(name):
+                    return False
+            return saw
+        except Exception:
+            return False
+
+    @staticmethod
+    def _effective_gpu_count(gpu_indices = None) -> int:
+        """GPUs llama-server will use: len(selection), else the visible CUDA
+        device count (None = every visible GPU). 0 on error so multi-GPU tuning
+        stays off when the count is unknown."""
+        if gpu_indices is not None:
+            return len(gpu_indices)
+        try:
+            import torch
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                return torch.cuda.device_count()
+        except Exception:
+            return 0
+        return 0
+
+    @staticmethod
+    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
+        """Inject DC llama.cpp tuning into env in place via setdefault (user
+        values win); return whether the box qualified. Opt out with
+        UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
+        (consumer/ROCm/CPU/error are a no-op). Sets GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F
+        for any qualifying GPU (FP32 accum: ~0% cost on B200, real cost on GeForce),
+        plus GGML_CUDA_P2P + CUDA_SCALE_LAUNCH_QUEUES=4x for multi-GPU (+33-51% pp
+        tensor-split, +8-16% pipeline split on B200)."""
+        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+            return False
+        if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
+            return False
+        env.setdefault("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")
+        if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
+            env.setdefault("GGML_CUDA_P2P", "1")
+            env.setdefault("CUDA_SCALE_LAUNCH_QUEUES", "4x")
+        return True
+
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
@@ -3405,6 +3504,14 @@ class LlamaCppBackend:
                 if self._amd_apu_wants_unified_memory():
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
+
+                # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
+                # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
+                if self._apply_datacenter_env(env, gpu_indices):
+                    multi_gpu = self._effective_gpu_count(gpu_indices) > 1
+                    logger.info(
+                        f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
+                    )
 
                 if sys.platform == "win32":
                     # Ordering: see _build_windows_path_dirs. #5106.
