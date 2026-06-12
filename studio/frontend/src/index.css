@@ -1568,11 +1568,11 @@
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
-		@apply md:min-h-[470px];
+		@apply md:min-h-[520px];
 	}
 
 	.h-studio-config-column {
-		@apply md:h-[470px];
+		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
