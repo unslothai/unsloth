@@ -37,6 +37,14 @@ export function S3ConfigForm() {
     setS3Config({ ...config, ...patch });
   };
 
+  const handleIamRoleChange = (useIamRole: boolean) => {
+    if (useIamRole) {
+      update({ useIamRole, accessKeyId: "", secretAccessKey: "" });
+      return;
+    }
+    update({ useIamRole });
+  };
+
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-lg border bg-muted/20 px-3.5 py-3">
       <div>
@@ -92,7 +100,7 @@ export function S3ConfigForm() {
         <Switch
           id="s3-iam"
           checked={config.useIamRole ?? false}
-          onCheckedChange={(useIamRole) => update({ useIamRole })}
+          onCheckedChange={handleIamRoleChange}
         />
       </div>
 
