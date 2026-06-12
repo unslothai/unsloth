@@ -24,7 +24,9 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileText, PlusIcon, XIcon } from "lucide-react";
+import { File02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlusIcon, XIcon } from "lucide-react";
 import {
   type FC,
   type PropsWithChildren,
@@ -134,7 +136,11 @@ const AttachmentThumb: FC = () => {
 
   return (
     <div className="flex h-full w-full items-center justify-center">
-      <FileText className="size-6 text-muted-foreground" />
+      <HugeiconsIcon
+        icon={File02Icon}
+        strokeWidth={2}
+        className="size-6 text-muted-foreground"
+      />
     </div>
   );
 };
@@ -158,8 +164,8 @@ const AttachmentUI: FC = () => {
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
   });
-  // Include filename in accessible name so screen readers distinguish
-  // same-typed attachments. Sighted users get it via the tooltip.
+  // Filename in accessible name lets screen readers distinguish same-typed
+  // attachments. Sighted users get it via the tooltip.
   const accessibleName = name
     ? `${typeLabel} attachment: ${name}`
     : `${typeLabel} attachment`;
@@ -238,7 +244,7 @@ export const ComposerAddAttachment: FC = () => {
         side="bottom"
         variant="ghost"
         size="icon"
-        className="aui-composer-add-attachment size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+        className="aui-composer-add-attachment size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
         aria-label="Add Attachment"
       >
         <PlusIcon className="aui-attachment-add-icon size-5 stroke-[1.5px]" />

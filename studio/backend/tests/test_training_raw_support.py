@@ -389,10 +389,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(result.dataset[0]["text"], "hello<eos>")
         self.assertEqual(result.dataset[1]["text"], "world<eos>")
         self.assertTrue(
-            any(
-                "null or non-string 'text' values" in notice.message
-                for notice in result.notices
-            )
+            any("null or non-string 'text' values" in notice.message for notice in result.notices)
         )
 
 

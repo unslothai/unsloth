@@ -128,9 +128,8 @@ function Source({
 
 interface SourceData {
   /**
-   * Stable per-citation key. Two Anthropic document citations into
-   * different spans of the same source share a ``url``, so React keys
-   * on ``id`` to keep each footnote distinct.
+   * Stable per-citation key. Two Anthropic citations into different spans of
+   * the same source share a `url`, so React keys on `id` to keep them distinct.
    */
   id: string;
   url: string;
@@ -185,7 +184,6 @@ const SourcesGroup: FC = () => {
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  // Extract source parts from the message
   const sources: SourceData[] = [];
   if (message.content) {
     for (const part of message.content) {
@@ -220,7 +218,6 @@ const SourcesGroup: FC = () => {
     const children = Array.from(container.children) as HTMLElement[];
     if (children.length === 0) return;
 
-    // Find the top of the first child as baseline
     const firstTop = children[0].offsetTop;
     let rowCount = 1;
     let prevTop = firstTop;
@@ -263,20 +260,29 @@ const SourcesGroup: FC = () => {
 
   return (
     <div className="relative mt-2 mb-3">
-      {/* Hidden measurement container — renders all badges to measure row positions */}
+      {/* Hidden measurement container: renders all badges off-screen to read
+          each child's offsetTop and decide how many fit in two rows. The
+          absolute/h-0/overflow-hidden wrapper clips the pills so they don't add
+          to scrollHeight (~30px per row) and create a phantom empty scroll area
+          below the message. offsetTop reads correctly because the wrapper is
+          positioned (absolute) and the flex-wrapped children measure against it. */}
       <div
-        ref={containerRef}
         aria-hidden
-        className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
+        className="absolute pointer-events-none overflow-hidden h-0 w-full left-0 top-0"
       >
-        {sources.map((source) => (
-          <span key={source.id} className="inline-block">
-            <Source href={source.url}>
-              <SourceIcon url={source.url} />
-              <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
-            </Source>
-          </span>
-        ))}
+        <div
+          ref={containerRef}
+          className="flex w-full flex-wrap gap-1 invisible"
+        >
+          {sources.map((source) => (
+            <span key={source.id} className="inline-block">
+              <Source href={source.url}>
+                <SourceIcon url={source.url} />
+                <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
+              </Source>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Visible container */}

@@ -48,8 +48,8 @@ export function useRecommendedModelVram(ids: string[]) {
         }),
       );
       if (!canceled) {
-        // Merge with previous state so that VRAM badges for already-visible
-        // models are preserved while newly-visible models are still loading.
+        // Merge with previous state so VRAM badges for already-visible models
+        // persist while newly-visible models are still loading.
         setParamCountById((prev) => new Map([...prev, ...next]));
         setIsLoading(false);
       }
