@@ -246,6 +246,34 @@ RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         jupyterlab notebook ipywidgets matplotlib
 
+# Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
+# features, which decode through torchcodec. Three traps, all defended:
+#   * version pairing: torchcodec 0.10 pairs with torch 2.10 (newer builds
+#     reference torch 2.11+ symbols and fail to dlopen);
+#   * CUDA line: the PyPI default wheel pairs with the cu13 torch line and
+#     dlopens libnvrtc.so.13 -- it must come from the cu128 channel;
+#   * its libraries dlopen torch + NVIDIA runtime libs that live inside the
+#     venv where ld.so cannot see them. Registered via ld.so.conf.d, NOT
+#     LD_LIBRARY_PATH: the loader consults the cache only after DT_RUNPATH,
+#     so the llama.cpp bundle keeps resolving its own $ORIGIN libraries.
+# ffmpeg itself comes from the apt block above. Fail-soft on arches without
+# a matching wheel.
+RUN set -eux \
+ && if ${VENV}/bin/uv pip install \
+        --python ${VENV}/bin/python \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        "torchcodec==0.10.0" \
+    && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; then \
+        SP=${VENV}/lib/python${PYTHON_VERSION}/site-packages; \
+        printf "%s\n" "$SP/torch/lib" "$SP/nvidia/cuda_nvrtc/lib" \
+                      "$SP/nvidia/cuda_runtime/lib" "$SP/nvidia/npp/lib" \
+            > /etc/ld.so.conf.d/zz-unsloth-venv.conf; \
+        ldconfig; \
+        ${VENV}/bin/python -c "import torchcodec; print('torchcodec', torchcodec.__version__)"; \
+    else \
+        echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"; \
+    fi
+
 # 5) Emit an informational pin record so downstream consumers can see exactly
 #    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
 #    captures version strings but not wheel hashes, and several deps (unsloth,
@@ -366,9 +394,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # zstd: the official Ollama notebooks run `curl ollama.com/install.sh | sh`
 # inside the container, and that installer extracts a zstd tarball -- without
 # it the Llama3 Ollama-export notebook dies at the install cell.
+# ffmpeg: torchcodec (datasets' audio decode path, pip-installed by the
+# TTS/STT notebooks) dlopens the system FFmpeg libraries; the wheel does not
+# bundle them, so without ffmpeg every audio notebook dies at load_dataset.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git libgomp1 \
-        gcc g++ zstd \
+        gcc g++ zstd ffmpeg \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
