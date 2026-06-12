@@ -17,6 +17,7 @@ from unsloth_cli.commands.studio import (
     studio_app,
     _expand_attached_np_short,
 )
+from unsloth_cli.commands.deploy import deploy_app
 
 
 # Canonicalise `-np<N>` only under the `unsloth` console-script;
@@ -77,6 +78,7 @@ app.command()(chat)
 app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
 app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
+app.add_typer(deploy_app, name = "deploy", help = "Launch Unsloth Studio on a cloud provider.")
 
 # Top-level `unsloth run` aliases `unsloth studio run`; same context
 # so unknown flags still pass through to llama-server.
