@@ -19,6 +19,7 @@ import {
   toExternalBackendProviderType,
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
+import { tryAdoptServerActiveModel } from "../lib/apply-inference-status-to-store";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -1142,6 +1143,10 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (await tryAdoptServerActiveModel()) {
+    return { loaded: true, blockedByTrustRemoteCode: false };
+  }
+
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
@@ -1485,6 +1490,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
         try {

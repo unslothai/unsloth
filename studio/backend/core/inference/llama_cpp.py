@@ -28,6 +28,7 @@ from typing import Callable, Generator, Iterable, List, Optional
 import httpx
 
 from core.inference.llama_server_args import (
+    extra_args_disable_mmproj,
     parse_cache_override,
     parse_ctx_override,
     resolve_cache_type_kv,
@@ -2933,8 +2934,8 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
+                    # Auto-download mmproj for vision models unless opted out.
+                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -3195,10 +3196,12 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     effective_ctx = requested_ctx  # fall back to original
 
-                launch_mmproj_path = self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
-                )
+                launch_mmproj_path = None
+                if not extra_args_disable_mmproj(extra_args):
+                    launch_mmproj_path = self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.

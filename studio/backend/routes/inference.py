@@ -1474,18 +1474,23 @@ async def load_model(
             # parse against a freshly-supplied first-class field.
             if request.llama_extra_args is None and llama_backend.extra_args:
                 source = llama_backend.extra_args_source
-                # Compare against the resolved variant, not the request field:
-                # callers commonly omit gguf_variant for local ``.gguf`` paths
-                # and HF auto-pick flows. ``config.gguf_variant`` is the variant
-                # load_model was actually invoked with (see HF / local branches
-                # below), so both sides key off the same string.
-                resolved_variant = config.gguf_variant
-                same_source = bool(
-                    source
-                    and source[0]
-                    and source[0].lower() == model_identifier.lower()
-                    and (source[1] or "").lower() == (resolved_variant or "").lower()
+                # Compare against the resolved variant, not the request
+                # field: callers commonly omit gguf_variant for local
+                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
+                # variant`` is the variant load_model was actually
+                # invoked with (see the HF / local branches below), so
+                # both sides of the comparison key off the same string.
+                resolved_variant = (config.gguf_variant or "").lower()
+                request_variant = (request.gguf_variant or "").lower()
+                stored_variant = (source[1] or "").lower() if source else ""
+                same_model = bool(
+                    source and source[0] and source[0].lower() == model_identifier.lower()
                 )
+                if request.gguf_variant:
+                    variant_mismatch = request_variant != stored_variant
+                else:
+                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+                same_source = same_model and not variant_mismatch
                 if not same_source:
                     logger.info(
                         "Not inheriting llama_extra_args: stored args came from %s, loading %s",
