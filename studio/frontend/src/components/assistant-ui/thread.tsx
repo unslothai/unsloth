@@ -162,13 +162,17 @@ const PageDragContext = createContext(false);
 // Composer remount when the first queued message creates a new thread, and
 // detection subscribes to runningByThreadId instead of aui.thread() so the
 // welcome-screen composer can queue safely before a thread is bound.
-interface PromptQueueUIState {
-  isRunning: boolean;
+type PromptQueueUIEntry = {
   current: number;
   total: number;
+};
+
+interface PromptQueueUIState {
+  byThreadId: Record<string, PromptQueueUIEntry>;
 }
+
 const usePromptQueueUI = create<PromptQueueUIState>(() => ({
-  isRunning: false, current: 0, total: 0,
+  byThreadId: {},
 }));
 
 type PromptQueueTarget = {
@@ -194,6 +198,10 @@ let promptQueueWaitingForTargetIdle = false;
 let promptQueueStoreUnsub: (() => void) | null = null;
 let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
+function compactIds(ids: Array<string | null | undefined>) {
+  return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
+}
+
 function stopPromptQueueSubscription({
   resetRunningState = true,
 }: {
@@ -218,7 +226,7 @@ function resetPromptQueue(showToast = false) {
     promptQueueRetryTimer = null;
   }
   stopPromptQueueSubscription();
-  usePromptQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+  syncPromptQueueUI();
   if (showToast) {
     toast.success("Prompt queue complete");
   }
@@ -229,6 +237,7 @@ function queueToastDescription(prompt: string) {
 }
 
 function appendQueuedPrompt(item: PromptQueueItem) {
+  syncPromptQueueUI();
   item.target.append(item.prompt);
 }
 
@@ -279,6 +288,7 @@ async function dispatchQueuedPrompt(item: PromptQueueItem) {
   ) {
     promptQueueWaitingForTargetIdle = true;
     promptQueuePrevStoreRunning = true;
+    syncPromptQueueUI();
     startPromptQueueSubscription();
     return;
   }
@@ -305,6 +315,84 @@ function appendTextToThread(prompt: string) {
     content: [{ type: "text", text: prompt }],
     createdAt: new Date(),
   } as never;
+}
+
+function getPromptQueueTargetIds(target: PromptQueueTarget) {
+  return compactIds([
+    ...target.getRunningThreadIds(),
+    target.getDocumentThreadId(),
+  ]);
+}
+
+function findPromptQueueEntry(
+  state: PromptQueueUIState,
+  threadIds: string[],
+) {
+  for (const threadId of threadIds) {
+    const entry = state.byThreadId[threadId];
+    if (entry) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function syncPromptQueueUI() {
+  if (!promptQueueIsRunning || promptQueueItems.length === 0) {
+    usePromptQueueUI.setState({ byThreadId: {} });
+    return;
+  }
+
+  const activeItemIndex = Math.max(promptQueueIndex, 0);
+  const groups: Array<{
+    ids: Set<string>;
+    current: number;
+    total: number;
+    active: boolean;
+  }> = [];
+
+  for (const [index, item] of promptQueueItems.entries()) {
+    const ids = getPromptQueueTargetIds(item.target);
+    if (ids.length === 0) {
+      continue;
+    }
+    let group = groups.find((candidate) =>
+      ids.some((id) => candidate.ids.has(id)),
+    );
+    if (!group) {
+      group = {
+        ids: new Set<string>(),
+        current: 0,
+        total: 0,
+        active: false,
+      };
+      groups.push(group);
+    }
+    ids.forEach((id) => group.ids.add(id));
+    group.total += 1;
+    if (promptQueueIndex >= 0 && index <= promptQueueIndex) {
+      group.current += 1;
+    }
+    if (index === activeItemIndex) {
+      group.active = true;
+    }
+  }
+
+  const byThreadId: Record<string, PromptQueueUIEntry> = {};
+  for (const group of groups) {
+    if (!group.active && group.current >= group.total) {
+      continue;
+    }
+    const entry = {
+      current: Math.min(group.current, group.total),
+      total: group.total,
+    };
+    group.ids.forEach((id) => {
+      byThreadId[id] = entry;
+    });
+  }
+
+  usePromptQueueUI.setState({ byThreadId });
 }
 
 function isPromptQueueTargetRunning(
@@ -341,10 +429,7 @@ function advancePromptQueue() {
     return;
   }
   promptQueueIndex = nextIndex;
-  usePromptQueueUI.setState({
-    current: nextIndex + 1,
-    total: promptQueueItems.length,
-  });
+  syncPromptQueueUI();
   const next = promptQueueItems[nextIndex];
   toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
     description: queueToastDescription(next.prompt),
@@ -412,11 +497,7 @@ function startPromptQueue(
     promptQueueItems.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
-    usePromptQueueUI.setState({
-      isRunning: true,
-      current: Math.max(promptQueueIndex + 1, 0),
-      total: promptQueueItems.length,
-    });
+    syncPromptQueueUI();
     toast.success("Added to prompt queue", {
       description: `${filtered.length} prompt${filtered.length === 1 ? "" : "s"} queued.`,
     });
@@ -433,11 +514,7 @@ function startPromptQueue(
   promptQueueIndex = shouldWaitForCurrentRun ? -1 : 0;
   promptQueueIsRunning = true;
   promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
-  usePromptQueueUI.setState({
-    isRunning: true,
-    current: shouldWaitForCurrentRun ? 0 : 1,
-    total: filtered.length,
-  });
+  syncPromptQueueUI();
   toast(
     shouldWaitForCurrentRun ? "Prompt queued" : `Prompt 1 / ${filtered.length}`,
     {
@@ -1186,8 +1263,27 @@ const Composer: FC<{
     Boolean(s.pendingAudioName),
   );
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const promptQueueActive = usePromptQueueUI((s) => s.isRunning);
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
+  const threadListItemRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  const promptQueueThreadIds = compactIds([
+    threadListItemId,
+    threadListItemRemoteId,
+    threadId,
+  ]);
+  const promptQueueActive = usePromptQueueUI((s) =>
+    Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
+  );
+  useEffect(() => {
+    if (threadId != null || activeThreadId != null) {
+      return;
+    }
+    stopPromptQueueRun();
+  }, [activeThreadId, threadId]);
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
   const canQueueCurrentPrompt =
@@ -1578,6 +1674,7 @@ const Composer: FC<{
           onStopClick={stopQueue}
           pendingSend={pendingSend}
           menuSide={effectiveMenuSide}
+          queueThreadIds={promptQueueThreadIds}
         />
       </div>
     </>
@@ -2783,6 +2880,7 @@ const ComposerRightControls: FC<{
   onStopClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
+  queueThreadIds: string[];
 }> = ({
   disabled,
   queueDisabled,
@@ -2791,10 +2889,14 @@ const ComposerRightControls: FC<{
   onStopClick,
   pendingSend,
   menuSide,
+  queueThreadIds,
 }) => {
-  const isQueueRunning = usePromptQueueUI((s) => s.isRunning);
-  const queueCurrent = usePromptQueueUI((s) => s.current);
-  const queueTotal = usePromptQueueUI((s) => s.total);
+  const queueEntry = usePromptQueueUI((s) =>
+    findPromptQueueEntry(s, queueThreadIds),
+  );
+  const isQueueRunning = Boolean(queueEntry);
+  const queueCurrent = queueEntry?.current ?? 0;
+  const queueTotal = queueEntry?.total ?? 0;
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />

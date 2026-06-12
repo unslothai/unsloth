@@ -1068,6 +1068,15 @@ function ThreadNewChatSwitch({
     if (isLoading) {
       return;
     }
+    const { runningByThreadId, cancelByThreadId } =
+      useChatRuntimeStore.getState();
+    for (const threadId of Object.keys(runningByThreadId)) {
+      try {
+        cancelByThreadId[threadId]?.();
+      } catch {
+        // The run may have ended while the new-chat route was mounting.
+      }
+    }
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
