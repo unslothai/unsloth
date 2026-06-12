@@ -37,11 +37,7 @@ class _FakePaginator:
 
     def paginate(self, **kwargs):
         prefix = kwargs.get("Prefix")
-        contents = [
-            {"Key": k}
-            for k in self._keys
-            if prefix is None or k.startswith(prefix)
-        ]
+        contents = [{"Key": k} for k in self._keys if prefix is None or k.startswith(prefix)]
         # Emit in two pages to exercise pagination handling.
         mid = len(contents) // 2
         yield {"Contents": contents[:mid]}
@@ -69,9 +65,9 @@ def fake_client(monkeypatch):
     keys = [
         "datasets/train.parquet",
         "datasets/extra.jsonl",
-        "datasets/notes.txt",          # filtered out (unsupported)
-        "datasets/subdir/",            # directory placeholder, skipped
-        "other/ignore.parquet",        # filtered out by prefix
+        "datasets/notes.txt",  # filtered out (unsupported)
+        "datasets/subdir/",  # directory placeholder, skipped
+        "other/ignore.parquet",  # filtered out by prefix
     ]
     client = _FakeS3Client(keys)
     monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)

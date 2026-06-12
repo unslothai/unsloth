@@ -85,9 +85,7 @@ def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list
     bucket/prefix contains no supported dataset files.
     """
     if not boto3_available():
-        raise RuntimeError(
-            "S3 dataset loading requires boto3. Install it with: pip install boto3"
-        )
+        raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
 
     bucket = s3_config.get("bucket")
     if not bucket:
