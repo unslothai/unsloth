@@ -456,6 +456,22 @@ def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatc
     assert result["cached"][1]["last_modified"] == 1_000.0
 
 
+def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
+    """Same repo in two caches with equal size keeps the newest last_modified,
+    regardless of scan order."""
+    older = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 1_000.0)], tmp_path / "a")
+    newer = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 9_000.0)], tmp_path / "b")
+    for scans in ([older, newer], [newer, older]):  # both orders
+        monkeypatch.setattr(
+            models_route,
+            "_all_hf_cache_scans",
+            lambda s=scans: [SimpleNamespace(repos=[s[0]]), SimpleNamespace(repos=[s[1]])],
+        )
+        result = asyncio.run(models_route.list_cached_gguf(current_subject="t"))
+        assert len(result["cached"]) == 1
+        assert result["cached"][0]["last_modified"] == 9_000.0
+
+
 def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_path):
     """The per-quant 'downloaded' flag is driven by the real weight file in a
     single snapshot; an mmproj vision adapter (matching a quant label) must

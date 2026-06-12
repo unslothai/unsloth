@@ -2089,8 +2089,12 @@ async def get_gguf_variants(
                             for f in _iter_gguf_paths(snap):
                                 if _is_mmproj_filename(f.name):
                                     continue
-                                q = _extract_quant_label(f.name)
-                                by_quant[q] = by_quant.get(q, 0) + f.stat().st_size
+                                try:
+                                    size = f.stat().st_size
+                                except OSError:
+                                    continue  # broken symlink / unreadable: skip
+                                q = _extract_quant_label(f.name).lower()
+                                by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)
                     break
@@ -2101,8 +2105,9 @@ async def get_gguf_variants(
             if variant.size_bytes == 0:
                 return False
             # Complete within one snapshot (tolerance for symlink size jitter).
+            quant = variant.quant.lower()
             return any(
-                by_quant.get(variant.quant, 0) >= variant.size_bytes * 0.99
+                by_quant.get(quant, 0) >= variant.size_bytes * 0.99
                 for by_quant in cached_bytes_by_quant_per_snapshot
             )
 
@@ -2449,17 +2454,21 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         continue
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
+                    last_modified = _repo_gguf_last_modified(repo_info)
                     if existing is None or total_size > existing["size_bytes"]:
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
                         }
-                        # Attach only when known; absent rows sort as oldest.
-                        last_modified = _repo_gguf_last_modified(repo_info)
-                        if last_modified > 0:
-                            row["last_modified"] = last_modified
+                        # Keep the newest timestamp across duplicate caches;
+                        # attach only when known so absent rows sort as oldest.
+                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        if lm > 0:
+                            row["last_modified"] = lm
                         seen_lower[key] = row
+                    elif last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
@@ -2522,10 +2531,14 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                         }
-                        # Attach only when known; absent rows sort as oldest.
-                        if last_modified > 0:
-                            row["last_modified"] = last_modified
+                        # Keep the newest timestamp across duplicate caches;
+                        # attach only when known so absent rows sort as oldest.
+                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        if lm > 0:
+                            row["last_modified"] = lm
                         seen_lower[key] = row
+                    elif last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
