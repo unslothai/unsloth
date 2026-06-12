@@ -4,12 +4,40 @@
 import asyncio
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 import routes.inference as inf_mod  # noqa: E402
+
+
+def test_non_streaming_generation_timeout_has_read_deadline():
+    timeout = inf_mod._llama_non_streaming_generation_timeout()
+    assert timeout.read == inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S
+
+
+def test_stream_first_item_deadline_after_headers():
+    async def _run():
+        class _Never:
+            async def __anext__(self):
+                await asyncio.Future()
+
+        started = time.monotonic()
+        try:
+            async for _ in inf_mod._aiter_llama_stream_items(
+                _Never(),
+                first_token_deadline = started + 0.02,
+            ):
+                pass
+        except inf_mod.httpx.ReadTimeout:
+            pass
+        else:
+            raise AssertionError("first item deadline did not fire")
+        assert time.monotonic() - started < 0.5
+
+    asyncio.run(_run())
 
 
 def test_preheader_send_cleanup_on_disconnect_and_cancel():

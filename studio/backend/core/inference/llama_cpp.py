@@ -5320,6 +5320,11 @@ class LlamaCppBackend:
                 response.close()
                 return
             try:
+                if last_chunk_at is None:
+                    remaining_s = first_token_deadline - time.monotonic()
+                    if remaining_s <= 0:
+                        raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
                 if chunk:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:

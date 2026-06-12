@@ -669,7 +669,7 @@ except ImportError:
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
     return httpx.Timeout(
         connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        read = None,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
     )
@@ -777,8 +777,21 @@ async def _aiter_llama_stream_items(
             if cancel_event is not None:
                 cancel_event.set()
             return
+        waiting_first_item = last_item_at is None
         try:
-            item = await async_iter.__anext__()
+            if waiting_first_item:
+                remaining_s = first_token_deadline - time.monotonic()
+                if remaining_s <= 0:
+                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                if response is not None:
+                    _set_stream_response_read_timeout(response, remaining_s)
+                item = await asyncio.wait_for(async_iter.__anext__(), timeout = remaining_s)
+            else:
+                item = await async_iter.__anext__()
+        except asyncio.TimeoutError as exc:
+            if waiting_first_item:
+                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
+            raise
         except StopAsyncIteration:
             return
         except httpx.ReadTimeout:
