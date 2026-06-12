@@ -580,7 +580,7 @@ export function ModelSection() {
                             }
                           }}
                           placeholder="/path/to/models"
-                          className="h-6 min-w-0 flex-1 rounded border border-background/20 bg-transparent px-1.5 font-mono text-[10px] text-background outline-none placeholder:text-muted-foreground/40 focus:border-background/40 dark:border-border/50 dark:text-foreground dark:focus:border-foreground/20"
+                          className="h-6 min-w-0 flex-1 rounded border border-background/20 bg-transparent px-1.5 font-mono text-[10px] text-background outline-none placeholder:text-muted-foreground/40 focus:border-background/40 dark:border-border/50 dark:focus:border-foreground/20"
                           disabled={folderLoading}
                           autoFocus={true}
                         />
