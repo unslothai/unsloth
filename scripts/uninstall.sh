@@ -303,9 +303,9 @@ case "$_os" in
                             } catch { }
                         }
                     }
-                    # WoA WSL-fallback (install.ps1) native shim/launcher dir
-                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry. install.ps1 created the
-                    # shim; clean it here too so a WSL-side bash uninstall is complete.
+                    # Remove the WoA WSL-fallback native shim/launcher dir
+                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry that install.ps1
+                    # created, so a WSL-side bash uninstall is complete.
                     $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
                     if ($ud) {
                         $shim = (Join-Path $ud "bin").TrimEnd("\","/");

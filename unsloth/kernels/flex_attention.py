@@ -27,10 +27,9 @@ torch_compile_options = {
 
 
 def _flex_is_dgx_spark():
-    # Local CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids a circular
-    # import). Runs at module import, before ._utils -- touching torch.cuda here would
-    # init the allocator before patch_dgx_spark_memory_config() can set
-    # PYTORCH_CUDA_ALLOC_CONF on the very Spark hosts this targets.
+    # CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids a circular import).
+    # Runs at module import, before ._utils -- touching torch.cuda here would init the
+    # allocator before patch_dgx_spark_memory_config() can set PYTORCH_CUDA_ALLOC_CONF.
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True

@@ -3,13 +3,11 @@
 
 """Unit tests for _nvidia_classify_spark_unified_memory (Spark OOM-guard classifier).
 
-Two paths: (1) the ``is_integrated`` device property (authoritative on native
-Linux), (2) device-name token match — needed because WSL2's GPU
-paravirtualization masks ``is_integrated`` to 0 and renames the device (the N1X
-reports ``JMJWOA-Generic-GPU``; verified on hardware).
-
-Mirrors test_rocm_oom_guard.py for the ROCm/Strix-Halo classifier the NVIDIA
-guard was modeled on.
+Two paths: (1) ``is_integrated`` device property (authoritative on native Linux),
+(2) device-name token match -- needed because WSL2's GPU paravirtualization masks
+``is_integrated`` to 0 and renames the device (N1X reports ``JMJWOA-Generic-GPU``;
+verified on hardware). Mirrors test_rocm_oom_guard.py for the ROCm/Strix-Halo
+classifier the NVIDIA guard was modeled on.
 """
 
 from __future__ import annotations

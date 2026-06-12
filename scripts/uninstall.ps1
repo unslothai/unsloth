@@ -418,12 +418,12 @@ function Uninstall-UnslothStudio {
     } catch { }
 
     # ── Windows-on-Arm WSL-fallback artifacts ──
-    # The ARM64+NVIDIA fallback puts Studio inside WSL plus a native shim + launcher under
-    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- all missed by the cleanup above.
+    # The ARM64+NVIDIA fallback puts Studio in WSL plus a native shim + launcher under
+    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- all missed above.
     _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
     $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
-    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it is cleanable
-    # without the env var set; read it BEFORE the directory is removed below.
+    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without the
+    # env var set; read it BEFORE the directory is removed below.
     $_recordedDistro = $null
     if ($unslothDir) {
         try {
@@ -460,19 +460,19 @@ function Uninstall-UnslothStudio {
     # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
-            # `wsl --list` emits UTF-16 PS mis-parses, so probe candidates by exit code instead
-            # ('' = default distro). rm runs FIRST (the kills could SIGKILL this shell) and also
-            # drops the dangling /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (where
-            # the fallback installs): /home/*/.unsloth may be an unrelated user's. The port-8888
-            # kill is gated on an Unsloth install existing (checked BEFORE rm deletes the marker)
-            # so an unrelated 8888 listener survives; pkill matches argv containing /root/.unsloth/
-            # rather than bare names that would kill a user's own llama-server, and the backslash
-            # + [h]-bracket in '/root/\.unslot[h]/' keep it from matching this command's own argv.
+            # Probe candidates by exit code ('' = default distro) since `wsl --list` emits UTF-16 PS
+            # mis-parses. rm runs FIRST (the kills could SIGKILL this shell) and drops the dangling
+            # /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (where the fallback installs);
+            # /home/*/.unsloth may be another user's. The 8888 kill is gated on an Unsloth install
+            # existing (checked BEFORE rm deletes the marker) so an unrelated listener survives; pkill
+            # matches argv containing /root/.unsloth/ (not bare names that would hit a user's own
+            # llama-server), and the backslash + [h]-bracket in '/root/\.unslot[h]/' keep it from
+            # matching this command's own argv.
             $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
-            # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker
-            # or an explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy
-            # marker-less installs, which exist only on ARM64 hosts -- on x86 it would delete
-            # distros this installer never touched (e.g. a ROCm-on-WSL Studio under /root).
+            # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker or an
+            # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy marker-less
+            # installs, which exist only on ARM64 -- on x86 it would delete distros this installer
+            # never touched (e.g. a ROCm-on-WSL Studio under /root).
             $_cands = @()
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
             if ($_recordedDistro) { $_cands += $_recordedDistro }
@@ -505,8 +505,8 @@ function Uninstall-UnslothStudio {
         Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
 
-    # The distro probes leave a failing $LASTEXITCODE; reset it so success exits 0. Set the
-    # var rather than `exit 0` so `irm ... | iex` doesn't terminate the caller's shell.
+    # The distro probes leave a failing $LASTEXITCODE; reset so success exits 0. Set the var
+    # rather than `exit 0` so `irm ... | iex` doesn't terminate the caller's shell.
     $global:LASTEXITCODE = 0
 }
 

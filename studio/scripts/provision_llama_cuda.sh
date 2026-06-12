@@ -13,9 +13,9 @@ LLAMA_DIR="${UNSLOTH_LLAMA_CPP_PATH:-$HOME/.unsloth/llama.cpp}"
 SERVER="$LLAMA_DIR/build/bin/llama-server"
 log() { printf '  - %s\n' "$*"; }
 
-# CUDA shows up two ways: old monolithic (libggml-cuda in ldd) or current split
-# build (dlopen-ed libggml-cuda.so* beside the binary, missed by ldd). CPU-only
-# builds ship no libggml-cuda.so, so its presence is the reliable signal.
+# CUDA shows up two ways: monolithic (libggml-cuda in ldd) or split (dlopen-ed
+# libggml-cuda.so* beside the binary, missed by ldd). CPU-only builds ship no
+# libggml-cuda.so, so its presence is the reliable signal.
 is_cuda_server() {
     [ -x "$1" ] || return 1
     ldd "$1" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
@@ -165,8 +165,8 @@ if ! _cmake_configure; then
     _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
 fi
 # Also builds the targets unsloth-zoo's GGUF exporter needs (llama-mtmd-cli,
-# llama-gguf-split). Jobs default to ~half the cores -- full -j(nproc) CUDA builds
-# trip thermal shutdowns on NVIDIA-ARM laptops (N1X "RTX Spark") -- and are
+# llama-gguf-split). Jobs default to ~half the cores (full -j(nproc) CUDA builds
+# trip thermal shutdowns on NVIDIA-ARM laptops like the N1X "RTX Spark") and are
 # RAM-capped (~1.5 GB/nvcc job). Tune: UNSLOTH_LLAMA_BUILD_JOBS=N; re-runs resume.
 _ncpu="$(nproc 2>/dev/null || echo 4)"
 # Honor a valid positive-int override; ignore junk/0 (cmake reads -j0 as "all cores").
@@ -198,7 +198,7 @@ _cmake_build_extras() {
     done
 }
 if ! _cmake_build; then
-    # An interrupted build (thermal/power shutdown -- this machine class is prone)
+    # An interrupted build (thermal/power shutdown, common on this machine class)
     # can leave a half-linked libggml-cuda.so that breaks the resume link
     # (undefined ggml_cuda_op_* refs); wipe and rebuild clean once.
     log "build failed (likely interrupted/partial); wiping build dir and rebuilding clean"
