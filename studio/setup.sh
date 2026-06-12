@@ -1004,6 +1004,13 @@ else
         fi
     done
 fi
+# UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
+# nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
+# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
+# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+    _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+fi
 # A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
 # no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
 # picked instead of ggml-org / a source build.
