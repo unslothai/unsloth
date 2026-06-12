@@ -3791,20 +3791,24 @@ def published_rocm_choice_for_host(
     """Select the published ROCm bundle whose gfx target covers the host GPU.
 
     The manifest's gfx_target uses umbrella family labels (gfx110X, gfx120X,
-    ...), so the host's detected gfx is matched against the bundle's concrete
-    mapped_targets list. Returns None when no published bundle covers the GPU, so
-    the caller falls back to a HIP source build."""
+    ...). A host's detected gfx is matched against the bundle's concrete
+    mapped_targets list, or against the family label itself. Returns None when no
+    published bundle covers the GPU, so the caller falls back to a HIP source
+    build."""
     if not host.rocm_gfx_target:
         return None
     gfx = host.rocm_gfx_target.lower().strip()
     for artifact in release.artifacts:
         if artifact.install_kind != install_kind:
             continue
-        # Match on the concrete built-arch list, not the family prefix: an
-        # in-generation-but-unbuilt arch (e.g. gfx1033 in the gfx103 prefix) must
-        # NOT be served the family bundle. None makes the caller fall back to a
-        # source build for that GPU.
-        if gfx not in {target.lower() for target in artifact.mapped_targets}:
+        # Match the concrete built-arch list so an in-generation-but-unbuilt arch
+        # (e.g. gfx1033 in the gfx103 family) is NOT served the family bundle and
+        # falls back to a source build. Also accept the family label itself: the
+        # llama.cpp update path re-derives --rocm-gfx from the family-named marker
+        # asset, so an update forwards the family token (gfx110X), not a concrete
+        # arch.
+        mapped = {target.lower() for target in artifact.mapped_targets}
+        if gfx not in mapped and gfx != (artifact.gfx_target or "").lower():
             continue
         asset_url = release.assets.get(artifact.asset_name)
         if not asset_url:

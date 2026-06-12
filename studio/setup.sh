@@ -1004,6 +1004,12 @@ else
         fi
     done
 fi
+# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
+# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
+# picked instead of ggml-org / a source build.
+if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
+    _LINUX_HAS_GPU=true
+fi
 
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \

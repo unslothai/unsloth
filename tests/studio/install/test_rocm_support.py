@@ -3206,6 +3206,20 @@ class TestRocmGfxForwarding:
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
 
+    def test_setup_sh_routes_inferred_gfx_to_fork(self):
+        # A forwarded/inferred gfx arch must route to the fork even without ROCm
+        # tooling on PATH, so the per-gfx prebuilt is picked over ggml-org. Pin
+        # the routing guard specifically -- a bare "${_setup_gfx:-}" check also
+        # appears in the unrelated --rocm-gfx forwarding block.
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert '[ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]' in source
+
+    def test_setup_ps1_routes_inferred_gfx_to_fork(self):
+        # Same on Windows: a resolved $script:ROCmGfxArch counts as a fork/GPU
+        # install even when $HasROCm is false (Adrenalin-only, no HIP runtime).
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
+
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
 # Honours CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES so a mixed-arch host installs
