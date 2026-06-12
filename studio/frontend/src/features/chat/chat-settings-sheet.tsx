@@ -325,6 +325,7 @@ function CollapsibleSection({
   label,
   labelHref,
   headerAction,
+  onLabelClick,
   children,
   defaultOpen = false,
   first = false,
@@ -342,6 +343,8 @@ function CollapsibleSection({
    * nested in a button.
    */
   headerAction?: ReactNode;
+  /** When set, clicking the label runs this instead of toggling collapse. */
+  onLabelClick?: () => void;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -395,7 +398,7 @@ function CollapsibleSection({
         <div className={headerClasses}>
           <button
             type="button"
-            onClick={toggle}
+            onClick={onLabelClick ?? toggle}
             className="flex min-w-0 flex-1 cursor-pointer items-center text-left leading-none transition-colors hover:text-nav-fg"
           >
             <span className="leading-none">{label}</span>
@@ -558,6 +561,9 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  // When the prompt overflows the inline box, clicking opens the popup editor.
+  const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
+  const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
     return getOrderedPresets(customPresets);
@@ -761,6 +767,16 @@ export function ChatSettingsPanel({
       setSystemPromptEditorOpen(false);
     }
   }, [open]);
+
+  useEffect(() => {
+    const el = systemPromptBoxRef.current;
+    setSystemPromptOverflows(
+      params.systemPrompt.length > 0 &&
+        el != null &&
+        el.clientHeight > 0 &&
+        el.scrollHeight > el.clientHeight + 1,
+    );
+  }, [params.systemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1119,7 +1135,7 @@ export function ChatSettingsPanel({
                     />
                     <InputGroupAddon
                       align="inline-end"
-                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0 !cursor-pointer"
                     >
                       <span
                         className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
@@ -1300,6 +1316,7 @@ export function ChatSettingsPanel({
         <CollapsibleSection
           label="System Prompt"
           defaultOpen={true}
+          onLabelClick={openSystemPromptEditor}
           headerAction={
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
@@ -1326,22 +1343,36 @@ export function ChatSettingsPanel({
             </Tooltip>
           }
         >
-          <button
-            type="button"
-            onClick={openSystemPromptEditor}
-            aria-label="Edit system prompt"
+          {/* Rounded wrapper clips overflowing text and the scrollbar. */}
+          <div
             className={cn(
-              "panel-text-surface -mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
-              params.systemPrompt
-                ? "text-nav-fg"
-                : "text-muted-foreground",
+              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+              systemPromptOverflows && "cursor-pointer",
             )}
           >
-            <span className="block line-clamp-3 whitespace-pre-wrap break-words">
-              {params.systemPrompt ||
-                "Example: You are a helpful assistant..."}
-            </span>
-          </button>
+            <textarea
+              ref={systemPromptBoxRef}
+              value={params.systemPrompt}
+              onChange={(e) => set("systemPrompt")(e.target.value)}
+              onMouseDown={(e) => {
+                // Overflowing prompt: click opens the popup editor instead.
+                // While focused, clicks still move the caret normally.
+                if (
+                  systemPromptOverflows &&
+                  document.activeElement !== e.currentTarget
+                ) {
+                  e.preventDefault();
+                  openSystemPromptEditor();
+                }
+              }}
+              placeholder="Example: You are a helpful assistant..."
+              aria-label="System prompt"
+              className={cn(
+                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                systemPromptOverflows && "cursor-pointer",
+              )}
+            />
+          </div>
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
@@ -1465,6 +1496,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <ConfirmToolCallsToggle />
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
@@ -1646,6 +1678,30 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function ConfirmToolCallsToggle() {
+  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
+  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Confirm tool calls
+        </span>
+        <InfoHint>
+          When on, local Studio tool calls pause for your approval before they
+          run. Provider-hosted tools are not gated here.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={confirmToolCalls}
+        onCheckedChange={setConfirmToolCalls}
       />
     </div>
   );

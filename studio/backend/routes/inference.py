@@ -29,6 +29,16 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int > 0 else None
+
+
 def _install_httpcore_asyncgen_silencer() -> None:
     """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
 
@@ -645,6 +655,7 @@ from models.inference import (
     ChatCompletionRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -692,6 +703,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
@@ -1390,6 +1402,7 @@ async def load_model(
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
+                    context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,
                 )
 
@@ -1438,18 +1451,23 @@ async def load_model(
             # parse against a freshly-supplied first-class field.
             if request.llama_extra_args is None and llama_backend.extra_args:
                 source = llama_backend.extra_args_source
-                # Compare against the resolved variant, not the request field:
-                # callers commonly omit gguf_variant for local ``.gguf`` paths
-                # and HF auto-pick flows. ``config.gguf_variant`` is the variant
-                # load_model was actually invoked with (see HF / local branches
-                # below), so both sides key off the same string.
-                resolved_variant = config.gguf_variant
-                same_source = bool(
-                    source
-                    and source[0]
-                    and source[0].lower() == model_identifier.lower()
-                    and (source[1] or "").lower() == (resolved_variant or "").lower()
+                # Compare against the resolved variant, not the request
+                # field: callers commonly omit gguf_variant for local
+                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
+                # variant`` is the variant load_model was actually
+                # invoked with (see the HF / local branches below), so
+                # both sides of the comparison key off the same string.
+                resolved_variant = (config.gguf_variant or "").lower()
+                request_variant = (request.gguf_variant or "").lower()
+                stored_variant = (source[1] or "").lower() if source else ""
+                same_model = bool(
+                    source and source[0] and source[0].lower() == model_identifier.lower()
                 )
+                if request.gguf_variant:
+                    variant_mismatch = request_variant != stored_variant
+                else:
+                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+                same_source = same_model and not variant_mismatch
                 if not same_source:
                     logger.info(
                         "Not inheriting llama_extra_args: stored args came from %s, loading %s",
@@ -1479,8 +1497,7 @@ async def load_model(
                         # Shouldn't happen on already-validated args; degrade to
                         # no-extras rather than 400 if managed flags changed.
                         logger.warning(
-                            "Stored llama_extra_args failed revalidation; "
-                            "loading without them: %s",
+                            "Stored llama_extra_args failed revalidation; loading without them: %s",
                             stripped,
                         )
                         extra_llama_args = []
@@ -1731,6 +1748,7 @@ async def load_model(
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
+            context_length = _positive_int_or_none(_model_info.get("context_length")),
             chat_template = _chat_template,
         )
 
@@ -1919,6 +1937,20 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
+
+
+@studio_router.post("/tool-confirm")
+async def confirm_tool_call(
+    request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
+):
+    matched = resolve_tool_decision(
+        request.approval_id,
+        request.decision,
+        session_id = request.session_id,
+    )
+    if not matched:
+        raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
+    return {"resolved": True}
 
 
 @router.post("/generate/stream")
@@ -2119,6 +2151,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
+            context_length = _positive_int_or_none(model_info.get("context_length")),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
@@ -3178,6 +3211,22 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        if payload.confirm_tool_calls and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls is only supported for local streaming tools.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request)
@@ -3549,6 +3598,16 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            if payload.confirm_tool_calls and not payload.stream:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "confirm_tool_calls requires stream=true for local tool execution.",
+                        status = 400,
+                        code = "invalid_request_error",
+                        param = "confirm_tool_calls",
+                    ),
+                )
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
@@ -3619,6 +3678,7 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
+                    confirm_tool_calls = bool(payload.confirm_tool_calls),
                 )
 
             _tool_sentinel = object()
@@ -3628,6 +3688,7 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                gen = None
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -3750,6 +3811,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except (RuntimeError, ValueError):
+                            pass
                     _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
@@ -4073,6 +4139,16 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
+        if payload.confirm_tool_calls and not payload.stream:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
@@ -4149,6 +4225,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
+                confirm_tool_calls = bool(payload.confirm_tool_calls),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -4159,6 +4236,7 @@ async def openai_chat_completions(
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
+            gen = None
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -4275,6 +4353,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
@@ -4625,28 +4708,38 @@ def _openai_model_objects() -> list[dict]:
             "created": _created,
             "owned_by": "local",
         }
-        # Extension fields: the real per-request window (post /props readback)
-        # so clients can budget/compact against the enforced limit.
-        if llama_backend.context_length:
-            entry["context_length"] = llama_backend.context_length
-        if llama_backend.max_context_length:
-            entry["max_context_length"] = llama_backend.max_context_length
+        _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        if _ctx is not None:
+            entry["context_length"] = _ctx
+        _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
+        if _max_ctx is not None:
+            entry["max_context_length"] = _max_ctx
+        _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
+        if _native_ctx is not None:
+            entry["native_context_length"] = _native_ctx
         models.append(entry)
 
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
+        model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             "id": backend.active_model_name,
             "object": "model",
             "created": _created,
             "owned_by": "local",
         }
-        _sf_ctx = getattr(backend, "context_length", None) or getattr(
-            backend, "max_seq_length", None
-        )
-        if _sf_ctx:
-            entry["context_length"] = _sf_ctx
+        _ctx = _positive_int_or_none(model_info.get("context_length"))
+        if _ctx is None:
+            for _candidate in (
+                getattr(backend, "context_length", None),
+                getattr(backend, "max_seq_length", None),
+            ):
+                _ctx = _positive_int_or_none(_candidate)
+                if _ctx is not None:
+                    break
+        if _ctx is not None:
+            entry["context_length"] = _ctx
         models.append(entry)
 
     return models
@@ -5906,6 +5999,15 @@ async def anthropic_messages(
         )
 
     if server_tools:
+        if bool(getattr(payload, "confirm_tool_calls", False)):
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "confirm_tool_calls is not supported for Anthropic Messages server tools.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
         from core.inference.tools import ALL_TOOLS
 
         openai_tools = _select_anthropic_server_tools(

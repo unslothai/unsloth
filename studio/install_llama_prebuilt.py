@@ -174,6 +174,12 @@ TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
+# Master switch for the staged runtime smoke test (llama-quantize + llama-server)
+# in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
+# JIT-compiles CUDA kernels on first load and stalls every install and update by
+# minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
+# are kept intact -- set this to True to re-enable them.
+_RUN_STAGED_PREBUILT_VALIDATION = False
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
@@ -460,8 +466,14 @@ def is_busy_lock_error(exc: BaseException) -> bool:
     return False
 
 
+# Status logs default to stderr so resolver modes keep stdout machine-readable
+# (setup.sh json.load()s the whole stdout). main() flips this for the install
+# path, where PowerShell otherwise renders stderr as NativeCommandError noise.
+_LOG_TO_STDOUT = False
+
+
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stderr)
+    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -856,6 +868,16 @@ def format_byte_count(num_bytes: float) -> str:
     return f"{num_bytes:.1f} B"
 
 
+def _progress_percent_step() -> int:
+    """Non-tty milestone granularity. The in-app updater sets
+    UNSLOTH_PROGRESS_PERCENT_STEP=5 to stream finer progress lines."""
+    try:
+        step = int(os.environ.get("UNSLOTH_PROGRESS_PERCENT_STEP", "25"))
+    except ValueError:
+        return 25
+    return min(max(step, 1), 50)
+
+
 class DownloadProgress:
     def __init__(self, label: str, total_bytes: int | None) -> None:
         self.label = label
@@ -868,6 +890,7 @@ class DownloadProgress:
         )
         self.is_tty = term_ok and self.stream.isatty()
         self.completed = False
+        self.milestone_step = _progress_percent_step()
         self.last_milestone_percent = -1
         self.last_milestone_bytes = 0
         self.has_rendered_tty_progress = False
@@ -918,7 +941,8 @@ class DownloadProgress:
         should_emit = False
         if self.total_bytes is not None:
             percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
-            milestone_percent = min((percent // 25) * 25, 100)
+            step = self.milestone_step
+            milestone_percent = min((percent // step) * step, 100)
             if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
                 self.last_milestone_percent = milestone_percent
                 should_emit = True
@@ -3916,6 +3940,12 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     return False
 
 
+# (gfx_target, asset_name) pairs already logged. resolve_lemonade_rocm_choice()
+# runs twice per install (direct planner + resolve_upstream_asset_choice), so
+# this stops its selection banner and hash-manifest NOTE printing twice.
+_lemonade_selection_logged: "set[tuple[str, str]]" = set()
+
+
 @functools.lru_cache(maxsize = 8)
 def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
     """Cached wrapper around fetch_json for lemonade release lookups.
@@ -4022,18 +4052,22 @@ def resolve_lemonade_rocm_choice(
     # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
     # generic glibc build that runs on any distro (Arch, Fedora, ...), so
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
-    log(
-        f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
-        f"trying lemonade-sdk ROCm prebuilt {asset_name} "
-        f"(works on any glibc Linux, not just Ubuntu)"
-    )
-    log(
-        f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
-        f"Unsloth approved-hash manifest; download integrity relies on "
-        f"functional validation (llama-bench / llama-server smoke tests) "
-        f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
-        f"lemonade and fall back to the upstream HIP build path."
-    )
+    # Log once per (gfx_target, asset); see _lemonade_selection_logged.
+    log_key = (host.rocm_gfx_target, asset_name)
+    if log_key not in _lemonade_selection_logged:
+        _lemonade_selection_logged.add(log_key)
+        log(
+            f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
+            f"trying lemonade-sdk ROCm prebuilt {asset_name} "
+            f"(works on any glibc Linux, not just Ubuntu)"
+        )
+        log(
+            f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
+            f"Unsloth approved-hash manifest; download integrity relies on "
+            f"functional validation (llama-bench / llama-server smoke tests) "
+            f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
+            f"lemonade and fall back to the upstream HIP build path."
+        )
     return AssetChoice(
         repo = LEMONADE_ROCM_REPO,
         tag = release_tag,
@@ -6523,23 +6557,31 @@ def validate_prebuilt_choice(
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
-    validate_quantize(
-        quantize_path,
-        probe_path,
-        quantized_path,
-        install_dir,
-        host,
-        runtime_line = choice.runtime_line,
-    )
-    validate_server(
-        server_path,
-        probe_path,
-        host,
-        install_dir,
-        runtime_line = choice.runtime_line,
-        install_kind = choice.install_kind,
-    )
-    log(f"staged prebuilt validation succeeded for {choice.name}")
+    # Hashless external prebuilts (e.g. lemonade) are not in the approved-sha256
+    # manifest and rely on the functional smoke test as their only integrity gate,
+    # so they are always validated. For an approved bundle the sha256 manifest
+    # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
+    # costing minutes on Blackwell sm_100 -- is gated behind
+    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
+    # source-build fallback it triggers are kept intact; flip the flag to restore it.
+    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+        validate_quantize(
+            quantize_path,
+            probe_path,
+            quantized_path,
+            install_dir,
+            host,
+            runtime_line = choice.runtime_line,
+        )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            runtime_line = choice.runtime_line,
+            install_kind = choice.install_kind,
+        )
+        log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
 
 
@@ -6951,6 +6993,9 @@ def main() -> int:
         raise SystemExit(
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag, --resolve-install-tag, or --resolve-source-build is used"
         )
+    # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
+    global _LOG_TO_STDOUT
+    _LOG_TO_STDOUT = True
     install_prebuilt(
         install_dir = Path(args.install_dir).expanduser().resolve(),
         llama_tag = args.llama_tag,

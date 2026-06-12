@@ -19,6 +19,7 @@ import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmation-controls";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
@@ -2520,6 +2521,19 @@ const CancelledIndicator: FC = () => {
   );
 };
 
+const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
+const KnowledgeBaseToolUIConfirmable =
+  withToolConfirmation(KnowledgeBaseToolUI);
+const PythonToolUIConfirmable = withToolConfirmation(PythonToolUI);
+const TerminalToolUIConfirmable = withToolConfirmation(TerminalToolUI);
+const CodeExecutionToolUIConfirmable =
+  withToolConfirmation(CodeExecutionToolUI);
+const ImageGenerationToolUIConfirmable = withToolConfirmation(
+  ImageGenerationToolUI,
+);
+const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -2538,15 +2552,15 @@ const AssistantMessage: FC = () => {
             ToolGroup: ToolGroup,
             tools: {
               by_name: {
-                web_search: WebSearchToolUI,
-                search_knowledge_base: KnowledgeBaseToolUI,
-                python: PythonToolUI,
-                terminal: TerminalToolUI,
-                code_execution: CodeExecutionToolUI,
-                image_generation: ImageGenerationToolUI,
-                render_html: RenderHtmlToolUI,
+                web_search: WebSearchToolUIConfirmable,
+                search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+                python: PythonToolUIConfirmable,
+                terminal: TerminalToolUIConfirmable,
+                code_execution: CodeExecutionToolUIConfirmable,
+                image_generation: ImageGenerationToolUIConfirmable,
+                render_html: RenderHtmlToolUIConfirmable,
               },
-              Fallback: ToolFallback,
+              Fallback: ToolFallbackConfirmable,
             },
           }}
         />
