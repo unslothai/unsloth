@@ -1456,7 +1456,11 @@ fi
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.7.14"
+UV_MIN_VERSION="0.7.22"
+
+# When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
+: "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
+export UV_COMPILE_BYTECODE_TIMEOUT
 
 version_ge() {
     # returns 0 if $1 >= $2

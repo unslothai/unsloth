@@ -951,6 +951,8 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          // Honor the Tensor Parallelism toggle on compare loads too.
+          tensor_parallel: currentStore.tensorParallel,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -966,6 +968,8 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          tensorParallel: resp.tensor_parallel ?? false,
+          loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
