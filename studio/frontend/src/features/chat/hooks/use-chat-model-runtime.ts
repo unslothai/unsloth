@@ -312,6 +312,7 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
+          loadedIsDiffusion: false,
         });
       }
     } catch (error) {
@@ -640,6 +641,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeNativePathToken: nativePathToken ?? null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
