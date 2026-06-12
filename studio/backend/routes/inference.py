@@ -1202,7 +1202,10 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
         )
     )
-    if resolve_tensor_parallel(effective_extra, request.tensor_parallel) != llama_backend.tensor_parallel:
+    if (
+        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
+        != llama_backend.tensor_parallel
+    ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
