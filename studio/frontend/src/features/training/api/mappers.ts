@@ -17,13 +17,34 @@ function parseSliceValue(value: string | null): number | null {
   return num;
 }
 
+function buildS3PayloadConfig(config: TrainingConfigState) {
+  const s3 = config.datasetSource === "s3" ? config.s3Config : null;
+  if (!s3) {
+    return null;
+  }
+  if (s3.useIamRole) {
+    return {
+      bucket: s3.bucket,
+      region: s3.region,
+      prefix: s3.prefix,
+      useIamRole: s3.useIamRole,
+    };
+  }
+  return s3;
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
 ): TrainingStartRequest {
   const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
   const isQloraMethod = config.trainingMethod === "qlora";
-  const isFourBitModel = (config.selectedModel ?? "").toLowerCase().includes("4bit");
+  const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
+  const isFourBitModel = _selectedModelLower.includes("4bit");
+  // DeepSeek OCR ignores user-selected image size; do not send it.
+  const isDeepseekOcr =
+    _selectedModelLower.includes("deepseek") &&
+    _selectedModelLower.includes("ocr");
   const isEmbedding = config.isEmbeddingModel;
   const isRawText = isRawTextDatasetFormat(config.datasetFormat);
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
@@ -31,6 +52,7 @@ export function buildTrainingStartPayload(
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
+  const s3Config = buildS3PayloadConfig(config);
   let customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
@@ -55,6 +77,10 @@ export function buildTrainingStartPayload(
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
+    vision_image_size:
+      config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
+        ? config.visionImageSize
+        : null,
     trust_remote_code: config.trustRemoteCode ?? false,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
@@ -67,6 +93,7 @@ export function buildTrainingStartPayload(
       config.datasetSource === "upload" && config.uploadedEvalFile
         ? [config.uploadedEvalFile]
         : [],
+    s3_config: s3Config,
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,

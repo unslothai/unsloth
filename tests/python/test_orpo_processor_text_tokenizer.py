@@ -34,7 +34,12 @@ class _Tokenizer:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, text, add_special_tokens = False, **kwargs):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+        **kwargs,
+    ):
         self.calls.append((text, add_special_tokens, kwargs))
         ids = [ord(c) % 31 + 3 for c in text]
         return {"input_ids": ids, "attention_mask": [1] * len(ids)}
@@ -60,7 +65,11 @@ class _Trainer:
         self.padding_value = 0
 
 
-def _exec_rewritten(function_name, source, extra_ns = None):
+def _exec_rewritten(
+    function_name,
+    source,
+    extra_ns = None,
+):
     rewriter = _load_orpo_rewriter()
     rewritten = rewriter(function_name, source)
     ns = {} if extra_ns is None else dict(extra_ns)

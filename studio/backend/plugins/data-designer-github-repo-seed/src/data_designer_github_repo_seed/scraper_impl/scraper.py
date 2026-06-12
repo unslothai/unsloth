@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Main scraper orchestration. Collects issues, PRs, discussions, commits, releases, etc.
+"""Scraper orchestration: issues, PRs, discussions, commits, releases, etc.
 
 Resumable via state file. Writes JSONL shards under data/{repo}/{resource}.jsonl.
 """
@@ -49,9 +49,9 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # When light=True, use trimmed GraphQL queries (no reviewThreads,
-        # reviews, commits, timelineItems, files) so PR pages can be much
-        # larger without blowing GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries (no reviewThreads/reviews/
+        # commits/timelineItems/files) so PR pages can be larger without
+        # hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
@@ -86,11 +86,7 @@ class RepoScraper:
         return counter >= lim
 
     def _log_rate(self, where: str, data: Dict[str, Any]) -> None:
-        rl = (
-            data.get("data", {}).get("rateLimit")
-            if isinstance(data.get("data"), dict)
-            else None
-        )
+        rl = data.get("data", {}).get("rateLimit") if isinstance(data.get("data"), dict) else None
         if rl:
             log.debug(
                 "[%s] rate cost=%s remaining=%s resetAt=%s",
@@ -102,9 +98,7 @@ class RepoScraper:
 
     # ----- repo meta -----
     def scrape_repo_meta(self) -> Dict[str, Any]:
-        data = self.client.graphql(
-            Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name}
-        )
+        data = self.client.graphql(Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name})
         self._log_rate("repo_meta", data)
         repo = data.get("data", {}).get("repository") or {}
         repo["_fetchedAt"] = ts()
@@ -121,9 +115,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Light query skips heavy nested fields; safe at 50 per page.
-        # Clamp by trial_limit so e.g. limit=1 asks GitHub for first:1
-        # instead of fetching a full 50-item page and discarding 49.
+        # Light query skips heavy nested fields; safe at 50/page. Clamp by
+        # trial_limit so limit=1 asks for first:1, not a full 50-item page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -150,11 +143,7 @@ class RepoScraper:
                         self._paginate_issue_comments(
                             it["number"], it["comments"]["pageInfo"]["endCursor"]
                         )
-                    if (
-                        it.get("timelineItems", {})
-                        .get("pageInfo", {})
-                        .get("hasNextPage")
-                    ):
+                    if it.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
                         self._paginate_issue_timeline(
                             it["number"],
                             it["timelineItems"]["pageInfo"]["endCursor"],
@@ -233,10 +222,9 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Heavy nested PR query is capped at 3 per page (GitHub node-count
-        # ceiling); light query skips reviewThreads/reviews/commits/etc and
-        # can safely go to 25 per page. Clamp by trial_limit for small
-        # previews so limit=1 does not fetch a whole 25-item page.
+        # Heavy nested PR query caps at 3/page (GitHub node-count ceiling);
+        # light query skips nested fields and goes to 25/page. Clamp by
+        # trial_limit so limit=1 does not fetch a whole 25-item page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -261,30 +249,16 @@ class RepoScraper:
                 num = pr["number"]
                 if not self.light:
                     if pr.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                        self._paginate_pr_comments(
-                            num, pr["comments"]["pageInfo"]["endCursor"]
-                        )
-                    if (
-                        pr.get("timelineItems", {})
-                        .get("pageInfo", {})
-                        .get("hasNextPage")
-                    ):
+                        self._paginate_pr_comments(num, pr["comments"]["pageInfo"]["endCursor"])
+                    if pr.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
                         self._paginate_pr_timeline(
                             num, pr["timelineItems"]["pageInfo"]["endCursor"]
                         )
                     if pr.get("commits", {}).get("pageInfo", {}).get("hasNextPage"):
-                        self._paginate_pr_commits(
-                            num, pr["commits"]["pageInfo"]["endCursor"]
-                        )
+                        self._paginate_pr_commits(num, pr["commits"]["pageInfo"]["endCursor"])
                     if pr.get("files", {}).get("pageInfo", {}).get("hasNextPage"):
-                        self._paginate_pr_files(
-                            num, pr["files"]["pageInfo"]["endCursor"]
-                        )
-                    if (
-                        pr.get("reviewThreads", {})
-                        .get("pageInfo", {})
-                        .get("hasNextPage")
-                    ):
+                        self._paginate_pr_files(num, pr["files"]["pageInfo"]["endCursor"])
+                    if pr.get("reviewThreads", {}).get("pageInfo", {}).get("hasNextPage"):
                         self._paginate_pr_review_threads(
                             num, pr["reviewThreads"]["pageInfo"]["endCursor"]
                         )
@@ -342,9 +316,7 @@ class RepoScraper:
                 "after": cur,
             }
             data = self.client.graphql(Q.PR_TIMELINE_QUERY, vars_)
-            item = ((data.get("data") or {}).get("repository") or {}).get(
-                "pullRequest"
-            ) or {}
+            item = ((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
             tl = item.get("timelineItems") or {}
             for ev in tl.get("nodes") or []:
                 ev["_owner"] = self.owner
@@ -367,9 +339,7 @@ class RepoScraper:
                 "after": cur,
             }
             data = self.client.graphql(Q.PR_COMMITS_QUERY, vars_)
-            item = ((data.get("data") or {}).get("repository") or {}).get(
-                "pullRequest"
-            ) or {}
+            item = ((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
             cc = item.get("commits") or {}
             for c in cc.get("nodes") or []:
                 c["_owner"] = self.owner
@@ -392,15 +362,13 @@ class RepoScraper:
                 "after": cur,
             }
             data = self.client.graphql(Q.PR_FILES_QUERY, vars_)
-            item = ((data.get("data") or {}).get("repository") or {}).get(
-                "pullRequest"
-            ) or {}
+            item = ((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
             ff = item.get("files") or {}
             for f in ff.get("nodes") or []:
                 f["_owner"] = self.owner
                 f["_repo"] = self.name
                 f["_prNumber"] = number
-                # files don't have id, synthesize one
+                # files have no id; synthesize one
                 f["_syntheticId"] = f"{self.owner}/{self.name}#{number}:{f.get('path')}"
                 self.writers[out_key].write(f)
             info = ff.get("pageInfo") or {}
@@ -419,9 +387,7 @@ class RepoScraper:
                 "after": cur,
             }
             data = self.client.graphql(Q.PR_REVIEW_THREADS_QUERY, vars_)
-            item = ((data.get("data") or {}).get("repository") or {}).get(
-                "pullRequest"
-            ) or {}
+            item = ((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
             rt = item.get("reviewThreads") or {}
             for th in rt.get("nodes") or []:
                 th["_owner"] = self.owner
@@ -461,9 +427,7 @@ class RepoScraper:
                 d["_fetchedAt"] = ts()
                 num = d["number"]
                 if d.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_discussion_comments(
-                        num, d["comments"]["pageInfo"]["endCursor"]
-                    )
+                    self._paginate_discussion_comments(num, d["comments"]["pageInfo"]["endCursor"])
                 # paginate replies per comment if needed
                 for c in d.get("comments", {}).get("nodes", []) or []:
                     if c.get("replies", {}).get("pageInfo", {}).get("hasNextPage"):
@@ -501,9 +465,7 @@ class RepoScraper:
                 "after": cur,
             }
             data = self.client.graphql(Q.DISCUSSION_COMMENTS_QUERY, vars_)
-            disc = ((data.get("data") or {}).get("repository") or {}).get(
-                "discussion"
-            ) or {}
+            disc = ((data.get("data") or {}).get("repository") or {}).get("discussion") or {}
             cc = disc.get("comments") or {}
             for c in cc.get("nodes") or []:
                 c["_owner"] = self.owner
@@ -513,9 +475,7 @@ class RepoScraper:
             info = cc.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
-    def _paginate_discussion_replies(
-        self, comment_id: str, after: str, disc_number: int
-    ) -> None:
+    def _paginate_discussion_replies(self, comment_id: str, after: str, disc_number: int) -> None:
         cur = after
         while cur:
             vars_ = {
@@ -650,12 +610,8 @@ def setup_logging(log_file: Path) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--base-dir", default = "/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper"
-    )
-    ap.add_argument(
-        "--repos", nargs = "+", default = ["unslothai/unsloth", "unslothai/unsloth-zoo"]
-    )
+    ap.add_argument("--base-dir", default = "/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper")
+    ap.add_argument("--repos", nargs = "+", default = ["unslothai/unsloth", "unslothai/unsloth-zoo"])
     ap.add_argument("--trial", action = "store_true", help = "Small trial run")
     ap.add_argument(
         "--only",
@@ -688,7 +644,6 @@ def main():
     uploader = None
     if args.hf_upload_interval > 0:
         from hf_uploader import HFUploader
-
         uploader = HFUploader(data_dir, interval_s = args.hf_upload_interval)
         uploader.start()
 
@@ -729,15 +684,9 @@ def main():
                 if not only or "commits" in only:
                     default_ref = repo_meta.get("defaultBranchRef") or {}
                     default_branch = (
-                        default_ref.get("name")
-                        if isinstance(default_ref, dict)
-                        else None
+                        default_ref.get("name") if isinstance(default_ref, dict) else None
                     )
-                    branch = (
-                        f"refs/heads/{default_branch}"
-                        if default_branch
-                        else "refs/heads/main"
-                    )
+                    branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
                     scraper.scrape_commits(branch = branch)
             finally:
                 scraper.close()

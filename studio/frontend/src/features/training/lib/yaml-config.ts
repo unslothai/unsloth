@@ -27,8 +27,27 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
+  // File import is authoritative: force vision_image_size = null when the
+  // training section is missing/malformed/lacks the key, so a stale store
+  // value can't survive an import. (Same-model defaults reloads preserve
+  // user choice via Object.hasOwn in model-defaults.ts.)
+  const rawTraining = raw.training;
+  const isPlainTrainingObject =
+    rawTraining != null &&
+    typeof rawTraining === "object" &&
+    !Array.isArray(rawTraining);
+  let trainingObj: Record<string, unknown>;
+  if (!isPlainTrainingObject) {
+    trainingObj = { vision_image_size: null };
+  } else {
+    trainingObj = { ...(rawTraining as Record<string, unknown>) };
+    if (!Object.hasOwn(trainingObj, "vision_image_size")) {
+      trainingObj.vision_image_size = null;
+    }
+  }
+
   return {
-    training: (raw.training ?? undefined) as BackendModelConfig["training"],
+    training: trainingObj as BackendModelConfig["training"],
     lora: (raw.lora ?? undefined) as BackendModelConfig["lora"],
     logging: (raw.logging ?? undefined) as BackendModelConfig["logging"],
   };
@@ -41,6 +60,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
 export function serializeConfigToYaml(
   state: TrainingConfigState,
   includeVisionFields: boolean,
+  includeVisionImageSize: boolean = includeVisionFields,
 ): string {
   const lora: Record<string, unknown> = {
     lora_r: state.loraRank,
@@ -58,25 +78,31 @@ export function serializeConfigToYaml(
     lora.finetune_mlp_modules = state.finetuneMLPModules;
   }
 
+  const training: Record<string, unknown> = {
+    max_seq_length: state.contextLength,
+    num_epochs: state.epochs,
+    learning_rate: state.learningRate,
+    batch_size: state.batchSize,
+    gradient_accumulation_steps: state.gradientAccumulation,
+    warmup_steps: state.warmupSteps,
+    max_steps: state.maxSteps,
+    save_steps: state.saveSteps,
+    eval_steps: state.evalSteps,
+    weight_decay: state.weightDecay,
+    random_seed: state.randomSeed,
+    packing: state.packing,
+    train_on_completions: state.trainOnCompletions,
+    gradient_checkpointing: state.gradientCheckpointing,
+    optim: state.optimizerType,
+    lr_scheduler_type: state.lrSchedulerType,
+  };
+
+  if (includeVisionImageSize) {
+    training.vision_image_size = state.visionImageSize;
+  }
+
   const config = {
-    training: {
-      max_seq_length: state.contextLength,
-      num_epochs: state.epochs,
-      learning_rate: state.learningRate,
-      batch_size: state.batchSize,
-      gradient_accumulation_steps: state.gradientAccumulation,
-      warmup_steps: state.warmupSteps,
-      max_steps: state.maxSteps,
-      save_steps: state.saveSteps,
-      eval_steps: state.evalSteps,
-      weight_decay: state.weightDecay,
-      random_seed: state.randomSeed,
-      packing: state.packing,
-      train_on_completions: state.trainOnCompletions,
-      gradient_checkpointing: state.gradientCheckpointing,
-      optim: state.optimizerType,
-      lr_scheduler_type: state.lrSchedulerType,
-    },
+    training,
     lora,
   };
 
