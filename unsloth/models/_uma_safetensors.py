@@ -14,13 +14,11 @@
 
 """Faster safetensors weight loading on unified-memory (integrated) GPUs.
 
-On UMA GPUs (AMD APUs, NVIDIA GB10 Spark, Intel iGPUs) a direct
-``safe_open(..., device=<cuda>)`` misses torch's fast pinned-DMA path because
-the mmap-backed safetensors buffers aren't recognized, falling to a slow
-per-tensor copy with page faults. Cloning each tensor into a normal torch CPU
-allocation and then moving it restores the fast path -- bit-identical outputs,
-only the transfer mechanism changes. Dependency-light (os/functools/torch) so
-it unit-tests in isolation.
+A direct ``safe_open(..., device=<cuda>)`` on UMA GPUs (AMD APUs, NVIDIA GB10
+Spark, Intel iGPUs) misses torch's fast pinned-DMA path: the mmap-backed
+safetensors buffers aren't recognized, so it falls to a slow per-tensor copy
+with page faults. Cloning each tensor into a normal torch CPU allocation before
+moving it restores the fast path; outputs are bit-identical.
 """
 
 import os
@@ -38,9 +36,8 @@ __all__ = [
 def is_integrated_unified_memory_gpu():
     """True only when EVERY visible CUDA/HIP device is integrated (UMA).
 
-    Uses the standard ``is_integrated`` device property; discrete GPUs and
-    mixed discrete+iGPU boxes return False (their pinned-DMA path already
-    works). Test override: ``UNSLOTH_FORCE_UMA=1`` / ``=0``.
+    Discrete and mixed discrete+iGPU boxes return False (pinned-DMA already
+    works there). Test override: ``UNSLOTH_FORCE_UMA=1`` / ``=0``.
     """
     _force = os.environ.get("UNSLOTH_FORCE_UMA")
     if _force == "1":
@@ -63,7 +60,7 @@ def is_integrated_unified_memory_gpu():
 
 
 def _is_cuda_target(device):
-    """Whether a ``safe_open`` ``device=`` argument names a CUDA/HIP device."""
+    """Does a ``safe_open`` ``device=`` arg name a CUDA/HIP device?"""
     if isinstance(device, bool):
         return False
     if isinstance(device, int):
@@ -77,21 +74,16 @@ def _is_cuda_target(device):
 
 
 def patch_unified_memory_safetensors_load():
-    """Wrap ``transformers.modeling_utils.safe_open``: CUDA-target shard loads
-    open on CPU, then each tensor is ``.clone()``-d and ``.to(device)``-moved,
-    restoring the fast DMA path UMA misses. Bit-identical outputs.
+    """Wrap ``transformers.modeling_utils.safe_open`` so CUDA-target shard loads
+    open on CPU then clone+``.to(device)``, restoring the UMA fast path.
 
-    Gated to integrated GPUs only (no-op on discrete/CPU/XPU/MLX); intercepts
-    ``framework="pt"`` CUDA targets only; idempotent (``_unsloth_uma_clone``);
-    opt out with ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
+    Gated to integrated GPUs (no-op on discrete/CPU/XPU/MLX), ``framework="pt"``
+    CUDA targets only, idempotent. Opt out: ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
 
-    The gate runs LAZILY inside the wrapper, never at install: probing device
-    properties here would init CUDA during ``import unsloth`` -- breaking fork
-    multiprocessing, preempting ``patch_dgx_spark_memory_config``'s allocator
-    config, and taxing CPU-only imports. At first CUDA-target ``safe_open`` the
-    caller is initializing CUDA anyway, so the lru-cached query is free.
-
-    Returns ``True`` if the wrapper was installed.
+    The gate runs lazily inside the wrapper, never here: probing device
+    properties at install would init CUDA during ``import unsloth`` -- breaking
+    fork multiprocessing and preempting ``patch_dgx_spark_memory_config``'s
+    allocator config. Returns ``True`` if the wrapper was installed.
     """
     if os.environ.get("UNSLOTH_DISABLE_UMA_CLONE_LOAD") == "1":
         return False
@@ -103,7 +95,7 @@ def patch_unified_memory_safetensors_load():
     if real_safe_open is None:
         return False
     if getattr(real_safe_open, "_unsloth_uma_clone", False):
-        return True  # already patched (idempotent)
+        return True  # idempotent
 
     class _ClonedSlice:
         """Proxy over a safetensors ``PySafeSlice`` that clones+moves on read."""
@@ -123,14 +115,13 @@ def patch_unified_memory_safetensors_load():
             return self._real[key].clone().to(self._device, non_blocking = False)
 
     class _ClonedSafeOpen:
-        """Proxy over a safetensors file handle that loads on CPU and
-        clones+moves each tensor to the originally-requested CUDA device."""
+        """Safetensors-handle proxy: load on CPU, clone+move tensors to CUDA."""
 
         __slots__ = ("_real", "_device")
 
         def __init__(self, args, kwargs):
             self._device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-            # Re-target the real open at CPU; we do the device move ourselves.
+            # Open on CPU; we do the device move ourselves.
             if len(args) > 2:
                 args = args[:2] + ("cpu",) + tuple(args[3:])
             else:
@@ -160,8 +151,7 @@ def patch_unified_memory_safetensors_load():
     def _uma_safe_open(*args, **kwargs):
         framework = kwargs.get("framework", args[1] if len(args) > 1 else None)
         device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-        # Gate order matters: the device check runs FIRST so non-CUDA loads
-        # never trigger the (CUDA-initializing) integrated-GPU property query.
+        # Device check FIRST so non-CUDA loads never trigger the CUDA-init gate.
         if (
             framework in ("pt", "pytorch")
             and _is_cuda_target(device)

@@ -14,11 +14,10 @@
 
 """Unit tests for the UMA safetensors clone-then-move fast load.
 
-The module is loaded in isolation with ``transformers.modeling_utils`` faked
-via ``sys.modules``. The CUDA correctness check needs a GPU; gating, CPU
-passthrough, idempotency and opt-out are GPU-free. The integrated-GPU gate is
-lazy (wrapper-time, not install-time), so the wrapper installs everywhere and
-passes through when the gate is off.
+The module loads in isolation with a fake ``transformers.modeling_utils``. The
+CUDA correctness check needs a GPU; gating, passthrough, idempotency and opt-out
+are GPU-free. The gate is lazy (wrapper-time), so the wrapper installs
+everywhere and passes through when it's off.
 """
 
 from __future__ import annotations
@@ -83,9 +82,7 @@ def _install_fake_modeling_utils(monkeypatch, safe_open_fn):
     return fake_mu
 
 
-# ---------------------------------------------------------------------------
-# detection / gate
-# ---------------------------------------------------------------------------
+# --- detection / gate ---
 
 
 def test_force_uma_on(uma, monkeypatch):
@@ -121,15 +118,12 @@ def test_is_cuda_target_torch_device(uma):
     assert uma._is_cuda_target(torch.device("cpu")) is False
 
 
-# ---------------------------------------------------------------------------
-# patch gating
-# ---------------------------------------------------------------------------
+# --- patch gating ---
 
 
 def test_wrapper_passes_through_off_uma(uma, force_uma, monkeypatch):
-    """The wrapper installs everywhere, but with the gate OFF every call --
-    including CUDA targets -- must pass straight through to the real
-    safe_open (the gate is evaluated lazily inside the wrapper)."""
+    """Gate OFF: every call -- including CUDA targets -- passes straight through
+    to the real safe_open (the gate is evaluated lazily inside the wrapper)."""
     force_uma(False)
     sentinel = object()
     calls = []
@@ -147,9 +141,9 @@ def test_wrapper_passes_through_off_uma(uma, force_uma, monkeypatch):
 
 
 def test_patch_install_does_not_evaluate_gate(uma, monkeypatch):
-    """Installing the wrapper must NOT query the integrated-GPU property:
-    that would initialize CUDA at `import unsloth` (fork-unsafe, and it would
-    run before the Spark allocator config is set)."""
+    """Installing the wrapper must NOT query the integrated-GPU property -- that
+    would init CUDA at ``import unsloth`` (fork-unsafe, and before the Spark
+    allocator config is set)."""
 
     def _boom():
         raise AssertionError("gate must not be evaluated at install time")
@@ -179,9 +173,7 @@ def test_patch_installs_and_is_idempotent(uma, force_uma, monkeypatch):
     assert fake_mu.safe_open is wrapped
 
 
-# ---------------------------------------------------------------------------
-# correctness
-# ---------------------------------------------------------------------------
+# --- correctness ---
 
 
 def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors):
