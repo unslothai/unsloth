@@ -1862,9 +1862,7 @@ class LlamaCppBackend:
         # can override outright (tensor-parallel mode passes a fatter margin), so
         # only compute a default when none was supplied.
         if budget_frac is None:
-            budget_frac = _CTX_FIT_VRAM_FRACTION - (
-                _MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0
-            )
+            budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
