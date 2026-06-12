@@ -125,13 +125,16 @@ async def start_training(
 
         backend = get_training_backend()
 
-        # S3 dataset loading is plumbed through but the loader is not built yet.
-        # Reject explicitly so credentials are never accepted and silently ignored.
+        # S3 dataset loading needs the optional boto3 dependency. Reject early
+        # with a clear message so credentials are never accepted and then
+        # silently dropped on a host without boto3 installed.
         if request.s3_config is not None:
-            raise HTTPException(
-                status_code = 501,
-                detail = "S3 dataset loading is not implemented yet",
-            )
+            from core.training.s3_dataset import boto3_available
+            if not boto3_available():
+                raise HTTPException(
+                    status_code = 501,
+                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
+                )
 
         # Check before mutating state.
         if backend.is_training_active():

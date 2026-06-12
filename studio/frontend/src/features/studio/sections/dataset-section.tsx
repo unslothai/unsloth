@@ -78,6 +78,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { translate, useT } from "@/i18n";
+import { S3ConfigForm } from "./s3-config-form";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ".csv",
@@ -154,6 +155,7 @@ export function DatasetSection() {
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
+    selectS3Source,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -177,6 +179,7 @@ export function DatasetSection() {
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
+      selectS3Source: s.selectS3Source,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -572,6 +575,32 @@ export function DatasetSection() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-4">
+          <Tabs
+            value={datasetSource}
+            onValueChange={(value) => {
+              if (value === datasetSource) return;
+              if (value === "huggingface") {
+                selectHfDataset(dataset);
+              } else if (value === "upload") {
+                selectLocalDataset(uploadedFile);
+              } else if (value === "s3") {
+                selectS3Source();
+              }
+            }}
+            className="w-full"
+          >
+            <TabsList className="w-full">
+              <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
+              <TabsTrigger value="upload">
+                {t("studio.dataset.localTab")}
+              </TabsTrigger>
+              <TabsTrigger value="s3">Amazon S3</TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          {datasetSource === "s3" && <S3ConfigForm />}
+
+          {datasetSource !== "s3" && (
           <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.dataset.chooseDataset")}
@@ -842,8 +871,10 @@ export function DatasetSection() {
               </p>
             )}
           </div>
+          )}
 
-          {isHfDatasetSelected ? (
+          {datasetSource !== "s3" &&
+            (isHfDatasetSelected ? (
             <HfDatasetSubsetSplitSelectors
               variant="studio"
               enabled={true}
@@ -918,7 +949,7 @@ export function DatasetSection() {
                 </div>
               </div>
             </div>
-          ) : null}
+          ) : null)}
 
           {datasetSource === "upload" && uploadedFile && (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">

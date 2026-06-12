@@ -2227,6 +2227,7 @@ class UnslothTrainer:
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
         is_cpt: bool = False,
+        s3_config: dict = None,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2271,6 +2272,18 @@ class UnslothTrainer:
                         logger.info(f"{notice.message}\n")
 
                 return result.dataset
+
+            # S3 datasets are downloaded to a local temp dir and then consumed
+            # through the same local-file path below.
+            if s3_config and not local_datasets:
+                from core.training.s3_dataset import download_s3_dataset
+
+                self._update_progress(status_message = "Downloading dataset from S3...")
+                local_datasets = download_s3_dataset(s3_config)
+                if self.should_stop:
+                    logger.info("Stopped during S3 download\n")
+                    return None
+                logger.info(f"Downloaded {len(local_datasets)} file(s) from S3\n")
 
             if local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory

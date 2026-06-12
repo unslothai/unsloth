@@ -570,6 +570,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             runDatasetCheck(uploadedFile, "train");
           }
         },
+        selectS3Source: () => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "s3",
+            dataset: null,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
+        },
         setDatasetFormat: (datasetFormat) =>
           set((state) => {
             if (state.trainingMethod === "cpt") {

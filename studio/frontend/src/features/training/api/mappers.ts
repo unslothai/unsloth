@@ -36,6 +36,7 @@ export function buildTrainingStartPayload(
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
+  const s3Config = config.datasetSource === "s3" ? config.s3Config : null;
   let customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
@@ -76,6 +77,7 @@ export function buildTrainingStartPayload(
       config.datasetSource === "upload" && config.uploadedEvalFile
         ? [config.uploadedEvalFile]
         : [],
+    s3_config: s3Config,
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,

@@ -2540,6 +2540,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
             is_cpt = _is_cpt_for_dataset,
+            s3_config = config.get("s3_config"),
         )
 
         if isinstance(dataset_result, tuple):
