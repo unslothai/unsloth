@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Shared helpers for raw-text dataset preparation.
-"""
+"""Shared helpers for raw-text dataset preparation."""
 
 from dataclasses import dataclass
 from typing import Literal
@@ -40,10 +38,7 @@ def _split_scope(split_name: str | None) -> str:
 
 
 def _drop_invalid_text_rows(
-    dataset: Dataset,
-    *,
-    mode_title: str,
-    split_scope: str,
+    dataset: Dataset, *, mode_title: str, split_scope: str
 ) -> tuple[Dataset, list[RawTextNotice]]:
     filtered_dataset = dataset.filter(lambda ex: isinstance(ex["text"], str))
     dropped_rows = len(dataset) - len(filtered_dataset)
@@ -105,8 +100,7 @@ def prepare_raw_text_dataset(
         notices.append(
             RawTextNotice(
                 message = (
-                    f"{mode_title}: renaming column '{renamed_col}' -> 'text' "
-                    f"for {split_scope}"
+                    f"{mode_title}: renaming column '{renamed_col}' -> 'text' " f"for {split_scope}"
                 ),
                 level = "info",
             )

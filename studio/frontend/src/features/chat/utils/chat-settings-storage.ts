@@ -28,6 +28,9 @@ const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
 const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+const COLLAPSE_HTML_ARTIFACTS_KEY = "unsloth_chat_collapse_html_artifacts";
+const ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
+  "unsloth_chat_allow_artifact_network_access";
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const LEGACY_CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
 const LEGACY_CHAT_SETTINGS_IMPORT_KEY =
@@ -140,6 +143,11 @@ function sanitizeInferenceParams(
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
   }
+  // Mirror trustRemoteCode handling so the toggle survives reload
+  // and the /api/chat/settings round-trip.
+  if (typeof value.fastMode === "boolean") {
+    params.fastMode = value.fastMode;
+  }
   return hasKeys(params) ? params : undefined;
 }
 
@@ -211,6 +219,10 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
   const autoTitle = sanitizeBool(value.autoTitle);
   const preserveThinking = sanitizeBool(value.preserveThinking);
+  const collapseHtmlArtifacts = sanitizeBool(value.collapseHtmlArtifacts);
+  const allowArtifactNetworkAccess = sanitizeBool(
+    value.allowArtifactNetworkAccess,
+  );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
@@ -225,6 +237,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
     settings.preserveThinking = preserveThinking;
+  if (collapseHtmlArtifacts !== undefined) {
+    settings.collapseHtmlArtifacts = collapseHtmlArtifacts;
+  }
+  if (allowArtifactNetworkAccess !== undefined) {
+    settings.allowArtifactNetworkAccess = allowArtifactNetworkAccess;
+  }
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
@@ -285,6 +303,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoTitle === undefined &&
     settings.reasoningEffort === undefined &&
     settings.preserveThinking === undefined &&
+    settings.collapseHtmlArtifacts === undefined &&
+    settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined
@@ -313,6 +333,8 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   );
   const autoTitle = loadBool(AUTO_TITLE_KEY);
   const preserveThinking = loadBool(PRESERVE_THINKING_KEY);
+  const collapseHtmlArtifacts = loadBool(COLLAPSE_HTML_ARTIFACTS_KEY);
+  const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
@@ -331,6 +353,12 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
     settings.preserveThinking = preserveThinking;
+  if (collapseHtmlArtifacts !== undefined) {
+    settings.collapseHtmlArtifacts = collapseHtmlArtifacts;
+  }
+  if (allowArtifactNetworkAccess !== undefined) {
+    settings.allowArtifactNetworkAccess = allowArtifactNetworkAccess;
+  }
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
