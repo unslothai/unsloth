@@ -63,6 +63,19 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+/** Newest-first by `last_modified` (epoch s), repo_id tie-break. Copies the
+ * input; treats a missing field as oldest for older-backend compatibility. */
+function sortByDownloadRecency<T extends { repo_id: string; last_modified?: number }>(
+  rows: T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    const at = a.last_modified ?? -1;
+    const bt = b.last_modified ?? -1;
+    if (at !== bt) return bt - at;
+    return a.repo_id.localeCompare(b.repo_id);
+  });
+}
+
 /** Lowercase and strip separators for fuzzy search. */
 function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s\-_\.]/g, "");
@@ -735,6 +748,29 @@ export function HubModelPicker({
 
   const showHfSection = debouncedQuery.trim().length > 0;
 
+  // Newest-first (also covers older backends without `last_modified`).
+  const sortedCachedGguf = useMemo(
+    () => sortByDownloadRecency(cachedGguf),
+    [cachedGguf],
+  );
+  const sortedCachedModels = useMemo(
+    () => sortByDownloadRecency(cachedModels),
+    [cachedModels],
+  );
+
+  // While searching, filter Downloaded by the query instead of hiding it, so a
+  // downloaded model the user is searching for stays visible.
+  const visibleCachedGguf = useMemo(() => {
+    if (!showHfSection) return sortedCachedGguf;
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return sortedCachedGguf.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+  }, [sortedCachedGguf, showHfSection, debouncedQuery]);
+  const visibleCachedModels = useMemo(() => {
+    if (!showHfSection) return sortedCachedModels;
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+  }, [sortedCachedModels, showHfSection, debouncedQuery]);
+
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -765,9 +801,11 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
+      // Shown under Downloaded (kept visible while searching); no duplicate.
+      .filter((id) => !downloadedSet.has(id.toLowerCase()))
       .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
+  }, [recommendedSet, downloadedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
 
   const metricsById = useMemo(
     () =>
@@ -897,23 +935,29 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="py-1">
-          {!cachedReady && !showHfSection ? (
+          {/* First-load spinner only when nothing cached is shown yet. */}
+          {!cachedReady &&
+          !showHfSection &&
+          visibleCachedGguf.length === 0 &&
+          visibleCachedModels.length === 0 ? (
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
                 Loading models…
               </span>
             </div>
-          ) : !showHfSection &&
-            (cachedGguf.length > 0 ||
-              (!chatOnly && cachedModels.length > 0)) ? (
+          ) : null}
+
+          {/* Downloaded stays visible (filtered) while searching. */}
+          {visibleCachedGguf.length > 0 ||
+          (!chatOnly && visibleCachedModels.length > 0) ? (
             <>
               <ListLabel
                 icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
               >Downloaded</ListLabel>
-              {!downloadedCollapsed && cachedGguf.map((c) => (
+              {!downloadedCollapsed && visibleCachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
                     label={c.repo_id}
@@ -943,7 +987,7 @@ export function HubModelPicker({
                 </div>
               ))}
               {!downloadedCollapsed && !chatOnly &&
-                cachedModels.map((c) => (
+                visibleCachedModels.map((c) => (
                   <div key={c.repo_id} className="flex items-center gap-0.5">
                     <div className="min-w-0 flex-1">
                       <ModelRow
@@ -1340,7 +1384,9 @@ export function HubModelPicker({
                 <ListLabel>Hugging Face</ListLabel>
               )}
               {hfIds.length === 0 && !isLoading ? (
-                filteredRecommendedIds.length === 0 ? (
+                filteredRecommendedIds.length === 0 &&
+                visibleCachedGguf.length === 0 &&
+                visibleCachedModels.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">
                     No matching models.
                   </div>
