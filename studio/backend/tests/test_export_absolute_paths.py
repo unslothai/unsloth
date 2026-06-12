@@ -323,7 +323,9 @@ def test_save_directory_validator_allows_deep_absolute_paths(monkeypatch, tmp_pa
 
 def test_save_directory_validator_rejects_long_path_component(monkeypatch, tmp_path):
     _install_pydantic_stub(monkeypatch)
-    export_models = _load_module("test_models_export_long_component", "models/export.py", monkeypatch)
+    export_models = _load_module(
+        "test_models_export_long_component", "models/export.py", monkeypatch
+    )
 
     with pytest.raises(ValueError, match = "path components"):
         export_models._validate_save_directory(str(tmp_path / ("a" * 256)))
@@ -370,7 +372,10 @@ def test_export_write_dir_handles_non_native_windows_absolute_as_relative(tmp_pa
     if storage_roots.os.name == "nt":
         pytest.skip("Windows drive paths are native on Windows")
 
-    assert storage_roots.resolve_export_write_dir(r"C:\exports\model") == export_root / r"C:\exports\model"
+    assert (
+        storage_roots.resolve_export_write_dir(r"C:\exports\model")
+        == export_root / r"C:\exports\model"
+    )
 
 
 def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch):
