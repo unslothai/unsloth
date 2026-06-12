@@ -132,7 +132,7 @@ export function WebUpdateBanner({
                 href={RELEASE_NOTES_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="-ml-2.5 whitespace-nowrap rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
+                className="-ml-2 whitespace-nowrap rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
                 data-testid="web-update-release-notes-link"
               >
                 Release notes

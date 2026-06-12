@@ -207,7 +207,7 @@ export function LlamaUpdateBanner({
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="-ml-2.5 h-auto rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground"
+                  className="-ml-2 h-auto rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground"
                   onClick={snooze}
                   data-testid="llama-update-snooze-button"
                 >
