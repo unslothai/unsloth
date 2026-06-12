@@ -5036,9 +5036,10 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
 class _ResponsesReasoningExtractor:
     """Split local <think> markup into Responses reasoning and visible text."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, parse_think_markers: bool = False) -> None:
         self._buffer = ""
         self._in_reasoning = False
+        self._parse_think_markers = parse_think_markers
 
     def feed(
         self,
@@ -5052,6 +5053,10 @@ class _ResponsesReasoningExtractor:
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
+        if not self._parse_think_markers:
+            visible_parts.append(self._buffer)
+            self._buffer = ""
+            return "".join(reasoning_parts), "".join(visible_parts)
 
         while self._buffer:
             if self._in_reasoning:
@@ -5097,17 +5102,39 @@ class _ResponsesReasoningExtractor:
             return "", ""
         remaining = self._buffer
         self._buffer = ""
+        if not self._parse_think_markers:
+            return "", remaining
         if self._in_reasoning:
             self._in_reasoning = False
             return remaining, ""
         return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
-def _extract_responses_reasoning(text: str = "", reasoning_content: Any = None) -> tuple[str, str]:
-    extractor = _ResponsesReasoningExtractor()
+def _extract_responses_reasoning(
+    text: str = "",
+    reasoning_content: Any = None,
+    *,
+    parse_think_markers: bool = False,
+) -> tuple[str, str]:
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = parse_think_markers)
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
     return reasoning + final_reasoning, visible + final_visible
+
+
+def _responses_should_parse_think_markers(
+    chat_req: ChatCompletionRequest,
+    llama_backend: Any = None,
+) -> bool:
+    if (
+        llama_backend is not None
+        and getattr(llama_backend, "is_loaded", False)
+        and getattr(llama_backend, "reasoning_always_on", False)
+    ):
+        return True
+    if chat_req.enable_thinking is True:
+        return True
+    return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
 
 
 def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
@@ -5351,9 +5378,11 @@ async def _responses_non_streaming(
         msg = choices[0].get("message", {}) or {}
         raw_content = msg.get("content", "") or ""
         raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+        llama_backend = get_llama_cpp_backend()
         reasoning_text, text = _extract_responses_reasoning(
             raw_text,
             msg.get("reasoning_content"),
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
         )
         tool_calls = msg.get("tool_calls") or []
 
@@ -5468,7 +5497,9 @@ async def _responses_stream(
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
-        extractor = _ResponsesReasoningExtractor()
+        extractor = _ResponsesReasoningExtractor(
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
+        )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,

@@ -986,6 +986,8 @@ class LlamaCppBackend:
             if self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
+                elif reasoning_effort == "minimal":
+                    kwargs["reasoning_effort"] = "low"
                 elif enable_thinking is not None:
                     kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
             else:

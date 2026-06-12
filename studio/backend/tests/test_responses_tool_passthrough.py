@@ -610,7 +610,7 @@ class TestResponsesNonStreamingAdapter:
         pass
 
     @staticmethod
-    def _run_with_message(monkeypatch, message):
+    def _run_with_message(monkeypatch, message, payload = None):
         import routes.inference as inf_mod
 
         async def fake_chat_completions(chat_req, request):
@@ -623,7 +623,7 @@ class TestResponsesNonStreamingAdapter:
             )
 
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
-        payload = ResponsesRequest(input = "hi")
+        payload = payload or ResponsesRequest(input = "hi")
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -635,7 +635,12 @@ class TestResponsesNonStreamingAdapter:
         return asyncio.run(run())
 
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
-        body = self._run_with_message(monkeypatch, {"content": "<think>plan</think>33"})
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>33"},
+            payload = payload,
+        )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
@@ -643,6 +648,12 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
+
+    def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
+        body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
         body = self._run_with_message(
@@ -667,7 +678,12 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "33"
 
     def test_reasoning_only_does_not_emit_empty_message(self, monkeypatch):
-        body = self._run_with_message(monkeypatch, {"content": "<think>plan</think>"})
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>"},
+            payload = payload,
+        )
 
         assert [item["type"] for item in body["output"]] == ["reasoning"]
         assert body["output"][0]["content"][0]["text"] == "plan"
@@ -745,7 +761,7 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True)
+        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -765,6 +781,32 @@ class TestResponsesStreamAdapter:
         ]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
+
+    def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "show <thi"}}]},
+            {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert reasoning_deltas == []
+        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == ["message"]
+        assert completed["response"]["output"][0]["content"][0]["text"] == (
+            "show <think>x</think> tags"
+        )
 
     def test_structured_reasoning_content_streams_as_reasoning(self, monkeypatch):
         chunks = [
