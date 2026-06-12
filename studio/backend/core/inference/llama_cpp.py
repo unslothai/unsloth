@@ -28,6 +28,7 @@ from typing import Callable, Generator, Iterable, List, Optional
 import httpx
 
 from core.inference.llama_server_args import (
+    extra_args_disable_mmproj,
     parse_cache_override,
     parse_ctx_override,
     resolve_cache_type_kv,
@@ -58,6 +59,13 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
+)
+from state.tool_approvals import (
+    TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
+    begin_tool_decision,
+    new_approval_id,
+    wait_tool_decision,
 )
 
 logger = get_logger(__name__)
@@ -1321,6 +1329,105 @@ class LlamaCppBackend:
             return False
         return False
 
+    # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
+    # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
+    # workstation parts as substrings: "a100" must not fire on "RTX A1000".
+    _DATACENTER_GPU_RE = re.compile(
+        r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|"
+        r"l40s?|l4|rtx pro 6000|rtx 6000 ada)\b"
+    )
+
+    @staticmethod
+    def _is_datacenter_gpu(gpu_indices = None) -> bool:
+        """True iff every selected NVIDIA GPU is a datacenter/professional part.
+        NVIDIA-only, fails open to False (consumer GeForce, ROCm, CPU and errors
+        are left untouched); a mixed DC+consumer selection counts as non-DC.
+
+        gpu_indices are PHYSICAL ids (see _get_gpu_free_memory), but
+        get_device_properties wants mask-relative ordinals, so we rebuild the
+        ordinal->physical map from CUDA_VISIBLE_DEVICES and key names by physical
+        id. Otherwise a masked host (CUDA_VISIBLE_DEVICES=4,5,6,7, selection [4,5])
+        would drop the tuning or probe the wrong GPU."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return False  # ROCm reuses torch.cuda.*; not a CUDA part
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            count = torch.cuda.device_count()
+
+            # Mirror _get_gpu_free_memory: map visible ordinal -> physical id via
+            # CUDA_VISIBLE_DEVICES; unset/unparsable leaves physical id == ordinal.
+            physical_ids: Optional[list[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+
+            pattern = LlamaCppBackend._DATACENTER_GPU_RE
+            names_by_id: dict[int, str] = {}
+            for ordinal in range(count):
+                try:
+                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
+                except Exception:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names_by_id[pid] = name
+
+            indices = list(gpu_indices) if gpu_indices else list(names_by_id)
+            saw = False
+            for _i in indices:
+                name = names_by_id.get(_i)
+                if name is None:
+                    continue  # not visible -> skip (fail conservative)
+                saw = True
+                if not pattern.search(name):
+                    return False
+            return saw
+        except Exception:
+            return False
+
+    @staticmethod
+    def _effective_gpu_count(gpu_indices = None) -> int:
+        """GPUs llama-server will use: len(selection), else the visible CUDA
+        device count (None = every visible GPU). 0 on error so multi-GPU tuning
+        stays off when the count is unknown."""
+        if gpu_indices is not None:
+            return len(gpu_indices)
+        try:
+            import torch
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                return torch.cuda.device_count()
+        except Exception:
+            return 0
+        return 0
+
+    @staticmethod
+    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
+        """Inject DC llama.cpp tuning into env in place via setdefault (user
+        values win); return whether the box qualified. Opt out with
+        UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
+        (consumer/ROCm/CPU/error are a no-op). Sets GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F
+        for any qualifying GPU (FP32 accum: ~0% cost on B200, real cost on GeForce),
+        plus GGML_CUDA_P2P + CUDA_SCALE_LAUNCH_QUEUES=4x for multi-GPU (+33-51% pp
+        tensor-split, +8-16% pipeline split on B200)."""
+        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+            return False
+        if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
+            return False
+        env.setdefault("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")
+        if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
+            env.setdefault("GGML_CUDA_P2P", "1")
+            env.setdefault("CUDA_SCALE_LAUNCH_QUEUES", "4x")
+        return True
+
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
@@ -2191,8 +2298,9 @@ class LlamaCppBackend:
                         else None
                     ),
                     (
-                        f"{general['general.organization']}/"
-                        f"{general['general.basename']}".replace(" ", "-")
+                        f"{general['general.organization']}/{general['general.basename']}".replace(
+                            " ", "-"
+                        )
                         if general.get("general.organization") and general.get("general.basename")
                         else None
                     ),
@@ -2929,8 +3037,8 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
+                    # Auto-download mmproj for vision models unless opted out.
+                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -3191,10 +3299,12 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     effective_ctx = requested_ctx  # fall back to original
 
-                launch_mmproj_path = self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
-                )
+                launch_mmproj_path = None
+                if not extra_args_disable_mmproj(extra_args):
+                    launch_mmproj_path = self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
@@ -3395,6 +3505,14 @@ class LlamaCppBackend:
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
+                # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
+                # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
+                if self._apply_datacenter_env(env, gpu_indices):
+                    multi_gpu = self._effective_gpu_count(gpu_indices) > 1
+                    logger.info(
+                        f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
+                    )
+
                 if sys.platform == "win32":
                     # Ordering: see _build_windows_path_dirs. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3479,7 +3597,7 @@ class LlamaCppBackend:
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # HIP/ROCR set, so set those too.
+                # set, so set HIP_VISIBLE_DEVICES too.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -3487,7 +3605,19 @@ class LlamaCppBackend:
                         import torch as _torch
                         if getattr(_torch.version, "hip", None) is not None:
                             env["HIP_VISIBLE_DEVICES"] = pinned
-                            env["ROCR_VISIBLE_DEVICES"] = pinned
+                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
+                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
+                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
+                            # setting both with the same physical indices applies
+                            # the mask twice: ROCR reduces the visible set and
+                            # re-indexes it from 0, then HIP indexes into the
+                            # already-reduced set. A single non-zero pin (e.g.
+                            # "1") then points out of range at the HIP layer, HIP
+                            # enumerates 0 devices, and llama.cpp falls back to
+                            # CPU ("ggml_cuda_init: no ROCm-capable device is
+                            # detected"). The HIP mask alone narrows correctly;
+                            # clear any inherited ROCR mask so it can't double up.
+                            env.pop("ROCR_VISIBLE_DEVICES", None)
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -3733,7 +3863,7 @@ class LlamaCppBackend:
                     )
 
                 logger.info(
-                    f"llama-server ready on port {self._port} " f"for model '{model_identifier}'"
+                    f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
 
             # Probe outside _lock (interruptible by /unload); init inside.
@@ -4358,7 +4488,7 @@ class LlamaCppBackend:
 
                         proc.kill()
                         logger.info(
-                            f"Killed orphaned llama-server process " f"(pid={proc.info['pid']})"
+                            f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
                     except (
                         psutil.NoSuchProcess,
@@ -4895,6 +5025,7 @@ class LlamaCppBackend:
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
+        confirm_tool_calls: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4913,7 +5044,7 @@ class LlamaCppBackend:
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
         # the same tool card + citations a real call would.
-        _auto = build_rag_autoinject(conversation, rag_scope)
+        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
@@ -5062,7 +5193,7 @@ class LlamaCppBackend:
                         if response.status_code != 200:
                             error_body = response.read().decode()
                             raise RuntimeError(
-                                f"llama-server returned {response.status_code}: " f"{error_body}"
+                                f"llama-server returned {response.status_code}: {error_body}"
                             )
 
                         raw_buf = ""
@@ -5473,8 +5604,7 @@ class LlamaCppBackend:
                         force = True,
                     )
                     logger.info(
-                        f"Safety net: parsed {len(tool_calls)} tool call(s) "
-                        f"from streamed content"
+                        f"Safety net: parsed {len(tool_calls)} tool call(s) from streamed content"
                     )
                 else:
                     # ── DRAINING path: assemble tool_calls ──
@@ -5594,8 +5724,51 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    yield {"type": "status", "text": decision.status_text}
-                    yield decision.tool_start_event()
+                    needs_confirm = bool(confirm_tool_calls)
+                    approval_id = new_approval_id() if needs_confirm else ""
+                    decision_slot = (
+                        begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    start_event = decision.tool_start_event()
+                    start_event["approval_id"] = approval_id
+                    start_event["awaiting_confirmation"] = needs_confirm
+
+                    try:
+                        yield {"type": "status", "text": decision.status_text}
+                        yield start_event
+
+                        if (
+                            decision_slot is not None
+                            and wait_tool_decision(
+                                decision_slot,
+                                approval_id,
+                                cancel_event = cancel_event,
+                            )
+                            == "deny"
+                        ):
+                            decision_slot = None
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": TOOL_REJECTED_MESSAGE,
+                                "provenance": decision.provenance,
+                            }
+                            denied_message = {
+                                "role": "tool",
+                                "name": decision.tool_name,
+                                "content": TOOL_REJECTED_MESSAGE,
+                            }
+                            if decision.tool_call_id:
+                                denied_message["tool_call_id"] = decision.tool_call_id
+                            conversation.append(denied_message)
+                            if _forced_tool_call_pending:
+                                _forced_tool_call_pending = False
+                            continue
+                        decision_slot = None
+                    finally:
+                        if decision_slot is not None:
+                            abort_tool_decision(decision_slot, approval_id)
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     # RAG: cap paraphrased KB re-searches that slip past the dup guard.

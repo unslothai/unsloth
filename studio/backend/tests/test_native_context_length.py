@@ -271,6 +271,7 @@ class TestPydanticModels:
     def test_load_response_has_field(self):
         """Field exists in LoadResponse.model_fields."""
         assert "native_context_length" in LoadResponse.model_fields
+        assert "context_length" in LoadResponse.model_fields
 
     def test_load_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -319,6 +320,7 @@ class TestPydanticModels:
     def test_status_response_has_field(self):
         """Field exists in InferenceStatusResponse.model_fields."""
         assert "native_context_length" in InferenceStatusResponse.model_fields
+        assert "context_length" in InferenceStatusResponse.model_fields
 
     def test_status_response_has_chat_template_field(self):
         """Status includes chat_template so the UI can rehydrate after refresh."""
@@ -346,6 +348,18 @@ class TestPydanticModels:
         )
         roundtripped = LoadResponse.model_validate_json(resp.model_dump_json())
         assert roundtripped.native_context_length == 131072
+
+    def test_context_length_roundtrip(self):
+        """Runtime context_length serializes for non-GGUF/hub models."""
+        resp = LoadResponse(
+            status = "loaded",
+            model = "test",
+            display_name = "Test",
+            inference = {},
+            context_length = 8192,
+        )
+        roundtripped = LoadResponse.model_validate_json(resp.model_dump_json())
+        assert roundtripped.context_length == 8192
 
 
 # =====================================================================
@@ -408,6 +422,16 @@ class TestRouteCompleteness:
                 "native_context_length" not in block
             ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
 
+    def test_non_gguf_load_responses_set_runtime_context_length(self):
+        """Non-GGUF LoadResponse blocks report runtime context_length."""
+        blocks = self._find_construction_blocks("LoadResponse")
+        non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
+        assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
+        for block in non_gguf:
+            assert (
+                "context_length" in block
+            ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
+
     def test_status_path(self):
         """InferenceStatusResponse construction with llama_backend has the field."""
         blocks = self._find_construction_blocks("InferenceStatusResponse")
@@ -419,6 +443,21 @@ class TestRouteCompleteness:
         assert (
             found
         ), "No InferenceStatusResponse block with llama_backend has native_context_length"
+
+    def test_non_gguf_status_path_reports_runtime_context_length(self):
+        """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
+        blocks = self._find_construction_blocks("InferenceStatusResponse")
+        found = False
+        for block in blocks:
+            if "is_gguf = False" in block and "context_length" in block:
+                found = True
+                break
+        assert found, "No non-GGUF InferenceStatusResponse block with context_length"
+
+    def test_openai_models_listing_reports_context_length(self):
+        """/v1/models includes context_length when the backend knows it."""
+        assert 'entry["context_length"]' in self._source
+        assert 'model_info.get("context_length")' in self._source
 
 
 # =====================================================================

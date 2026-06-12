@@ -1673,12 +1673,26 @@ def _llama3_inv_freq_from_config(
     return torch.where(is_medium, smoothed, scaled)
 
 
+def _vanilla_inv_freq_from_config(config, device = "cpu"):
+    """Unscaled RoPE inv_freq (rope_type 'default'/None), matching the constructor's fallback."""
+    base = _get_rope_theta(config, default = 10000.0)
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        dim = int(config.hidden_size // config.num_attention_heads)
+    return 1.0 / (base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim))
+
+
 def _compute_config_rope_inv_freq(config, rope_scaling):
     """(inv_freq, attention_scaling) per config.rope_scaling via transformers'
     ROPE_INIT_FUNCTIONS, with an inline llama3 fallback; (None, 1.0) on failure."""
     original_rope_scaling = rope_scaling
     rope_scaling = _rope_scaling_as_dict(rope_scaling)
     rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
+    # "default"/unset means unscaled RoPE. transformers >=5 reports
+    # rope_type="default" for every plain config and dropped "default" from
+    # ROPE_INIT_FUNCTIONS, so compute it directly instead of warning per load.
+    if rope_type in (None, "default"):
+        return _vanilla_inv_freq_from_config(config).to(dtype = torch.float32, device = "cpu"), 1.0
     try:
         from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
@@ -2369,11 +2383,30 @@ class FastLlamaModel:
         assert dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32
 
         # RoPE Scaling
-        model_config = AutoConfig.from_pretrained(
-            model_name,
-            token = token,
-            attn_implementation = "sdpa",
-        )
+        # Respect a user-provided config so it is the single config object used
+        # everywhere below; otherwise HF would receive it again through **kwargs
+        # alongside our own config= and fail with a duplicate-kwarg TypeError.
+        user_config = kwargs.pop("config", None)
+        if user_config is not None:
+            model_config = user_config
+            # model_name may have been remapped to a prequantized repo whose
+            # checkpoint needs its quantization_config; graft it onto the user
+            # config or the 4bit weights load without their quant state.
+            if getattr(model_config, "quantization_config", None) is None:
+                _checkpoint_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    attn_implementation = "sdpa",
+                )
+                _checkpoint_quant = getattr(_checkpoint_config, "quantization_config", None)
+                if _checkpoint_quant is not None:
+                    model_config.quantization_config = _checkpoint_quant
+        else:
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                attn_implementation = "sdpa",
+            )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
@@ -2490,14 +2523,17 @@ class FastLlamaModel:
             # Transformers 5.x @strict config classes reject unexpected kwargs
             # like num_labels and max_position_embeddings. Set on the config
             # object directly and pass config= instead.
-            model_config.num_labels = num_labels
+            set_task_config_attr(model_config, "num_labels", num_labels)
             if max_position_embeddings is not None:
                 model_config.max_position_embeddings = max_position_embeddings
             # Pop config-level attrs that would be rejected by @strict model init
             for _cfg_key in ("id2label", "label2id", "rope_scaling"):
                 _cfg_val = kwargs.pop(_cfg_key, None)
                 if _cfg_val is not None:
-                    setattr(model_config, _cfg_key, _cfg_val)
+                    if _cfg_key in ("id2label", "label2id"):
+                        set_task_config_attr(model_config, _cfg_key, _cfg_val)
+                    else:
+                        setattr(model_config, _cfg_key, _cfg_val)
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
                 config = model_config,
@@ -2530,17 +2566,33 @@ class FastLlamaModel:
                 fast_inference = fast_inference,
             )
         elif not fast_inference:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map = device_map,
-                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                # quantization_config     = bnb_config,
-                token = token,
-                max_position_embeddings = max_position_embeddings,
-                trust_remote_code = trust_remote_code,
-                attn_implementation = preferred_attn_impl,
-                **kwargs,
-            )
+            if user_config is not None:
+                # Transformers 5.x @strict model init rejects extra kwargs next
+                # to config=; set the override on the config and pass the single
+                # config object through so user overrides reach the actual load.
+                if max_position_embeddings is not None:
+                    model_config.max_position_embeddings = max_position_embeddings
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    config = model_config,
+                    device_map = device_map,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    attn_implementation = preferred_attn_impl,
+                    **kwargs,
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map = device_map,
+                    # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
+                    # quantization_config     = bnb_config,
+                    token = token,
+                    max_position_embeddings = max_position_embeddings,
+                    trust_remote_code = trust_remote_code,
+                    attn_implementation = preferred_attn_impl,
+                    **kwargs,
+                )
             # Attach dispatch hooks for bnb multi-device loads.
             from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
