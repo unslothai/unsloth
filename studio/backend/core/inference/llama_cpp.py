@@ -1071,7 +1071,7 @@ class LlamaCppBackend:
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod
-    def _find_llama_server_binary() -> Optional[str]:
+    def _find_llama_server_binary(*, include_denied: bool = False) -> Optional[str]:
         """
         Locate the llama-server binary.
 
@@ -1125,13 +1125,14 @@ class LlamaCppBackend:
         def _scan_pinned(paths: list):
             # first existing candidate wins -> (path, None); a present-but-denied
             # one -> (None, denied_path) so the caller reports it rather than
-            # skipping to a lower-priority location
+            # skipping to a lower-priority location. include_denied returns the
+            # locked path instead: diffusion asset lookup only needs its dir.
             for p in paths:
                 st = _file_status(p)
                 if st == "file":
                     return str(p), None
                 if st == "denied":
-                    return None, p
+                    return (str(p), None) if include_denied else (None, p)
             return None, None
 
         # 1. Env var: direct path to binary
@@ -2466,7 +2467,9 @@ class LlamaCppBackend:
         visual_bin = os.environ.get("DG_VISUAL_BIN")
         if not visual_bin:
             name = "llama-diffusion-gemma-visual-server" + (".exe" if os.name == "nt" else "")
-            base = self._find_llama_server_binary()
+            # include_denied: a transiently locked llama-server still pins the
+            # install dir so the adjacent visual-server can be found
+            base = self._find_llama_server_binary(include_denied = True)
             if base:
                 base_dir = Path(base).parent
                 for cand in (
