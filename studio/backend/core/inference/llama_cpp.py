@@ -1153,6 +1153,8 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "supports_kv_unified": False,
+                "supports_fit_ctx": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1166,6 +1168,8 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        supports_kv_unified = False
+        supports_fit_ctx = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1253,6 +1257,9 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+
+            supports_kv_unified = _is_real("--kv-unified")
+            supports_fit_ctx = _is_real("--fit-ctx")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1263,6 +1270,8 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "supports_kv_unified": supports_kv_unified,
+            "supports_fit_ctx": supports_fit_ctx,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -3232,6 +3241,16 @@ class LlamaCppBackend:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
 
+                cmd.extend(
+                    self._ctx_integrity_flags(
+                        n_parallel,
+                        use_fit,
+                        requested_ctx,
+                        effective_ctx,
+                        self.probe_server_capabilities(binary),
+                    )
+                )
+
                 # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
                 # so we don't inherit llama-server's internal default, which
                 # has varied (hardware concurrency incl. hyperthreads on some
@@ -3460,7 +3479,7 @@ class LlamaCppBackend:
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # HIP/ROCR set, so set those too.
+                # set, so set HIP_VISIBLE_DEVICES too.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -3468,7 +3487,19 @@ class LlamaCppBackend:
                         import torch as _torch
                         if getattr(_torch.version, "hip", None) is not None:
                             env["HIP_VISIBLE_DEVICES"] = pinned
-                            env["ROCR_VISIBLE_DEVICES"] = pinned
+                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
+                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
+                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
+                            # setting both with the same physical indices applies
+                            # the mask twice: ROCR reduces the visible set and
+                            # re-indexes it from 0, then HIP indexes into the
+                            # already-reduced set. A single non-zero pin (e.g.
+                            # "1") then points out of range at the HIP layer, HIP
+                            # enumerates 0 devices, and llama.cpp falls back to
+                            # CPU ("ggml_cuda_init: no ROCm-capable device is
+                            # detected"). The HIP mask alone narrows correctly;
+                            # clear any inherited ROCR mask so it can't double up.
+                            env.pop("ROCR_VISIBLE_DEVICES", None)
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -3585,6 +3616,7 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
+                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
@@ -4467,6 +4499,64 @@ class LlamaCppBackend:
 
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
+
+    @staticmethod
+    def _ctx_integrity_flags(
+        n_parallel: int, use_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict
+    ) -> list[str]:
+        """Flags that keep the per-request window equal to the advertised ctx.
+
+        Explicit ``--parallel`` disables llama-server's auto-slots
+        ``--kv-unified`` default, silently splitting ``-c`` into per-slot
+        windows of ``-c / N``; restore the shared pool so one request can use
+        the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
+        at an explicitly requested ctx (default floor is 4096) so it offloads
+        or fails instead of silently shrinking the window.
+        """
+        flags: list[str] = []
+        if n_parallel > 1 and caps.get("supports_kv_unified"):
+            flags.append("--kv-unified")
+        if use_fit and requested_ctx > 0 and effective_ctx > 0 and caps.get("supports_fit_ctx"):
+            flags.extend(["--fit-ctx", str(effective_ctx)])
+        return flags
+
+    def _query_server_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated, from ``/props``.
+
+        The memory-fit step or ``--parallel`` slot split can leave this below
+        the requested ``-c``; requests are validated against this value.
+        """
+        url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(url, timeout = 5.0)
+            if resp.status_code != 200:
+                return None
+            settings = resp.json().get("default_generation_settings") or {}
+            n_ctx = settings.get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except Exception:
+            return None
+
+    def _reconcile_effective_ctx_with_server(self) -> None:
+        """Adopt the server's real ``n_ctx`` when it is below Studio's value.
+
+        Keeps ``context_length`` (load response, status route, passthrough
+        ``max_tokens`` ceiling) honest; clients sized to the requested value
+        would otherwise hit ``exceed_context_size_error`` 400s early.
+        """
+        actual_n_ctx = self._query_server_n_ctx()
+        if not actual_n_ctx or actual_n_ctx <= 0:
+            return
+        if self._effective_context_length and actual_n_ctx < self._effective_context_length:
+            logger.warning(
+                "llama-server allocated a smaller per-request context than "
+                f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
+                "memory fit or --parallel slot split); clients must treat "
+                f"{actual_n_ctx} as the real context window."
+            )
+            self._effective_context_length = actual_n_ctx
+        elif not self._effective_context_length:
+            self._effective_context_length = actual_n_ctx
 
     # ── Message building (OpenAI format) ──────────────────────────
 

@@ -168,10 +168,11 @@ class TestChatMessageToolRoles:
         with pytest.raises(ValidationError):
             ChatMessage(role = "user", content = [])
 
-    def test_tool_empty_content_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
-        assert "content" in str(exc_info.value)
+    def test_tool_empty_content_accepted(self):
+        # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
+        # OpenAI and llama-server both accept it, so Studio must not 400.
+        msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
+        assert msg.content == ""
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
         # Stop-button leaves an empty assistant turn; tolerate for replay.

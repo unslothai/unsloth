@@ -1614,14 +1614,18 @@ class TestApplyGpuIdsRocmFallback:
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'getattr(_torch.version, "hip", None)' in func_body
 
-    def test_apply_gpu_ids_sets_hip_and_rocr_visible_devices(self):
-        """apply_gpu_ids should set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES on ROCm."""
+    def test_apply_gpu_ids_sets_hip_but_not_rocr_visible_devices(self):
+        """apply_gpu_ids should set HIP_VISIBLE_DEVICES but leave ROCR_VISIBLE_DEVICES inherited.
+
+        ROCR_VISIBLE_DEVICES uses HSA agent-level indexing, not physical GPU indices.
+        Overwriting it breaks multi-GPU ROCm systems (see issue #6118).
+        """
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'os.environ["HIP_VISIBLE_DEVICES"] = value' in func_body
-        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' in func_body
+        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' not in func_body
 
     def test_apply_gpu_ids_rocm_fallback_is_guarded_by_try_except(self):
         """torch import in apply_gpu_ids must be wrapped in try/except so a missing torch never crashes."""
@@ -2241,7 +2245,22 @@ class TestRuntimeBnbRocmSourceGuards:
         """A failed redetect must not downgrade a persisted suffix to '72'."""
         for path in (self._MAIN_PATH, self._TRAINING_WORKER_PATH):
             source = path.read_text(encoding = "utf-8")
-            assert 'os.environ.get("BNB_ROCM_VERSION") or "72"' in source, path.name
+            assert (
+                '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source
+            ), path.name
+
+    def test_main_requires_found_rocm_dll(self):
+        """HIP_PATH/ROCM_PATH alone (HIP SDK on a CUDA/CPU box) must not force
+        a ROCm backend onto a non-ROCm bitsandbytes."""
+        source = self._MAIN_PATH.read_text(encoding = "utf-8")
+        assert "if _found_rocm_bnb:" in source
+        assert "_hip_env" not in source
+
+    def test_worker_requires_found_rocm_dll(self):
+        """No DLL found: the worker must not write any override or touch the
+        seeded marker (later import fixes must still see sitecustomize)."""
+        source = self._TRAINING_WORKER_PATH.read_text(encoding = "utf-8")
+        assert "if _found_rocm_bnb:" in source
 
 
 class TestDetectBnbRocmDllVer:
@@ -2443,8 +2462,9 @@ class TestWorkerWindowsRocmPatches:
         assert "BNB_ROCM_VERSION" in source
         # Detection helper must be used
         assert "_detect_bnb_rocm_dll_ver" in source or "libbitsandbytes_rocm" in source
-        # "72" must appear as the safe fallback
-        assert '"72"' in source or "'72'" in source
+        # Falls back to the seeded value, never a blind "72" (which would
+        # force a ROCm backend onto a non-ROCm bitsandbytes wheel)
+        assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION")' in source
 
     def test_bnb_rocm_version_set_before_ml_imports(self):
         """BNB_ROCM_VERSION must appear in section 1f, before section 2 ML imports."""
