@@ -385,7 +385,7 @@ INNER
         --ulimit stack=67108864 \
         -v "$HOST_RUN_DIR:/workspace/host" \
         -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
-        "${HF_ARGS[@]}" \
+        ${HF_ARGS[@]+"${HF_ARGS[@]}"} \
         -e HF_HUB_ENABLE_HF_TRANSFER=1 \
         "$TAG" \
         bash /workspace/host/run_notebook.sh 2>&1 | tee "$GPT_LOG"

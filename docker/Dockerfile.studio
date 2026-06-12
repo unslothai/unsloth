@@ -35,8 +35,19 @@ FROM ${BASE_IMAGE}
 ARG UNSLOTH_STUDIO_REF=main
 ARG TARGETARCH
 
+# Services run as root in this revision (the base image is root-only by
+# design); the previous production image ran them as a dedicated uid-1001
+# user. Non-root parity is a tracked follow-up. sshd is key-only and stays
+# disabled unless a PUBLIC_KEY/SSH_KEY is provided, and no secrets are
+# persisted to disk (see studio_launch.sh).
+#
+# The JUPYTER_PORT / UNSLOTH_ENABLE_SSHD defaults exist so supervisord's
+# %(ENV_*)s expansions still resolve when someone bypasses the launcher
+# and runs supervisord directly.
 USER root
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    JUPYTER_PORT=8888 \
+    UNSLOTH_ENABLE_SSHD=false \
     DEBIAN_FRONTEND=noninteractive
 
 # install.sh needs curl + git; supervisor + openssh-server run the service

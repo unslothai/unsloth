@@ -18,8 +18,11 @@ export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 
 # Make the runtime env visible to SSH sessions, which get a fresh login shell
-# without the `docker run -e` vars. Same pattern as the production image.
+# without the `docker run -e` vars. Secrets are excluded on purpose: tokens,
+# API keys and passwords stay in process env only, never on disk where an
+# SSH session (or anything reading /etc/profile.d) could pick them up.
 printenv | grep -E '^(HF_|CUDA_|NCCL_|JUPYTER_|UNSLOTH_|WANDB_|PATH=|TRITON_)' | \
+    grep -vE '^[^=]*(_TOKEN|_API_KEY|_PASSWORD|_SECRET|_LICENSE)=' | \
     sed 's/^\([^=]*\)=\(.*\)$/export \1="\2"/' > /etc/profile.d/unsloth_env.sh || true
 
 # --- Jupyter -----------------------------------------------------------------

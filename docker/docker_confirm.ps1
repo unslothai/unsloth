@@ -96,9 +96,16 @@ Hr
 
 # 3) Container runtime check --------------------------------------------------
 Bold "3) Container runtime check"
+# Mirror docker_confirm.sh's GPU selector translation: bare indices and
+# comma lists become device= selectors (Docker reads a bare integer for
+# --gpus as a COUNT, not an index).
+$GPU_SELECTOR = "all"
+if ($GPUS -notin @("auto", "all", "none")) {
+  $GPU_SELECTOR = if ($GPUS -like "device=*") { $GPUS } else { "`"device=$GPUS`"" }
+}
 if ($GPU_MODE) {
   $log = Join-Path $WORK "gpu_check.log"
-  docker run --rm --gpus all $BASE_IMAGE python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, '-', torch.cuda.get_device_name(0))" *> $log
+  docker run --rm --gpus $GPU_SELECTOR $BASE_IMAGE python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, '-', torch.cuda.get_device_name(0))" *> $log
   if ($LASTEXITCODE -eq 0) {
     Ok ("torch.cuda available in-container: " + (Get-Content $log -Tail 1))
   } else {
@@ -124,7 +131,7 @@ Bold "4) Training smoke"
 if ($GPU_MODE -and -not $SKIP_TRAIN) {
   $log = Join-Path $WORK "train_smoke.log"
   $hfArgs = @(); if ($env:HF_TOKEN) { $hfArgs = @("-e", "HF_TOKEN") }
-  docker run --rm --gpus all --ipc=host @hfArgs $BASE_IMAGE python /workspace/smoke_test.py *> $log
+  docker run --rm --gpus $GPU_SELECTOR --ipc=host @hfArgs $BASE_IMAGE python /workspace/smoke_test.py *> $log
   if ($LASTEXITCODE -eq 0) {
     Ok "smoke_test.py: 5 LoRA steps completed"
     Select-String -Path $log -Pattern "^step|loss" | Select-Object -Last 5 | ForEach-Object { Info $_.Line }
@@ -153,7 +160,7 @@ Hr
 # 6) Studio + JupyterLab ------------------------------------------------------
 Bold "6) Studio + JupyterLab (full image)"
 $runArgs = @("-d", "-p", "${PORT_STUDIO}:8000", "-p", "${PORT_JUPYTER}:8888")
-if ($GPU_MODE) { $runArgs += @("--gpus", "all") } else { $runArgs += @("-e", "UNSLOTH_ALLOW_CPU=1") }
+if ($GPU_MODE) { $runArgs += @("--gpus", $GPU_SELECTOR) } else { $runArgs += @("-e", "UNSLOTH_ALLOW_CPU=1") }
 $script:STUDIO_CID = (docker run @runArgs $IMAGE 2>(Join-Path $WORK "studio_run.err"))
 if (-not $script:STUDIO_CID) {
   Bad ("full image failed to start (see " + (Join-Path $WORK "studio_run.err") + ")")

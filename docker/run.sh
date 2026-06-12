@@ -109,8 +109,10 @@ fi
 # Avoid `set -x` here so the literal HF_TOKEN / WANDB_API_KEY / UNSLOTH_LICENSE
 # values do not get echoed to stdout/CI logs. The forwarded env vars are
 # already in ENV_FORWARD; printing them again was a secret leak.
-exec docker run --rm "${TTY_FLAG[@]}" \
-    "${GPU_FLAG[@]}" \
+# The ${arr[@]+"${arr[@]}"} form keeps empty arrays nounset-safe on
+# bash 3.2 (macOS /bin/bash), where a bare "${empty[@]}" trips set -u.
+exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
+    ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
@@ -118,5 +120,5 @@ exec docker run --rm "${TTY_FLAG[@]}" \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     "${ENV_FORWARD[@]}" \
-    "${PORT_FLAGS[@]}" \
+    ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

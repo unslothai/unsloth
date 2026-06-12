@@ -286,8 +286,11 @@ jobs:
           file: ./docker/Dockerfile.studio
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          # mode=min (final layers only): a mode=max cache of this ~24GB
+          # image would blow straight through the 10GB per-repo GHA cache
+          # quota and evict the base build's cache for zero hit-rate gain.
           cache-from: type=gha,scope=studio-${{ matrix.platform }}
-          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=max
+          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}

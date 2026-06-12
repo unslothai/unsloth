@@ -49,14 +49,12 @@ if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
 fi
 
 # --- Check 1: nvidia-smi present and can enumerate at least one GPU ---------
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-    err "nvidia-smi not found inside the container."
-    err "The CUDA runtime in this image is broken. Re-pull the image."
-    exit 1
-fi
-
-if ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
-    err "No GPU visible to nvidia-smi from inside the container."
+# nvidia-smi is injected by nvidia-container-toolkit when the container is
+# started with a GPU request; it is NOT baked into the image. A missing
+# binary therefore means "no GPU was attached", the same failure class as
+# an empty -L listing, not a broken image.
+if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+    err "No GPU visible inside the container."
     cat >&2 <<'MSG'
 
 Likely causes (in order of frequency):
@@ -80,7 +78,12 @@ Likely causes (in order of frequency):
        podman:     --device nvidia.com/gpu=all
        k8s:        nvidia.com/gpu resource request + GPU operator
 
-To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
+  5. This host has no NVIDIA GPU at all (Docker Desktop on macOS, Windows
+     without WSL2 GPU support, CPU-only Linux). Training needs a GPU, but
+     Jupyter, GGUF tooling and Studio chat work on CPU:
+       docker run -e UNSLOTH_ALLOW_CPU=1 ...
+
+To bypass this check entirely (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
 MSG
     exit 1
 fi
