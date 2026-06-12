@@ -36,7 +36,10 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1137,6 +1140,7 @@ async function autoLoadSmallestModel(): Promise<{
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -1201,7 +1205,10 @@ async function autoLoadSmallestModel(): Promise<{
               is_lora: false,
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
+              speculative_type: specSettings.speculativeType,
+              spec_draft_n_max: specSettings.specDraftNMax,
             });
+            saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -1250,6 +1257,7 @@ async function autoLoadSmallestModel(): Promise<{
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
               loadedIsMultimodal: isMultimodalResponse(loadResp),
+              ...resolveLoadedSpeculativeSettings(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
               id: toastId,
@@ -1290,7 +1298,10 @@ async function autoLoadSmallestModel(): Promise<{
             is_lora: false,
             gguf_variant: null,
             trust_remote_code: trustRemoteCode,
+            speculative_type: specSettings.speculativeType,
+            spec_draft_n_max: specSettings.specDraftNMax,
           });
+          saveSpeculativeType(specSettings.speculativeType);
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
           store.setModelRequiresTrustRemoteCode(
@@ -1310,6 +1321,7 @@ async function autoLoadSmallestModel(): Promise<{
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
+            ...resolveLoadedSpeculativeSettings(sfLoadResp),
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -1372,7 +1384,10 @@ async function autoLoadSmallestModel(): Promise<{
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
       });
+      saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1412,6 +1427,7 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        ...resolveLoadedSpeculativeSettings(loadResp),
       });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
