@@ -30,20 +30,109 @@ import {
   downloadChatExport,
   importConversationsFromFile,
   useChatRuntimeStore,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
+  Bookmark02Icon,
   Delete02Icon,
   Download01Icon,
+  FileDatabaseIcon,
+  Folder01Icon,
+  McpServerIcon,
+  PencilRulerIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
+// Adjustable "+" menu items shown in settings, in display order. Icons mirror
+// the ones used in the composer + menu itself.
+const PLUS_MENU_ICON_CLASS = "size-[18px]";
+const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }[] =
+  [
+    {
+      id: "chatWithFiles",
+      label: "Chat with Files",
+      icon: (
+        <HugeiconsIcon
+          icon={FileDatabaseIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "mcp",
+      label: "MCP",
+      icon: (
+        <HugeiconsIcon
+          icon={McpServerIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "savedPrompts",
+      label: "Saved prompts",
+      icon: (
+        <HugeiconsIcon
+          icon={Bookmark02Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "compareChat",
+      label: "Compare chat",
+      icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+    },
+    {
+      id: "exportChat",
+      label: "Export chat",
+      icon: (
+        <HugeiconsIcon
+          icon={Download01Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "canvas",
+      label: "Canvas",
+      icon: (
+        <HugeiconsIcon
+          icon={PencilRulerIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "projects",
+      label: "Projects",
+      icon: (
+        <HugeiconsIcon
+          icon={Folder01Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+  ];
+
 export function ChatTab() {
   const t = useT();
+  const plusPins = usePlusMenuPrefsStore((state) => state.pins);
+  const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -157,13 +246,36 @@ export function ChatTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.chat.description")}
         </p>
       </header>
+
+      <SettingsSection
+        title="Chat menu"
+        description={
+          <>
+            Choose which items are pinned in chat's{" "}
+            <PlusIcon
+              aria-label="+"
+              className="inline size-3.5 align-[-2px] stroke-[2px]"
+            />{" "}
+            side menu. Unpinned items move into “More”.
+          </>
+        }
+      >
+        {PLUS_MENU_SETTINGS.map((item) => (
+          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            <Switch
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
+            />
+          </SettingsRow>
+        ))}
+      </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
         <SettingsRow

@@ -77,6 +77,38 @@ import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+function buildRelativeSaveDirectory(
+  exportMethod: ExportMethod | null,
+  sourceBaseModelName: string,
+  selectedModelIdx: string | null,
+  checkpoint: string | null,
+): string {
+  if (exportMethod === "gguf") {
+    return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
+      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
+  }
+  return `${selectedModelIdx ?? "model"}/${checkpoint}`;
+}
+
+function siblingGgufDirectory(sourcePath: string): string | null {
+  const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return null;
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (slash < 0) return `${trimmed}_gguf`;
+  const parent =
+    slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
+      ? trimmed.slice(0, slash + 1)
+      : trimmed.slice(0, slash);
+  const name = trimmed.slice(slash + 1);
+  if (!name) return null;
+  const sep = parent.endsWith("/") || parent.endsWith("\\")
+    ? ""
+    : trimmed.includes("\\")
+      ? "\\"
+      : "/";
+  return `${parent}${sep}${name}_gguf`;
+}
+
 export function ExportPage() {
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -114,6 +146,9 @@ export function ExportPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
+  const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
+    null,
+  );
   const [hfUsername, setHfUsername] = useState("");
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
@@ -336,6 +371,36 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  const defaultSaveDirectory = useMemo(() => {
+    const relative = buildRelativeSaveDirectory(
+      exportMethod,
+      sourceBaseModelName,
+      selectedModelIdx,
+      checkpoint,
+    );
+    if (
+      exportMethod === "gguf" &&
+      sourceMode === "model" &&
+      modelSource === "local" &&
+      selectedSourceModel
+    ) {
+      const localModel = localMetaById.get(selectedSourceModel);
+      if (localModel && (localModel.source === "models_dir" || localModel.source === "custom")) {
+        return siblingGgufDirectory(localModel.path) ?? relative;
+      }
+    }
+    return relative;
+  }, [
+    checkpoint,
+    exportMethod,
+    localMetaById,
+    modelSource,
+    selectedModelIdx,
+    selectedSourceModel,
+    sourceBaseModelName,
+    sourceMode,
+  ]);
+  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
@@ -380,6 +445,10 @@ export function ExportPage() {
     setSelectedSourceModel(next || null);
   }, []);
 
+  useEffect(() => {
+    setCustomSaveDirectory(null);
+  }, [checkpoint, exportMethod, modelSource, selectedModelIdx, selectedSourceModel, sourceMode]);
+
   const handleLocalSourceInputChange = useCallback(
     (value: string, eventDetails?: { reason?: string }) => {
       localModelInputRef.current = value;
@@ -410,13 +479,6 @@ export function ExportPage() {
     setExportSuccess(false);
     setExportOutputPath(null);
 
-    // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
-    // For other formats, nest under training-run/checkpoint
-    const saveDir =
-      exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
-        : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
@@ -444,7 +506,7 @@ export function ExportPage() {
       if (exportMethod === "merged") {
         if (isAdapter) {
           const resp = await exportMerged({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
@@ -453,7 +515,7 @@ export function ExportPage() {
           lastOutputPath = resp.details?.output_path ?? null;
         } else {
           const resp = await exportBase({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
@@ -465,7 +527,7 @@ export function ExportPage() {
       } else if (exportMethod === "gguf") {
         for (const quant of quantLevels) {
           const resp = await exportGGUF({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             quantization_method: quant,
             push_to_hub: pushToHub,
             repo_id: repoId,
@@ -475,7 +537,7 @@ export function ExportPage() {
         }
       } else if (exportMethod === "lora") {
         const resp = await exportLoRA({
-          save_directory: saveDir,
+          save_directory: saveDirectory,
           push_to_hub: pushToHub,
           repo_id: repoId,
           hf_token: token,
@@ -507,9 +569,9 @@ export function ExportPage() {
     selectedModelData,
     exportMethod,
     isAdapter,
-    sourceBaseModelName,
     quantLevels,
     destination,
+    saveDirectory,
     hfUsername,
     modelName,
     hfToken,
@@ -1080,6 +1142,10 @@ export function ExportPage() {
         isAdapter={sourceMode === "checkpoint" && isAdapter}
         destination={destination}
         onDestinationChange={setDestination}
+        saveDirectory={saveDirectory}
+        defaultSaveDirectory={defaultSaveDirectory}
+        saveDirectoryOverridden={!!customSaveDirectory}
+        onSaveDirectoryChange={setCustomSaveDirectory}
         hfUsername={hfUsername}
         onHfUsernameChange={setHfUsername}
         modelName={modelName}

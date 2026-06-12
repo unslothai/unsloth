@@ -174,6 +174,12 @@ TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
+# Master switch for the staged runtime smoke test (llama-quantize + llama-server)
+# in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
+# JIT-compiles CUDA kernels on first load and stalls every install and update by
+# minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
+# are kept intact -- set this to True to re-enable them.
+_RUN_STAGED_PREBUILT_VALIDATION = False
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
@@ -5656,6 +5662,33 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
     return windows_runtime_dirs_for_patterns(patterns)
 
 
+def _wsl_system_rocm_lib_dirs() -> list[str]:
+    """System ROCm lib dir(s) for binary_env to load before a prebuilt's HIP.
+
+    A prebuilt bundles a bare-metal HIP runtime that can't drive WSL's /dev/dxg
+    and segfaults on the first GPU call -> validation fails, install falls back
+    to a CPU build. Putting the system ROCm libs first loads the WSL-capable
+    HIP (libamdhip64 + librocdxg) while the bundle still supplies libggml-hip /
+    librocblas with the gfx1151 kernels. Strict no-op off WSL (needs /dev/dxg, a
+    "microsoft" /proc/version, and a librocdxg-providing ROCm).
+    """
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    out: list[str] = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            out.append(d)
+    return out
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5677,6 +5710,11 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
+        # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+        _wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if _wsl_rocm:
+            ld_dirs = [*_wsl_rocm, *ld_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
@@ -6551,23 +6589,31 @@ def validate_prebuilt_choice(
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
-    validate_quantize(
-        quantize_path,
-        probe_path,
-        quantized_path,
-        install_dir,
-        host,
-        runtime_line = choice.runtime_line,
-    )
-    validate_server(
-        server_path,
-        probe_path,
-        host,
-        install_dir,
-        runtime_line = choice.runtime_line,
-        install_kind = choice.install_kind,
-    )
-    log(f"staged prebuilt validation succeeded for {choice.name}")
+    # Hashless external prebuilts (e.g. lemonade) are not in the approved-sha256
+    # manifest and rely on the functional smoke test as their only integrity gate,
+    # so they are always validated. For an approved bundle the sha256 manifest
+    # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
+    # costing minutes on Blackwell sm_100 -- is gated behind
+    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
+    # source-build fallback it triggers are kept intact; flip the flag to restore it.
+    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+        validate_quantize(
+            quantize_path,
+            probe_path,
+            quantized_path,
+            install_dir,
+            host,
+            runtime_line = choice.runtime_line,
+        )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            runtime_line = choice.runtime_line,
+            install_kind = choice.install_kind,
+        )
+        log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
 
 

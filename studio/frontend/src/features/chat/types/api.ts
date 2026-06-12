@@ -56,6 +56,11 @@ export interface LoadModelRequest {
    * when speculative_type resolves to "mtp" or "mtp+ngram".
    */
   spec_draft_n_max?: number | null;
+  /**
+   * Split the model across GPUs by tensor (--split-mode tensor) instead
+   * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
+   */
+  tensor_parallel?: boolean | null;
 }
 
 export interface ValidateModelResponse {
@@ -134,6 +139,8 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  tensor_parallel?: boolean;
 }
 
 export interface UnloadModelRequest {
@@ -174,6 +181,8 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  tensor_parallel?: boolean;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
@@ -282,6 +291,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** Local models + enable_tools only. */
+  confirm_tool_calls?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

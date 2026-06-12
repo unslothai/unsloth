@@ -320,7 +320,7 @@
 @layer utilities {
 	.hub-tag-soft,
 	.hub-tag-meta {
-		@apply min-h-[26px] rounded-[11px] bg-muted/70 ring-1 ring-inset;
+		@apply min-h-[26px] rounded-full bg-muted/70 ring-1 ring-inset;
 		--tw-ring-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 
@@ -333,6 +333,11 @@
 		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
 		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
 		box-shadow: none;
+	}
+
+	/* Single-row state (variant + actions only) reads as a full pill. */
+	.hub-download-card:not(:has(> :nth-child(2))) {
+		border-radius: 9999px;
 	}
 
 	.dark .hub-download-card {

@@ -108,6 +108,9 @@ class ProviderTestRequest(BaseModel):
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"
     )
+    model_id: Optional[str] = Field(
+        None, description = "Model ID for providers that need a chat probe"
+    )
 
 
 class ProviderTestResult(BaseModel):

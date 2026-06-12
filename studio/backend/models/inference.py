@@ -87,6 +87,15 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = (
+            "Split the model across GPUs by tensor (--split-mode tensor) "
+            "instead of by layer for GGUF models. Only affects multi-GPU "
+            "setups, where it can make generation significantly faster. "
+            "No effect on a single GPU. Ignored for non-GGUF models."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -224,6 +233,10 @@ class LoadResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -338,6 +351,10 @@ class InferenceStatusResponse(BaseModel):
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
         ),
+    )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -690,6 +707,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -924,6 +945,12 @@ class ChatCompletionRequest(BaseModel):
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
         return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
 
 
 # ── OpenAI shell-tool container management ─────────────────────
@@ -1304,6 +1331,23 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
@@ -1318,7 +1362,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):
