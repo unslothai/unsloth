@@ -75,6 +75,9 @@ import {
 } from "./stores/plus-menu-prefs-store";
 import {
   type ReasoningEffort,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -910,6 +913,9 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
+      const specSettings = resolveSpeculativeSettingsForLoad({
+        usePersistedPreference: true,
+      });
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -951,9 +957,12 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism toggle on compare loads too.
           tensor_parallel: currentStore.tensorParallel,
         });
+        saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -971,6 +980,7 @@ export function SharedComposer({
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
