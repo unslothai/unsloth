@@ -305,9 +305,13 @@ case "$_os" in
                     }
                     # Remove the WoA WSL-fallback native shim/launcher dir
                     # (%LOCALAPPDATA%\Unsloth) + its PATH entry that install.ps1
-                    # created, so a WSL-side bash uninstall is complete.
+                    # created, so a WSL-side bash uninstall is complete. Only when THIS
+                    # distro owns the fallback (wsl-distro.txt) -- else uninstalling a
+                    # different distro would break the still-installed shim.
                     $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
-                    if ($ud) {
+                    $owner = $null;
+                    if ($ud) { $of = Join-Path $ud "wsl-distro.txt"; if (Test-Path -LiteralPath $of) { $owner = (Get-Content -LiteralPath $of | Select-Object -First 1).Trim() } }
+                    if ($ud -and ((-not $owner) -or (-not $distro) -or ($owner -ieq $distro))) {
                         $shim = (Join-Path $ud "bin").TrimEnd("\","/");
                         $up = [Environment]::GetEnvironmentVariable("Path","User");
                         if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }

@@ -1851,6 +1851,10 @@ shell.Run cmd, 0, False
         try { & wsl.exe -d $distro -- true *> $null; if ($LASTEXITCODE -eq 0) { $haveDistro = $true } } catch {}
         if (-not $haveDistro) {
             substep "installing WSL distro '$distro' (first time only)..." "Cyan"
+            # New distros install at the global default WSL version; force 2 so a host
+            # whose default is WSL1 doesn't get a GPU-less distro (fails only at torch.cuda).
+            $global:LASTEXITCODE = -1
+            try { & wsl.exe --set-default-version 2 *> $null } catch {}
             try { & wsl.exe --install -d $distro --no-launch } catch {}
         } else {
             # A PRE-EXISTING distro may be WSL1 (no GPU passthrough; would only fail at the final
@@ -1884,6 +1888,9 @@ shell.Run cmd, 0, False
         # setup.sh would defer to a background builder that never starts (no llama-server).
         $_fwdEnv = ''
         if ($env:UNSLOTH_NO_LLAMA_CUDA -eq '1') { $_fwdEnv = 'export UNSLOTH_NO_LLAMA_CUDA=1; ' }
+        # Forward a user Python pin: install.sh reads UNSLOTH_PYTHON, but a Windows env var
+        # isn't visible inside WSL unless bridged. Numeric-only guard (e.g. 3.12) = no injection.
+        if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^[0-9][0-9.]*$')) { $_fwdEnv += "export UNSLOTH_PYTHON=$($env:UNSLOTH_PYTHON); " }
         if ($_instRef -eq 'main') {
             $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
         } else {
@@ -1927,7 +1934,7 @@ shell.Run cmd, 0, False
                 # studio.txt minus the huggingface-hub pin; uv preferred, pip fallback. Bare names only:
                 # `>=` would become a redirection through PowerShell -> wsl.exe -> bash -lc, and
                 # latest-of-each satisfies the studio.txt minimums anyway.
-                $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict structlog diceware ddgs cryptography httpx fastmcp'
+                $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict structlog diceware ddgs cryptography httpx fastmcp sqlite-vec pymupdf python-docx'
                 $_repair = 'PY=/root/.unsloth/studio/unsloth_studio/bin/python; UV="$(command -v uv 2>/dev/null || echo /root/.local/bin/uv)"; if [ -x "$UV" ] || command -v uv >/dev/null 2>&1; then "$UV" pip install --python "$PY" ' + $_deps + '; else "$PY" -m pip install ' + $_deps + '; fi'
                 $prevEapR = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try { & wsl.exe -d $distro --cd /root -u root -- bash -lc $_repair } catch {} finally { $ErrorActionPreference = $prevEapR }
