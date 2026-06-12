@@ -315,6 +315,28 @@ def test_stop_terminates_process():
     t.stop()
 
 
+def test_start_after_stop_does_not_spawn(monkeypatch):
+    # If stop() lands before start() (a concurrent shutdown in the caller's
+    # register->start window), start() must NOT spawn a cloudflared process --
+    # nobody would own it and it would be orphaned.
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    spawned = []
+
+    class _FakeProc:
+        stdout = None
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1]
+    )
+    t.stop()  # proc is None -> no-op terminate, but marks the tunnel stopped
+    t.start()  # must short-circuit before Popen
+    assert spawned == []
+    assert t._proc is None
+
+
 def test_wait_for_ready_times_out_without_blocking():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
     assert t.wait_for_ready(timeout = 0.05) is None
@@ -641,6 +663,13 @@ def test_run_server_cloudflare_default_true():
 
 def test_argparse_cloudflare_default_true():
     assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
+
+
+def test_run_server_registers_tunnel_atexit_backstop():
+    # An abnormal exit (exception after startup -> sys.exit) bypasses
+    # _graceful_shutdown; an atexit backstop must still stop the tunnel.
+    src = _RUN_PY.read_text()
+    assert "atexit.register(stop_studio_tunnel)" in src
 
 
 def test_run_server_gates_tunnel_on_wildcard():

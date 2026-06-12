@@ -201,6 +201,7 @@ class CloudflareTunnel:
         self.protocol = protocol
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._stopped = False
         self._url_event = threading.Event()
         self._ready_event = threading.Event()
         self.url: Optional[str] = None
@@ -217,17 +218,22 @@ class CloudflareTunnel:
         ]
         if self.protocol:
             cmd += ["--protocol", self.protocol]
-        proc = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            stdin = subprocess.DEVNULL,
-            text = True,
-            errors = "replace",
-            bufsize = 1,
-            **_windows_hidden_kwargs(),
-        )
         with self._lock:
+            # A stop() that landed before us (e.g. a shutdown in the caller's
+            # register->start window) marks the tunnel stopped; spawning now would
+            # orphan a process nobody owns, so refuse.
+            if self._stopped:
+                return
+            proc = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                errors = "replace",
+                bufsize = 1,
+                **_windows_hidden_kwargs(),
+            )
             self._proc = proc
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
@@ -272,6 +278,8 @@ class CloudflareTunnel:
     def stop(self) -> None:
         """Terminate the tunnel. Idempotent and safe to call from a signal handler."""
         with self._lock:
+            # Mark stopped so a start() racing behind us refuses to spawn.
+            self._stopped = True
             proc, self._proc = self._proc, None
         if proc is None:
             return
