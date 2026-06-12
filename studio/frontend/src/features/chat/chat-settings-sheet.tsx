@@ -1086,9 +1086,12 @@ export function ChatSettingsPanel({
                 )}
               </>
             )}
-            <ChatTemplateFields />
+            {/* Apply/Reset belongs to the model-reload settings above (context
+                length, KV cache, speculative decoding). Render it here, before
+                the Chat Template row, so it never reads as attached to Chat
+                Template (which is edited via its own dialog). */}
             {modelSettingsDirty && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
                   onClick={() => onReloadModel?.()}
@@ -1115,6 +1118,7 @@ export function ChatSettingsPanel({
                 </Button>
               </div>
             )}
+            <ChatTemplateFields />
           </div>
         </CollapsibleSection>
         )}
