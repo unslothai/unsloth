@@ -21,6 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 class _NoopLogger:
     """structlog-style logger: every method swallows positional + kwargs.
 
@@ -328,7 +329,7 @@ def test_format_stale_warning_singular_day():
 def test_parse_base_build():
     assert fr.parse_base_build("b9596") == 9596
     assert fr.parse_base_build(" b9596 ") == 9596
-    assert fr.parse_base_build("b9596-mix-e6f2453") == 9596   # mix suffix doesn't defeat it
+    assert fr.parse_base_build("b9596-mix-e6f2453") == 9596  # mix suffix doesn't defeat it
     assert fr.parse_base_build("9596") is None
     assert fr.parse_base_build("master-abc") is None
     assert fr.parse_base_build("") is None
@@ -338,16 +339,20 @@ def test_parse_base_build():
 @pytest.mark.parametrize(
     "installed, latest, expected",
     [
-        ("b9596-mix-e6f2453", "b9596-mix-e6f2453", False),  # already on the mix latest -> not behind
-        ("b9596", "b9594", False),                          # latest is an older build -> downgrade guard
-        ("b9596", "b9594-mix-xxx", False),                  # older mix latest -> still guarded
-        ("b9500", "b9596-mix-e6f2453", True),               # newer base -> behind
-        ("b9596-mix-aaa", "b9596-mix-bbb", True),           # new mix at same base -> behind
-        ("b9596", "b9596-mix-bbb", True),                   # clean -> mix at same base -> behind
-        ("b9596-mix-aaa", "b9596", False),                  # bare base never supersedes a mix install
-        ("b9596", "b9596", False),                          # identical -> not behind
-        (" b9596 ", "b9596", False),                        # whitespace-only diff -> not behind
-        ("master-abc", "master-def", True),                 # non-bNNNN both -> plain inequality
+        (
+            "b9596-mix-e6f2453",
+            "b9596-mix-e6f2453",
+            False,
+        ),  # already on the mix latest -> not behind
+        ("b9596", "b9594", False),  # latest is an older build -> downgrade guard
+        ("b9596", "b9594-mix-xxx", False),  # older mix latest -> still guarded
+        ("b9500", "b9596-mix-e6f2453", True),  # newer base -> behind
+        ("b9596-mix-aaa", "b9596-mix-bbb", True),  # new mix at same base -> behind
+        ("b9596", "b9596-mix-bbb", True),  # clean -> mix at same base -> behind
+        ("b9596-mix-aaa", "b9596", False),  # bare base never supersedes a mix install
+        ("b9596", "b9596", False),  # identical -> not behind
+        (" b9596 ", "b9596", False),  # whitespace-only diff -> not behind
+        ("master-abc", "master-def", True),  # non-bNNNN both -> plain inequality
         ("master-abc", "master-abc", False),
         (None, "b9596", False),
         ("b9596", None, False),
@@ -363,7 +368,9 @@ def test_check_prebuilt_freshness_not_behind_on_mix_latest(monkeypatch, tmp_path
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9596", release_tag = "b9596-mix-e6f2453")
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453")
+    monkeypatch.setattr(
+        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["behind"] is False
     assert info["stale"] is False
@@ -405,9 +412,24 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
             return False
 
     payload = [
-        {"tag_name": "b9518", "draft": False, "prerelease": False, "published_at": "2026-06-04T21:11:19Z"},
-        {"tag_name": "b9596-mix-e6f2453", "draft": False, "prerelease": False, "published_at": "2026-06-11T22:50:41Z"},
-        {"tag_name": "b9999-draft", "draft": True, "prerelease": False, "published_at": "2026-06-12T00:00:00Z"},
+        {
+            "tag_name": "b9518",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-06-04T21:11:19Z",
+        },
+        {
+            "tag_name": "b9596-mix-e6f2453",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-06-11T22:50:41Z",
+        },
+        {
+            "tag_name": "b9999-draft",
+            "draft": True,
+            "prerelease": False,
+            "published_at": "2026-06-12T00:00:00Z",
+        },
     ]
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"

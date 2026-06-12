@@ -139,7 +139,8 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     if not isinstance(data, list):
         return None
     published = [
-        r for r in data
+        r
+        for r in data
         if isinstance(r, dict)
         and not r.get("draft")
         and not r.get("prerelease")

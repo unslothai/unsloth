@@ -812,7 +812,9 @@ def test_status_not_offered_on_mix_latest(monkeypatch, tmp_path):
     # Installed the mix latest; GitHub latest is that same full tag -> no banner.
     binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
     st = upd.get_update_status()
     assert st["update_available"] is False
     assert st["installed_tag"] == "b9596"
@@ -833,7 +835,9 @@ def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
     binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "up_to_date"
