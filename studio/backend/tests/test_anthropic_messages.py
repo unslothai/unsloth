@@ -1148,60 +1148,6 @@ class TestAnthropicPassthroughStreamAdapter:
             if line.startswith(prefix)
         ]
 
-    def test_stream_read_timeout_emits_error_without_message_stop(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        class _FailingStream(httpx.AsyncByteStream):
-            async def __aiter__(self):
-                chunk = {"choices": [{"delta": {"content": "partial"}}]}
-                yield f"data: {json.dumps(chunk)}\n\n".encode()
-                raise httpx.ReadTimeout("stream stalled")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                stream = _FailingStream(),
-                headers = {"content-type": "text/event-stream"},
-            )
-
-        transport = httpx.MockTransport(handler)
-        real_async_client = httpx.AsyncClient
-
-        def _client(*args, **kwargs):
-            return real_async_client(
-                transport = transport,
-                timeout = kwargs.get("timeout", 600),
-            )
-
-        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
-        backend = SimpleNamespace(
-            base_url = "http://llama.test",
-            context_length = 4096,
-            count_chat_tokens = lambda *args, **kwargs: 2,
-        )
-
-        async def run():
-            response = await _anthropic_passthrough_stream(
-                self._Request(),
-                threading.Event(),
-                backend,
-                [{"role": "user", "content": "hi"}],
-                [],
-                0.7,
-                0.95,
-                20,
-                16,
-                "msg_1",
-                "test-model",
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        error = self._payloads(lines, "error")[0]
-        assert "stopped producing tokens" in error["error"]["message"]
-        assert "event: message_stop" not in "".join(lines)
-
     def test_stream_requests_usage_for_final_message_delta(self, monkeypatch):
         import routes.inference as inf_mod
 

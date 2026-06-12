@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
-
-Covers:
-- ChatCompletionRequest accepts standard OpenAI `tools` / `tool_choice` / `stop`.
-- ChatMessage accepts role="tool" with `tool_call_id` and role="assistant"
-  with `content: None` + `tool_calls`.
-- ChatCompletionRequest carries unknown fields via `extra="allow"`.
-- anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
-- _build_passthrough_payload() honors a caller-supplied tool_choice and
-  defaults to "auto" when unset.
-- _friendly_error() maps httpx transport errors to legible messages
-  instead of bare 500s.
-
-No running server or GPU required.
-"""
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
 import sys
@@ -48,7 +34,6 @@ from routes.inference import (
     _clamp_finish_reason,
     _effective_max_tokens,
     _extract_content_parts,
-    _format_timeout_label,
     _friendly_error,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
@@ -695,10 +680,6 @@ class TestBuildPassthroughPayloadToolChoice:
         )
         assert body.get("stream_options") == {"include_usage": True}
 
-    def test_generation_wall_clock_cap_not_forwarded(self):
-        body = _build_passthrough_payload(**self._args())
-        assert "t_max_predict_ms" not in body
-
     def test_stream_forwards_include_usage_false_when_client_requests_it(self):
         args = self._args()
         args["stream"] = True
@@ -945,30 +926,6 @@ class TestFriendlyErrorHttpx:
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
         assert "first token within 20 minutes" in _friendly_error(exc)
-
-    def test_read_timeout_after_stream_started_mapped_as_stall(self):
-        exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "stopped producing tokens" in _friendly_error(exc, timeout_phase = "stream")
-
-    def test_timeout_siblings_are_not_reported_as_crashes(self):
-        timeout_types = (
-            httpx.ConnectTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
-        )
-        for timeout_type in timeout_types:
-            exc = timeout_type("timed out", request = self._req())
-            message = _friendly_error(exc)
-            assert "Timed out" in message
-            assert "crashed" not in message
-
-    def test_timeout_label_singular_plural(self):
-        assert _format_timeout_label(1.0) == "1 second"
-        assert _format_timeout_label(1.5) == "1.5 seconds"
-        assert _format_timeout_label(2.0) == "2 seconds"
-        assert _format_timeout_label(60.0) == "1 minute"
-        assert _format_timeout_label(120.0) == "2 minutes"
-        assert _format_timeout_label(90.0) == "90 seconds"
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics

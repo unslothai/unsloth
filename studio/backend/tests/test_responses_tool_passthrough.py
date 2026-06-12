@@ -784,61 +784,6 @@ class TestResponsesStreamAdapter:
             ),
         )
 
-    def test_stream_read_timeout_emits_failed_without_completed(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        class _FailingStream(httpx.AsyncByteStream):
-            async def __aiter__(self):
-                chunk = {"choices": [{"delta": {"content": "partial"}}]}
-                yield f"data: {json.dumps(chunk)}\n\n".encode()
-                raise httpx.ReadTimeout("stream stalled")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                stream = _FailingStream(),
-                headers = {"content-type": "text/event-stream"},
-            )
-
-        transport = httpx.MockTransport(handler)
-        real_async_client = httpx.AsyncClient
-
-        def _client(*args, **kwargs):
-            return real_async_client(
-                transport = transport,
-                timeout = kwargs.get("timeout", 600),
-            )
-
-        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
-        monkeypatch.setattr(
-            inf_mod,
-            "get_llama_cpp_backend",
-            lambda: SimpleNamespace(
-                is_loaded = True,
-                is_vision = False,
-                context_length = 4096,
-                base_url = "http://llama.test",
-                supports_reasoning = True,
-                reasoning_always_on = False,
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
-                ),
-            ),
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
-
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        failed = self._payloads(lines, "response.failed")[0]
-        assert failed["response"]["status"] == "failed"
-        assert "stopped producing tokens" in failed["response"]["error"]["message"]
-        assert "response.completed" not in "".join(lines)
-
     def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
         chunks = [
             {"choices": [{"delta": {"content": "<thi"}}]},

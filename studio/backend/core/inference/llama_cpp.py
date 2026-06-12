@@ -122,18 +122,8 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 1
 
-# Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
-# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
-# fails. Keep max_tokens as the front-line limiter; do not add a fixed
-# wall-clock cutoff for Studio chat because very slow CPU/GPU-offload
-# generations can legitimately keep producing useful tokens past the
-# first-token timeout.
-#
-# The cap is the model's effective context length when we know it,
-# falling back to a generous floor when metadata is unavailable. 4096 was
-# too low: Qwen3 / gpt-oss reasoning traces routinely exceed it, and any
-# OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
-# curl) sees responses silently truncated mid-sentence.
+# Default max_tokens to the effective context when known. The floor is high
+# enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
@@ -5319,15 +5309,7 @@ class LlamaCppBackend:
         stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
         first_token_deadline: Optional[float] = None,
     ) -> Generator[str, None, None]:
-        """Iterate an httpx streaming response with cancel support.
-
-        Checks cancel_event between chunks and on ReadTimeout.  The
-        cancel watcher in _stream_with_retry also calls response.close()
-        on cancel, which unblocks iter_text() once the response exists.
-        After the first chunk, a ReadTimeout loop longer than
-        stall_timeout_s is treated as an inter-token stall instead of
-        being swallowed forever.
-        """
+        """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -5354,15 +5336,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
-        """Shorten httpx's post-header read timeout for stream polling.
-
-        The request uses a long read timeout so llama-server can spend
-        several minutes in prefill before response headers arrive. httpx
-        stores that timeout on the request and also applies it to later
-        response-body reads, so after headers arrive we lower only the
-        read component. This restores frequent cancel/stall polling
-        during token streaming without reintroducing prefill retry storms.
-        """
+        """Lower only post-header stream reads; keep prefill timeout long."""
         try:
             timeout_ext = response.request.extensions.get("timeout")
             if isinstance(timeout_ext, dict):
@@ -5374,9 +5348,6 @@ class LlamaCppBackend:
     def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
         """Best-effort interrupt for a sync httpx request blocked before headers."""
         try:
-            # httpx.Client.close() does not reliably interrupt a blocking
-            # socket recv from another thread, so reach down to the active
-            # httpcore socket and shutdown it first.
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
             connections = list(getattr(pool, "_connections", []) or [])
             for connection in connections:
@@ -5410,33 +5381,16 @@ class LlamaCppBackend:
         headers: Optional[dict] = None,
         first_token_deadline: Optional[float] = None,
     ):
-        """Open an httpx streaming POST with cancel support.
-
-        Sends the request once with a long read timeout so
-        prompt processing (prefill) can finish without triggering a
-        retry storm.  The previous 0.5 s timeout caused duplicate POST
-        requests every half second, forcing llama-server to restart
-        processing each time.
-
-        A background watcher thread provides cancel by closing the
-        response when cancel_event is set. If headers have not arrived
-        yet, there is no response object to close, so it shuts down the
-        active socket to interrupt the blocked header wait.
-        """
+        """Open one streaming POST and let cancel interrupt prefill or reads."""
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
 
-        # Background watcher: close the response if cancel is requested.
-        # Before response headers arrive there is no response object, so
-        # shutdown the active socket to interrupt the blocked header wait.
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
 
         def _cancel_watcher():
             while not _cancel_closed.is_set():
                 if cancel_event.wait(timeout = 0.3):
-                    # Cancel requested. Prefer closing the response once it
-                    # exists; otherwise shutdown the socket to interrupt prefill.
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
@@ -5447,7 +5401,6 @@ class LlamaCppBackend:
                             return
                         except Exception as e:
                             logger.debug(f"Error closing request in cancel watcher: {e}")
-                        # Response not created yet -- wait briefly and retry
                         _cancel_closed.wait(timeout = 0.1)
                     return
 
@@ -5457,9 +5410,6 @@ class LlamaCppBackend:
             watcher.start()
 
         try:
-            # Long read timeout so prefill can finish without a retry storm.
-            # Cancel during prefill and streaming is handled by the watcher:
-            # socket shutdown before headers, response close after headers.
             if first_token_deadline is None:
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
@@ -5537,8 +5487,7 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
-        # Default cap to the model's effective context length when known,
-        # otherwise the conservative floor.
+        # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
             if max_tokens is not None
@@ -5559,9 +5508,7 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         try:
-            # _stream_with_retry uses the first-token timeout so prefill
-            # can finish.  Cancel during streaming is handled by the
-            # watcher thread (closes the response on cancel_event).
+            # Prefill can use the long first-token timeout; body reads are lowered after headers.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             with httpx.Client(

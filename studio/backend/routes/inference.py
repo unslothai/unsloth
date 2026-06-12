@@ -91,17 +91,6 @@ def _install_httpcore_asyncgen_silencer() -> None:
 _install_httpcore_asyncgen_silencer()
 
 
-def _format_timeout_label(seconds: float) -> str:
-    value = float(seconds)
-    if value >= 60 and value.is_integer() and int(value) % 60 == 0:
-        minutes = int(value) // 60
-        unit = "minute" if minutes == 1 else "minutes"
-        return f"{minutes} {unit}"
-    display = str(int(value)) if value.is_integer() else f"{value:g}"
-    unit = "second" if value == 1 else "seconds"
-    return f"{display} {unit}"
-
-
 def _loaded_chat_template() -> Optional[str]:
     """Chat template of the currently loaded GGUF model, if any."""
     try:
@@ -130,39 +119,21 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     return candidate if candidate and candidate in chat_template else None
 
 
-def _friendly_error(exc: Exception, timeout_phase: str = "first_token") -> str:
+def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    if isinstance(exc, httpx.ReadTimeout):
+        if "stopped producing tokens" in str(exc).lower():
+            return (
+                "The model stopped producing tokens before the response "
+                "completed. Try stopping and retrying, or reduce max tokens."
+            )
+        return (
+            "The model is still processing the prompt but did not produce a "
+            "first token within 20 minutes. Try reducing context length, "
+            "using more GPU offload, or loading a smaller model."
+        )
     if isinstance(exc, httpx.TimeoutException):
-        timeout_label = _format_timeout_label(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
-        if isinstance(exc, httpx.ReadTimeout):
-            msg = str(exc).lower()
-            if timeout_phase == "stream" or "stopped producing tokens" in msg:
-                return (
-                    "The model stopped producing tokens before the response "
-                    "completed. Try stopping and retrying, or reduce max "
-                    "tokens if the generation repeatedly stalls."
-                )
-            return (
-                "The model is still processing the prompt but did not produce a "
-                f"first token within {timeout_label}. Try reducing context length, "
-                "using more GPU offload, or loading a smaller model."
-            )
-        if isinstance(exc, httpx.ConnectTimeout):
-            return (
-                f"Timed out connecting to the model server within {timeout_label}. "
-                "It may still be starting -- try again shortly."
-            )
-        if isinstance(exc, httpx.WriteTimeout):
-            return (
-                f"Timed out sending the request to the model server within {timeout_label}. "
-                "Try again, or shorten the request if it keeps happening."
-            )
-        if isinstance(exc, httpx.PoolTimeout):
-            return (
-                f"Timed out waiting for an available model-server connection within {timeout_label}. "
-                "Another generation may still be running -- stop it or try again shortly."
-            )
-        return f"The model server did not respond within {timeout_label}. Try again shortly."
+        return "Timed out communicating with the model server. Try again shortly."
     # httpx transport failures from the async pass-through helpers. Any
     # RequestError subclass (ConnectError, ReadError, RemoteProtocolError,
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
@@ -258,7 +229,7 @@ def _raise_unsupported_n(path_label: str) -> None:
     _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
 
 
-def _openai_stream_error_chunk(exc, timeout_phase: str = "first_token") -> dict:
+def _openai_stream_error_chunk(exc) -> dict:
     """Build an in-band OpenAI error chunk for a mid-stream failure. Once the
     stream's 200 headers are flushed the status can't change, so the error must
     ride in the SSE body. An upstream context-window overflow is mapped to
@@ -267,19 +238,13 @@ def _openai_stream_error_chunk(exc, timeout_phase: str = "first_token") -> dict:
     _cls = _classify_llama_generation_error(exc)
     if _cls:
         return openai_error_body(
-            _friendly_error(exc, timeout_phase = timeout_phase),
+            _friendly_error(exc),
             status = 400,
             code = "context_length_exceeded",
         )
     if _cls is False:
-        return openai_error_body(
-            _friendly_error(exc, timeout_phase = timeout_phase),
-            status = 400,
-        )
-    return openai_error_body(
-        _friendly_error(exc, timeout_phase = timeout_phase),
-        status = 500,
-    )
+        return openai_error_body(_friendly_error(exc), status = 400)
+    return openai_error_body(_friendly_error(exc), status = 500)
 
 
 def _openai_passthrough_error(status_code, text) -> "HTTPException":
@@ -470,21 +435,16 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
 def _anthropic_stream_error_event(
     exc,
     *,
-    timeout_phase: str = "first_token",
     force: bool = False,
 ):
-    """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
-    to fall through to a normal message_delta finish. Returns an event only for a
-    classifiable upstream client error (context overflow / 4xx) so a streaming
-    over-context request surfaces a real error instead of a silent empty
-    end_turn message. ``force`` also emits transport/runtime stream failures."""
+    """Return an Anthropic in-band stream error event when one is useful."""
     _cls = _classify_llama_generation_error(exc)
     if _cls is None and not force:
         return None
     status = 400 if _cls is not None else 500
     return build_anthropic_sse_event(
         "error",
-        anthropic_error_body(_friendly_error(exc, timeout_phase = timeout_phase), status = status),
+        anthropic_error_body(_friendly_error(exc), status = status),
     )
 
 
@@ -711,13 +671,6 @@ except ImportError:
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    """Timeout policy for non-streaming llama-server generations.
-
-    Non-streaming responses do not deliver response-body bytes until the
-    completion is finished, so a finite read timeout becomes a generation
-    wall-clock cap. Keep connect/write/pool bounded, but do not cap the
-    response-body read.
-    """
     return httpx.Timeout(
         connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         read = None,
@@ -836,7 +789,7 @@ async def _aiter_llama_stream_items(
                 if now >= first_token_deadline:
                     raise
                 continue
-            raise
+            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         last_item_at = time.monotonic()
         yield item
 
@@ -5150,7 +5103,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
             resp = None
             bytes_iter = None
-            first_chunk_seen = False
             try:
                 req = client.build_request("POST", target_url, json = body)
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -5174,7 +5126,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         event, buffer = buffer.split(b"\n\n", 1)
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
-                            first_chunk_seen = True
                             yield out + b"\n\n"
                 if buffer:
                     out = _cmpl_stream_event_out(buffer, _include_usage)
@@ -5182,12 +5133,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
-                        first_chunk_seen = True
                         yield out + b"\n\n"
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
-                timeout_phase = "stream" if first_chunk_seen else "first_token"
-                error_chunk = _openai_stream_error_chunk(e, timeout_phase = timeout_phase)
+                error_chunk = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                 return
             finally:
@@ -5993,7 +5942,7 @@ async def _responses_stream(
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
-        def _failed_response_payload(exc: Exception, status_code: int, timeout_phase: str) -> dict:
+        def _failed_response_payload(exc: Exception, status_code: int) -> dict:
             return {
                 "type": "response.failed",
                 "response": {
@@ -6010,7 +5959,7 @@ async def _responses_stream(
                     },
                     "error": {
                         "code": status_code,
-                        "message": _friendly_error(exc, timeout_phase = timeout_phase),
+                        "message": _friendly_error(exc),
                     },
                 },
             }
@@ -6041,7 +5990,6 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
-        first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -6110,7 +6058,6 @@ async def _responses_stream(
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
-                first_chunk_seen = True
                 try:
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
@@ -6222,11 +6169,10 @@ async def _responses_stream(
                     output_tokens = usage.get("completion_tokens", output_tokens)
         except Exception as e:
             logger.error("responses stream error: %s", e)
-            timeout_phase = "stream" if first_chunk_seen else "first_token"
             status_code = 400 if _classify_llama_generation_error(e) is not None else 500
             yield _sse(
                 "response.failed",
-                _failed_response_payload(e, status_code, timeout_phase),
+                _failed_response_payload(e, status_code),
             )
             return
         finally:
@@ -7453,7 +7399,6 @@ async def _anthropic_passthrough_stream(
         resp = None
         lines_iter = None
         cancel_watcher = None
-        first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -7502,7 +7447,6 @@ async def _anthropic_passthrough_stream(
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
-                first_chunk_seen = True
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
@@ -7514,10 +7458,8 @@ async def _anthropic_passthrough_stream(
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
-                timeout_phase = "stream" if first_chunk_seen else "first_token"
                 event = _anthropic_stream_error_event(
                     e,
-                    timeout_phase = timeout_phase,
                     force = True,
                 )
                 if event is not None:
@@ -7526,10 +7468,8 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
-                timeout_phase = "stream" if first_chunk_seen else "first_token"
                 event = _anthropic_stream_error_event(
                     e,
-                    timeout_phase = timeout_phase,
                     force = True,
                 )
                 if event is not None:
@@ -7966,7 +7906,7 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
 
-    # Outer guard keeps the tracker paired when pre-header dispatch is cancelled.
+    # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         # Dispatch BEFORE returning StreamingResponse so transport errors and
         # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
@@ -8058,7 +7998,6 @@ async def _openai_passthrough_stream(
             # cancel fires, unblocking the iterator with a RemoteProtocolError
             # caught in the except clause below.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
-            first_chunk_seen = False
             try:
                 _set_stream_response_read_timeout(resp)
                 lines_iter = resp.aiter_lines()
@@ -8081,7 +8020,6 @@ async def _openai_passthrough_stream(
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
-                    first_chunk_seen = True
                     if raw_line[6:].strip() == "[DONE]":
                         break
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
@@ -8092,10 +8030,7 @@ async def _openai_passthrough_stream(
             except Exception as e:
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
-                err = _openai_stream_error_chunk(
-                    e,
-                    timeout_phase = "stream" if first_chunk_seen else "first_token",
-                )
+                err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
                 cancel_watcher.cancel()
