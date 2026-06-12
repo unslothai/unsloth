@@ -347,6 +347,11 @@ def test_windows_full_offload_flags_use_current_llama_server_args():
     assert stale_checkpoint_flag not in src
 
 
+def test_load_model_sets_threads_once():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count('cmd.extend(["--threads", str(') == 1
+
+
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
     # User --spec-type none suppressed auto-MTP; repeat /load must not re-promote.
     backend = _mtp_backend(
@@ -586,6 +591,9 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
 
 
 # ngram-mod flag flavor detection (new vs legacy llama-server).
@@ -618,6 +626,12 @@ _LEGACY_HELP = """\
                                         (env: LLAMA_ARG_DRAFT_MIN)
 --spec-ngram-size-n N                   ngram lookup length (default: 24)
 --spec-type none,ngram-mod,ngram-simple                                        comma-separated list of types of speculative decoding to use
+"""
+
+_CACHE_FLAGS_HELP = """\
+--cache-ram N                           store prompt cache in RAM (default: 0)
+--ctx-checkpoints N                     number of context checkpoints (default: 0)
+--no-cache-prompt                       do not reuse prompt cache
 """
 
 
@@ -664,6 +678,26 @@ def test_probe_no_ngram_mod_on_minimal_binary(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps["ngram_mod_flavor"] is None
     assert caps["supports_ngram_mod"] is False
+
+
+@_NEEDS_BASH
+def test_probe_detects_windows_cache_flags(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _CACHE_FLAGS_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is True
+    assert caps["supports_ctx_checkpoints"] is True
+    assert caps["supports_no_cache_prompt"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
 
 
 def test_build_ngram_mod_flags_new():

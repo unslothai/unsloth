@@ -1207,7 +1207,7 @@ class LlamaCppBackend:
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag}.
+        supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
         ``--spec-ngram-mod-n-match / -n-min / -n-max`` are real args;
@@ -1232,6 +1232,9 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_cache_ram": False,
+                "supports_ctx_checkpoints": False,
+                "supports_no_cache_prompt": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1247,6 +1250,9 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_cache_ram = False
+        supports_ctx_checkpoints = False
+        supports_no_cache_prompt = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1337,6 +1343,9 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_cache_ram = _is_real("--cache-ram")
+            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            supports_no_cache_prompt = _is_real("--no-cache-prompt")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1349,6 +1358,9 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_cache_ram": supports_cache_ram,
+            "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "supports_no_cache_prompt": supports_no_cache_prompt,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -3906,13 +3918,14 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1"])
                     fully_gpu_offloaded = True
 
+                server_caps = self.probe_server_capabilities(binary)
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
                         use_fit,
                         requested_ctx,
                         effective_ctx,
-                        self.probe_server_capabilities(binary),
+                        server_caps,
                     )
                 )
                 offload_overridden = _extra_args_set_any_flag(
@@ -3921,10 +3934,10 @@ class LlamaCppBackend:
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # -1 = llama.cpp auto-detect (physical cores). Windows +
-                # full offload caps at 2 to stop OpenMP spin-wait burning
-                # CPU during GPU decode. User pass-through offload/thread
-                # flags keep last-wins semantics. #5692.
+                # Pass --threads explicitly so we do not inherit llama-server
+                # defaults. Windows + full offload caps at 2 to stop OpenMP
+                # spin-wait burning CPU during GPU decode. User pass-through
+                # offload/thread flags keep last-wins semantics. #5692.
                 if (
                     sys.platform == "win32"
                     and full_offload_tuning_active
@@ -3934,12 +3947,6 @@ class LlamaCppBackend:
                 else:
                     threads_arg = n_threads if n_threads is not None else -1
                 cmd.extend(["--threads", str(threads_arg)])
-
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
-                # so we don't inherit llama-server's internal default, which
-                # has varied (hardware concurrency incl. hyperthreads on some
-                # builds).
-                cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4084,15 +4091,24 @@ class LlamaCppBackend:
                 # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
                 # overhead). CPU/partial offload keeps prompt caching. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
-                    cmd.extend(
-                        [
-                            "--cache-ram",
-                            "0",
-                            "--ctx-checkpoints",
-                            "0",
-                            "--no-cache-prompt",
-                        ]
-                    )
+                    unsupported_cache_flags: list[str] = []
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", "0"])
+                    else:
+                        unsupported_cache_flags.append("--cache-ram")
+                    if server_caps.get("supports_ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", "0"])
+                    else:
+                        unsupported_cache_flags.append("--ctx-checkpoints")
+                    if server_caps.get("supports_no_cache_prompt"):
+                        cmd.append("--no-cache-prompt")
+                    else:
+                        unsupported_cache_flags.append("--no-cache-prompt")
+                    if unsupported_cache_flags:
+                        logger.info(
+                            "Skipping unsupported Windows cache flags for llama-server: %s",
+                            ", ".join(unsupported_cache_flags),
+                        )
 
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
