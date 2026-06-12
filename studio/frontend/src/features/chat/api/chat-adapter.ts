@@ -1440,6 +1440,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
+      const toolConfirmationIdsByBackendId = new Map<string, string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1513,6 +1517,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         imageToolsEnabled,
         artifactsEnabled,
         mcpEnabledForChat,
+        confirmToolCalls,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2435,6 +2440,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  confirm_tool_calls: confirmToolCalls,
                   // Scope: thread_id = this thread's docs, kb_id = a KB.
                   ...(ragEnabled
                     ? {
@@ -2560,9 +2566,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   toolEvent.provenance,
                 );
                 if (toolEvent.type === "tool_start") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvalId = (toolEvent.approval_id as string) || "";
+                  const awaitingConfirmation =
+                    toolEvent.awaiting_confirmation === true;
                   const id =
-                    (toolEvent.tool_call_id as string) ||
-                    `${toolEvent.tool_name}_${Date.now()}`;
+                    awaitingConfirmation && approvalId
+                      ? `${toolConfirmationScopeId}:${approvalId}`
+                      : backendToolCallId ||
+                        approvalId ||
+                        `${toolEvent.tool_name}_${Date.now()}`;
+                  if (awaitingConfirmation && backendToolCallId) {
+                    toolConfirmationIdsByBackendId.set(backendToolCallId, id);
+                  }
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -2593,11 +2610,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
                     } as PositionedToolCallPart);
                   }
+                  if (awaitingConfirmation) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolConfirmation(
+                        id,
+                        approvalId,
+                        sandboxSessionId ?? "",
+                        toolConfirmationScopeId,
+                      );
+                  }
                 } else if (toolEvent.type === "tool_end") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
                   const id =
-                    (toolEvent.tool_call_id as string) ||
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  if (backendToolCallId) {
+                    toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                  }
+                  useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3149,6 +3185,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw err;
       } finally {
         abortSignal.removeEventListener("abort", onAbortCancel);
+        const confirmStore = useChatRuntimeStore.getState();
+        for (const part of toolCallParts) {
+          confirmStore.clearToolConfirmation(part.toolCallId);
+        }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);

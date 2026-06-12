@@ -301,7 +301,22 @@ def format_stale_warning(info: dict) -> str:
     )
 
 
-def reset_caches() -> None:
-    """Test-only: drop all in-memory caches."""
+def reset_caches(*, drop_disk: bool = False) -> None:
+    """Drop the in-memory freshness caches. The no-arg form is test-only.
+
+    With ``drop_disk = True`` also delete the on-disk 24h release cache. Used by
+    the post-install/update path: in-memory clearing alone leaves the stale
+    same-base value on disk, so if the post-install GitHub refresh can't reach
+    the network, ``latest_published_release`` would replay that stale disk value
+    (see its last-good fallback) and the banner could linger. Dropping the disk
+    cache makes latest read as None in that offline case, so the banner fails
+    open (off) instead of pointing at the just-replaced build."""
     _marker_cache.clear()
     _release_memo.clear()
+    if drop_disk:
+        import shutil
+
+        # _cache_dir() is a dedicated freshness-only subdir; it is re-created on
+        # the next _save_disk_cache. ignore_errors so a missing/locked dir is a
+        # no-op rather than breaking an otherwise successful install.
+        shutil.rmtree(_cache_dir(), ignore_errors = True)

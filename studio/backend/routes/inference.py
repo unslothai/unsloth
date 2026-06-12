@@ -655,6 +655,7 @@ from models.inference import (
     ChatCompletionRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -704,6 +705,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
@@ -1497,8 +1499,7 @@ async def load_model(
                         # Shouldn't happen on already-validated args; degrade to
                         # no-extras rather than 400 if managed flags changed.
                         logger.warning(
-                            "Stored llama_extra_args failed revalidation; "
-                            "loading without them: %s",
+                            "Stored llama_extra_args failed revalidation; loading without them: %s",
                             stripped,
                         )
                         extra_llama_args = []
@@ -1938,6 +1939,20 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
+
+
+@studio_router.post("/tool-confirm")
+async def confirm_tool_call(
+    request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
+):
+    matched = resolve_tool_decision(
+        request.approval_id,
+        request.decision,
+        session_id = request.session_id,
+    )
+    if not matched:
+        raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
+    return {"resolved": True}
 
 
 @router.post("/generate/stream")
@@ -3198,6 +3213,22 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        if payload.confirm_tool_calls and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls is only supported for local streaming tools.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request)
@@ -3569,6 +3600,16 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            if payload.confirm_tool_calls and not payload.stream:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "confirm_tool_calls requires stream=true for local tool execution.",
+                        status = 400,
+                        code = "invalid_request_error",
+                        param = "confirm_tool_calls",
+                    ),
+                )
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
@@ -3639,6 +3680,7 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
+                    confirm_tool_calls = bool(payload.confirm_tool_calls),
                 )
 
             _tool_sentinel = object()
@@ -3648,6 +3690,7 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                gen = None
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -3770,6 +3813,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except (RuntimeError, ValueError):
+                            pass
                     _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
@@ -4093,6 +4141,16 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
+        if payload.confirm_tool_calls and not payload.stream:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
@@ -4169,6 +4227,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
+                confirm_tool_calls = bool(payload.confirm_tool_calls),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -4179,6 +4238,7 @@ async def openai_chat_completions(
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
+            gen = None
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -4295,6 +4355,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
@@ -6339,6 +6404,15 @@ async def anthropic_messages(
         )
 
     if server_tools:
+        if bool(getattr(payload, "confirm_tool_calls", False)):
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "confirm_tool_calls is not supported for Anthropic Messages server tools.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
         from core.inference.tools import ALL_TOOLS
 
         openai_tools = _select_anthropic_server_tools(
