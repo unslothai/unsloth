@@ -3350,9 +3350,7 @@ class LlamaCppBackend:
                     # that drives context auto-sizing + GPU selection;
                     # otherwise tight vision loads over-promise VRAM (#5825).
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path)
-                        if effective_is_vision
-                        else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
                     gpus = self._get_gpu_free_memory()
@@ -3595,9 +3593,7 @@ class LlamaCppBackend:
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
                     mmproj_note = (
-                        f"mmproj: {mmproj_size / (1024**3):.1f} GB, "
-                        if mmproj_size
-                        else ""
+                        f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
                     )
                     logger.info(
                         f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
