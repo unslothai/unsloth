@@ -295,9 +295,10 @@ export interface OpenAIChatCompletionsRequest {
   mcp_enabled?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
-  /** Exactly one of `kb_id` (a KB) or `thread_id` (thread docs). */
+  /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;
+    project_id?: string;
     thread_id?: string;
     default_top_k: number;
     mode: "hybrid" | "lexical" | "dense";

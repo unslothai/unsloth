@@ -3,7 +3,8 @@
 
 """``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
 
-KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model,
+KB scope wins; otherwise project and thread scopes combine so project chats also
+see their own attachments. Hits render as ``<chunk>`` blocks for the model,
 plus a parallel citation source-map for clickable sources. Each call opens and
 closes its own ``rag_db`` connection.
 """
@@ -15,7 +16,7 @@ from xml.sax.saxutils import quoteattr
 from storage import rag_db
 
 from . import config, retrieval
-from .store import kb_scope, thread_scope
+from .store import kb_scope, project_scope, thread_scope
 
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
@@ -42,12 +43,23 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
 }
 
 
-def _resolve_scope(scope_kb_id: str | None, scope_thread_id: str | None) -> str | None:
+def _resolve_scope(
+    scope_kb_id: str | None,
+    scope_thread_id: str | None,
+    scope_project_id: str | None = None,
+) -> str | list[str] | None:
+    """KB (an explicit pick) is exclusive; project and thread scopes combine so a
+    project chat also retrieves from its own attached documents."""
     if scope_kb_id:
         return kb_scope(scope_kb_id)
+    scopes = []
+    if scope_project_id:
+        scopes.append(project_scope(scope_project_id))
     if scope_thread_id:
-        return thread_scope(scope_thread_id)
-    return None
+        scopes.append(thread_scope(scope_thread_id))
+    if not scopes:
+        return None
+    return scopes[0] if len(scopes) == 1 else scopes
 
 
 def _format(rows, hits) -> tuple[str, list[dict]]:
@@ -83,6 +95,7 @@ def search_knowledge_base_with_sources(
     query: str,
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
+    scope_project_id: str | None = None,
     top_k: int | None = None,
     min_score: float = 0.0,
     model_name: str | None = None,
@@ -92,7 +105,7 @@ def search_knowledge_base_with_sources(
     rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
-    scope = _resolve_scope(scope_kb_id, scope_thread_id)
+    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)
     if scope is None:
         return "No documents are attached to this chat.", []
 
@@ -124,6 +137,7 @@ def search_for_autoinject(
     query: str,
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
+    scope_project_id: str | None = None,
     top_k: int | None = None,
     min_dense_score: float = 0.70,
     model_name: str | None = None,
@@ -138,7 +152,7 @@ def search_for_autoinject(
     """
     if not query or not query.strip():
         return None
-    scope = _resolve_scope(scope_kb_id, scope_thread_id)
+    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)
     if scope is None:
         return None
     k = top_k or config.TOP_K_HYBRID
@@ -177,6 +191,7 @@ def search_knowledge_base(
     query: str,
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
+    scope_project_id: str | None = None,
     top_k: int | None = None,
     min_score: float = 0.0,
     model_name: str | None = None,
@@ -186,6 +201,7 @@ def search_knowledge_base(
         query = query,
         scope_kb_id = scope_kb_id,
         scope_thread_id = scope_thread_id,
+        scope_project_id = scope_project_id,
         top_k = top_k,
         min_score = min_score,
         model_name = model_name,
