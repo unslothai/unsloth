@@ -432,11 +432,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     return True
 
 
-def _anthropic_stream_error_event(
-    exc,
-    *,
-    force: bool = False,
-):
+def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
     _cls = _classify_llama_generation_error(exc)
     if _cls is None and not force:
