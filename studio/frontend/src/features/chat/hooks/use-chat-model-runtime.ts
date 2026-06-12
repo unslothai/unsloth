@@ -24,7 +24,9 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -354,6 +356,7 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
+          loadedIsDiffusion: false,
         });
       }
     } catch (error) {
@@ -535,16 +538,16 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto on model switch: spec
-            // strategy is per-model, so a sub-3B non-MTP GGUF's "Off" must
-            // not carry into a 27B MTP GGUF where Auto auto-promotes to
-            // draft-mtp. Clears the stale prior choice so the backend's
-            // platform-aware path runs by default; same for spec_draft_n_max
-            // (MTP-only). The user can still force a mode on the new model.
+            // On a model switch, fall back to the persisted standing
+            // preference rather than null so a per-session forced MTP mode
+            // can't follow the user onto a model without an MTP head.
+            // spec_draft_n_max is MTP-only and always resets. The loaded
+            // shadow is seeded too, preventing a transient dirty Apply state.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
+              const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
-                speculativeType: null,
-                loadedSpeculativeType: null,
+                speculativeType: persistedSpeculativeType,
+                loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
@@ -592,6 +595,11 @@ export function useChatModelRuntime() {
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
+            // The load applied this spec mode, so persist the user's standing
+            // preference now (the requested intent, not the resolved echo;
+            // saveSpeculativeType keeps only the universal auto/ngram/off).
+            saveSpeculativeType(speculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
@@ -682,6 +690,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeNativePathToken: nativePathToken ?? null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
@@ -753,6 +762,8 @@ export function useChatModelRuntime() {
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  loadedSpeculativeType: null,
+                  loadedSpecDraftNMax: null,
                 });
                 await refresh();
               } catch {

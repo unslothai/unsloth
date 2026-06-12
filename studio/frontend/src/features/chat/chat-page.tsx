@@ -16,8 +16,8 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
   NativeModelChip,
   NativeModelDropOverlay,
@@ -32,7 +32,6 @@ import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   Folder02Icon,
-  FolderAddIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -933,13 +932,16 @@ function ProjectLanding({
             } as CSSProperties
           }
         >
-          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
-            <div className="mb-12 flex items-center gap-3">
-              <HugeiconsIcon
-                icon={Folder02Icon}
-                strokeWidth={1.75}
-                className="size-9 shrink-0 text-foreground"
-              />
+          {/* 46rem matches the composer so every block shares the same edges. */}
+          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-4">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={1.75}
+                  className="size-6.5"
+                />
+              </span>
               <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
@@ -955,7 +957,7 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("chats")}
                 data-active={projectTab === "chats"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
@@ -963,35 +965,17 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
+                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
+                  New
+                </span>
               </button>
             </div>
 
             {projectTab === "sources" ? (
-              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
-                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-6"
-                  />
-                </span>
-                <div className="space-y-1">
-                  <p className="text-[15px] font-semibold text-foreground">
-                    Give this project context
-                  </p>
-                  <p className="max-w-sm text-sm text-muted-foreground">
-                    Upload PDFs, documents, or other text. The model can
-                    reference them in every chat in this project.
-                  </p>
-                </div>
-                <Button type="button" className="mt-1" disabled>
-                  Add sources
-                </Button>
-                <p className="text-[11px] text-muted-foreground">Coming soon</p>
-              </div>
+              <ProjectSourcesPanel projectId={projectId} />
             ) : (
             <div className="mt-8 flex flex-col gap-1">
               {items.map((item) => {
