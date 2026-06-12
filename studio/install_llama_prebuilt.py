@@ -5640,6 +5640,38 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
     return windows_runtime_dirs_for_patterns(patterns)
 
 
+def _wsl_system_rocm_lib_dirs() -> list[str]:
+    """System ROCm lib dir(s) to prefer over a prebuilt's bundled HIP, on WSL.
+
+    In WSL the GPU is reached through the system ROCm's librocdxg bridge over
+    /dev/dxg. A llama.cpp ROCm prebuilt bundles its own (often newer) HIP
+    runtime built for bare-metal Linux; that runtime cannot drive /dev/dxg and
+    segfaults on the first GPU call, so the prebuilt fails validation and the
+    install silently falls back to a CPU build. Returning the system ROCm lib
+    dir here lets binary_env put it AHEAD of the bundle, so the WSL-capable HIP
+    runtime (libamdhip64 + librocdxg) is loaded while the bundle still supplies
+    libggml-hip / librocblas with the gfx1151 kernels.
+
+    Strict no-op off WSL: requires both /dev/dxg and a "microsoft" /proc/version,
+    and a librocdxg-providing ROCm install. Bare-metal Linux returns [].
+    """
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    out: list[str] = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            out.append(d)
+    return out
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5661,6 +5693,13 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
+        # WSL ROCDXG: load the system HIP runtime ahead of the prebuilt's
+        # bundled one (which segfaults reaching the GPU over /dev/dxg). The
+        # bundle still provides libggml-hip / librocblas. No-op on bare metal.
+        _wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if _wsl_rocm:
+            ld_dirs = [*_wsl_rocm, *ld_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
