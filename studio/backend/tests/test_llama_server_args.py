@@ -28,6 +28,7 @@ parse_ctx_override = _lsa.parse_ctx_override
 parse_fit_override = _lsa.parse_fit_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 strip_shadowing_flags = _lsa.strip_shadowing_flags
+extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
 
@@ -527,6 +528,22 @@ def test_parse_fit_override_ignores_bare_and_unknown():
     assert parse_fit_override(["--fit"]) is None
     assert parse_fit_override(["--fit", "--threads"]) is None
     assert parse_fit_override(["--fit", "maybe"]) is None
+
+
+def test_extra_args_disable_mmproj_detects_flag():
+    assert extra_args_disable_mmproj(["--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--threads", "12", "--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--no-mmproj-auto"]) is True
+
+
+def test_extra_args_disable_mmproj_false_when_absent():
+    assert extra_args_disable_mmproj(None) is False
+    assert extra_args_disable_mmproj(["--threads", "12"]) is False
+
+
+def test_extra_args_disable_mmproj_last_wins():
+    assert extra_args_disable_mmproj(["--no-mmproj", "--mmproj-auto"]) is False
+    assert extra_args_disable_mmproj(["--mmproj-auto", "--no-mmproj-auto"]) is True
 
 
 def test_strip_shadowing_flags_drops_model_draft_with_spec():
