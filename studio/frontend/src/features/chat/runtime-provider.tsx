@@ -69,6 +69,7 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
@@ -567,17 +568,21 @@ export async function ensureThreadRecord({
   // that lands mid-await (the list call is a real network round-trip) flip
   // the decision and persist what should have been an incognito thread.
   const incognitoAtInit = useChatRuntimeStore.getState().incognito;
+  // Fresh assistant-ui threads are local ids. Temporary chats can skip the
+  // history list entirely so a storage outage cannot block the first send.
+  if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
+    markThreadIncognito(threadId);
+    return;
+  }
   const existing = (await listStoredChatThreads({ includeArchived: true })).find(
     (thread) => thread.id === threadId,
   );
   if (existing) {
     return;
   }
-  // Tag a brand-new thread created while temporary chat is on (see the
-  // incognitoThreadIds note in chat-history-storage). The `existing` check
-  // runs first so an already-persisted thread is never tagged -- that's
-  // what keeps a real thread saving normally even if the toggle flips on
-  // while its run is still streaming.
+  // For non-local ids, keep the existing check first so an already-persisted
+  // thread is never tagged -- that's what keeps a real thread saving normally
+  // even if the toggle flips on while its run is still streaming.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
     return;

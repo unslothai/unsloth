@@ -2060,6 +2060,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -2095,8 +2096,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
-  // Disable Export chat until the thread has content.
+  // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
+  const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
@@ -2296,9 +2298,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               Compare chat
             </DropdownMenuItem>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger
-                disabled={!activeThreadId || messageCount === 0}
-              >
+              <DropdownMenuSubTrigger disabled={exportDisabled}>
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
                 Export chat
               </DropdownMenuSubTrigger>

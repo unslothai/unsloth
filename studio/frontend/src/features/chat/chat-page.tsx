@@ -113,6 +113,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 type LoraCandidate = {
   id: string;
@@ -160,12 +161,6 @@ function pickBestLoraForBase(
     );
   });
   return partial ?? sorted[0] ?? null;
-}
-
-function isAssistantLocalThreadId(
-  threadId: string | null | undefined,
-): boolean {
-  return Boolean(threadId?.startsWith("__LOCALID_"));
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -1050,6 +1045,12 @@ export function ChatPage(): ReactElement {
   const incognitoLabel = incognito
     ? "Turn off temporary chat"
     : "Turn on temporary chat";
+  const createNavigationNonce = useCallback(() => {
+    if (typeof globalThis.crypto?.randomUUID === "function") {
+      return globalThis.crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }, []);
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     store.setIncognito(!store.incognito);
@@ -1067,8 +1068,8 @@ export function ChatPage(): ReactElement {
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
     store.setActiveProjectId(null);
-    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-  }, [navigate, search]);
+    navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+  }, [createNavigationNonce, navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
