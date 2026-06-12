@@ -779,7 +779,7 @@
 		height: 36px;
 		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
-		border-radius: 9999px;
+		border-radius: 12px;
 		font-weight: 500;
 		font-size: 15px;
 		line-height: 20px;
@@ -1294,18 +1294,33 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark).
+		/* Concentric with the item hover boxes, like Gemini: container radius =
+		   item radius (12px) + side gutter (10px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 18px !important;
+		border-radius: 22px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
+		/* Side gutter so item hover boxes sit inset from the menu edge, like
+		   Gemini's menus (more breathing room than a hairline gutter). */
+		padding-left: 10px;
+		padding-right: 10px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
-	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
-	   the narrower + menu (18 * 232/212 ~= 20px). */
+	/* Width does not change the concentric radius; the MCP menu uses the same
+	   item radius + gutter, so it keeps the same container radius. */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 20px !important;
+		border-radius: 22px !important;
+	}
+
+	/* One-line menus (a single item, e.g. "All saved prompts…" with nothing
+	   pinned, or a lone "Export as Markdown") read as fully rounded pills. */
+	.unsloth-plus-menu[data-slot]:not(:has(> :nth-child(2))) {
+		border-radius: 9999px !important;
+	}
+	.unsloth-plus-menu[data-slot]:not(:has(> :nth-child(2)))
+		:is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
+		border-radius: 9999px;
 	}
 
 	.dark .unsloth-plus-menu[data-slot] {
@@ -1319,14 +1334,15 @@
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		) {
-		@apply gap-3 pl-4 pr-3 py-2 text-[14px];
+		@apply gap-3 pl-3 pr-3 py-2 text-[14px];
 		cursor: pointer;
-		/* Pin hover-box radius so dark matches light (same as the container). */
-		border-radius: 1.1rem;
+		/* Pin hover-box radius so dark matches light (container radius minus the
+		   side gutter keeps the curves concentric). */
+		border-radius: 12px;
 	}
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
-		@apply pl-4 pr-3 py-1.5 text-[12px];
+		@apply pl-3 pr-3 py-1.5 text-[12px];
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
@@ -1370,8 +1386,8 @@
 			[data-slot="dropdown-menu-sub-trigger"]
 		)
 		svg {
-		width: 1.05rem;
-		height: 1.05rem;
+		width: 1.15rem;
+		height: 1.15rem;
 	}
 
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
