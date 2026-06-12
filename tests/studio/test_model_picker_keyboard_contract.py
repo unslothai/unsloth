@@ -14,9 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PICKERS_TSX = (
-    REPO / "studio/frontend/src/components/assistant-ui/model-selector/pickers.tsx"
-)
+PICKERS_TSX = REPO / "studio/frontend/src/components/assistant-ui/model-selector/pickers.tsx"
 SELECTOR_TSX = REPO / "studio/frontend/src/components/assistant-ui/model-selector.tsx"
 
 
@@ -80,7 +78,7 @@ def test_arrow_down_from_tab_or_search_enters_active_model_list():
     assert "function handlePickerEntryKeyDown" in src
     assert 'event.key !== "ArrowDown"' in src
     assert '[data-model-picker-active-option="true"]' in src
-    assert '[data-model-picker-option]' in src
+    assert "[data-model-picker-option]" in src
     assert "data-model-picker-search-input" in pickers
     assert "isPickerSearchInput" in src
     assert "isTabTrigger" in src
