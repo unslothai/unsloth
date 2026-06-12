@@ -162,10 +162,15 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
 # (--split-mode tensor). Pass-through stays allowed so users keep the
 # row/none/layer modes the toggle doesn't expose, but it's stripped on
 # inherit and reconciled into the round-tripped tensor_parallel state.
+# --tensor-split is coupled to the split mode and is stripped with it: Studio
+# owns the tensor-mode split ratios, so an inherited/stale --tensor-split must
+# not last-wins-override Studio's computed asymmetric split.
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
+_TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
+_SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_MODE_FLAGS
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
@@ -331,7 +336,7 @@ def strip_shadowing_flags(
     if strip_template:
         shadowing |= _TEMPLATE_FLAGS
     if strip_split_mode:
-        shadowing |= _SPLIT_MODE_FLAGS
+        shadowing |= _SPLIT_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -355,9 +360,10 @@ def strip_shadowing_flags(
 
 
 def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
-    """Remove only ``--split-mode`` / ``-sm`` from ``args``, keeping every other
-    shadow flag. Preserves a None/empty input so the inherit-vs-explicit-empty
-    distinction survives. Used where tensor mode is being forced off."""
+    """Remove the split-mode group (``--split-mode`` / ``-sm`` and the coupled
+    ``--tensor-split`` / ``-ts``) from ``args``, keeping every other shadow flag.
+    Preserves a None/empty input so the inherit-vs-explicit-empty distinction
+    survives. Used where tensor mode is being forced off (downgrade / fallback)."""
     if not args:
         return args
     return strip_shadowing_flags(

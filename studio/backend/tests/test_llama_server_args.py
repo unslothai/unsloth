@@ -683,6 +683,35 @@ def test_strip_split_mode_only_preserves_none_and_empty():
     assert strip_split_mode_only([]) == []
 
 
+def test_strip_shadowing_flags_drops_tensor_split_with_split_mode():
+    # --tensor-split is coupled to the split mode: stripped together so a stale
+    # ratio can't override Studio's computed tensor split. Other flags survive.
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_tensor_split_when_not_requested():
+    # strip_split_mode=False keeps the whole split group (mode + ratios).
+    assert strip_shadowing_flags(
+        ["--tensor-split", "1,1", "--top-k", "20"], strip_split_mode = False
+    ) == ["--tensor-split", "1,1", "--top-k", "20"]
+
+
+def test_strip_split_mode_only_drops_tensor_split_too():
+    # Downgrade / layer fallback must drop the coupled --tensor-split (all forms).
+    assert strip_split_mode_only(
+        ["--split-mode", "tensor", "--tensor-split", "1,1", "-c", "4096"]
+    ) == ["-c", "4096"]
+    assert strip_split_mode_only(["-sm=tensor", "-ts=3,1"]) == []
+
+
 def test_strip_shadowing_flags_keeps_model_draft_without_spec():
     out = strip_shadowing_flags(
         ["--model-draft", "/custom/mtp.gguf"],
