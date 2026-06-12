@@ -577,6 +577,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
@@ -592,6 +593,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if tensor_parallel:
+        payload["tensor_parallel"] = True
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
 
@@ -940,6 +943,15 @@ def run(
         "--cloudflare/--no-cloudflare",
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
     ),
+    tensor_parallel: bool = typer.Option(
+        False,
+        "--tensor-parallel/--no-tensor-parallel",
+        help = (
+            "Split a GGUF across GPUs by tensor (--split-mode tensor) instead of "
+            "by layer. Multi-GPU only (no effect on one GPU); dense models gain "
+            "decode speed, MoE usually don't."
+        ),
+    ),
 ):
     """Start Studio, load a model, print an API key -- one-liner server.
 
@@ -956,6 +968,7 @@ def run(
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
+        unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
@@ -1061,6 +1074,7 @@ def run(
         args.extend(["--parallel", str(parallel)])
         # Forward the explicit polarity (same rationale as --load-in-4bit above).
         args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+        args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
@@ -1126,6 +1140,7 @@ def run(
                 gguf_variant = gguf_variant,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
+                tensor_parallel = tensor_parallel,
                 llama_extra_args = extra_llama_args,
             )
         except RuntimeError as exc:
