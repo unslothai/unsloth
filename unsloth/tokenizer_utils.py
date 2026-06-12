@@ -42,6 +42,7 @@ __all__ = [
     "check_tokenizer",
     "add_new_tokens",
     "fix_sentencepiece_gguf",
+    "fix_gguf_special_token_types",
     "get_tokenizer_info",
 ]
 
@@ -546,6 +547,182 @@ def fix_sentencepiece_gguf(saved_location):
     # actual_vocab_size = model.config.vocab_size
     # padding = actual_vocab_size - len(tokenizer_file.pieces)
     return
+
+
+# GGUF value/array element types we need to walk the metadata KV section.
+# Mirrors gguf.GGUFValueType so we don't add a hard dependency on the gguf package.
+_GGUF_SCALAR_FMT = {
+    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I",
+    5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+}
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+
+# SentencePiece / GGUF token type values (see SentencePieceTokenTypes above).
+_GGUF_TOKEN_TYPE_NORMAL = 1
+_GGUF_TOKEN_TYPE_CONTROL = 3
+_GGUF_TOKEN_TYPE_USER_DEFINED = 4
+
+
+def _looks_like_control_token(content):
+    # llama.cpp warns about and overrides tokens shaped like <...> that are not
+    # control-type. We mirror that shape test so we only ever retype delimiters.
+    return (
+        isinstance(content, str)
+        and len(content) > 2
+        and content.startswith("<")
+        and content.endswith(">")
+    )
+
+
+def fix_gguf_special_token_types(gguf_location, tokenizer_json = None):
+    """
+    Patch a GGUF file's `tokenizer.ggml.token_type` array so special tokens are
+    typed CONTROL (3) instead of NORMAL (1) or USER_DEFINED (4).
+
+    Some converters only mark a hardcoded subset of structural tokens as CONTROL.
+    On Gemma 4 (and its QAT GGUFs) llama.cpp leaves newer delimiters such as
+    `<|tool_call>`, `<|tool_response>` and `<|channel>` as USER_DEFINED even
+    though tokenizer.json marks them special. llama.cpp then logs
+    "control-looking token ... was not control-type" and tool calling / thinking
+    boundaries break. `fix_sentencepiece_gguf` cannot help here because Gemma 4
+    ships no `tokenizer.model` (pure tokenizers/BPE backend), so its retyping
+    runs against the produced GGUF instead.
+
+    The `token_type` array is a fixed-size int32 array, so we rewrite individual
+    entries in place: only values change, never the file layout.
+
+    `tokenizer_json` defaults to a `tokenizer.json` next to the GGUF. Returns the
+    number of token types patched.
+    """
+    import json
+    import struct
+
+    if not os.path.isfile(gguf_location):
+        return 0
+
+    # Resolve tokenizer.json: it carries the authoritative `special` flags.
+    if tokenizer_json is None:
+        gguf_dir = os.path.dirname(os.path.abspath(gguf_location))
+        for candidate in (
+            os.path.join(gguf_dir, "tokenizer.json"),
+            os.path.join(os.path.dirname(gguf_dir), "tokenizer.json"),
+        ):
+            if os.path.isfile(candidate):
+                tokenizer_json = candidate
+                break
+    if tokenizer_json is None or not os.path.isfile(tokenizer_json):
+        return 0
+
+    with open(tokenizer_json, "r", encoding = "utf-8") as f:
+        tokenizer_json_data = json.load(f)
+    special_contents = {}
+    for entry in tokenizer_json_data.get("added_tokens", []):
+        token_id = entry.get("id")
+        content = entry.get("content")
+        if entry.get("special", False) and isinstance(token_id, int):
+            special_contents[token_id] = content
+    if not special_contents:
+        return 0
+
+    def _read(file, fmt):
+        size = struct.calcsize(fmt)
+        data = file.read(size)
+        if len(data) != size:
+            raise EOFError
+        return struct.unpack(fmt, data)[0]
+
+    token_type_offset = None
+    token_type_count = 0
+    gguf_tokens = {}  # id -> text, captured for cross-checking against tokenizer.json
+
+    with open(gguf_location, "rb") as file:
+        if file.read(4) != b"GGUF":
+            return 0
+        version = _read(file, "<I")
+        # GGUF v1 used 32-bit counts/lengths; v2+ use 64-bit.
+        count_fmt = "<I" if version == 1 else "<Q"
+
+        def _read_len():
+            return _read(file, count_fmt)
+
+        def _skip_value(value_type):
+            if value_type == _GGUF_TYPE_STRING:
+                file.seek(_read_len(), os.SEEK_CUR)
+            elif value_type == _GGUF_TYPE_ARRAY:
+                elem_type = _read(file, "<I")
+                count = _read_len()
+                if elem_type == _GGUF_TYPE_STRING:
+                    for _ in range(count):
+                        file.seek(_read_len(), os.SEEK_CUR)
+                else:
+                    file.seek(struct.calcsize(_GGUF_SCALAR_FMT[elem_type]) * count, os.SEEK_CUR)
+            else:
+                file.seek(struct.calcsize(_GGUF_SCALAR_FMT[value_type]), os.SEEK_CUR)
+
+        n_tensors = _read(file, "<Q")
+        n_kv = _read(file, "<Q")
+        for _ in range(n_kv):
+            key_len = _read_len()
+            key = file.read(key_len).decode("utf-8", "replace")
+            value_type = _read(file, "<I")
+
+            if key == "tokenizer.ggml.tokens" and value_type == _GGUF_TYPE_ARRAY:
+                elem_type = _read(file, "<I")
+                count = _read_len()
+                for token_id in range(count):
+                    str_len = _read_len()
+                    if token_id in special_contents:
+                        gguf_tokens[token_id] = file.read(str_len).decode("utf-8", "replace")
+                    else:
+                        file.seek(str_len, os.SEEK_CUR)
+            elif key == "tokenizer.ggml.token_type" and value_type == _GGUF_TYPE_ARRAY:
+                elem_type = _read(file, "<I")
+                token_type_count = _read_len()
+                token_type_offset = file.tell()
+                # token_type is int32 (5) or uint32 (4); both are 4 bytes wide.
+                elem_size = struct.calcsize(_GGUF_SCALAR_FMT[elem_type])
+                file.seek(elem_size * token_type_count, os.SEEK_CUR)
+                # token_type always follows tokens in llama.cpp output, so stop here
+                # and avoid walking the (large) merges array and tensor section.
+                break
+            else:
+                _skip_value(value_type)
+
+    if token_type_offset is None or token_type_count == 0:
+        return 0
+
+    # Decide which entries to flip, validating content where we have it.
+    patches = []
+    with open(gguf_location, "rb") as file:
+        for token_id, content in special_contents.items():
+            if not (0 <= token_id < token_type_count):
+                continue
+            # If the GGUF token text disagrees with tokenizer.json, the ids have
+            # drifted; skip rather than risk corrupting an unrelated entry.
+            if token_id in gguf_tokens and gguf_tokens[token_id] != content:
+                continue
+            if not _looks_like_control_token(content):
+                continue
+            file.seek(token_type_offset + 4 * token_id)
+            current = struct.unpack("<i", file.read(4))[0]
+            if current in (_GGUF_TOKEN_TYPE_NORMAL, _GGUF_TOKEN_TYPE_USER_DEFINED):
+                patches.append((token_id, content))
+
+    if not patches:
+        return 0
+
+    with open(gguf_location, "r+b") as file:
+        for token_id, _ in patches:
+            file.seek(token_type_offset + 4 * token_id)
+            file.write(struct.pack("<i", _GGUF_TOKEN_TYPE_CONTROL))
+
+    logger.warning(
+        f"Unsloth: Patched {len(patches)} special token(s) in {gguf_location} "
+        f"to CONTROL type so llama.cpp tool calling / chat boundaries work correctly "
+        f"(e.g. {', '.join(repr(c) for _, c in patches[:4])})."
+    )
+    return len(patches)
 
 
 def _load_correct_tokenizer(

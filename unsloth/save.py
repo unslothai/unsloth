@@ -2336,6 +2336,21 @@ def unsloth_save_pretrained_gguf(
         else:
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
 
+    # Retype special tokens to CONTROL in the produced GGUF(s). Needed for
+    # tokenizers/BPE models (e.g. Gemma 4) that ship no tokenizer.model, so
+    # fix_sentencepiece_gguf above is a no-op and llama.cpp's converter leaves
+    # delimiters like <|tool_call> / <|tool_response> as USER_DEFINED, breaking
+    # tool calling. Patches token_type in place; failures are non-fatal.
+    try:
+        from .tokenizer_utils import fix_gguf_special_token_types
+        tokenizer_json = os.path.join(save_directory, "tokenizer.json")
+        for gguf_file in all_file_locations or []:
+            fix_gguf_special_token_types(gguf_file, tokenizer_json = tokenizer_json)
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: fix_gguf_special_token_types skipped ({type(e).__name__}): {e}"
+        )
+
     # Step 9: Create Ollama modelfile
     gguf_directory = f"{save_directory}_gguf"
     modelfile_location = None
