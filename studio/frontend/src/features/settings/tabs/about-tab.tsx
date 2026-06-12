@@ -142,7 +142,7 @@ export function AboutTab() {
         </p>
       </header>
 
-      <SettingsSection title="Studio">
+      <SettingsSection title="Unsloth">
         <SettingsRow label={t("settings.about.studioVersion")}>
           <code className="font-mono text-xs text-muted-foreground">
             {studioVersion}
@@ -202,6 +202,37 @@ export function AboutTab() {
               className="size-3.5"
             />
             {t("settings.about.reportIssue")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.about.license.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.about.license.studioLabel")}
+          description={t("settings.about.license.studioDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.studioLicense")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.about.license.libraryLabel")}
+          description={t("settings.about.license.libraryDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.libraryLicense")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>

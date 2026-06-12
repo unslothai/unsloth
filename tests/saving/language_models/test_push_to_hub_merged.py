@@ -32,7 +32,6 @@ from tests.utils.perplexity_eval import (
 )
 
 
-# Define helper functions outside of main
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
@@ -135,7 +134,7 @@ trainer = train_on_responses_only(
 trainer_stats = trainer.train()
 
 
-# saving and merging the model to local disk
+# save and merge the model to local disk
 hf_username = os.environ.get("HF_USER", "")
 if not hf_username:
     hf_username = input("Please enter your Hugging Face username: ").strip()
