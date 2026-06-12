@@ -5308,6 +5308,7 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
         first_token_deadline: Optional[float] = None,
+        post_first_chunk_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
     ) -> Generator[str, None, None]:
         """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
@@ -5321,6 +5322,11 @@ class LlamaCppBackend:
             try:
                 chunk = next(text_iter)
                 if chunk:
+                    if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
+                        LlamaCppBackend._set_stream_read_timeout(
+                            response,
+                            post_first_chunk_read_timeout_s,
+                        )
                     last_chunk_at = time.monotonic()
                 yield chunk
             except StopIteration:
@@ -5427,7 +5433,6 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
-                LlamaCppBackend._set_stream_read_timeout(response, 0.5)
                 if cancel_event is not None and cancel_event.is_set():
                     raise GeneratorExit
                 yield response

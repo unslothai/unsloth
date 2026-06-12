@@ -764,6 +764,8 @@ async def _aiter_llama_stream_items(
     cancel_event = None,
     request: Optional[Request] = None,
     first_token_deadline: Optional[float] = None,
+    response: Optional[httpx.Response] = None,
+    post_first_item_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
 ):
     if first_token_deadline is None:
         first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -786,6 +788,8 @@ async def _aiter_llama_stream_items(
                     raise
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+        if last_item_at is None and response is not None and post_first_item_read_timeout_s is not None:
+            _set_stream_response_read_timeout(response, post_first_item_read_timeout_s)
         last_item_at = time.monotonic()
         yield item
 
@@ -5109,13 +5113,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
                     raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
-                _set_stream_response_read_timeout(resp)
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
                 async for chunk in _aiter_llama_stream_items(
                     bytes_iter,
                     request = request,
                     first_token_deadline = first_token_deadline,
+                    response = resp,
                 ):
                     buffer += chunk
                     while b"\n\n" in buffer:
@@ -6040,12 +6044,12 @@ async def _responses_stream(
                 )
                 return
 
-            _set_stream_response_read_timeout(resp)
             lines_iter = resp.aiter_lines()
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 request = request,
                 first_token_deadline = first_token_deadline,
+                response = resp,
             ):
                 if not raw_line:
                     continue
@@ -7425,7 +7429,6 @@ async def _anthropic_passthrough_stream(
                 )
                 return
 
-            _set_stream_response_read_timeout(resp)
             # See _openai_passthrough_stream for rationale: aiter_lines()
             # blocks during llama-server prefill, so the in-loop cancel
             # check is unreachable until the first SSE chunk arrives.
@@ -7437,6 +7440,7 @@ async def _anthropic_passthrough_stream(
                 cancel_event = cancel_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
+                response = resp,
             ):
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
@@ -7995,13 +7999,13 @@ async def _openai_passthrough_stream(
             # caught in the except clause below.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
             try:
-                _set_stream_response_read_timeout(resp)
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
                     lines_iter,
                     cancel_event = cancel_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
+                    response = resp,
                 ):
                     if not raw_line:
                         continue
