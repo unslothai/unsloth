@@ -51,6 +51,7 @@ def _flex_is_dgx_spark():
         names = (out.stdout or "").upper()
         # Whole-token match so "GB10" does not match a discrete "GB100"/"GB10X".
         import re
+
         return any(
             re.search(r"(?<![A-Z0-9])" + re.escape(t) + r"(?![A-Z0-9])", names)
             for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
