@@ -122,6 +122,25 @@ def main() -> None:
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
 
+    # Mirror the install into build/bin/ via hardlinks (zero extra bytes).
+    # Studio's setup.sh treats an executable build/bin/llama-server +
+    # build/bin/llama-quantize as a complete local build and skips its
+    # source-build fallback -- which would otherwise fire inside the image
+    # build, where the host-probing prebuilt updater cannot succeed, and
+    # compile a CPU-only llama.cpp over the baked CUDA bundle. Hardlinks
+    # (not symlinks) keep $ORIGIN rpath resolution working from build/bin
+    # and avoid a cycle when setup.sh later relinks the root quantizer to
+    # build/bin/llama-quantize.
+    build_bin = os.path.join(install_dir, "build", "bin")
+    os.makedirs(build_bin, exist_ok = True)
+    for entry in os.listdir(install_dir):
+        source = os.path.join(install_dir, entry)
+        if os.path.isfile(source) and not os.path.islink(source):
+            try:
+                os.link(source, os.path.join(build_bin, entry))
+            except OSError:
+                shutil.copy2(source, os.path.join(build_bin, entry))
+
     # Sanity: the server binary must execute on a GPU-less host (the CUDA
     # backend is a dlopen'd plugin, so --version works anywhere).
     out = subprocess.run(
