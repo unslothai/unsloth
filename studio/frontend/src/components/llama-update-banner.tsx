@@ -138,7 +138,7 @@ export function LlamaUpdateBanner({
           )}
           data-testid="llama-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-4 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             {applying ? null : (
               <button
                 type="button"
@@ -203,7 +203,7 @@ export function LlamaUpdateBanner({
                 />
               </div>
             ) : (
-              <div className="mt-4 flex items-center justify-between gap-2">
+              <div className="mt-4 flex items-center justify-between">
                 <Button
                   size="sm"
                   variant="ghost"
@@ -215,7 +215,8 @@ export function LlamaUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  className="h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  // ml offsets the pill's filled edge so visual gaps stay equal
+                  className="ml-2.5 h-auto rounded-full px-3.5 py-2 text-[13px]"
                   onClick={handleUpdate}
                   data-testid="llama-update-button"
                 >

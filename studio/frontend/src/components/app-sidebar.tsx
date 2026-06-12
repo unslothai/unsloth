@@ -67,6 +67,7 @@ import {
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Setting07Icon,
+  Sun03Icon,
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -82,7 +83,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, MoreHorizontalIcon, Moon, Sun } from "lucide-react";
+import { ChevronDown, MoreHorizontalIcon, Moon } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   archiveChatItem,
@@ -1244,7 +1245,7 @@ export function AppSidebar() {
                     ref={anchorRef as React.Ref<HTMLDivElement>}
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
-                    {isDark ? <Sun strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                    {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
                     <span>
                       {isDark
                         ? t("shell.navigation.lightMode")
