@@ -4768,8 +4768,10 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Studio only invokes llama-server and llama-quantize;
-    # other CLIs upstream ships (llama-cli, llama-bench, ...) are skipped.
+    # every new file. Studio invokes llama-server, llama-quantize, and the
+    # DiffusionGemma visual-server (when the bundle ships it, for native
+    # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
+    # llama-bench, ...) are skipped.
     if choice.install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -4777,9 +4779,9 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-rocm",
         "linux-arm64",
     }:
-        return ["llama-server", "llama-quantize", "lib*.so*"]
+        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
-        return ["llama-server", "llama-quantize", "lib*.dylib"]
+        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.dylib"]
     if choice.install_kind in {
         "windows-cpu",
         "windows-cuda",
@@ -4787,7 +4789,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-rocm",
         "windows-arm64",
     }:
-        return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
+        return ["llama-server.exe", "llama-quantize.exe", "llama-diffusion-gemma-visual-server.exe", "*.dll"]
     raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
 
 
