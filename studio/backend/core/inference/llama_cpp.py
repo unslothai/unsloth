@@ -2328,9 +2328,11 @@ class LlamaCppBackend:
 
         self._kill_process()
         self._port = self._find_free_port()
-        # The whole [prompt | 256-canvas] must fit one ubatch; the model's native
-        # context (262144) is irrelevant here, so cap to a sane per-turn budget.
-        maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 16384) else 8192
+        # The whole [prompt | 256-canvas] must fit one non-causal ubatch. Default to auto-size (0): the
+        # visual server probes the largest context that actually fits this GPU's VRAM (capped at the
+        # model's training context), which is far better than the old fixed 8192. Honor an explicit,
+        # in-range user n_ctx as an override.
+        maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
         gpu = os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
@@ -2406,8 +2408,9 @@ class LlamaCppBackend:
                 self._hf_variant = None
         else:
             self._hf_variant = None
-        self._effective_context_length = maxtok
-        self._max_context_length = self._context_length or maxtok
+        # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
+        self._effective_context_length = maxtok or self._context_length
+        self._max_context_length = self._context_length or maxtok or None
 
         healthy = self._wait_for_health(timeout = 600.0)
         if healthy:
@@ -2416,6 +2419,22 @@ class LlamaCppBackend:
             if extra_args is not None:
                 self._extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
+            # The visual server logs "... MAXTOK=<N> ..." with the per-turn context budget it actually
+            # resolved (auto-sized to fit VRAM when launched with --maxtok 0). Read it back so the UI
+            # context bar reflects the real budget rather than the requested value.
+            chosen = maxtok
+            try:
+                import re as _re
+                for _ln in reversed(self._stdout_lines):
+                    _m = _re.search(r"MAXTOK=(\d+)", _ln)
+                    if _m:
+                        chosen = int(_m.group(1))
+                        break
+            except Exception:
+                pass
+            if chosen and chosen > 0:
+                self._effective_context_length = chosen
+                self._max_context_length = chosen
             self._requested_n_ctx = int(n_ctx)
         else:
             self._healthy = False

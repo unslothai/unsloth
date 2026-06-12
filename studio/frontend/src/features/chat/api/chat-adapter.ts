@@ -113,6 +113,10 @@ interface ServerTimings {
   predicted_ms: number;
   predicted_per_token_ms: number;
   predicted_per_second: number;
+  // DiffusionGemma-only extras (present when serving a diffusion model; ignored otherwise).
+  diffusion_blocks?: number;
+  diffusion_steps?: number;
+  diffusion_canvas?: number;
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];

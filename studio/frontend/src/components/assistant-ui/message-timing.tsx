@@ -135,6 +135,30 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
+              {timing.firstTokenTime !== undefined && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">First token</span>
+                  <span className="font-mono tabular-nums">
+                    {formatTimingMs(timing.firstTokenTime)}
+                  </span>
+                </div>
+              )}
+              {st?.diffusion_steps != null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Denoising steps</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(st.diffusion_steps)}
+                  </span>
+                </div>
+              )}
+              {st?.diffusion_blocks != null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Blocks</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(st.diffusion_blocks)}
+                  </span>
+                </div>
+              )}
               {cacheHits > 0 && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Cache hits</span>
