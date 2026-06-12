@@ -201,7 +201,8 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
         setattr(
             importlib.import_module("unsloth_zoo.temporary_patches.common"),
-            "determine_compile_threads", lambda: 1,
+            "determine_compile_threads",
+            lambda: 1,
         )
     except Exception:
         pass
