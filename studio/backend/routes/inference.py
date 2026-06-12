@@ -746,29 +746,36 @@ def _set_stream_response_read_timeout(
         pass
 
 
-async def _wait_cancel_event(cancel_event) -> None:
-    while not cancel_event.is_set():
+async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if request is not None and await request.is_disconnected():
+        if cancel_event is not None:
+            cancel_event.set()
+        return True
+    return False
+
+
+async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request] = None) -> None:
+    while not await _preheader_cancelled(cancel_event, request):
         await asyncio.sleep(0.05)
 
 
 async def _send_stream_with_preheader_cancel(
-    client: httpx.AsyncClient, req: httpx.Request, cancel_event
+    client: httpx.AsyncClient,
+    req: httpx.Request,
+    cancel_event = None,
+    request: Optional[Request] = None,
 ) -> Optional[httpx.Response]:
-    if cancel_event is None:
+    if cancel_event is None and request is None:
         return await client.send(req, stream = True)
-    if cancel_event.is_set():
+    if await _preheader_cancelled(cancel_event, request):
         return None
 
     send_task = asyncio.create_task(client.send(req, stream = True))
-    cancel_task = asyncio.create_task(_wait_cancel_event(cancel_event))
-    try:
-        done, _pending = await asyncio.wait(
-            {send_task, cancel_task},
-            return_when = asyncio.FIRST_COMPLETED,
-        )
-        if send_task in done:
-            return await send_task
+    cancel_task = asyncio.create_task(_wait_preheader_cancel(cancel_event, request))
 
+    async def _stop_send_task() -> None:
         try:
             await client.aclose()
         except Exception:
@@ -778,7 +785,22 @@ async def _send_stream_with_preheader_cancel(
             await send_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    try:
+        done, _pending = await asyncio.wait(
+            {send_task, cancel_task},
+            return_when = asyncio.FIRST_COMPLETED,
+        )
+        if send_task in done:
+            return await send_task
+
+        await _stop_send_task()
         return None
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            cancel_event.set()
+        await _stop_send_task()
+        raise
     finally:
         cancel_task.cancel()
         try:
@@ -5132,7 +5154,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             try:
                 req = client.build_request("POST", target_url, json = body)
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await client.send(req, stream = True)
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
                 if resp.status_code != 200:
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
@@ -6022,7 +6046,9 @@ async def _responses_stream(
             req = client.build_request("POST", target_url, json = body)
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await client.send(req, stream = True)
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
                 yield _sse(
@@ -7431,7 +7457,9 @@ async def _anthropic_passthrough_stream(
         try:
             req = client.build_request("POST", target_url, json = body)
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            resp = await _send_stream_with_preheader_cancel(client, req, cancel_event)
+            resp = await _send_stream_with_preheader_cancel(
+                client, req, cancel_event, request = request
+            )
             if resp is None:
                 return
 
@@ -7938,9 +7966,7 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
 
-    # Outer guard: asyncio.CancelledError at `await client.send(...)` is a
-    # BaseException that bypasses `except httpx.RequestError`; without this the
-    # tracker leaks. The generator's finally only runs once iteration starts.
+    # Outer guard keeps the tracker paired when pre-header dispatch is cancelled.
     try:
         # Dispatch BEFORE returning StreamingResponse so transport errors and
         # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
@@ -7957,7 +7983,9 @@ async def _openai_passthrough_stream(
             try:
                 req = client.build_request("POST", target_url, json = body)
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await _send_stream_with_preheader_cancel(client, req, cancel_event)
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
