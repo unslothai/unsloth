@@ -123,6 +123,10 @@ for img in "$BASE_IMAGE" "$IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 && ok "local image present: $img" || bad "SKIP_PULL=1 but image missing locally: $img"
   elif docker pull "$img" >"$WORK/pull_$(echo "$img" | tr '/:' '__').log" 2>&1; then
     ok "pulled $img"
+  elif docker image inspect "$img" >/dev/null 2>&1; then
+    # Locally built tags (test_locally.sh / docker build) are not on a
+    # registry; that is fine as long as the image is present.
+    warn "not pullable but present locally: $img"
   else
     bad "could not pull $img (see $WORK/pull_*.log)"
   fi

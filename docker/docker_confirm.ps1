@@ -89,7 +89,13 @@ foreach ($img in @($BASE_IMAGE, $IMAGE)) {
   } else {
     $log = Join-Path $WORK ("pull_" + ($img -replace "[/:]", "_") + ".log")
     docker pull $img *> $log
-    if ($LASTEXITCODE -eq 0) { Ok "pulled $img" } else { Bad "could not pull $img (see $log)" }
+    if ($LASTEXITCODE -eq 0) { Ok "pulled $img" }
+    else {
+      docker image inspect $img *> $null
+      # Locally built tags are not on a registry; presence is what matters.
+      if ($LASTEXITCODE -eq 0) { Warn "not pullable but present locally: $img" }
+      else { Bad "could not pull $img (see $log)" }
+    }
   }
 }
 Hr
