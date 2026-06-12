@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
-
-Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
-extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
-tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
-mapping. No server or GPU required.
-"""
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
 import sys
@@ -914,12 +908,6 @@ class TestOpenAICompatibilityHelpers:
 
 
 class TestFriendlyErrorHttpx:
-    """When llama-server is down, httpx RequestError strings lack the
-    "Lost connection to llama-server" substring the sync path keys off, so the
-    old substring-only `_friendly_error` returned a useless generic message.
-    These tests pin the new isinstance-based mapping.
-    """
-
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
@@ -937,7 +925,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "Lost connection" in _friendly_error(exc)
+        assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
