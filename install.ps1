@@ -1226,8 +1226,8 @@ shell.Run cmd, 0, False
         return (Exit-InstallFailure "uv could not be installed")
     }
 
-    # Large Python installs can exceed uv's 60s bytecode compilation timeout on
-    # slower machines. Keep caller overrides intact, including "0" to disable it.
+    # When bytecode compilation is enabled, large installs can exceed uv's 60s
+    # default on slow machines. Default to 180s, preserving overrides ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
     }
