@@ -527,6 +527,23 @@ except ImportError:
         verify_native_path_lease,
     )
 
+
+def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
+    """Timeout policy for non-streaming llama-server generations.
+
+    Non-streaming responses do not deliver response-body bytes until the
+    completion is finished, so a finite read timeout becomes a generation
+    wall-clock cap. Keep connect/write/pool bounded, but do not cap the
+    response-body read.
+    """
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = None,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
 from models.inference import (
     LoadRequest,
     UnloadRequest,
@@ -4652,7 +4669,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
 
         if resp.status_code != 200:
             raise _openai_passthrough_error(resp.status_code, resp.text)
@@ -6512,7 +6533,11 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+        resp = await client.post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -7016,7 +7041,11 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
     except httpx.RequestError as e:
         # llama-server subprocess crashed / starting / unreachable. Surface the
         # same friendly message the sync chat path emits so operators don't see

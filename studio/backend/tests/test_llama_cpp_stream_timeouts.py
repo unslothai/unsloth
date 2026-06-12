@@ -5,6 +5,9 @@
 
 import httpx
 import pytest
+import socket
+import threading
+from types import SimpleNamespace
 
 from core.inference import llama_cpp
 from core.inference.llama_cpp import LlamaCppBackend
@@ -57,3 +60,85 @@ def test_stream_read_timeout_is_lowered_after_headers_arrive():
     LlamaCppBackend._set_stream_read_timeout(response, 0.5)
 
     assert response.request.extensions["timeout"]["read"] == 0.5
+
+
+class _BlockingBeforeHeadersStream:
+    def __init__(self, client):
+        self.client = client
+
+    def __enter__(self):
+        self.client.entered.set()
+        if not self.client.closed.wait(timeout = 2):
+            raise AssertionError("request was not closed during prefill cancel")
+        raise httpx.ReadError("closed before response headers")
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeSocket:
+    def __init__(self):
+        self.shutdown_called = threading.Event()
+        self.close_called = threading.Event()
+
+    def shutdown(self, how):
+        if how == socket.SHUT_RDWR:
+            self.shutdown_called.set()
+
+    def close(self):
+        self.close_called.set()
+
+
+class _BlockingBeforeHeadersClient:
+    def __init__(self):
+        self.entered = threading.Event()
+        self.closed = threading.Event()
+        self.socket = _FakeSocket()
+        self._transport = SimpleNamespace(
+            _pool = SimpleNamespace(
+                _connections = [
+                    SimpleNamespace(
+                        _connection = SimpleNamespace(
+                            _network_stream = SimpleNamespace(_sock = self.socket)
+                        )
+                    )
+                ]
+            )
+        )
+
+    def stream(self, *args, **kwargs):
+        return _BlockingBeforeHeadersStream(self)
+
+    def close(self):
+        self.closed.set()
+
+
+def test_stream_with_retry_closes_client_when_cancelled_before_headers():
+    client = _BlockingBeforeHeadersClient()
+    cancel_event = threading.Event()
+    caught: list[BaseException] = []
+
+    def _run():
+        try:
+            with LlamaCppBackend._stream_with_retry(
+                client,
+                "http://llama.test/v1/chat/completions",
+                {"stream": True},
+                cancel_event,
+            ):
+                pass
+        except BaseException as exc:
+            caught.append(exc)
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    assert client.entered.wait(timeout = 2)
+
+    cancel_event.set()
+    worker.join(timeout = 2)
+
+    assert not worker.is_alive()
+    assert client.socket.shutdown_called.is_set()
+    assert client.socket.close_called.is_set()
+    assert client.closed.is_set()
+    assert caught and isinstance(caught[0], GeneratorExit)

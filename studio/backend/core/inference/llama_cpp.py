@@ -4529,6 +4529,36 @@ class LlamaCppBackend:
             logger.debug("Could not lower response read timeout", exc_info = True)
 
     @staticmethod
+    def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
+        """Best-effort interrupt for a sync httpx request blocked before headers."""
+        try:
+            # httpx.Client.close() does not reliably interrupt a blocking
+            # socket recv from another thread, so reach down to the active
+            # httpcore socket and shutdown it first.
+            pool = getattr(getattr(client, "_transport", None), "_pool", None)
+            connections = list(getattr(pool, "_connections", []) or [])
+            for connection in connections:
+                inner = getattr(connection, "_connection", None)
+                stream = getattr(inner, "_network_stream", None)
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    continue
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        except Exception:
+            logger.debug("Could not shutdown active httpx socket", exc_info = True)
+        try:
+            client.close()
+        except Exception:
+            logger.debug("Could not close httpx client", exc_info = True)
+
+    @staticmethod
     @contextlib.contextmanager
     def _stream_with_retry(
         client: "httpx.Client",
@@ -4546,37 +4576,34 @@ class LlamaCppBackend:
         processing each time.
 
         A background watcher thread provides cancel by closing the
-        response when cancel_event is set.  Limitation: httpx does not
-        allow interrupting a blocked read from another thread before
-        the response object exists, so cancel during the initial
-        header wait (prefill phase) only takes effect once headers
-        arrive.  After that, response.close() unblocks reads promptly.
-        In practice llama-server prefill is 1-5 s for typical prompts,
-        during which cancel is deferred -- still much better than the
-        old retry storm which made prefill slower.
+        response when cancel_event is set. If headers have not arrived
+        yet, there is no response object to close, so it shuts down the
+        active socket to interrupt the blocked header wait.
         """
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
 
         # Background watcher: close the response if cancel is requested.
-        # Only effective after response headers arrive (httpx limitation).
+        # Before response headers arrive there is no response object, so
+        # shutdown the active socket to interrupt the blocked header wait.
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
 
         def _cancel_watcher():
             while not _cancel_closed.is_set():
                 if cancel_event.wait(timeout = 0.3):
-                    # Cancel requested. Poll until the response object exists
-                    # so we can close it, or until the main thread finishes
-                    # (_cancel_closed set in finally).
+                    # Cancel requested. Prefer closing the response once it
+                    # exists; otherwise shutdown the socket to interrupt prefill.
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
-                        if r is not None:
-                            try:
+                        try:
+                            if r is not None:
                                 r.close()
-                                return
-                            except Exception as e:
-                                logger.debug(f"Error closing response in cancel watcher: {e}")
+                            else:
+                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
+                            return
+                        except Exception as e:
+                            logger.debug(f"Error closing request in cancel watcher: {e}")
                         # Response not created yet -- wait briefly and retry
                         _cancel_closed.wait(timeout = 0.1)
                     return
@@ -4588,8 +4615,8 @@ class LlamaCppBackend:
 
         try:
             # Long read timeout so prefill can finish without a retry storm.
-            # Cancel during prefill and streaming is handled by the watcher
-            # thread closing the response, unblocking any httpx read.
+            # Cancel during prefill and streaming is handled by the watcher:
+            # socket shutdown before headers, response close after headers.
             prefill_timeout = httpx.Timeout(
                 connect = 30,
                 read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -4609,7 +4636,7 @@ class LlamaCppBackend:
                     raise GeneratorExit
                 yield response
                 return
-        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
+        except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
                 raise GeneratorExit
