@@ -18,14 +18,38 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 from importlib.util import find_spec
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 # Extensions the local-file loader (UnslothTrainer._loader_for_files) understands.
 SUPPORTED_EXTENSIONS = (".parquet", ".json", ".jsonl", ".csv")
+_JSON_EXTENSIONS = (".json", ".jsonl")
+_IGNORED_METADATA_FILENAMES = {
+    "dataset_info.json",
+    "metadata.json",
+    "schema.json",
+    "state.json",
+}
+
+
+class S3DownloadCancelled(RuntimeError):
+    """Raised when the caller cancels an S3 dataset download."""
+
+
+class S3DatasetDownload:
+    def __init__(self, files: list[str], temp_dir: Optional[str] = None):
+        self.files = files
+        self.temp_dir = temp_dir
+
+    def cleanup(self) -> None:
+        if not self.temp_dir:
+            return
+        shutil.rmtree(self.temp_dir, ignore_errors = True)
+        self.temp_dir = None
 
 
 def boto3_available() -> bool:
@@ -70,9 +94,34 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
             key = obj["Key"]
             if key.endswith("/"):
                 continue  # directory placeholder
+            if os.path.basename(key).lower() in _IGNORED_METADATA_FILENAMES:
+                continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS):
                 keys.append(key)
     return keys
+
+
+def _extension_family(key: str) -> str:
+    ext = os.path.splitext(key)[1].lower()
+    if ext in _JSON_EXTENSIONS:
+        return "json"
+    return ext.lstrip(".")
+
+
+def _validate_single_extension_family(keys: list[str]) -> None:
+    families: list[str] = []
+    for key in keys:
+        family = _extension_family(key)
+        if family not in families:
+            families.append(family)
+
+    if len(families) <= 1:
+        return
+
+    raise ValueError(
+        "S3 prefix contains mixed dataset formats "
+        f"({', '.join(families)}). Keep one dataset format under the selected prefix."
+    )
 
 
 def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
@@ -87,11 +136,20 @@ def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> 
     return candidate
 
 
-def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list[str]:
+def _raise_if_cancelled(cancel_callback: Optional[Callable[[], bool]]) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise S3DownloadCancelled("S3 dataset download cancelled")
+
+
+def prepare_s3_dataset_download(
+    s3_config: dict,
+    dest_dir: Optional[str] = None,
+    cancel_callback: Optional[Callable[[], bool]] = None,
+) -> S3DatasetDownload:
     """Download supported dataset files from S3 to a local directory.
 
-    Returns the list of absolute local file paths (one per downloaded object),
-    suitable for passing through the existing local-file dataset loader.
+    Returns the local files plus the owned temporary directory, when one was
+    created. Call ``cleanup()`` after the dataset loader has materialized data.
 
     Raises ``RuntimeError`` if boto3 is missing, and ``ValueError`` if the
     bucket/prefix contains no supported dataset files.
@@ -104,9 +162,11 @@ def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list
         raise ValueError("s3_config.bucket is required")
     prefix = s3_config.get("prefix")
 
+    _raise_if_cancelled(cancel_callback)
     client = _build_s3_client(s3_config)
 
     keys = _list_dataset_keys(client, bucket, prefix)
+    _raise_if_cancelled(cancel_callback)
     if not keys:
         where = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
         raise ValueError(
@@ -114,17 +174,31 @@ def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list
             f"found under {where}"
         )
 
-    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_")
-    os.makedirs(target_dir, exist_ok = True)
+    _validate_single_extension_family(keys)
 
-    local_files: list[str] = []
-    used_paths: set[str] = set()
-    for key in keys:
-        # Flatten the key to a filename, keeping the basename and extension.
-        filename = os.path.basename(key)
-        local_path = _unique_local_path(target_dir, filename, used_paths)
-        client.download_file(bucket, key, local_path)
-        local_files.append(local_path)
+    owns_temp_dir = dest_dir is None
+    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_")
+    try:
+        os.makedirs(target_dir, exist_ok = True)
+
+        local_files: list[str] = []
+        used_paths: set[str] = set()
+        for key in keys:
+            _raise_if_cancelled(cancel_callback)
+            filename = os.path.basename(key)
+            local_path = _unique_local_path(target_dir, filename, used_paths)
+            download_kwargs = {}
+            if cancel_callback is not None:
+                download_kwargs["Callback"] = lambda _bytes: _raise_if_cancelled(
+                    cancel_callback
+                )
+            client.download_file(bucket, key, local_path, **download_kwargs)
+            _raise_if_cancelled(cancel_callback)
+            local_files.append(local_path)
+    except Exception:
+        if owns_temp_dir:
+            shutil.rmtree(target_dir, ignore_errors = True)
+        raise
 
     logger.info(
         "Downloaded %d dataset file(s) from s3://%s/%s to %s",
@@ -133,4 +207,20 @@ def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list
         prefix or "",
         target_dir,
     )
-    return local_files
+    return S3DatasetDownload(
+        files = local_files,
+        temp_dir = target_dir if owns_temp_dir else None,
+    )
+
+
+def download_s3_dataset(
+    s3_config: dict,
+    dest_dir: Optional[str] = None,
+    cancel_callback: Optional[Callable[[], bool]] = None,
+) -> list[str]:
+    download = prepare_s3_dataset_download(
+        s3_config,
+        dest_dir = dest_dir,
+        cancel_callback = cancel_callback,
+    )
+    return download.files

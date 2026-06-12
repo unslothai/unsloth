@@ -1133,111 +1133,115 @@ export function DatasetSection() {
             </CollapsibleContent>
           </Collapsible>
 
-          <div className="flex flex-col gap-3">
-            {selectedDatasetName ? (
-              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-                <div className="rounded-md bg-indigo-500/10 p-1.5">
-                  <HugeiconsIcon
-                    icon={FileAttachmentIcon}
-                    className="size-4 text-indigo-500"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-sm font-medium truncate">
-                    {datasetSource === "upload"
-                      ? (selectedLocalDataset?.label ??
-                        deriveLocalDatasetName(selectedDatasetName))
-                      : selectedDatasetName}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {datasetSource === "upload" ? (
-                      uploadedFile ? (
-                        <>
-                          {t("studio.dataset.localDataset")}
-                          {selectedLocalRows != null
-                            ? t("studio.dataset.localDatasetRows", {
-                                count: selectedLocalRows.toLocaleString(),
-                              })
-                            : ""}
-                        </>
+          {datasetSource !== "s3" && (
+            <div className="flex flex-col gap-3">
+              {selectedDatasetName ? (
+                <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
+                  <div className="rounded-md bg-indigo-500/10 p-1.5">
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      className="size-4 text-indigo-500"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-sm font-medium truncate">
+                      {datasetSource === "upload"
+                        ? (selectedLocalDataset?.label ??
+                          deriveLocalDatasetName(selectedDatasetName))
+                        : selectedDatasetName}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {datasetSource === "upload" ? (
+                        uploadedFile ? (
+                          <>
+                            {t("studio.dataset.localDataset")}
+                            {selectedLocalRows != null
+                              ? t("studio.dataset.localDatasetRows", {
+                                  count: selectedLocalRows.toLocaleString(),
+                                })
+                              : ""}
+                          </>
+                        ) : (
+                          t("studio.dataset.localDataset")
+                        )
                       ) : (
-                        t("studio.dataset.localDataset")
-                      )
-                    ) : (
-                      <>
-                        {t("studio.dataset.huggingFaceDataset")}
-                        {datasetSubset && ` / ${datasetSubset}`}
-                        {datasetSplit && ` / ${datasetSplit}`}
-                      </>
-                    )}
-                  </p>
+                        <>
+                          {t("studio.dataset.huggingFaceDataset")}
+                          {datasetSubset && ` / ${datasetSubset}`}
+                          {datasetSplit && ` / ${datasetSplit}`}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-xs"
+                    onClick={() => clearSelectionForTab(activeSourceTab)}
+                  >
+                    {t("studio.dataset.clear")}
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 text-xs"
-                  onClick={() => clearSelectionForTab(activeSourceTab)}
+              ) : (
+                <button
+                  type="button"
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
+                    isDatasetDragOver
+                      ? "border-indigo-500/70 bg-indigo-500/10"
+                      : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
+                  }`}
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                  onDrop={handleDatasetDrop}
+                  onDragOver={handleDatasetDragOver}
+                  onDragLeave={handleDatasetDragLeave}
                 >
-                  {t("studio.dataset.clear")}
+                  <HugeiconsIcon
+                    icon={CloudUploadIcon}
+                    className="pointer-events-none size-4 shrink-0 text-indigo-500"
+                  />
+                  <span className="pointer-events-none min-w-0">
+                    <span className="block text-xs font-medium text-foreground">
+                      {t("studio.dataset.dropFileOrClick")}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                      {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
+                      {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
+                    </span>
+                  </span>
+                </button>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                >
+                  {isUploading ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                  )}
+                  {isUploading
+                    ? t("studio.dataset.uploading")
+                    : t("studio.dataset.upload")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={!selectedDatasetName}
+                  onClick={() => openPreview()}
+                >
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+                  {t("studio.dataset.viewDataset")}
                 </Button>
               </div>
-            ) : (
-              <button
-                type="button"
-                className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
-                  isDatasetDragOver
-                    ? "border-indigo-500/70 bg-indigo-500/10"
-                    : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
-                }`}
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-                onDrop={handleDatasetDrop}
-                onDragOver={handleDatasetDragOver}
-                onDragLeave={handleDatasetDragLeave}
-              >
-                <HugeiconsIcon
-                  icon={CloudUploadIcon}
-                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
-                />
-                <span className="pointer-events-none min-w-0">
-                  <span className="block text-xs font-medium text-foreground">
-                    {t("studio.dataset.dropFileOrClick")}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
-                    {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
-                  </span>
-                </span>
-              </button>
-            )}
-
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-              >
-                {isUploading ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                )}
-                {isUploading ? t("studio.dataset.uploading") : t("studio.dataset.upload")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={!selectedDatasetName}
-                onClick={() => openPreview()}
-              >
-                <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-                {t("studio.dataset.viewDataset")}
-              </Button>
             </div>
-          </div>
+          )}
           <input
             ref={fileInputRef}
             type="file"

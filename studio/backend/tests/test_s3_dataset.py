@@ -53,8 +53,11 @@ class _FakeS3Client:
         assert name == "list_objects_v2"
         return _FakePaginator(self._keys)
 
-    def download_file(self, bucket, key, local_path):
+    def download_file(self, bucket, key, local_path, **kwargs):
         self.downloaded.append((bucket, key, local_path))
+        callback = kwargs.get("Callback")
+        if callback is not None:
+            callback(1)
         with open(local_path, "w", encoding = "utf-8") as f:
             f.write(f"content-of:{key}")
 
@@ -64,7 +67,7 @@ def fake_client(monkeypatch):
     """Force boto3_available True and stub the client builder."""
     keys = [
         "datasets/train.parquet",
-        "datasets/extra.jsonl",
+        "datasets/extra.parquet",
         "datasets/notes.txt",  # filtered out (unsupported)
         "datasets/subdir/",  # directory placeholder, skipped
         "other/ignore.parquet",  # filtered out by prefix
@@ -93,9 +96,47 @@ def test_downloads_only_supported_files_under_prefix(fake_client, tmp_path):
     names = sorted(os.path.basename(f) for f in files)
     # txt is unsupported, the directory placeholder is skipped, and the
     # "other/" key is excluded by the prefix filter.
-    assert names == ["extra.jsonl", "train.parquet"]
+    assert names == ["extra.parquet", "train.parquet"]
     for f in files:
         assert os.path.exists(f)
+
+
+def test_allows_json_and_jsonl_family(monkeypatch, tmp_path):
+    client = _FakeS3Client(["datasets/train.json", "datasets/extra.jsonl"])
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+
+    assert sorted(os.path.basename(f) for f in files) == ["extra.jsonl", "train.json"]
+
+
+def test_ignores_common_json_metadata_files(monkeypatch, tmp_path):
+    client = _FakeS3Client(
+        [
+            "datasets/train.parquet",
+            "datasets/schema.json",
+            "datasets/metadata.json",
+            "datasets/dataset_info.json",
+        ]
+    )
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+
+    assert [os.path.basename(f) for f in files] == ["train.parquet"]
+
+
+def test_raises_when_prefix_contains_mixed_formats(monkeypatch, tmp_path):
+    client = _FakeS3Client(["datasets/train.parquet", "datasets/stray.csv"])
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    with pytest.raises(ValueError, match = "mixed dataset formats"):
+        s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+
+    assert client.downloaded == []
 
 
 def test_raises_when_no_supported_files(monkeypatch, tmp_path):
@@ -147,6 +188,55 @@ def test_basename_collision_skips_existing_generated_suffix(monkeypatch, tmp_pat
     assert (tmp_path / "train_2.parquet").read_text(encoding = "utf-8") == (
         "content-of:datasets/c/train.parquet"
     )
+
+
+def test_download_handle_cleans_owned_temp_dir(monkeypatch, tmp_path):
+    target_dir = tmp_path / "owned-download"
+    client = _FakeS3Client(["datasets/train.parquet"])
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+    monkeypatch.setattr(s3_dataset.tempfile, "mkdtemp", lambda prefix: str(target_dir))
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg())
+
+    assert target_dir.exists()
+    assert download.files == [str(target_dir / "train.parquet")]
+    download.cleanup()
+    assert not target_dir.exists()
+
+
+def test_dest_dir_is_not_removed_by_cleanup(monkeypatch, tmp_path):
+    client = _FakeS3Client(["datasets/train.parquet"])
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    download.cleanup()
+    assert tmp_path.exists()
+    assert (tmp_path / "train.parquet").exists()
+
+
+def test_cancel_callback_aborts_and_removes_temp_dir(monkeypatch, tmp_path):
+    target_dir = tmp_path / "cancelled-download"
+    client = _FakeS3Client(["datasets/train.parquet"])
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+    monkeypatch.setattr(s3_dataset.tempfile, "mkdtemp", lambda prefix: str(target_dir))
+    calls = 0
+
+    def cancel_after_download_starts():
+        nonlocal calls
+        calls += 1
+        return calls >= 4
+
+    with pytest.raises(s3_dataset.S3DownloadCancelled):
+        s3_dataset.prepare_s3_dataset_download(
+            _cfg(),
+            cancel_callback = cancel_after_download_starts,
+        )
+
+    assert not target_dir.exists()
 
 
 # ── S3Config model (camelCase aliases + credential validation) ──

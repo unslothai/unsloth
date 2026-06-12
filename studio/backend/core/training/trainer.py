@@ -2238,6 +2238,9 @@ class UnslothTrainer:
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
         """
+        from core.training.s3_dataset import S3DownloadCancelled
+
+        s3_download = None
         try:
             dataset = None
             eval_dataset = None
@@ -2276,10 +2279,14 @@ class UnslothTrainer:
             # S3 datasets are downloaded to a local temp dir and then consumed
             # through the same local-file path below.
             if s3_config and not local_datasets:
-                from core.training.s3_dataset import download_s3_dataset
+                from core.training.s3_dataset import prepare_s3_dataset_download
 
                 self._update_progress(status_message = "Downloading dataset from S3...")
-                local_datasets = download_s3_dataset(s3_config)
+                s3_download = prepare_s3_dataset_download(
+                    s3_config,
+                    cancel_callback = lambda: self.should_stop,
+                )
+                local_datasets = s3_download.files
                 if self.should_stop:
                     logger.info("Stopped during S3 download\n")
                     return None
@@ -2552,10 +2559,16 @@ class UnslothTrainer:
 
             return (dataset_info, eval_dataset)
 
+        except S3DownloadCancelled:
+            logger.info("Stopped during S3 download\n")
+            return None
         except Exception as e:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error = str(e))
             return None
+        finally:
+            if s3_download is not None:
+                s3_download.cleanup()
 
     def _auto_detect_eval_split_from_hf(
         self, dataset_source: str, subset: str
