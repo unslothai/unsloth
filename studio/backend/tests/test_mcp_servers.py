@@ -1086,6 +1086,61 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
     assert mcp_client.in_failure_cooloff("s1")
 
 
+def test_refresh_drops_result_when_config_changes_mid_probe(tmp_path, monkeypatch):
+    """A manual refresh must not warm the chat cache with tools discovered
+    under an old config if the server is edited while the probe is in flight."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True)
+
+    async def fake_refresh(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
+        mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
+        return _one_tool("stale")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_refresh)
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("s1", current_subject = "u"))
+    assert res.ok and res.tool_count == 1
+    assert mcp_client.get_cached_tools("s1") is None
+
+
+def test_refresh_failure_no_cooloff_when_config_changes_mid_probe(tmp_path, monkeypatch):
+    """A manual refresh failure for an old config must not cool off the freshly
+    edited server."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True)
+
+    async def boom(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
+        mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
+        raise RuntimeError("old endpoint down")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", boom)
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("s1", current_subject = "u"))
+    assert res.ok is False
+    assert not mcp_client.in_failure_cooloff("s1")
+
+
 def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(tmp_path, monkeypatch):
     """A delete landing while a probe is in flight must drop the now-orphan
     result -- the `fresh is None` arm of the mid-probe TOCTOU guard. The

@@ -248,13 +248,23 @@ async def refresh_mcp_server_tools(
             error = str(exc),
             exc_info = True,
         )
-        # Start the cool-off so the next chat send doesn't immediately re-hang
-        # on this server's timeout.
-        record_probe_failure(server_id, use_oauth)
+        current = mcp_servers_db.get_server(server_id)
+        if current is not None and not any(
+            current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+        ):
+            # Start the cool-off so the next chat send doesn't immediately re-hang
+            # on this server's timeout. If the row changed while the probe was
+            # awaiting, the failure belongs to the old config and must not park
+            # the newly edited server.
+            record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     # Warm the chat-path cache so the next send skips re-probing.
-    cache_tools(server_id, tools)
+    current = mcp_servers_db.get_server(server_id)
+    if current is not None and not any(
+        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    ):
+        cache_tools(server_id, tools)
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
