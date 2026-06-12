@@ -958,11 +958,17 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info(current_subject: str = Depends(get_current_subject)):
+def get_hardware_info(current_subject: str = Depends(get_current_subject)):
     """Return GPU name, total VRAM, and key ML package versions.
 
     Gated behind auth alongside /api/system -- same fingerprinting concern.
     /api/system/gpu-visibility is also auth-gated.
+
+    Sync def (not async): every call here is blocking -- get_gpu_summary and
+    get_backend_visible_gpu_info can shell out (nvidia-smi/ioreg), and
+    get_installed_llama_version may run ``llama-server --version`` on markerless
+    builds. FastAPI runs sync endpoints in a threadpool, so this can't stall the
+    event loop the way an awaitless async def would.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
     from utils.llama_cpp_update import get_installed_llama_version
