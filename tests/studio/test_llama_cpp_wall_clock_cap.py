@@ -25,13 +25,15 @@ SRC = SOURCE_PATH.read_text()
 TREE = ast.parse(SRC)
 
 
-def _is_subscript_assign(stmt: ast.stmt, target_name: str, key: str) -> bool:
+def _is_subscript_assign(stmt: ast.stmt, target_name: str | None, key: str) -> bool:
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return False
     t = stmt.targets[0]
     if not isinstance(t, ast.Subscript):
         return False
-    if not (isinstance(t.value, ast.Name) and t.value.id == target_name):
+    if target_name is not None and not (
+        isinstance(t.value, ast.Name) and t.value.id == target_name
+    ):
         return False
     slc = t.slice
     return isinstance(slc, ast.Constant) and slc.value == key
@@ -62,9 +64,7 @@ def test_first_token_timeout_is_at_least_ten_minutes():
 
 
 def test_studio_chat_payloads_do_not_set_wall_clock_generation_cap():
-    hits_payload = _collect_assignments(TREE, "payload", "t_max_predict_ms")
-    hits_stream = _collect_assignments(TREE, "stream_payload", "t_max_predict_ms")
-    assert hits_payload + hits_stream == []
+    assert _collect_assignments(TREE, None, "t_max_predict_ms") == []
 
 
 def test_max_tokens_default_cap_still_applied():

@@ -5027,6 +5027,7 @@ class LlamaCppBackend:
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
         stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        first_token_deadline: Optional[float] = None,
     ) -> Generator[str, None, None]:
         """Iterate an httpx streaming response with cancel support.
 
@@ -5038,7 +5039,8 @@ class LlamaCppBackend:
         being swallowed forever.
         """
         text_iter = response.iter_text()
-        started_at = time.monotonic()
+        if first_token_deadline is None:
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -5054,7 +5056,7 @@ class LlamaCppBackend:
             except httpx.ReadTimeout:
                 now = time.monotonic()
                 if last_chunk_at is None:
-                    if now - started_at >= _DEFAULT_FIRST_TOKEN_TIMEOUT_S:
+                    if now >= first_token_deadline:
                         raise
                 elif now - last_chunk_at >= stall_timeout_s:
                     raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
@@ -5116,6 +5118,7 @@ class LlamaCppBackend:
         payload: dict,
         cancel_event: Optional[threading.Event] = None,
         headers: Optional[dict] = None,
+        first_token_deadline: Optional[float] = None,
     ):
         """Open an httpx streaming POST with cancel support.
 
@@ -5167,9 +5170,12 @@ class LlamaCppBackend:
             # Long read timeout so prefill can finish without a retry storm.
             # Cancel during prefill and streaming is handled by the watcher:
             # socket shutdown before headers, response close after headers.
+            if first_token_deadline is None:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+                read = prefill_read_timeout,
                 write = 10,
                 pool = 10,
             )
@@ -5271,12 +5277,14 @@ class LlamaCppBackend:
             with httpx.Client(
                 timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
                     client,
                     url,
                     payload,
                     cancel_event,
                     headers = _auth_headers,
+                    first_token_deadline = first_token_deadline,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -5287,7 +5295,11 @@ class LlamaCppBackend:
                     buffer = ""
                     has_content_tokens = False
                     reasoning_text = ""
-                    for raw_chunk in self._iter_text_cancellable(response, cancel_event):
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
+                        cancel_event,
+                        first_token_deadline = first_token_deadline,
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
@@ -5556,12 +5568,14 @@ class LlamaCppBackend:
                     timeout = stream_timeout,
                     limits = httpx.Limits(max_keepalive_connections = 0),
                 ) as client:
+                    first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                     with self._stream_with_retry(
                         client,
                         url,
                         payload,
                         cancel_event,
                         headers = _auth_headers,
+                        first_token_deadline = first_token_deadline,
                     ) as response:
                         if response.status_code != 200:
                             error_body = response.read().decode()
@@ -5573,6 +5587,7 @@ class LlamaCppBackend:
                         for raw_chunk in self._iter_text_cancellable(
                             response,
                             cancel_event,
+                            first_token_deadline = first_token_deadline,
                         ):
                             raw_buf += raw_chunk
                             while "\n" in raw_buf:
@@ -6244,12 +6259,14 @@ class LlamaCppBackend:
             with httpx.Client(
                 timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
                     client,
                     url,
                     stream_payload,
                     cancel_event,
                     headers = _auth_headers,
+                    first_token_deadline = first_token_deadline,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -6258,7 +6275,11 @@ class LlamaCppBackend:
                         )
 
                     buffer = ""
-                    for raw_chunk in self._iter_text_cancellable(response, cancel_event):
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
+                        cancel_event,
+                        first_token_deadline = first_token_deadline,
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)

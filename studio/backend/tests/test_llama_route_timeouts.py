@@ -18,21 +18,24 @@ import routes.inference as inf_mod  # noqa: E402
 
 
 def _backend_ctx():
+    def _request_reasoning_kwargs(
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ):
+        return None
+
     return SimpleNamespace(
         base_url = "http://llama.test",
         context_length = 4096,
         is_loaded = True,
-        _request_reasoning_kwargs = (
-            lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
-        ),
+        _request_reasoning_kwargs = _request_reasoning_kwargs,
     )
 
 
 class _RecordingAsyncClient:
-    seen: list[httpx.Timeout] = []
-
     def __init__(self, *args, **kwargs):
-        pass
+        self.seen: list[httpx.Timeout] = []
 
     async def __aenter__(self):
         return self
@@ -59,9 +62,9 @@ class _RecordingAsyncClient:
 
 
 def _patch_recording_client(monkeypatch):
-    _RecordingAsyncClient.seen = []
-    monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _RecordingAsyncClient)
-    return _RecordingAsyncClient.seen
+    recorder = _RecordingAsyncClient()
+    monkeypatch.setattr(inf_mod.httpx, "AsyncClient", lambda *args, **kwargs: recorder)
+    return recorder.seen
 
 
 def _assert_uncapped_generation_read(timeout: httpx.Timeout):

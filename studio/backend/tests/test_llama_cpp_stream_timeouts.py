@@ -13,6 +13,9 @@ from core.inference import llama_cpp
 from core.inference.llama_cpp import LlamaCppBackend
 
 
+_TEST_WORKER_TIMEOUT_S = 2.0
+
+
 class _StallingTextIterator:
     def __init__(self):
         self.calls = 0
@@ -43,6 +46,19 @@ class _FakeResponse:
         self.closed = True
 
 
+class _NeverFirstTokenIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise httpx.ReadTimeout("first token stall")
+
+
+class _NoFirstTokenResponse(_FakeResponse):
+    def iter_text(self):
+        return _NeverFirstTokenIterator()
+
+
 def test_iter_text_cancellable_raises_after_inter_token_stall(monkeypatch):
     times = iter([0.0, 1.0, 122.0])
     monkeypatch.setattr(llama_cpp.time, "monotonic", lambda: next(times))
@@ -51,6 +67,18 @@ def test_iter_text_cancellable_raises_after_inter_token_stall(monkeypatch):
 
     assert next(iterator) == "data: first-token\n"
     with pytest.raises(httpx.ReadTimeout, match = "stopped producing tokens"):
+        next(iterator)
+
+
+def test_iter_text_cancellable_uses_shared_first_token_deadline(monkeypatch):
+    monkeypatch.setattr(llama_cpp.time, "monotonic", lambda: 701.0)
+
+    iterator = LlamaCppBackend._iter_text_cancellable(
+        _NoFirstTokenResponse(),
+        first_token_deadline = 700.0,
+    )
+
+    with pytest.raises(httpx.ReadTimeout, match = "first token stall"):
         next(iterator)
 
 
@@ -68,7 +96,7 @@ class _BlockingBeforeHeadersStream:
 
     def __enter__(self):
         self.client.entered.set()
-        if not self.client.closed.wait(timeout = 2):
+        if not self.client.closed.wait(timeout = _TEST_WORKER_TIMEOUT_S):
             raise AssertionError("request was not closed during prefill cancel")
         raise httpx.ReadError("closed before response headers")
 
@@ -132,10 +160,10 @@ def test_stream_with_retry_closes_client_when_cancelled_before_headers():
 
     worker = threading.Thread(target = _run)
     worker.start()
-    assert client.entered.wait(timeout = 2)
+    assert client.entered.wait(timeout = _TEST_WORKER_TIMEOUT_S)
 
     cancel_event.set()
-    worker.join(timeout = 2)
+    worker.join(timeout = _TEST_WORKER_TIMEOUT_S)
 
     assert not worker.is_alive()
     assert client.socket.shutdown_called.is_set()

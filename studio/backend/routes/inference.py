@@ -467,17 +467,24 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     return True
 
 
-def _anthropic_stream_error_event(exc):
+def _anthropic_stream_error_event(
+    exc,
+    *,
+    timeout_phase: str = "first_token",
+    force: bool = False,
+):
     """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
     to fall through to a normal message_delta finish. Returns an event only for a
     classifiable upstream client error (context overflow / 4xx) so a streaming
     over-context request surfaces a real error instead of a silent empty
-    end_turn message."""
-    if _classify_llama_generation_error(exc) is None:
+    end_turn message. ``force`` also emits transport/runtime stream failures."""
+    _cls = _classify_llama_generation_error(exc)
+    if _cls is None and not force:
         return None
+    status = 400 if _cls is not None else 500
     return build_anthropic_sse_event(
         "error",
-        anthropic_error_body(_friendly_error(exc), status = 400),
+        anthropic_error_body(_friendly_error(exc, timeout_phase = timeout_phase), status = status),
     )
 
 
@@ -4964,9 +4971,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             resp = None
             bytes_iter = None
+            first_chunk_seen = False
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
                 async for chunk in bytes_iter:
@@ -4975,6 +4987,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         event, buffer = buffer.split(b"\n\n", 1)
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
+                            first_chunk_seen = True
                             yield out + b"\n\n"
                 if buffer:
                     out = _cmpl_stream_event_out(buffer, _include_usage)
@@ -4982,9 +4995,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
+                        first_chunk_seen = True
                         yield out + b"\n\n"
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
+                timeout_phase = "stream" if first_chunk_seen else "first_token"
+                error_chunk = _openai_stream_error_chunk(e, timeout_phase = timeout_phase)
+                yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                return
             finally:
                 if bytes_iter is not None:
                     try:
@@ -5788,6 +5806,28 @@ async def _responses_stream(
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
+        def _failed_response_payload(exc: Exception, status_code: int, timeout_phase: str) -> dict:
+            return {
+                "type": "response.failed",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "failed",
+                    "model": payload.model,
+                    "output": _snapshot_output(),
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                    "error": {
+                        "code": status_code,
+                        "message": _friendly_error(exc, timeout_phase = timeout_phase),
+                    },
+                },
+            }
+
         # ── Preamble events ──
         yield _sse(
             "response.created",
@@ -5814,6 +5854,7 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
         resp = None
         lines_iter = None
+        first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
             try:
@@ -5876,6 +5917,7 @@ async def _responses_stream(
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
+                first_chunk_seen = True
                 try:
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
@@ -5987,6 +6029,13 @@ async def _responses_stream(
                     output_tokens = usage.get("completion_tokens", output_tokens)
         except Exception as e:
             logger.error("responses stream error: %s", e)
+            timeout_phase = "stream" if first_chunk_seen else "first_token"
+            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+            yield _sse(
+                "response.failed",
+                _failed_response_payload(e, status_code, timeout_phase),
+            )
+            return
         finally:
             if lines_iter is not None:
                 try:
@@ -7211,6 +7260,7 @@ async def _anthropic_passthrough_stream(
         resp = None
         lines_iter = None
         cancel_watcher = None
+        first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
@@ -7253,6 +7303,7 @@ async def _anthropic_passthrough_stream(
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
+                first_chunk_seen = True
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
@@ -7261,11 +7312,30 @@ async def _anthropic_passthrough_stream(
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
                     yield line
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
-                raise
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                timeout_phase = "stream" if first_chunk_seen else "first_token"
+                event = _anthropic_stream_error_event(
+                    e,
+                    timeout_phase = timeout_phase,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         except Exception as e:
-            logger.error("anthropic_messages passthrough stream error: %s", e)
+            if not cancel_event.is_set():
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                timeout_phase = "stream" if first_chunk_seen else "first_token"
+                event = _anthropic_stream_error_event(
+                    e,
+                    timeout_phase = timeout_phase,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         finally:
             if cancel_watcher is not None:
                 cancel_watcher.cancel()
