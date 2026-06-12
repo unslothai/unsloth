@@ -407,10 +407,13 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             tail = "".join(tail_lines).strip()[-1500:]
             raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop in-memory caches and
-        # re-prime the 24h disk freshness cache with the true newest, so the
-        # banner can't linger on a stale same-base value after the swap.
-        reset_caches()
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
+        # on-disk freshness caches, then re-prime the 24h disk cache with the
+        # true newest, so the banner can't linger on a stale same-base value
+        # after the swap. drop_disk matters when the refresh below can't reach
+        # GitHub: without it, latest_published_release would replay the stale
+        # disk value; with it, latest reads as None and the banner fails open.
+        reset_caches(drop_disk = True)
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive

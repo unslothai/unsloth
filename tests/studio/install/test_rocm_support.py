@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
 import pytest
 
@@ -3263,6 +3263,158 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
     assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
+
+
+# TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
+
+
+_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
+_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+
+
+class TestWslSystemRocmLibDirs:
+    """install_llama_prebuilt._wsl_system_rocm_lib_dirs: a strict no-op off a
+    ROCDXG WSL host; returns the system ROCm lib dir there so binary_env can
+    load the WSL-capable HIP runtime before a prebuilt's bundled one."""
+
+    def test_empty_without_dev_dxg(self):
+        with patch("os.path.exists", return_value = False):
+            assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+    def test_empty_on_bare_metal_linux(self):
+        # /dev/dxg present but /proc/version is not a WSL kernel.
+        with patch("os.path.exists", lambda p: p == "/dev/dxg"):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "Linux version 6.8.0-generic"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+    def test_returns_system_lib_on_wsl_with_librocdxg(self):
+        # Normalize separators: os.path.join uses "\" on the Windows test host
+        # though the target path is Linux.
+        def _exists(p):
+            p = str(p).replace("\\", "/")
+            return p in ("/dev/dxg", "/opt/rocm/lib/librocdxg.so")
+
+        with patch("os.path.exists", _exists):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "Linux version 5.15.0-microsoft-standard-WSL2"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == ["/opt/rocm/lib"]
+
+    def test_empty_on_wsl_without_librocdxg(self):
+        # WSL kernel + /dev/dxg but no librocdxg -> not a ROCDXG ROCm install.
+        with patch("os.path.exists", lambda p: p == "/dev/dxg"):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "microsoft-standard-WSL2"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+
+class TestBinaryEnvWslOrdering:
+    """binary_env must put the system ROCm lib dir AHEAD of the prebuilt's
+    bundle dir on a ROCDXG WSL host, and set HSA_ENABLE_DXG_DETECTION; no-op
+    on bare-metal Linux."""
+
+    @staticmethod
+    def _linux_host():
+        return HostInfo(
+            system = "Linux",
+            machine = "x86_64",
+            is_windows = False,
+            is_linux = True,
+            is_macos = False,
+            is_x86_64 = True,
+            is_arm64 = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            visible_cuda_devices = None,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+        )
+
+    def test_wsl_prepends_system_rocm_and_sets_hsa(self, tmp_path):
+        binary = tmp_path / "bundle" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        # binary_env's dedupe_existing_dirs drops non-existent dirs, so use a
+        # real dir to stand in for the system ROCm lib path.
+        sys_rocm = tmp_path / "sysrocm"
+        sys_rocm.mkdir()
+        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]):
+            with patch.dict(os.environ, {}, clear = True):
+                env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
+        ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
+        # Compare resolved paths (dedupe_existing_dirs calls Path.resolve()).
+        ld_resolved = [str(Path(p).resolve()) for p in ld]
+        assert ld_resolved[0] == str(sys_rocm.resolve())
+        assert str(binary.parent.resolve()) in ld_resolved
+        assert ld_resolved.index(str(sys_rocm.resolve())) < ld_resolved.index(
+            str(binary.parent.resolve())
+        )
+        assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
+
+    def test_bare_metal_linux_unchanged(self, tmp_path):
+        binary = tmp_path / "bundle" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = []):
+            with patch.dict(os.environ, {}, clear = True):
+                env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
+        ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
+        assert ld[0] == str(binary.parent)  # bundle dir first, as before
+        assert "HSA_ENABLE_DXG_DETECTION" not in env
+
+
+class TestInstallShDropinPersistence:
+    """install.sh must persist the ROCm-on-WSL drop-in even when rocminfo
+    already enumerates the GPU (via the transient probe env), so a reinstall
+    over an existing /opt/rocm doesn't leave login shells without the env."""
+
+    def test_has_persist_helper(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "_persist_rocm_wsl_dropin()" in source
+
+    def test_gate5_early_return_persists_dropin(self):
+        """The rocminfo-already-works early return must call the persist helper
+        BEFORE returning."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # Find the rocminfo gfx1151 gate and assert the persist call precedes
+        # its `return 0`.
+        gate = source.find("Name:[[:space:]]*gfx1151")
+        assert gate != -1
+        window = source[gate : gate + 900]
+        assert "_persist_rocm_wsl_dropin" in window
+        assert window.find("_persist_rocm_wsl_dropin") < window.find("return 0")
+
+    def test_persist_helper_gated_on_librocdxg(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        body_start = source.find("_persist_rocm_wsl_dropin()")
+        body = source[body_start : body_start + 1200]
+        assert "librocdxg.so" in body
+        assert "profile.d/unsloth-rocm-wsl.sh" in body
+
+
+class TestLlamaCppRuntimeWslOrdering:
+    """The serve-time launcher must mirror binary_env: system HIP before the
+    bundle dir on WSL, so a prebuilt that passed install validation runs."""
+
+    def test_has_wsl_helper(self):
+        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        assert "_wsl_system_rocm_lib_dirs" in source
+
+    def test_prepends_before_binary_dir(self):
+        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        # The Linux lib_dirs build must add WSL rocm dirs before binary_dir.
+        idx_helper = source.find("for _wsl_rocm in _wsl_system_rocm_lib_dirs()")
+        idx_binary = source.find("lib_dirs.append(binary_dir)")
+        assert idx_helper != -1 and idx_binary != -1
+        assert idx_helper < idx_binary
 
 
 if __name__ == "__main__":

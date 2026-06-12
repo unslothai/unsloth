@@ -3367,7 +3367,19 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+            num_samples = None
+            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
+                try:
+                    num_samples = len(self.trainer.train_dataset)
+                except TypeError:
+                    logger.debug(
+                        "train_dataset does not support len(); falling back to "
+                        "raw dataset size for step estimation."
+                    )
+
+            if num_samples is None:
+                num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+
             batch_size = training_args.get("batch_size", 2)
             total_steps = self._calculate_total_steps(
                 num_samples,
@@ -3376,10 +3388,8 @@ class UnslothTrainer:
                 training_args.get("num_epochs", 3),
                 training_args.get("max_steps", 0),
             )
-            self._update_progress(total_steps = total_steps)
-
             # ========== START TRAINING ==========
-            self._update_progress(status_message = "Starting training...")
+            self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
 

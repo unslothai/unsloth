@@ -62,7 +62,7 @@ export function ProjectSwitcher({
             <HugeiconsIcon
               icon={ArrowDown01Icon}
               strokeWidth={1.75}
-              className="relative top-0.5 size-3.5 text-muted-foreground"
+              className="size-3.5 text-muted-foreground"
               aria-hidden={true}
             />
           </span>

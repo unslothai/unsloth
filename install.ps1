@@ -1177,14 +1177,38 @@ shell.Run cmd, 0, False
     if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
     Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
-    # ── Install uv if not present ──
+    # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        substep "installing uv package manager..."
+    $UvMinVersion = "0.7.22"
+    function Test-UvVersionOk {
+        $cmd = Get-Command uv -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $false }
+        try {
+            $raw = (& uv --version 2>$null | Select-Object -First 1)
+        } catch {
+            return $false
+        }
+        if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)') { return $false }
+        try {
+            return ([version]$Matches[1] -ge [version]$UvMinVersion)
+        } catch {
+            return $false
+        }
+    }
+
+    if (-not (Test-UvVersionOk)) {
+        if (Get-Command uv -ErrorAction SilentlyContinue) {
+            substep "updating uv package manager..."
+        } else {
+            substep "installing uv package manager..."
+        }
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            try { winget upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            if (-not (Test-UvVersionOk)) {
+                try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
@@ -1192,17 +1216,38 @@ shell.Run cmd, 0, False
         # use Astral's official PowerShell installer. This is the only
         # supported path on hosts without winget (Windows ARM64 runners,
         # corporate machines without the Store, etc.).
-        if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        if (-not (Test-UvVersionOk)) {
             substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
             Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
     }
 
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    # A freshly installed uv can sit later on PATH than an older one (active
+    # venv, Scoop/pipx shim). Prefer a just-installed uv from a known location.
+    if (-not (Test-UvVersionOk)) {
+        $origPath = $env:PATH
+        foreach ($d in @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
+                         (Join-Path $env:USERPROFILE ".local\bin"),
+                         (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"))) {
+            if ($d -and (Test-Path $d)) {
+                $env:PATH = "$d;$origPath"
+                if (Test-UvVersionOk) { break }
+                $env:PATH = $origPath
+            }
+        }
+    }
+
+    if (-not (Test-UvVersionOk)) {
         step "uv" "could not be installed" "Red"
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return (Exit-InstallFailure "uv could not be installed")
+    }
+
+    # When bytecode compilation is enabled, large installs can exceed uv's 60s
+    # default on slow machines. Default to 180s, preserving overrides ("0" disables).
+    if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
+        $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
