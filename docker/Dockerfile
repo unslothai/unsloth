@@ -253,26 +253,18 @@ RUN ${VENV}/bin/uv pip install \
 #   * CUDA line: the PyPI default wheel pairs with the cu13 torch line and
 #     dlopens libnvrtc.so.13 -- it must come from the cu128 channel;
 #   * its libraries dlopen torch + NVIDIA runtime libs that live inside the
-#     venv where ld.so cannot see them. Registered via ld.so.conf.d, NOT
-#     LD_LIBRARY_PATH: the loader consults the cache only after DT_RUNPATH,
-#     so the llama.cpp bundle keeps resolving its own $ORIGIN libraries.
-# ffmpeg itself comes from the apt block above. Fail-soft on arches without
-# a matching wheel.
+#     venv where ld.so cannot see them. Registered via ld.so.conf.d in the
+#     RUNTIME stage (this builder layer only installs the wheels, which ride
+#     along in the venv copy; the import check needs ffmpeg, which only the
+#     runtime stage installs).
+# Fail-soft on arches without a matching wheel.
 RUN set -eux \
- && if ${VENV}/bin/uv pip install \
+ && { ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-url https://download.pytorch.org/whl/cu128 \
         "torchcodec==0.10.0" \
-    && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; then \
-        SP=${VENV}/lib/python${PYTHON_VERSION}/site-packages; \
-        printf "%s\n" "$SP/torch/lib" "$SP/nvidia/cuda_nvrtc/lib" \
-                      "$SP/nvidia/cuda_runtime/lib" "$SP/nvidia/npp/lib" \
-            > /etc/ld.so.conf.d/zz-unsloth-venv.conf; \
-        ldconfig; \
-        ${VENV}/bin/python -c "import torchcodec; print('torchcodec', torchcodec.__version__)"; \
-    else \
-        echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"; \
-    fi
+   && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; } \
+ || echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"
 
 # 5) Emit an informational pin record so downstream consumers can see exactly
 #    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
@@ -465,6 +457,22 @@ RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
             ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
         fi; \
     fi
+
+# Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec
+# (installed in the builder, see the bake comment there) can dlopen them.
+# ld.so.conf.d, NOT LD_LIBRARY_PATH: the cache is consulted only after
+# DT_RUNPATH, so the llama.cpp bundle keeps resolving its own $ORIGIN
+# libraries first. The import check runs here because ffmpeg lives in this
+# stage; fail-soft where the torchcodec wheel was unavailable.
+RUN set -eux \
+ && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
+ && printf "%s\n" "$SP/torch/lib" "$SP/nvidia/cuda_nvrtc/lib" \
+                  "$SP/nvidia/cuda_runtime/lib" "$SP/nvidia/npp/lib" \
+        > /etc/ld.so.conf.d/zz-unsloth-venv.conf \
+ && ldconfig \
+ && { /opt/unsloth-venv/bin/python -c \
+        "import torchcodec; print('torchcodec', torchcodec.__version__)" \
+   || echo ">> torchcodec unavailable on this arch (audio decode falls back)"; }
 
 # Prebuilt llama.cpp so GGUF export works out of the box.
 #
