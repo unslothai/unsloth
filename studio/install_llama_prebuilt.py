@@ -862,6 +862,16 @@ def format_byte_count(num_bytes: float) -> str:
     return f"{num_bytes:.1f} B"
 
 
+def _progress_percent_step() -> int:
+    """Non-tty milestone granularity. The in-app updater sets
+    UNSLOTH_PROGRESS_PERCENT_STEP=5 to stream finer progress lines."""
+    try:
+        step = int(os.environ.get("UNSLOTH_PROGRESS_PERCENT_STEP", "25"))
+    except ValueError:
+        return 25
+    return min(max(step, 1), 50)
+
+
 class DownloadProgress:
     def __init__(self, label: str, total_bytes: int | None) -> None:
         self.label = label
@@ -874,6 +884,7 @@ class DownloadProgress:
         )
         self.is_tty = term_ok and self.stream.isatty()
         self.completed = False
+        self.milestone_step = _progress_percent_step()
         self.last_milestone_percent = -1
         self.last_milestone_bytes = 0
         self.has_rendered_tty_progress = False
@@ -924,7 +935,8 @@ class DownloadProgress:
         should_emit = False
         if self.total_bytes is not None:
             percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
-            milestone_percent = min((percent // 25) * 25, 100)
+            step = self.milestone_step
+            milestone_percent = min((percent // step) * step, 100)
             if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
                 self.last_milestone_percent = milestone_percent
                 should_emit = True
