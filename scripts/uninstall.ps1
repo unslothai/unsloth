@@ -341,13 +341,17 @@ function Uninstall-UnslothStudio {
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
+    # Canonical name is "Unsloth Studio.lnk"; also sweep legacy distro-suffixed
+    # names ("Unsloth Studio (WSL - <distro>).lnk") left by pre-release dev builds.
     _Step "Removing desktop and Start Menu shortcuts..."
-    try {
-        $desktop = [Environment]::GetFolderPath("Desktop")
-        if ($desktop) { _RemovePath (Join-Path $desktop "Unsloth Studio.lnk") }
-    } catch { }
-    if ($env:APPDATA) {
-        _RemovePath (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk")
+    $shortcutDirs = @()
+    try { $d = [Environment]::GetFolderPath("Desktop"); if ($d) { $shortcutDirs += $d } } catch { }
+    if ($env:APPDATA) { $shortcutDirs += (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs") }
+    foreach ($dir in $shortcutDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        _RemovePath (Join-Path $dir "Unsloth Studio.lnk")
+        Get-ChildItem -LiteralPath $dir -Filter "Unsloth Studio (*.lnk" -ErrorAction SilentlyContinue |
+            ForEach-Object { _RemovePath $_.FullName }
     }
     # Invalidate the Win11 Start Menu tile cache so the removed shortcut's tile
     # disappears promptly instead of lingering stale (mirrors install.ps1's
