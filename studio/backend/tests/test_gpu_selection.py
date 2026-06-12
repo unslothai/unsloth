@@ -181,7 +181,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
 
     def test_uuid_parent_visibility_falls_back_to_torch(self):
-        """UUID/MIG masks should fall through nvidia to torch fallback and
+        """UUID/MIG masks fall through nvidia to the torch fallback and
         still report visible devices using relative ordinals."""
         fake_torch_devices = [
             {
@@ -1338,7 +1338,7 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
         self.assertEqual(src, "weight_bytes")
 
     def test_equal_local_and_config_keeps_config_label(self):
-        # why: tie-breaker is "local must be strictly larger" so an exact
+        # Tie-breaker is "local must be strictly larger", so an exact
         # match keeps the config-derived path.
         same = 8 * (1 << 30)
         bytes_, src = self._run(

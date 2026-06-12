@@ -27,10 +27,10 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
-  // File import is authoritative: forge vision_image_size = null when the
-  // training section is missing, malformed, or missing the key, so a stale
-  // store value cannot survive an import. (Same-model defaults reloads
-  // preserve user choice via Object.hasOwn in model-defaults.ts.)
+  // File import is authoritative: force vision_image_size = null when the
+  // training section is missing/malformed/lacks the key, so a stale store
+  // value can't survive an import. (Same-model defaults reloads preserve
+  // user choice via Object.hasOwn in model-defaults.ts.)
   const rawTraining = raw.training;
   const isPlainTrainingObject =
     rawTraining != null &&

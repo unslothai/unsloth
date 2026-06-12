@@ -39,7 +39,7 @@ inputs = merged_tokenizer.apply_chat_template(
     add_generation_prompt = True,
     return_tensors = "pt",
     return_dict = True,
-    reasoning_effort = "low",  # **NEW!** Set reasoning effort to low, medium or high
+    reasoning_effort = "low",  # low, medium or high
 ).to(merged_model.device)
 
 _ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))

@@ -40,9 +40,8 @@ def run_bash(
     timeout: int = 60,
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a bash script fragment and return the CompletedProcess.
-    60s default tolerates slow shell startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second."""
+    """Run a bash script fragment. 60s default tolerates slow CI shell
+    startup; the scripts themselves run in well under a second."""
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
@@ -61,10 +60,8 @@ def run_pwsh(
     timeout: int = 60,
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a PowerShell script fragment and return the CompletedProcess.
-    60s default tolerates slow pwsh startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second.
-    A 10s budget previously surfaced as a flaky TimeoutExpired."""
+    """Run a PowerShell script fragment. 60s default tolerates slow CI pwsh
+    startup (a 10s budget was flaky); the scripts run in under a second."""
     run_env = os.environ.copy()
     run_env["NO_COLOR"] = "1"
     if env:
@@ -466,8 +463,13 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
+        # No env-based release-repo override; the repo is chosen by GPU detection
+        # (GPU -> fork, CPU -> ggml-org), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
-        assert '$HelperReleaseRepo = "ggml-org/llama.cpp"' in self.content
+        assert (
+            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) "
+            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
+        )
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content

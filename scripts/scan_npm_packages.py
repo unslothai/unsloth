@@ -7,73 +7,32 @@
 
 """scan_npm_packages.py -- npm-side content scanner.
 
-Counterpart to scripts/scan_packages.py for the pip ecosystem. Reads
+npm counterpart to scripts/scan_packages.py. Reads
 studio/frontend/package-lock.json, downloads each resolved tarball
 DIRECTLY from registry.npmjs.org (never via `npm install` -- no
-lifecycle scripts ever run), verifies the lockfile integrity hash,
-unpacks each tarball into a sandboxed temp dir behind size / count /
-path-escape / symlink guards, and pattern-scans the extracted file
-contents for the signatures common to npm supply-chain attacks:
+lifecycle scripts run), verifies the lockfile integrity hash, unpacks
+each into a sandboxed temp dir behind size/count/path-escape/symlink
+guards, and pattern-scans extracted contents for npm supply-chain
+attack signatures: malicious lifecycle scripts, C2 / exfil hosts,
+credential-stealing references, known IOC filenames, and obfuscation
+shapes.
 
-  - Lifecycle (preinstall / install / postinstall / prepare) scripts
-    in any package.json that fetch + execute external code.
-  - C2 / exfiltration hosts (getsession.org, AWS IMDS endpoints,
-    Kubernetes ServiceAccount token paths, GitHub Actions OIDC,
-    HashiCorp Vault endpoints).
-  - Credential-stealing references (~/.npmrc, ~/.aws/credentials,
-    GITHUB_TOKEN / NPM_TOKEN in JS sources).
-  - Known IOC filenames from public advisories
-    (router_init.js, tanstack_runner.js, router_runtime.js).
-  - Obfuscation shapes (large single JS in package root with a low
-    whitespace ratio + Function/eval against a base64-decoded blob).
-
-Safety stance
-=============
-
-This script ingests attacker-controlled archives. Every parse path
-assumes the worst:
-
-  1. Downloads ONLY from `registry.npmjs.org`. Any tarball URL with a
-     different hostname is refused without fetching.
-  2. Tarball download is size-capped (HARD_MAX_TARBALL_BYTES default
-     64 MiB). HEAD-style probe via the Content-Length response header
-     plus a chunked read that aborts on overflow.
+Safety stance (ingests attacker-controlled archives; assumes worst):
+  1. Downloads ONLY from registry.npmjs.org; other hosts refused.
+  2. Tarball download size-capped via Content-Length probe + chunked
+     read that aborts on overflow.
   3. SHA-512 integrity verified against the lockfile entry BEFORE the
-     tarball is even opened. A mismatch aborts that package -- the
-     scanner does not "fall back" to the registry-published hash.
-  4. tar extraction goes through `safe_extract`:
-        - rejects symbolic links (`SYMTYPE`, `LNKTYPE`)
-        - rejects absolute paths, `..` traversal, paths outside the
-          extract root after resolution
-        - rejects character / block / FIFO devices
-        - per-file uncompressed size cap (HARD_MAX_FILE_BYTES, default
-          8 MiB) AND cumulative cap (HARD_MAX_TOTAL_BYTES, default
-          128 MiB) AND member-count cap (HARD_MAX_MEMBERS, default
-          50_000)
-        - tar reads happen via `tarfile.open(mode='r|gz')` streaming
-          so an oversized file is detected before write
-  5. NOTHING from the extracted tree is ever executed. Files are read
-     as raw bytes, decoded with `errors='replace'`, and grepped. We
-     never call `node`, `eval`, `compile`, `subprocess.run`,
-     `os.system`, or anything that would touch the tarball's
-     declared scripts.
-  6. Tempdir is created with `tempfile.mkdtemp(prefix='npm-scan-')`,
-     fully resolved with .resolve(), and registered with atexit to be
-     wiped on every termination path.
-  7. Stdlib only. No third-party deps -- adding one would itself be a
-     supply-chain liability.
+     tarball is opened; mismatch aborts that package (no fallback).
+  4. tar extraction via `safe_extract`: rejects symlinks, absolute /
+     `..` paths, device files; enforces per-file, cumulative, and
+     member-count caps; streams (`r|gz`) so oversize is caught early.
+  5. NOTHING extracted is executed -- files are read as bytes and
+     grepped only.
+  6. Tempdir resolved and atexit-wiped on every termination path.
+  7. Stdlib only (a dep would be a supply-chain liability itself).
 
-Exit codes
-==========
-
-  0  no findings of severity HIGH or higher
-  1  one or more HIGH/CRITICAL findings (or pre-scan structural
-     anomalies -- non-registry resolved URL, missing integrity)
-  2  internal error (lockfile missing, integrity mismatch on
-     download, malformed tarball, etc.)
-
-The script is meant to be run in CI on every PR that touches
-package-lock.json and on a nightly schedule.
+Exit codes: 0 = no HIGH+ findings; 1 = HIGH/CRITICAL or pre-scan
+structural anomaly; 2 = internal error. Run in CI per-PR and nightly.
 """
 
 from __future__ import annotations
@@ -565,12 +524,9 @@ CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ),
 )
 
-# Credentials a frontend package should NEVER need to read. Bare
-# substring match is too noisy (object-treeify ships a `docker` dev
-# script that mounts ~/.npmrc -- legitimate dev tooling, never run
-# at install time). We instead surface these only when they appear
-# inside a LIFECYCLE script (preinstall / install / postinstall /
-# prepare), which is the only path that runs automatically on
+# Credentials a frontend package should never read. Bare substring
+# match is too noisy (legit dev tooling mounts ~/.npmrc), so we flag
+# these only inside lifecycle scripts -- the only auto-run path on
 # `npm ci`. See `scan_package_json` below.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.npmrc", "npm credentials file"),
@@ -603,9 +559,8 @@ _JS_FETCH_EVAL = re.compile(
     """,
 )
 
-# `process.env.GITHUB_TOKEN` / `NPM_TOKEN` / `AWS_*` access in
-# top-level / install-time code is suspicious. We also catch
-# `os.environ["GITHUB_TOKEN"]` for the rare Python-in-npm postinstall.
+# Token env access in install-time code; also catches os.environ[...]
+# for the rare Python-in-npm postinstall.
 _JS_ENV_TOKEN = re.compile(
     r"""(process\.env\.|os\.environ\[?['"])(?:
         GITHUB_TOKEN | GH_TOKEN | NPM_TOKEN | NODE_AUTH_TOKEN
@@ -616,11 +571,9 @@ _JS_ENV_TOKEN = re.compile(
     re.VERBOSE,
 )
 
-# Suspicious lifecycle-script payloads. Anything in a package.json
-# `scripts` field that wgets/curls an external resource and executes
-# it. We do NOT block ALL curl/wget in scripts (some legit packages
-# fetch test fixtures into devDependencies), but we DO block the
-# fetch+exec chain.
+# Lifecycle-script fetch+exec chain: curl/wget an external resource
+# and run it. Bare curl/wget is allowed (legit fixture fetches); only
+# the fetch+exec chain is blocked.
 _LIFECYCLE_FETCH_EXEC = re.compile(
     r"""(?xs)
     (?:curl|wget|fetch|http\.get|axios\.get)\s+ # fetch verb
@@ -634,9 +587,8 @@ _LIFECYCLE_FETCH_EXEC = re.compile(
     """,
 )
 
-# Obfuscation: large JS file that is mostly one line of base64-ish
-# blob with a Function() / eval() bookend. Tuned against the
-# router_init.js shape (2.3 MB obfuscated single-blob).
+# Obfuscation: large single-line base64-ish blob behind Function()/
+# eval(). Tuned against the router_init.js shape (2.3 MB blob).
 _OBFUSC_BLOB = re.compile(
     r"""(?xs)
     (?:Function|eval)\s*\(\s*['"`]?
@@ -653,11 +605,9 @@ _OBFUSC_BLOB = re.compile(
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     """Return (entries, structural_findings).
 
-    Structural findings here are HIGH-severity refusals that should
-    short-circuit the scan -- a lockfile with non-registry resolved
-    URLs is itself a finding (covered by scripts/lockfile_supply_chain
-    _audit.py in detail; we surface a summary here so this scanner is
-    standalone-runnable).
+    Structural findings are HIGH-severity refusals that short-circuit
+    the scan (e.g. non-registry resolved URLs). A summary is surfaced
+    here so this scanner is standalone-runnable.
     """
     entries: list[PackageEntry] = []
     findings: list[Finding] = []
@@ -701,9 +651,8 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
         resolved = entry.get("resolved")
         if not resolved:
             continue
-        # Strict registry origin check. lockfile_supply_chain_audit
-        # already catches this; double-defend here so this scanner
-        # cannot be tricked into fetching from an attacker-chosen URL.
+        # Strict registry origin check so this scanner can't be tricked
+        # into fetching from an attacker-chosen URL.
         parsed = urllib.parse.urlparse(resolved)
         if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
             findings.append(
@@ -775,16 +724,12 @@ def download_tarball(
     timeout: float = HARD_HTTP_TIMEOUT_S,
     max_bytes: int = HARD_MAX_TARBALL_BYTES,
 ) -> tuple[Path, str | None]:
-    """Stream-download entry.resolved to dest. Verify SRI integrity.
+    """Stream-download entry.resolved to dest and verify SRI integrity.
 
-    Returns (downloaded_path, error_or_none). On any error the
-    returned path may not exist. Network access is restricted to
-    https://{ALLOWED_DOWNLOAD_HOST}/ -- the caller passes a Request
-    we already validated.
+    Returns (downloaded_path, error_or_none); on error the path may not
+    exist. Network access is restricted to ALLOWED_DOWNLOAD_HOST.
     """
-    # Re-assert hostname; the entry was validated at parse time but a
-    # defence-in-depth check here means a future refactor cannot
-    # accidentally bypass it.
+    # Re-assert hostname (defence-in-depth against a future refactor).
     parsed = urllib.parse.urlparse(entry.resolved)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
         return dest, (f"refused download from non-allowlisted URL {entry.resolved!r}")
@@ -873,8 +818,7 @@ def safe_extract(
     total = 0
     count = 0
     try:
-        # Open in streaming mode so we never seek backwards in the
-        # input. `r|gz` rejects malformed gzip frames immediately.
+        # Streaming mode (no backward seeks); `r|gz` rejects bad gzip.
         with tarfile.open(tarball_path, mode = "r|gz") as tf:
             for member in tf:
                 count += 1
@@ -889,9 +833,8 @@ def safe_extract(
                     return f"refused link member {name!r} (sym/lnk)"
                 if member.isdev() or member.isfifo():
                     return f"refused special member {name!r}"
-                # Cumulative cap is checked against DECLARED size up
-                # front to short-circuit obvious bombs without reading
-                # the body.
+                # Check declared size up front to short-circuit bombs
+                # without reading the body.
                 declared = max(member.size, 0)
                 if declared > HARD_MAX_BINARY_FILE_BYTES:
                     return (
@@ -903,9 +846,8 @@ def safe_extract(
                         f"cumulative bytes {total + declared} > cap "
                         f"{max_total_bytes} at {name!r}"
                     )
-                # Strip leading "package/" -- the npm convention. We do
-                # NOT trust npm to be right, so we explicitly resolve
-                # the destination and refuse anything that escapes.
+                # Resolve destination and refuse anything escaping root
+                # (don't trust the npm "package/" convention).
                 dest = extract_root / name
                 if not _is_within(extract_root, dest):
                     return f"refused escape: {name!r} resolved outside root"
@@ -919,10 +861,8 @@ def safe_extract(
                 src = tf.extractfile(member)
                 if src is None:
                     continue
-                # Sniff first 16 bytes to classify text vs binary.
-                # Text-cap members get the tight 16 MiB limit; binary
-                # members (executables, .node, .wasm, native libs)
-                # get the generous binary cap. We bound BOTH cases.
+                # Sniff first 16 bytes to classify text vs binary;
+                # each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
                 file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
@@ -941,8 +881,7 @@ def safe_extract(
                         f"({'binary' if is_binary else 'text'})"
                     )
                 total += len(data)
-                # Write with restrictive mode (rw-r--r--) so even if
-                # someone runs the extract dir nothing is executable.
+                # Restrictive mode (rw-r--r--): nothing executable.
                 with open(dest, "wb") as out:
                     out.write(data)
                 os.chmod(dest, 0o644)
@@ -1008,10 +947,8 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     ),
                 )
             )
-        # Credential file paths inside a lifecycle script are
-        # exfiltration prep -- npm runs these scripts automatically
-        # on `npm ci`. Manual `scripts.*` entries (like a `docker`
-        # dev script) are out of scope: npm does not run them.
+        # Cred file paths in a lifecycle script are exfil prep (npm
+        # auto-runs these on `npm ci`); manual scripts are out of scope.
         for path_substr, why in CRED_PATH_SUBSTRINGS:
             if path_substr in body:
                 findings.append(
@@ -1071,20 +1008,12 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
 
 
 def _host_in_outbound_context(text: str, host: str) -> bool:
-    """True if `host` appears in a way consistent with an outbound call.
+    """True if `host` appears consistent with an outbound call.
 
-    A bare `"169.254.169.254"` array literal (defensive blocklist) is
-    safe; a `fetch("http://169.254.169.254/...")` is not. The signal
-    is co-occurrence with either an HTTP URL scheme or a fetch verb
-    within a short window.
-
-    A defensive blocklist looks like:
-        const CLOUD_METADATA_IPS = ["169.254.169.254", "169.254.170.2"];
-    An exfil call looks like:
-        fetch("http://169.254.169.254/latest/meta-data/...")
-        http.request({ host: "169.254.169.254", path: "/..." })
+    A bare array literal (defensive blocklist) is safe; co-occurrence
+    with an HTTP URL scheme or a fetch verb in a short window is not.
     """
-    # Esc for use in a regex (IPs contain dots).
+    # Escape for regex (IPs contain dots).
     host_re = re.escape(host)
     # 1. URL form: http://host or https://host or //host/ or //host"
     url_form = re.compile(
@@ -1127,8 +1056,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Credential surfaces. Tier 1: hosts with no legitimate use,
-    # bare substring is enough.
+    # Cred surfaces, tier 1: hosts with no legit use; bare substring.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
@@ -1145,8 +1073,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Credential surfaces. Tier 2: hosts that do appear in defensive
-    # code; require co-occurrence with a fetch verb or URL prefix.
+    # Cred surfaces, tier 2: hosts that appear in defensive code too;
+    # require co-occurrence with a fetch verb or URL prefix.
     for needle, why in CRED_HOST_NEEDS_CONTEXT:
         if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
@@ -1164,11 +1092,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Credential PATHS are deliberately not scanned here; they have
-    # too high a false-positive rate at file scope (defensive code,
-    # docker mounts, AWS SDK docs strings). `scan_package_json`
-    # catches the malicious case -- credential paths inside a
-    # lifecycle script run automatically on `npm ci`.
+    # Credential PATHS aren't scanned here (too many FPs at file
+    # scope); scan_package_json catches them inside lifecycle scripts.
 
     # JS-specific regex.
     if _JS_FETCH_EVAL.search(text):
@@ -1211,9 +1136,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     return findings
 
 
-# Filename suffix decides which scanners run. We deliberately treat
-# *.cjs/*.mjs/*.ts the same as *.js -- attackers use whichever
-# extension the consumer's bundler / loader resolves.
+# Filename suffix decides which scanners run; .cjs/.mjs/.ts are
+# treated like .js (attackers use whichever the loader resolves).
 _TEXT_SUFFIXES = (
     ".js",
     ".mjs",
@@ -1241,12 +1165,9 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         lower = rel.lower()
         if not lower.endswith(_TEXT_SUFFIXES):
-            # Skip native binaries entirely -- regex over compiled
-            # machine code is just noise (false positives in WASM
-            # opcodes, .node BSS segments, image pixel data). Use
-            # content-magic detection so extensionless executables
-            # (eg `package/biome`) and versioned shared libraries
-            # are also skipped.
+            # Skip native binaries (regex over machine code is noise);
+            # content-magic detection also skips extensionless
+            # executables and versioned shared libraries.
             try:
                 if path.stat().st_size > HARD_MAX_TEXT_FILE_BYTES:
                     continue
@@ -1288,12 +1209,12 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
 
 
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
-    """Download + extract + scan a single package. Cleans up its dir.
+    """Download + extract + scan a single package; cleans up its dir.
 
     Returns (findings, error). `error` is non-None only on hard
-    failures (download error, integrity mismatch, malformed tarball);
-    on a clean run with findings the error is None and the caller
-    decides exit code based on severity.
+    failures (download, integrity mismatch, malformed tarball); on a
+    clean run with findings, error is None and the caller decides the
+    exit code from severity.
     """
     pkg_dir = workspace / f"{pkg.name.replace('/', '_')}-{pkg.version}"
     pkg_dir.mkdir(parents = True, exist_ok = True)

@@ -179,13 +179,9 @@ def MistralForCausalLM_fast_forward(
             # If attention_mask exists, it will be handled in the attention forward
 
         elif self.training:
-            # During training, LlamaModel_fast_forward's DPO embed-masking
-            # block requires a 2D attention_mask (it does
-            # inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)).
-            # Afterwards, LlamaModel_fast_forward sets attention_mask=None
-            # before the attention layers anyway, so leaving the 2D mask
-            # untouched here is safe and avoids converting to 4D (which would
-            # crash the DPO block).
+            # LlamaModel_fast_forward's DPO embed-masking block needs the 2D
+            # attention_mask; it nulls the mask before attention anyway, so
+            # leaving it 2D is safe and avoids a 4D conversion that crashes DPO.
             pass
 
         else:
