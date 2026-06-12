@@ -229,6 +229,17 @@ RUN set -eux \
        && ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)" \
        && ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')" \
        && ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')" \
+        # flashinfer-jit-cache: the runtime image ships no nvcc, so any
+        # flashinfer op missing from the cubin package would hit the JIT
+        # path and die (standalone `vllm serve` does exactly this for
+        # fmha_gen on sm_100a; in-process GRPO survives because zoo blocks
+        # the FlashInfer JIT). The precompiled cache removes the entire
+        # runtime-compile failure class for ~1.5 GB.
+       && { ${VENV}/bin/uv pip install \
+            --python ${VENV}/bin/python \
+            --index-url https://flashinfer.ai/whl/cu128 \
+            "flashinfer-jit-cache==0.6.6" \
+         || echo ">> flashinfer-jit-cache unavailable for ${TARGETARCH:-amd64}; vllm serve may require nvcc for uncached ops"; } \
        && echo ">> vLLM installed (numpy + numba re-upgraded post-vllm)"; \
         } || { \
             if [ "${TARGETARCH:-amd64}" != "amd64" ]; then \
@@ -411,9 +422,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # wget: notebooks fetch sample assets with `!wget URL`; without it the cell
 # "succeeds" with sh's not-found on stderr and the next cell crashes on the
 # missing file (the Whisper notebook died exactly this way).
+# ninja-build: flashinfer's cpp_ext JIT shells out to ninja; subprocesses
+# (e.g. `vllm serve` launched by unsloth.dataprep) do not always inherit the
+# venv bin on PATH, so the pip ninja alone is not reachable there.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl wget git libgomp1 \
-        gcc g++ zstd ffmpeg \
+        gcc g++ zstd ffmpeg ninja-build \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
