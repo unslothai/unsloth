@@ -71,8 +71,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
+  composerDraftKey,
+  readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
+  writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
@@ -83,6 +86,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -112,7 +116,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -950,6 +953,31 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+
+  // Per-thread draft autosave: restore on mount, then mirror composer text
+  // into localStorage (debounced) so a half-typed message survives a
+  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
+  // text even when no draft exists keeps a thread from inheriting the
+  // previous thread's composer contents.
+  const draftKey = composerDraftKey(activeThreadId);
+  const lastDraftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    const draft = readComposerDraft(draftKey) ?? "";
+    const composer = aui.composer();
+    if (composer.getState().isEditing) {
+      composer.setText(draft);
+    }
+  }, [draftKey, aui]);
+  useEffect(() => {
+    // After a thread switch composerText can still hold the previous
+    // thread's text; skip that cycle so it isn't saved under the new key.
+    if (lastDraftKeyRef.current !== draftKey) {
+      lastDraftKeyRef.current = draftKey;
+      return;
+    }
+    const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    return () => clearTimeout(t);
+  }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =
@@ -2568,6 +2596,38 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
+// Live in-place denoising canvas for DiffusionGemma: while generating, render the
+// latest per-step canvas snapshot in the bubble so the user watches the answer resolve
+// out of noise. Transient (store-only, cleared on run end), so the finished message
+// keeps only the committed markdown.
+const DiffusionCanvas: FC = () => {
+  const isRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
+  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
+  if (!isRunning || !canvas) {
+    return null;
+  }
+  const stepLabel =
+    canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
+  return (
+    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
+      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary/80">
+        <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
+        <span>Denoising</span>
+        <span className="opacity-60">
+          block {canvas.block + 1} - {stepLabel}
+        </span>
+      </div>
+      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/90">
+        {canvas.text}
+      </pre>
+    </div>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -2577,6 +2637,7 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
         <CancelledIndicator />
+        <DiffusionCanvas />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
