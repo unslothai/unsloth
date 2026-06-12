@@ -2,4 +2,4 @@
 # main venv's constraints.txt pin transformers==4.57.6 and forces uv to
 # backtrack unsloth. Relax to match the pin -- per-model 5.x routing
 # happens at runtime via the side-car venvs.
-transformers>=4.57.6
+transformers>=5.0.0rc3
