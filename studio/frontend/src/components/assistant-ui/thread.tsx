@@ -70,6 +70,7 @@ import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled"
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
@@ -161,30 +162,49 @@ const usePromptQueueUI = create<PromptQueueUIState>(() => ({
   isRunning: false, current: 0, total: 0,
 }));
 
-let promptQueueItems: string[] = [];
+type PromptQueueTarget = {
+  getThreadId: () => string | null;
+  append: (prompt: string) => void;
+  cancel: () => void;
+  isIndexing: () => boolean;
+};
+
+type PromptQueueItem = {
+  prompt: string;
+  target: PromptQueueTarget;
+};
+
+const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
+
+let promptQueueItems: PromptQueueItem[] = [];
 let promptQueueIndex = 0;
 let promptQueueIsRunning = false;
 let promptQueuePrevStoreRunning = false;
 let promptQueueStoreUnsub: (() => void) | null = null;
+let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Points to the current Composer's aui (updated every render), so it stays valid
-// after a remount.
-let getPromptQueueAui: () => ReturnType<typeof useAui> = () => {
-  throw new Error("aui not initialised");
-};
-
-function stopPromptQueueSubscription() {
+function stopPromptQueueSubscription({
+  resetRunningState = true,
+}: {
+  resetRunningState?: boolean;
+} = {}) {
   if (promptQueueStoreUnsub) {
     promptQueueStoreUnsub();
     promptQueueStoreUnsub = null;
   }
-  promptQueuePrevStoreRunning = false;
+  if (resetRunningState) {
+    promptQueuePrevStoreRunning = false;
+  }
 }
 
 function resetPromptQueue(showToast = false) {
   promptQueueIsRunning = false;
   promptQueueItems = [];
   promptQueueIndex = 0;
+  if (promptQueueRetryTimer) {
+    clearTimeout(promptQueueRetryTimer);
+    promptQueueRetryTimer = null;
+  }
   stopPromptQueueSubscription();
   usePromptQueueUI.setState({ isRunning: false, current: 0, total: 0 });
   if (showToast) {
@@ -196,15 +216,72 @@ function queueToastDescription(prompt: string) {
   return prompt.length > 80 ? `${prompt.slice(0, 80)}...` : prompt;
 }
 
-function appendQueuedPrompt(prompt: string) {
+function appendQueuedPrompt(item: PromptQueueItem) {
+  item.target.append(item.prompt);
+}
+
+async function targetHasIndexingDocuments(item: PromptQueueItem) {
+  if (item.target.isIndexing()) {
+    return true;
+  }
+  const state = useChatRuntimeStore.getState();
+  if (
+    !state.ragEnabled ||
+    state.ragSource.type !== "thread"
+  ) {
+    return false;
+  }
+  const threadId = item.target.getThreadId();
+  if (!threadId) {
+    return false;
+  }
+  try {
+    const documents = await listThreadDocuments(threadId);
+    return documents.some(
+      (doc) => doc.status === "pending" || doc.status === "running",
+    );
+  } catch {
+    return item.target.isIndexing();
+  }
+}
+
+function scheduleQueuedPromptDispatch(item: PromptQueueItem, delay: number) {
+  if (promptQueueRetryTimer) {
+    clearTimeout(promptQueueRetryTimer);
+  }
+  promptQueueRetryTimer = setTimeout(() => {
+    promptQueueRetryTimer = null;
+    void dispatchQueuedPrompt(item);
+  }, delay);
+}
+
+async function dispatchQueuedPrompt(item: PromptQueueItem) {
   if (!promptQueueIsRunning) {
     return;
   }
-  getPromptQueueAui().thread().append({
+  if (await targetHasIndexingDocuments(item)) {
+    scheduleQueuedPromptDispatch(item, PROMPT_QUEUE_INDEXING_RETRY_MS);
+    return;
+  }
+  if (!promptQueueIsRunning) {
+    return;
+  }
+  appendQueuedPrompt(item);
+}
+
+function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
+  return {
+    prompt,
+    target,
+  };
+}
+
+function appendTextToThread(prompt: string) {
+  return {
     role: "user",
     content: [{ type: "text", text: prompt }],
     createdAt: new Date(),
-  } as never);
+  } as never;
 }
 
 function advancePromptQueue() {
@@ -220,16 +297,16 @@ function advancePromptQueue() {
   });
   const next = promptQueueItems[nextIndex];
   toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
-    description: queueToastDescription(next),
+    description: queueToastDescription(next.prompt),
   });
   promptQueuePrevStoreRunning = false;
-  setTimeout(() => {
-    appendQueuedPrompt(next);
-  }, 100);
+  scheduleQueuedPromptDispatch(next, 100);
 }
 
 function startPromptQueueSubscription() {
-  stopPromptQueueSubscription();
+  const wasWaitingForRun = promptQueuePrevStoreRunning;
+  stopPromptQueueSubscription({ resetRunningState: false });
+  promptQueuePrevStoreRunning = wasWaitingForRun;
   // runningByThreadId tracks the actual thread (not aui.thread()), so detection
   // survives navigation.
   promptQueueStoreUnsub = useChatRuntimeStore.subscribe((state) => {
@@ -253,14 +330,20 @@ function startPromptQueueSubscription() {
   }
 }
 
-function startPromptQueue(items: string[], waitForCurrentRun = false) {
+function startPromptQueue(
+  items: string[],
+  target: PromptQueueTarget,
+  waitForCurrentRun = false,
+) {
   const filtered = items.map((item) => item.trim()).filter(Boolean);
   if (filtered.length === 0) {
     return;
   }
 
   if (promptQueueIsRunning) {
-    promptQueueItems.push(...filtered);
+    promptQueueItems.push(
+      ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
+    );
     usePromptQueueUI.setState({
       isRunning: true,
       current: Math.max(promptQueueIndex + 1, 0),
@@ -275,7 +358,9 @@ function startPromptQueue(items: string[], waitForCurrentRun = false) {
   const shouldWaitForCurrentRun =
     waitForCurrentRun &&
     Object.keys(useChatRuntimeStore.getState().runningByThreadId).length > 0;
-  promptQueueItems = filtered;
+  promptQueueItems = filtered.map((prompt) =>
+    createQueuedPrompt(prompt, target),
+  );
   promptQueueIndex = shouldWaitForCurrentRun ? -1 : 0;
   promptQueueIsRunning = true;
   promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
@@ -292,9 +377,20 @@ function startPromptQueue(items: string[], waitForCurrentRun = false) {
   );
   startPromptQueueSubscription();
   if (!shouldWaitForCurrentRun) {
-    setTimeout(() => {
-      appendQueuedPrompt(filtered[0]);
-    }, 50);
+    const first = promptQueueItems[0];
+    if (first) {
+      scheduleQueuedPromptDispatch(first, 50);
+    }
+  }
+}
+
+function stopPromptQueueRun() {
+  const activeTarget = promptQueueItems[Math.max(promptQueueIndex, 0)]?.target;
+  resetPromptQueue();
+  try {
+    activeTarget?.cancel();
+  } catch {
+    // The active run may have already ended.
   }
 }
 
@@ -1089,9 +1185,31 @@ const Composer: FC<{
   // While this thread's docs index, hold the send and fire it once they finish so
   // retrieval covers all of them.
   const [indexingActive, setIndexingActive] = useState(false);
+  const indexingActiveRef = useRef(false);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
+
+  const handleIndexingChange = useCallback((active: boolean) => {
+    indexingActiveRef.current = active;
+    setIndexingActive(active);
+  }, []);
+
+  const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
+    const thread = aui.thread();
+    const threadListItem = aui.threadListItem();
+    return {
+      getThreadId: () => {
+        const state = threadListItem.getState();
+        return state.remoteId ?? referenceThreadId ?? state.id ?? null;
+      },
+      append: (prompt) => {
+        thread.append(appendTextToThread(prompt));
+      },
+      cancel: () => thread.cancelRun(),
+      isIndexing: () => indexingActiveRef.current,
+    };
+  }, [aui, referenceThreadId]);
 
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
@@ -1186,7 +1304,7 @@ const Composer: FC<{
         flushResourcesSync(() => {
           aui.composer().setText("");
         });
-        startPromptQueue([queuedPrompt], true);
+        startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
         return;
       }
 
@@ -1239,6 +1357,7 @@ const Composer: FC<{
       canQueueCurrentPrompt,
       closeOverlay,
       composerText,
+      createPromptQueueTarget,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
@@ -1251,24 +1370,15 @@ const Composer: FC<{
     ],
   );
 
-  // Update the getter every render so the queue always calls the current
-  // Composer's aui (post-remount).
-  getPromptQueueAui = () => aui;
-
   const stopQueue = useCallback(() => {
-    resetPromptQueue();
-    try {
-      getPromptQueueAui().thread().cancelRun();
-    } catch {
-      // The active run may have already ended.
-    }
+    stopPromptQueueRun();
   }, []);
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = false) => {
-      startPromptQueue(items, waitForCurrentRun);
+      startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [],
+    [createPromptQueueTarget],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -1279,7 +1389,7 @@ const Composer: FC<{
       <PendingAudioChip />
       <ThreadDocumentsBar
         threadId={referenceThreadId}
-        onIndexingChange={setIndexingActive}
+        onIndexingChange={handleIndexingChange}
       />
       <ToolStatusDisplay />
       <div
@@ -1336,7 +1446,7 @@ const Composer: FC<{
             flushResourcesSync(() => {
               aui.composer().setText("");
             });
-            startPromptQueue([queuedPrompt], true);
+            startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
           }}
           onSendClick={interceptSend}
           onStopClick={stopQueue}
