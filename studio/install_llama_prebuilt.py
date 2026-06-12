@@ -47,6 +47,38 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
+# DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
+# elevation (its manifest is asInvoker), so this is just harmless belt-and-
+# suspenders for manifest-elevating tools. The real guard is _amd_smi_allowed():
+# we don't spawn amd-smi on Windows w/o a HIP SDK (or opt-in).
+if platform.system() == "Windows":
+    os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi here.
+
+    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
+    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows
+    when a HIP SDK is detectable (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1;
+    Linux/macOS always allowed. When skipped, the gfx arch still arrives via the
+    forwarded --rocm-gfx, so prebuilt selection is unaffected.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if shutil.which("hipinfo"):
+        return True
+    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        _root = os.environ.get(_var)
+        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+            return True
+    return False
+
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
     """Return Windows-only subprocess kwargs that suppress console windows."""
@@ -70,7 +102,12 @@ def windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
-def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+def env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+) -> int:
     raw = os.environ.get(name)
     if raw is None:
         value = default
@@ -104,9 +141,7 @@ UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
 
 LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
-LEMONADE_ROCM_RELEASES_API = (
-    f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
-)
+LEMONADE_ROCM_RELEASES_API = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
 
 
 def _lemonade_release_api_for(llama_tag: str) -> str:
@@ -135,15 +170,20 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
     )
 
 
-TEST_MODEL_URL = (
-    "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
-)
+TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
+# Master switch for the staged runtime smoke test (llama-quantize + llama-server)
+# in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
+# JIT-compiles CUDA kernels on first load and stalls every install and update by
+# minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
+# are kept intact -- set this to True to re-enable them.
+_RUN_STAGED_PREBUILT_VALIDATION = False
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
+HF_AUTH_HOSTS = {"huggingface.co", "www.huggingface.co"}
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
@@ -176,61 +216,6 @@ _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
-# sm_103 (B300 / GB300 Blackwell Ultra) is not built natively but runs on the
-# bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
-# It is listed in every bundle that ships the sm_100 build (the "newer" and
-# "portable" classes) so those hosts get a prebuilt instead of a source compile.
-DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
-    "cuda12-older": {
-        "runtime_line": "cuda12",
-        "coverage_class": "older",
-        "supported_sms": ["70", "75", "80", "86", "89"],
-        "min_sm": 70,
-        "max_sm": 89,
-        "rank": 10,
-    },
-    "cuda12-newer": {
-        "runtime_line": "cuda12",
-        "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "103", "120"],
-        "min_sm": 86,
-        "max_sm": 120,
-        "rank": 20,
-    },
-    "cuda12-portable": {
-        "runtime_line": "cuda12",
-        "coverage_class": "portable",
-        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
-        "min_sm": 70,
-        "max_sm": 120,
-        "rank": 30,
-    },
-    "cuda13-older": {
-        "runtime_line": "cuda13",
-        "coverage_class": "older",
-        "supported_sms": ["75", "80", "86", "89"],
-        "min_sm": 75,
-        "max_sm": 89,
-        "rank": 40,
-    },
-    "cuda13-newer": {
-        "runtime_line": "cuda13",
-        "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "103", "120"],
-        "min_sm": 86,
-        "max_sm": 120,
-        "rank": 50,
-    },
-    "cuda13-portable": {
-        "runtime_line": "cuda13",
-        "coverage_class": "portable",
-        "supported_sms": ["75", "80", "86", "89", "90", "100", "103", "120"],
-        "min_sm": 75,
-        "max_sm": 120,
-        "rank": 60,
-    },
-}
-
 # Lowest CUDA major we ship prebuilts for, and the highest major we probe for
 # installed runtime libraries. Detection and runtime-line derivation are
 # generated per major so a new toolkit (cuda14, ...) needs no code change while
@@ -256,12 +241,8 @@ _BLACKWELL_MIN_SM = 120
 # windows-cuda build at or above this already covers Blackwell and makes the
 # older pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
-_PINNED_BLACKWELL_LLAMA_SHA256 = (
-    "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
-)
-_PINNED_BLACKWELL_CUDART_SHA256 = (
-    "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
-)
+_PINNED_BLACKWELL_LLAMA_SHA256 = "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
+_PINNED_BLACKWELL_CUDART_SHA256 = "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
@@ -269,35 +250,6 @@ def _cuda_runtime_lines_for_major(major: int) -> list[str]:
     down to the minimum we ship. A driver runs its own major and any older one
     (backward compatibility)."""
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
-
-
-def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None":
-    """Profile (runtime line + sm coverage) for a linux-x64-cuda<major>-<class>
-    bundle. Known majors use their published coverage; an unknown future major
-    reuses the newest known major's coverage for the same class as a forward
-    default, with the post-build GPU smoke test as the backstop."""
-    known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
-    if known is not None:
-        return known
-    m = re.fullmatch(
-        r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile
-    )
-    if not m:
-        return None
-    base_key = max(
-        (
-            k
-            for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
-            if v["coverage_class"] == m.group("klass")
-        ),
-        key = lambda k: int(re.match(r"cuda(\d+)-", k).group(1)),
-        default = None,
-    )
-    if base_key is None:
-        return None
-    profile = dict(DIRECT_LINUX_BUNDLE_PROFILES[base_key])
-    profile["runtime_line"] = f"cuda{m.group('major')}"
-    return profile
 
 
 @dataclass
@@ -358,6 +310,10 @@ class PublishedLlamaArtifact:
     max_sm: int | None
     bundle_profile: str | None
     rank: int
+    # ROCm bundles only: the umbrella gfx target (e.g. "gfx110X") and the
+    # concrete gfx archs it covers (e.g. ["gfx1100", "gfx1101", ...]).
+    gfx_target: str | None = None
+    mapped_targets: list[str] = field(default_factory = list)
 
 
 @dataclass
@@ -510,8 +466,14 @@ def is_busy_lock_error(exc: BaseException) -> bool:
     return False
 
 
+# Status logs default to stderr so resolver modes keep stdout machine-readable
+# (setup.sh json.load()s the whole stdout). main() flips this for the install
+# path, where PowerShell otherwise renders stderr as NativeCommandError noise.
+_LOG_TO_STDOUT = False
+
+
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stderr)
+    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -535,6 +497,10 @@ def should_send_github_auth(url: str | None) -> bool:
     return parsed_hostname(url) in GITHUB_AUTH_HOSTS
 
 
+def should_send_hf_auth(url: str | None) -> bool:
+    return parsed_hostname(url) in HF_AUTH_HOSTS
+
+
 def auth_headers(url: str | None = None) -> dict[str, str]:
     headers = {
         "User-Agent": "unsloth-studio-llama-prebuilt",
@@ -542,7 +508,33 @@ def auth_headers(url: str | None = None) -> dict[str, str]:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token and should_send_github_auth(url):
         headers["Authorization"] = f"Bearer {token}"
+        return headers
+    # Anonymous huggingface.co fetches share a per-IP rate limit that CI
+    # fleets exhaust (HTTP 429), sinking the prebuilt path into a source
+    # build. Authenticate when a token is available.
+    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if hf_token and should_send_hf_auth(url):
+        headers["Authorization"] = f"Bearer {hf_token}"
     return headers
+
+
+class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Drop Authorization when a redirect leaves the original host.
+
+    huggingface.co redirects file downloads to CDN hosts whose signed URLs
+    can reject foreign Authorization headers; urllib forwards headers to
+    redirect targets by default (requests/huggingface_hub strip them).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
+            new_request.headers.pop("Authorization", None)
+            new_request.unredirected_hdrs.pop("Authorization", None)
+        return new_request
+
+
+_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
 
 
 def github_api_headers(url: str | None = None) -> dict[str, str]:
@@ -788,9 +780,9 @@ def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
     candidate_commit = normalize_source_commit(candidate_ref)
     requested_commit = normalize_source_commit(requested_ref)
     if candidate_commit and requested_commit:
-        return candidate_commit.startswith(
-            requested_commit
-        ) or requested_commit.startswith(candidate_commit)
+        return candidate_commit.startswith(requested_commit) or requested_commit.startswith(
+            candidate_commit
+        )
     return False
 
 
@@ -820,9 +812,7 @@ def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]
 
 
 def windows_cuda_asset_aliases(
-    asset_name: str,
-    *,
-    compatibility_tag: str | None = None,
+    asset_name: str, *, compatibility_tag: str | None = None
 ) -> list[str]:
     aliases: list[str] = []
     legacy_match = re.fullmatch(
@@ -878,6 +868,16 @@ def format_byte_count(num_bytes: float) -> str:
     return f"{num_bytes:.1f} B"
 
 
+def _progress_percent_step() -> int:
+    """Non-tty milestone granularity. The in-app updater sets
+    UNSLOTH_PROGRESS_PERCENT_STEP=5 to stream finer progress lines."""
+    try:
+        step = int(os.environ.get("UNSLOTH_PROGRESS_PERCENT_STEP", "25"))
+    except ValueError:
+        return 25
+    return min(max(step, 1), 50)
+
+
 class DownloadProgress:
     def __init__(self, label: str, total_bytes: int | None) -> None:
         self.label = label
@@ -886,19 +886,21 @@ class DownloadProgress:
         self.last_emit = 0.0
         term_ok = os.environ.get("TERM", "").lower() != "dumb"
         self.stream = (
-            sys.stderr
-            if sys.stderr.isatty()
-            else sys.stdout
-            if sys.stdout.isatty()
-            else sys.stderr
+            sys.stderr if sys.stderr.isatty() else sys.stdout if sys.stdout.isatty() else sys.stderr
         )
         self.is_tty = term_ok and self.stream.isatty()
         self.completed = False
+        self.milestone_step = _progress_percent_step()
         self.last_milestone_percent = -1
         self.last_milestone_bytes = 0
         self.has_rendered_tty_progress = False
 
-    def _render(self, downloaded_bytes: int, *, final: bool = False) -> str:
+    def _render(
+        self,
+        downloaded_bytes: int,
+        *,
+        final: bool = False,
+    ) -> str:
         elapsed = max(time.monotonic() - self.start_time, 1e-6)
         speed = downloaded_bytes / elapsed
         speed_text = f"{format_byte_count(speed)}/s"
@@ -918,10 +920,7 @@ class DownloadProgress:
         if self.is_tty:
             elapsed = now - self.start_time
             if not self.has_rendered_tty_progress:
-                if (
-                    self.total_bytes is not None
-                    and downloaded_bytes >= self.total_bytes
-                ):
+                if self.total_bytes is not None and downloaded_bytes >= self.total_bytes:
                     return
                 if elapsed < TTY_PROGRESS_START_DELAY_SECONDS:
                     return
@@ -942,11 +941,9 @@ class DownloadProgress:
         should_emit = False
         if self.total_bytes is not None:
             percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
-            milestone_percent = min((percent // 25) * 25, 100)
-            if (
-                milestone_percent > self.last_milestone_percent
-                and milestone_percent < 100
-            ):
+            step = self.milestone_step
+            milestone_percent = min((percent // step) * step, 100)
+            if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
                 self.last_milestone_percent = milestone_percent
                 should_emit = True
         else:
@@ -994,16 +991,12 @@ def download_bytes(
     for attempt in range(1, attempts + 1):
         try:
             request = urllib.request.Request(url, headers = headers or auth_headers(url))
-            with urllib.request.urlopen(request, timeout = timeout) as response:
+            with _URL_OPENER.open(request, timeout = timeout) as response:
                 total_bytes: int | None = None
                 content_length = response.headers.get("Content-Length")
                 if content_length and content_length.isdigit():
                     total_bytes = int(content_length)
-                progress = (
-                    DownloadProgress(progress_label, total_bytes)
-                    if progress_label
-                    else None
-                )
+                progress = DownloadProgress(progress_label, total_bytes) if progress_label else None
                 data = bytearray()
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -1033,17 +1026,13 @@ def fetch_json(url: str) -> Any:
             data = download_bytes(
                 url,
                 timeout = 30,
-                headers = github_api_headers(url)
-                if is_github_api_url(url)
-                else auth_headers(url),
+                headers = github_api_headers(url) if is_github_api_url(url) else auth_headers(url),
             )
         except urllib.error.HTTPError as exc:
             if exc.code == 403 and is_github_api_url(url):
                 hint = ""
                 if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
-                    hint = (
-                        "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
-                    )
+                    hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
                 raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
             raise
         if not data:
@@ -1052,9 +1041,7 @@ def fetch_json(url: str) -> Any:
             try:
                 payload = json.loads(data.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                last_decode_exc = RuntimeError(
-                    f"downloaded invalid JSON from {url}: {exc}"
-                )
+                last_decode_exc = RuntimeError(f"downloaded invalid JSON from {url}: {exc}")
             else:
                 if not isinstance(payload, dict) and not isinstance(payload, list):
                     raise RuntimeError(
@@ -1083,14 +1070,12 @@ def download_file(url: str, destination: Path) -> None:
                 delete = False,
             ) as handle:
                 tmp_path = Path(handle.name)
-                with urllib.request.urlopen(request, timeout = 120) as response:
+                with _URL_OPENER.open(request, timeout = 120) as response:
                     total_bytes: int | None = None
                     content_length = response.headers.get("Content-Length")
                     if content_length and content_length.isdigit():
                         total_bytes = int(content_length)
-                    progress = DownloadProgress(
-                        f"Downloading {destination.name}", total_bytes
-                    )
+                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
                     downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
@@ -1115,27 +1100,19 @@ def download_file(url: str, destination: Path) -> None:
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
                 raise
-            log(
-                f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
-            )
+            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
             sleep_backoff(attempt, exc = exc)
     assert last_exc is not None
     raise last_exc
 
 
 def download_file_verified(
-    url: str,
-    destination: Path,
-    *,
-    expected_sha256: str | None,
-    label: str,
+    url: str, destination: Path, *, expected_sha256: str | None, label: str
 ) -> None:
     normalized_expected = normalize_sha256_digest(expected_sha256)
     if not normalized_expected:
         download_file(url, destination)
-        log(
-            f"downloaded {label} without a published sha256; relying on install validation"
-        )
+        log(f"downloaded {label} without a published sha256; relying on install validation")
         return
 
     for attempt in range(1, 3):
@@ -1171,6 +1148,20 @@ def commit_source_archive_urls(repo: str, source_commit: str) -> list[str]:
         f"https://codeload.github.com/{repo}/tar.gz/{encoded_commit}",
         f"https://github.com/{repo}/archive/{encoded_commit}.tar.gz",
     ]
+
+
+def release_asset_download_url(
+    repo: str | None, release_tag: str | None, asset_name: str | None
+) -> str | None:
+    """Direct download URL for a release asset, or None if any part is missing.
+    A mix build's merged commit is never pushed, so its source tree is only
+    reachable as this asset (codeload would 404 on the merge commit)."""
+    if not repo or not release_tag or not asset_name:
+        return None
+    return (
+        f"https://github.com/{repo}/releases/download/"
+        f"{urllib.parse.quote(release_tag, safe = '')}/{urllib.parse.quote(asset_name, safe = '')}"
+    )
 
 
 def github_release_assets(repo: str, tag: str) -> dict[str, str]:
@@ -1219,9 +1210,7 @@ def latest_upstream_release_tag() -> str:
     payload = fetch_json(UPSTREAM_RELEASES_API)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
-        raise RuntimeError(
-            f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
-        )
+        raise RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
     return tag
 
 
@@ -1256,19 +1245,13 @@ def iter_release_payloads_by_time(
         yield github_release(repo, published_release_tag)
         return
 
-    if (
-        requested_tag
-        and requested_tag != "latest"
-        and is_release_tag_like(requested_tag)
-    ):
+    if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
         try:
             yield github_release(repo, requested_tag)
             return
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                log(
-                    f"release tag {requested_tag} not found in {repo}; scanning recent releases"
-                )
+                log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
             else:
                 raise
         except Exception:
@@ -1276,21 +1259,15 @@ def iter_release_payloads_by_time(
 
     releases = [
         release
-        for release in github_releases(
-            repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
-        )
-        if isinstance(release, dict)
-        and not release.get("draft")
-        and not release.get("prerelease")
+        for release in github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        if isinstance(release, dict) and not release.get("draft") and not release.get("prerelease")
     ]
     releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
         yield release
 
 
-def direct_release_matches_request(
-    *, release_tag: str, llama_tag: str, requested_tag: str
-) -> bool:
+def direct_release_matches_request(*, release_tag: str, llama_tag: str, requested_tag: str) -> bool:
     if requested_tag == "latest":
         return True
     for candidate in (release_tag, llama_tag):
@@ -1392,10 +1369,7 @@ def parse_direct_linux_release_bundle(
 
 
 def direct_linux_release_plan(
-    release: dict[str, Any],
-    host: HostInfo,
-    repo: str,
-    requested_tag: str,
+    release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
     bundle = parse_direct_linux_release_bundle(repo, release)
     if bundle is None:
@@ -1410,8 +1384,8 @@ def direct_linux_release_plan(
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
         # Prefer the cudart major Studio loads at runtime (torch's bundled
-        # libcudart), not the newest detected on disk. Without this a stray
-        # cuda13 runtime outranks the torch cuda12 the binary links against.
+        # libcudart), not the newest on disk. Otherwise a stray cuda13
+        # runtime outranks the torch cuda12 the binary links against.
         torch_preference = detect_torch_cuda_runtime_preference(host)
         selection = linux_cuda_choice_from_release(
             host,
@@ -1424,23 +1398,28 @@ def direct_linux_release_plan(
     if host.has_rocm and not host.has_usable_nvidia:
         # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
         # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
-        # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
-        # The "ubuntu" label is lemonade's asset naming convention only --
-        # the binary is a manylinux-style glibc build that runs on Arch,
-        # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
-        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
-        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
-        # so the caller triggers the HIP source build, not silently install a
-        # CPU-only binary.
+        # Strix Halo) the upstream combined-ROCm tarball doesn't cover.
+        # "ubuntu" is lemonade's asset naming convention only -- the binary
+        # is a manylinux-style glibc build that runs on Arch, Fedora,
+        # openSUSE, etc. with a recent-enough glibc. Do NOT append the CPU
+        # asset for ROCm-only hosts: if lemonade fails validation we want
+        # validate_prebuilt_attempts to raise PrebuiltFallback so the caller
+        # triggers the HIP source build, not silently install a CPU binary.
         lemonade_choice = resolve_lemonade_rocm_choice(
             host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
         if lemonade_choice is not None:
             attempts.append(lemonade_choice)
-    else:
+    elif not host.has_usable_nvidia:
         cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
         if cpu_choice is not None:
             attempts.append(cpu_choice)
+    # NVIDIA hosts whose CUDA selection produced nothing fall through to the
+    # raise below (mirroring the ROCm policy above): the caller then walks
+    # back to an older release that still ships a usable CUDA line instead of
+    # silently installing a CPU binary on a GPU host. Today's walk-back only
+    # works because partial releases ship no CPU bundle; this keeps it working
+    # if a future partial release does.
     if not attempts:
         raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
     approved_checksums = synthetic_checksums_for_release(
@@ -1454,9 +1433,9 @@ def direct_linux_release_plan(
     ):
         approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
         # Require exact source provenance for branch/pull/commit releases.
-        # Mirrors validated_checksums_for_bundle so incomplete metadata
-        # fails closed instead of degrading to the legacy branch-as-tag
-        # source hydration path that this PR is meant to eliminate.
+        # Mirrors validated_checksums_for_bundle so incomplete metadata fails
+        # closed instead of degrading to the legacy branch-as-tag source
+        # hydration path this PR eliminates.
         if (
             not approved_checksums.source_commit
             or exact_source_archive_hash(approved_checksums) is None
@@ -1477,10 +1456,7 @@ def direct_linux_release_plan(
 
 
 def direct_upstream_release_plan(
-    release: dict[str, Any],
-    host: HostInfo,
-    repo: str,
-    requested_tag: str,
+    release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
     release_tag = release.get("tag_name")
     if not isinstance(release_tag, str) or not release_tag:
@@ -1506,6 +1482,7 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
             # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
             # build over the CPU-only cuda-12.4 the in-release gating leaves.
             pinned = _pinned_windows_cuda_fallback(host, attempts)
@@ -1590,6 +1567,14 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
+        if host.has_rocm:
+            # Lemonade first, mirroring the Windows ROCm branch above, so a
+            # ROCm host routed to ggml-org does not silently get the CPU build.
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+            )
+            if lemonade_choice is not None:
+                attempts.append(lemonade_choice)
         asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -1664,19 +1649,19 @@ def resolve_simple_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
-    requested_tag = normalized_requested_llama_tag(llama_tag)
-    # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
-    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
-    # x64 binary, so fall back to a source build that targets the GPU rather than
-    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
-    if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
-        raise PrebuiltFallback(
-            f"{repo} ships only linux-x64 prebuilts; "
-            f"{host.machine or 'non-x64'} Linux falls back to source build"
+    # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
+    # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
+    # manifest and is selected by asset filename in the loop below.
+    if repo == DEFAULT_PUBLISHED_REPO:
+        return _fork_manifest_release_plans(
+            llama_tag,
+            host,
+            published_repo,
+            published_release_tag,
+            max_release_fallbacks = max_release_fallbacks,
         )
-    allow_older_release_fallback = (
-        requested_tag == "latest" and not published_release_tag
-    )
+    requested_tag = normalized_requested_llama_tag(llama_tag)
+    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     # macOS: pin the last upstream build that loads on a pre-26 host instead of
     # fetching the latest (macOS 26 only) build and walking back release by
     # release. No-op on macOS 26+, unknown version, non-macOS, and the fork.
@@ -1690,17 +1675,10 @@ def resolve_simple_install_release_plans(
     last_error: PrebuiltFallback | None = None
 
     try:
-        releases = iter_release_payloads_by_time(
-            repo, published_release_tag, requested_tag
-        )
+        releases = iter_release_payloads_by_time(repo, published_release_tag, requested_tag)
         for release in releases:
             try:
-                if host.is_linux and repo == "unslothai/llama.cpp":
-                    plan = direct_linux_release_plan(release, host, repo, requested_tag)
-                else:
-                    plan = direct_upstream_release_plan(
-                        release, host, repo, requested_tag
-                    )
+                plan = direct_upstream_release_plan(release, host, repo, requested_tag)
                 if plan is None:
                     continue
             except PrebuiltFallback as exc:
@@ -1720,17 +1698,13 @@ def resolve_simple_install_release_plans(
     except PrebuiltFallback:
         raise
     except Exception as exc:
-        raise PrebuiltFallback(
-            f"failed to inspect published releases in {repo}: {exc}"
-        ) from exc
+        raise PrebuiltFallback(f"failed to inspect published releases in {repo}: {exc}") from exc
 
     if plans:
         return requested_tag, plans
     if last_error is not None:
         raise last_error
-    raise PrebuiltFallback(
-        f"no installable published llama.cpp releases were found in {repo}"
-    )
+    raise PrebuiltFallback(f"no installable published llama.cpp releases were found in {repo}")
 
 
 def normalized_requested_llama_tag(requested_tag: str | None) -> str:
@@ -1782,9 +1756,7 @@ def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
     return [token.strip() for token in raw.split(",") if token.strip()]
 
 
-def supports_explicit_visible_device_matching(
-    visible_devices: list[str] | None,
-) -> bool:
+def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
     if not visible_devices:
         return False
     for token in visible_devices:
@@ -1796,8 +1768,7 @@ def supports_explicit_visible_device_matching(
 
 
 def select_visible_gpu_rows(
-    gpu_rows: Iterable[tuple[str, str, str]],
-    visible_devices: list[str] | None,
+    gpu_rows: Iterable[tuple[str, str, str]], visible_devices: list[str] | None
 ) -> list[tuple[str, str, str]]:
     rows = list(gpu_rows)
     if visible_devices is None:
@@ -1835,9 +1806,7 @@ def dir_provides_exact_library(directory: str | Path, library: str) -> bool:
     return candidate.exists() and (candidate.is_file() or candidate.is_symlink())
 
 
-def linux_runtime_dirs_for_required_libraries(
-    required_libraries: Iterable[str],
-) -> list[str]:
+def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]) -> list[str]:
     required = [library for library in required_libraries if library]
     candidates: list[str | Path] = []
 
@@ -1853,9 +1822,7 @@ def linux_runtime_dirs_for_required_libraries(
         value = os.environ.get(name)
         if value:
             cuda_roots.append(Path(value))
-    cuda_roots.extend(
-        Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*")
-    )
+    cuda_roots.extend(Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*"))
 
     for root in cuda_roots:
         candidates.extend(
@@ -1880,8 +1847,7 @@ def linux_runtime_dirs_for_required_libraries(
         )
     )
     candidates.extend(
-        Path(path)
-        for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
+        Path(path) for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
     )
     candidates.extend(Path(path) for path in python_runtime_dirs())
     candidates.extend(Path(path) for path in ldconfig_runtime_dirs(required))
@@ -1893,9 +1859,7 @@ def linux_runtime_dirs_for_required_libraries(
     matched: list[tuple[int, str]] = []
     for directory in resolved:
         base = Path(directory)
-        provided = sum(
-            1 for library in required if dir_provides_exact_library(directory, library)
-        )
+        provided = sum(1 for library in required if dir_provides_exact_library(directory, library))
         if provided:
             matched.append((provided, directory))
 
@@ -1916,9 +1880,7 @@ def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
         matching_dirs: list[str] = []
         for library in required:
             matched_dirs = [
-                directory
-                for directory in dirs
-                if any(Path(directory).glob(f"{library}*"))
+                directory for directory in dirs if any(Path(directory).glob(f"{library}*"))
             ]
             if not matched_dirs:
                 library_matches = {}
@@ -1955,17 +1917,13 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     if not isinstance(asset_name, str) or not asset_name:
         raise ValueError("artifact.asset_name was missing or not a string")
     if not isinstance(install_kind, str) or not install_kind:
-        raise ValueError(
-            f"artifact {asset_name} install_kind was missing or not a string"
-        )
+        raise ValueError(f"artifact {asset_name} install_kind was missing or not a string")
 
     supported_sms_raw = raw.get("supported_sms", [])
     if not isinstance(supported_sms_raw, (list, tuple)):
         raise ValueError(f"artifact {asset_name} supported_sms must be a list or tuple")
     if any(not isinstance(value, (int, str)) for value in supported_sms_raw):
-        raise ValueError(
-            f"artifact {asset_name} supported_sms entries must be ints or strings"
-        )
+        raise ValueError(f"artifact {asset_name} supported_sms entries must be ints or strings")
     supported_sms = normalize_compute_caps(supported_sms_raw)
 
     min_sm_raw = raw.get("min_sm")
@@ -1974,9 +1932,7 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         min_sm = int(min_sm_raw) if min_sm_raw is not None else None
         max_sm = int(max_sm_raw) if max_sm_raw is not None else None
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"artifact {asset_name} min_sm/max_sm were not integers"
-        ) from exc
+        raise ValueError(f"artifact {asset_name} min_sm/max_sm were not integers") from exc
     runtime_line = raw.get("runtime_line")
     coverage_class = raw.get("coverage_class")
     bundle_profile = raw.get("bundle_profile")
@@ -1991,12 +1947,22 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         rank = int(rank_raw)
     except (TypeError, ValueError):
         raise ValueError(f"artifact {asset_name} rank was not an integer")
+    gfx_target_raw = raw.get("gfx_target")
+    gfx_target = (
+        gfx_target_raw.strip()
+        if isinstance(gfx_target_raw, str) and gfx_target_raw.strip()
+        else None
+    )
+    mapped_raw = raw.get("mapped_targets", [])
+    mapped_targets = (
+        [value.strip() for value in mapped_raw if isinstance(value, str) and value.strip()]
+        if isinstance(mapped_raw, (list, tuple))
+        else []
+    )
     return PublishedLlamaArtifact(
         asset_name = asset_name,
         install_kind = install_kind,
-        runtime_line = runtime_line
-        if isinstance(runtime_line, str) and runtime_line
-        else None,
+        runtime_line = runtime_line if isinstance(runtime_line, str) and runtime_line else None,
         coverage_class = coverage_class
         if isinstance(coverage_class, str) and coverage_class
         else None,
@@ -2007,6 +1973,8 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         if isinstance(bundle_profile, str) and bundle_profile
         else None,
         rank = rank,
+        gfx_target = gfx_target,
+        mapped_targets = mapped_targets,
     )
 
 
@@ -2071,9 +2039,7 @@ def parse_published_release_bundle(
         try:
             artifact = parse_published_artifact(raw_artifact)
         except ValueError as exc:
-            log(
-                f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}"
-            )
+            log(f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}")
             continue
         if artifact is not None:
             artifacts.append(artifact)
@@ -2092,9 +2058,7 @@ def parse_published_release_bundle(
         release_tag = release_tag,
         upstream_tag = upstream_tag,
         manifest_sha256 = manifest_sha256,
-        source_repo = source_repo
-        if isinstance(source_repo, str) and source_repo
-        else None,
+        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -2117,9 +2081,7 @@ def parse_published_release_bundle(
 
 
 def parse_approved_release_checksums(
-    repo: str,
-    release_tag: str,
-    payload: Any,
+    repo: str, release_tag: str, payload: Any
 ) -> ApprovedReleaseChecksums:
     if not isinstance(payload, dict):
         raise RuntimeError(
@@ -2157,18 +2119,12 @@ def parse_approved_release_checksums(
     artifacts: dict[str, ApprovedArtifactHash] = {}
     for asset_name, raw_entry in artifacts_payload.items():
         if not isinstance(asset_name, str) or not asset_name:
-            raise RuntimeError(
-                "published checksum asset used a non-string artifact key"
-            )
+            raise RuntimeError("published checksum asset used a non-string artifact key")
         if not isinstance(raw_entry, dict):
-            raise RuntimeError(
-                f"published checksum entry for {asset_name} was not an object"
-            )
+            raise RuntimeError(f"published checksum entry for {asset_name} was not an object")
         digest = normalize_sha256_digest(raw_entry.get("sha256"))
         if not digest:
-            raise RuntimeError(
-                f"published checksum entry for {asset_name} omitted a valid sha256"
-            )
+            raise RuntimeError(f"published checksum entry for {asset_name} omitted a valid sha256")
         repo_value = raw_entry.get("repo")
         kind_value = raw_entry.get("kind")
         artifacts[asset_name] = ApprovedArtifactHash(
@@ -2189,9 +2145,7 @@ def parse_approved_release_checksums(
         repo = repo,
         release_tag = release_tag,
         upstream_tag = upstream_tag,
-        source_repo = source_repo
-        if isinstance(source_repo, str) and source_repo
-        else None,
+        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -2210,9 +2164,7 @@ def parse_approved_release_checksums(
     )
 
 
-def load_approved_release_checksums(
-    repo: str, release_tag: str
-) -> ApprovedReleaseChecksums:
+def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
     try:
         release = github_release(repo, release_tag)
     except Exception as exc:
@@ -2246,9 +2198,7 @@ def iter_published_release_bundles(
         else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
-        if not published_release_tag and (
-            release.get("draft") or release.get("prerelease")
-        ):
+        if not published_release_tag and (release.get("draft") or release.get("prerelease")):
             continue
         try:
             bundle = parse_published_release_bundle(repo, release)
@@ -2259,6 +2209,25 @@ def iter_published_release_bundles(
         if bundle is None:
             continue
         yield bundle
+
+
+def _artifact_covers_sms(artifact: PublishedLlamaArtifact, host_sms: Iterable[str]) -> bool:
+    """True when every host SM is listed in the artifact's supported_sms and
+    falls within its [min_sm, max_sm] range."""
+    if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
+        return False
+    supported = {str(value) for value in artifact.supported_sms}
+    return all(sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms)
+
+
+def _sm_range(artifact: PublishedLlamaArtifact) -> int:
+    """SM-coverage span used as a sort key, where a tighter (smaller) range wins.
+    A bundle with no SM metadata (legacy/upstream-named) gets a max range so it
+    sorts last and can't outrank a real targeted bundle whose tight range would
+    otherwise sort first."""
+    if artifact.min_sm is not None and artifact.max_sm is not None:
+        return artifact.max_sm - artifact.min_sm
+    return 9999
 
 
 def linux_cuda_choice_from_release(
@@ -2300,14 +2269,14 @@ def linux_cuda_choice_from_release(
                 else "none"
             )
         )
+    # arm64 CUDA hosts (DGX Spark / Grace Hopper) consume linux-arm64-cuda
+    # bundles; x64 hosts consume linux-cuda. The SM / runtime-line matching
+    # below is arch-agnostic and applies to both.
+    cuda_install_kind = "linux-arm64-cuda" if host.is_arm64 else "linux-cuda"
     published_artifacts = [
-        artifact
-        for artifact in release.artifacts
-        if artifact.install_kind == "linux-cuda"
+        artifact for artifact in release.artifacts if artifact.install_kind == cuda_install_kind
     ]
-    published_asset_names = sorted(
-        artifact.asset_name for artifact in published_artifacts
-    )
+    published_asset_names = sorted(artifact.asset_name for artifact in published_artifacts)
     selection_log.append(
         "linux_cuda_selection: published_assets="
         + (",".join(published_asset_names) if published_asset_names else "none")
@@ -2343,9 +2312,7 @@ def linux_cuda_choice_from_release(
     attempts: list[AssetChoice] = []
     seen_attempts: set[str] = set()
 
-    def add_attempt(
-        artifact: PublishedLlamaArtifact, asset_url: str, reason: str
-    ) -> None:
+    def add_attempt(artifact: PublishedLlamaArtifact, asset_url: str, reason: str) -> None:
         asset_name = artifact.asset_name
         if asset_name in seen_attempts:
             return
@@ -2358,7 +2325,7 @@ def linux_cuda_choice_from_release(
                 url = asset_url,
                 source_label = "published",
                 is_ready_bundle = True,
-                install_kind = "linux-cuda",
+                install_kind = cuda_install_kind,
                 bundle_profile = artifact.bundle_profile,
                 runtime_line = artifact.runtime_line,
                 coverage_class = artifact.coverage_class,
@@ -2382,9 +2349,7 @@ def linux_cuda_choice_from_release(
             asset_name = artifact.asset_name
             asset_url = release.assets.get(asset_name)
             if not asset_url:
-                selection_log.append(
-                    f"linux_cuda_selection: reject {asset_name} missing asset"
-                )
+                selection_log.append(f"linux_cuda_selection: reject {asset_name} missing asset")
                 continue
             if not host_sms and artifact.coverage_class != "portable":
                 selection_log.append(
@@ -2412,9 +2377,7 @@ def linux_cuda_choice_from_release(
             supported_sms = {str(value) for value in artifact.supported_sms}
             missing_sms = [sm for sm in host_sms if sm not in supported_sms]
             out_of_range_sms = [
-                sm
-                for sm in host_sms
-                if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
+                sm for sm in host_sms if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
             ]
             reasons: list[str] = []
             if missing_sms:
@@ -2444,7 +2407,7 @@ def linux_cuda_choice_from_release(
             artifact, url = sorted(
                 coverage_candidates,
                 key = lambda item: (
-                    (item[0].max_sm or 0) - (item[0].min_sm or 0),
+                    _sm_range(item[0]),
                     item[0].rank,
                     item[0].max_sm or 0,
                 ),
@@ -2458,8 +2421,7 @@ def linux_cuda_choice_from_release(
         return None
 
     selection_log.append(
-        "linux_cuda_selection: attempt_order="
-        + ",".join(choice.name for choice in attempts)
+        "linux_cuda_selection: attempt_order=" + ",".join(choice.name for choice in attempts)
     )
     for attempt in attempts:
         attempt.selection_log = list(selection_log) + [
@@ -2477,9 +2439,7 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
-    for release in github_releases(
-        UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
-    ):
+    for release in github_releases(UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES):
         if release.get("draft") or release.get("prerelease"):
             continue
         yield release
@@ -2511,12 +2471,19 @@ def validated_checksums_for_bundle(
     # legacy llama.cpp-source-<upstream_tag>.tar.gz entry.
     if exact_source_archive_hash(checksums) is None:
         require_approved_source_hash(checksums, bundle.upstream_tag)
+    elif source_clone_url_for_release(checksums, bundle) is None:
+        # No source repo in either the checksum payload or the manifest bundle:
+        # preferred_source_archive would silently fall back to ggml-org source at
+        # the upstream tag, pairing the prebuilt with a possibly mismatched tree.
+        # Fail closed so the resolver skips this release.
+        raise PrebuiltFallback(
+            f"approved checksum asset for {repo}@{bundle.release_tag} declared an "
+            "exact source archive without a source repo to clone it from"
+        )
     return checksums
 
 
-def published_release_matches_request(
-    bundle: PublishedReleaseBundle, requested_ref: str
-) -> bool:
+def published_release_matches_request(bundle: PublishedReleaseBundle, requested_ref: str) -> bool:
     if requested_ref == "latest":
         return True
     for candidate in (
@@ -2571,9 +2538,7 @@ def resolve_published_release(
             raise PrebuiltFallback(
                 f"no usable published llama.cpp releases were available in {repo}"
             )
-        raise PrebuiltFallback(
-            f"no published llama.cpp releases were available in {repo}"
-        )
+        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -2632,9 +2597,7 @@ def iter_resolved_published_releases(
         return
 
     if normalized_requested == "latest":
-        raise PrebuiltFallback(
-            f"no published llama.cpp releases were available in {repo}"
-        )
+        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -2692,36 +2655,34 @@ def resolve_requested_install_tag(
     ).bundle.upstream_tag
 
 
-def exact_source_archive_hash(
-    checksums: ApprovedReleaseChecksums,
-) -> ApprovedArtifactHash | None:
+def exact_source_archive_hash(checksums: ApprovedReleaseChecksums) -> ApprovedArtifactHash | None:
     if not checksums.source_commit:
         return None
-    return checksums.artifacts.get(
-        exact_source_archive_logical_name(checksums.source_commit)
+    return checksums.artifacts.get(exact_source_archive_logical_name(checksums.source_commit))
+
+
+def source_clone_url_for_release(
+    checksums: ApprovedReleaseChecksums, bundle: PublishedReleaseBundle
+) -> str | None:
+    # Single source of truth for "where do we clone source from", shared by the
+    # validation gate and source_build_plan_for_release: take the repo from the
+    # checksum payload, falling back field by field to the manifest bundle.
+    return source_repo_clone_url(
+        checksums.source_repo or bundle.source_repo,
+        checksums.source_repo_url or bundle.source_repo_url,
     )
 
 
-def source_clone_url_from_checksums(checksums: ApprovedReleaseChecksums) -> str | None:
-    return source_repo_clone_url(checksums.source_repo, checksums.source_repo_url)
-
-
-def source_build_plan_for_release(
-    release: ResolvedPublishedRelease,
-) -> SourceBuildPlan:
+def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBuildPlan:
     checksums = release.checksums
     exact_source = exact_source_archive_hash(checksums)
     source_repo = checksums.source_repo or release.bundle.source_repo
     source_repo_url = checksums.source_repo_url or release.bundle.source_repo_url
-    requested_source_ref = (
-        checksums.requested_source_ref or release.bundle.requested_source_ref
-    )
-    resolved_source_ref = (
-        checksums.resolved_source_ref or release.bundle.resolved_source_ref
-    )
+    requested_source_ref = checksums.requested_source_ref or release.bundle.requested_source_ref
+    resolved_source_ref = checksums.resolved_source_ref or release.bundle.resolved_source_ref
     source_commit = checksums.source_commit or release.bundle.source_commit
     source_ref_kind = checksums.source_ref_kind or release.bundle.source_ref_kind
-    source_url = source_repo_clone_url(source_repo, source_repo_url)
+    source_url = source_clone_url_for_release(checksums, release.bundle)
     if exact_source is not None and source_url and source_commit:
         return SourceBuildPlan(
             source_url = source_url,
@@ -2734,14 +2695,8 @@ def source_build_plan_for_release(
             resolved_source_ref = resolved_source_ref,
             source_commit = source_commit,
         )
-    source_ref = checkout_friendly_ref(
-        source_ref_kind, resolved_source_ref or requested_source_ref
-    )
-    if (
-        source_url
-        and source_ref
-        and source_ref_kind in {"tag", "branch", "pull", "commit"}
-    ):
+    source_ref = checkout_friendly_ref(source_ref_kind, resolved_source_ref or requested_source_ref)
+    if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull", "commit"}:
         return SourceBuildPlan(
             source_url = source_url,
             source_ref = source_ref,
@@ -2818,6 +2773,15 @@ def run_capture(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    # amd-smi on Windows auto-elevates and pops a UAC/DiskPart prompt mid-install;
+    # RunAsInvoker forces it un-elevated. Callers already fall back to WMI/name
+    # detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate; Windows-only.
+    if (
+        command
+        and platform.system() == "Windows"
+        and os.path.basename(command[0]).lower().startswith("amd-smi")
+    ):
+        env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
     result = subprocess.run(
         command,
         capture_output = True,
@@ -2925,9 +2889,7 @@ def detect_host() -> HostInfo:
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
             listing = run_capture([nvidia_smi, "-L"], timeout = 20)
-            gpu_lines = [
-                line for line in listing.stdout.splitlines() if line.startswith("GPU ")
-            ]
+            gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
             if gpu_lines:
                 has_physical_nvidia = True
                 has_usable_nvidia = visible_device_tokens != []
@@ -2997,7 +2959,27 @@ def detect_host() -> HostInfo:
         except Exception:
             pass
 
+    # Linux /proc/driver/nvidia/gpus fallback: the NVIDIA driver exposes one
+    # subdir per GPU here regardless of nvidia-smi state, so a host whose
+    # nvidia-smi is absent from PATH, wedged, or failing is still recognised as
+    # NVIDIA. Mirrors the fallback added to install.sh / install_python_stack.py
+    # in PR 6174 so the prebuilt installer does not misroute such hosts to ROCm
+    # or CPU. driver_cuda_version / compute_caps stay unset here; downstream
+    # CUDA asset selection treats unknown SMs as "prefer portable" and an
+    # unknown driver runtime line as "no published CUDA match" (returns None,
+    # no crash), so planning falls back to a source build with GGML_CUDA=ON.
+    if is_linux and not has_physical_nvidia:
+        try:
+            proc_gpu_dir = "/proc/driver/nvidia/gpus"
+            if os.path.isdir(proc_gpu_dir) and os.listdir(proc_gpu_dir):
+                has_physical_nvidia = True
+                has_usable_nvidia = visible_device_tokens != []
+        except OSError:
+            pass
+
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
+    # NVIDIA takes precedence: when an NVIDIA GPU is usable, skip ROCm probing
+    # entirely so co-installed ROCm tools cannot misroute the host (PR 6174).
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
@@ -3005,7 +2987,14 @@ def detect_host() -> HostInfo:
 
     has_rocm = False
     rocm_gfx_target: str | None = None
-    if is_linux:
+    if is_linux and not has_usable_nvidia:
+        # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
+        # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
+        # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
+        # drop-in reaches login shells only). Probe accordingly or a ROCDXG
+        # WSL host is misdetected as CPU-only.
+        _dxg_probe_env = {**os.environ}
+        _dxg_probe_env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
         for _cmd, _check in (
             # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
             # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -3018,10 +3007,18 @@ def detect_host() -> HostInfo:
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
+            if not _exe and _cmd[0] == "rocminfo":
+                _opt_rocminfo = "/opt/rocm/bin/rocminfo"
+                if os.access(_opt_rocminfo, os.X_OK):
+                    _exe = _opt_rocminfo
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+                _result = run_capture(
+                    [_exe, *_cmd[1:]],
+                    timeout = 10,
+                    env = _dxg_probe_env if _cmd[0] == "rocminfo" else None,
+                )
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
@@ -3029,7 +3026,7 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
-    elif is_windows:
+    elif is_windows and not has_usable_nvidia:
         # Windows: prefer active probes that validate GPU presence.
         # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
         # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
@@ -3047,12 +3044,20 @@ def detect_host() -> HostInfo:
                     _candidate = os.path.join(_root, "bin", f"{name}.exe")
                     if os.path.isfile(_candidate):
                         return _candidate
+            # AMD torch wheels ship hipInfo.exe into the venv Scripts dir
+            # (next to python.exe) -- resolvable on driver-only hosts where no
+            # SDK dir exists, so a standalone rerun can still detect the GPU.
+            _venv_candidate = os.path.join(os.path.dirname(sys.executable), f"{name}.exe")
+            if os.path.isfile(_venv_candidate):
+                return _venv_candidate
             return None
 
-        for _cmd, _check in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _amd_smi_has_gpu),
-        ):
+        _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
+        if _amd_smi_allowed():
+            # Skipped on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # gfx arch still arrives via --rocm-gfx, so has_rocm is set by override.
+            _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
+        for _cmd, _check in _win_probes:
             _exe = _resolve_exe(_cmd[0])
             if not _exe:
                 continue
@@ -3129,6 +3134,21 @@ def _apply_host_overrides(
     return host
 
 
+def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool = False) -> str:
+    """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
+    fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
+    -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
+    or ROCm) -> the fork. linux_amd_tooling_present mirrors setup.sh routing Linux
+    hosts that expose AMD tooling (rocminfo/amd-smi/hipconfig/hipinfo) to the fork
+    even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
+    if host.is_macos:
+        return DEFAULT_PUBLISHED_REPO
+    has_gpu = (
+        host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
+    )
+    return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
+
+
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
@@ -3177,9 +3197,10 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
-    major, minor = host.driver_cuda_version
-    # cuda12 prebuilts need a 12.4+ driver; cuda13+ any minor of the major.
-    if major < _MIN_CUDA_MAJOR or (major == _MIN_CUDA_MAJOR and minor < 4):
+    major, _minor = host.driver_cuda_version
+    # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
+    # minor-version compatibility runs them on any 12.x driver, same as Linux.
+    if major < _MIN_CUDA_MAJOR:
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -3225,9 +3246,7 @@ def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreferenc
     try:
         cuda_available = bool(torch.cuda.is_available())
     except Exception as exc:
-        selection_log.append(
-            f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}"
-        )
+        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
@@ -3315,14 +3334,10 @@ def windows_cuda_attempts(
             f"{preferred_runtime_line} unavailable_or_incompatible"
         )
     else:
-        selection_log.append(
-            "windows_cuda_selection: no Torch runtime preference available"
-        )
+        selection_log.append("windows_cuda_selection: no Torch runtime preference available")
 
     runtime_order.extend(
-        runtime_line
-        for runtime_line in normal_runtime_lines
-        if runtime_line not in runtime_order
+        runtime_line for runtime_line in normal_runtime_lines if runtime_line not in runtime_order
     )
     # Keep every driver-compatible line reachable as a fallback, so a line gated
     # out by the driver version still drops to an older major (cuda13 -> cuda12).
@@ -3346,9 +3361,7 @@ def windows_cuda_attempts(
         # Track whatever minor llama.cpp actually ships for this major
         # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
         # matching asset instead of guessing a now-missing name.
-        runtime = _published_windows_cuda_runtime(
-            upstream_assets, major, host.driver_cuda_version
-        )
+        runtime = _published_windows_cuda_runtime(upstream_assets, major, host.driver_cuda_version)
         if runtime is None:
             selection_log.append(
                 f"windows_cuda_selection: no driver-supported asset for {runtime_line}"
@@ -3409,14 +3422,43 @@ def windows_cuda_attempts(
 
 
 def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt is built with a toolkit that
-    covers Blackwell sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    """True if an in-release windows-cuda attempt yields a Blackwell sm_120
+    capable build. The fork's app-named bundles declare their SM coverage
+    directly; legacy upstream-named bundles instead encode their CUDA toolkit
+    minor in the filename (covers Blackwell at toolkit >= 12.8)."""
     if attempt.install_kind != "windows-cuda":
         return False
+    # Legacy upstream-named bundles encode their toolkit minor; it is the binding
+    # constraint (a 12.4 toolkit cannot offload sm_120 whatever its metadata says).
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
-    return (
-        m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
-    )
+    if m is not None:
+        return (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+    # App-named bundles carry no minor and declare their SM coverage directly.
+    return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
+
+
+def _host_is_blackwell(host: HostInfo) -> bool:
+    caps = normalize_compute_caps(host.compute_caps)
+    return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
+
+
+def _drop_blackwell_incapable_windows_cuda(
+    host: HostInfo, attempts: list[AssetChoice]
+) -> list[AssetChoice]:
+    """On a Blackwell host, drop windows-cuda attempts that cannot offload
+    sm_120 (e.g. upstream cuda-12.4, toolkit 12.4). Such a build loads and
+    passes the functional validator but runs the model on a slow non-native
+    path (an RTX 5090 measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must
+    not sit in the fallback chain behind the pin or an in-release cuda13.
+    Non-cuda attempts (windows-cpu, windows-hip, ...) pass through so the
+    host still degrades to an honest CPU install when no CUDA 13 exists."""
+    if not _host_is_blackwell(host):
+        return attempts
+    return [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
+    ]
 
 
 def _pinned_windows_cuda_fallback(
@@ -3441,10 +3483,7 @@ def _pinned_windows_cuda_fallback(
     caps = normalize_compute_caps(host.compute_caps)
     if not caps or int(caps[-1]) < _BLACKWELL_MIN_SM:
         return None
-    if any(
-        _windows_cuda_attempt_covers_blackwell(attempt)
-        for attempt in existing_cuda_attempts
-    ):
+    if any(_windows_cuda_attempt_covers_blackwell(attempt) for attempt in existing_cuda_attempts):
         return None
     tag = _PINNED_BLACKWELL_FALLBACK_TAG
     runtime = _PINNED_BLACKWELL_FALLBACK_RUNTIME
@@ -3499,13 +3538,12 @@ def _augment_checksums_with_pin(
 
 
 def _with_pinned_windows_cuda_fallback(
-    host: HostInfo,
-    attempts: list[AssetChoice],
-    checksums: ApprovedReleaseChecksums,
+    host: HostInfo, attempts: list[AssetChoice], checksums: ApprovedReleaseChecksums
 ) -> tuple[list[AssetChoice], ApprovedReleaseChecksums]:
     """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
     through apply_approved_hashes, or return the inputs unchanged when dormant.
     Gives the published install path the same GPU fallback as the simple path."""
+    attempts = _drop_blackwell_incapable_windows_cuda(host, attempts)
     pin = _pinned_windows_cuda_fallback(host, attempts)
     if pin is None:
         return attempts, checksums
@@ -3519,34 +3557,8 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(release.selection_log) + list(selection_preamble)
-    # Seed the runtime-line ordering from the real published windows-cuda minors
-    # (their names encode the minor), so a future CUDA major published here is
-    # ordered too instead of a hardcoded cuda12/cuda13 pair. Keys mirror the
-    # upstream naming so windows_cuda_attempts can match them; fall back to the
-    # long-standing default when the release lists no windows-cuda asset.
-    published_minors: list[str] = []
-    for artifact in release.artifacts:
-        if artifact.install_kind != "windows-cuda":
-            continue
-        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
-        if m:
-            published_minors.append(m.group(1))
-    if not published_minors:
-        published_minors = ["12.4", "13.1"]
-    runtime_order = windows_cuda_attempts(
-        host,
-        release.upstream_tag,
-        {
-            f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
-            for minor in published_minors
-        },
-        preferred_runtime_line,
-        selection_log,
-    )
     published_artifacts = [
-        artifact
-        for artifact in release.artifacts
-        if artifact.install_kind == "windows-cuda"
+        artifact for artifact in release.artifacts if artifact.install_kind == "windows-cuda"
     ]
     artifacts_by_runtime: dict[str, list[PublishedLlamaArtifact]] = {}
     for artifact in published_artifacts:
@@ -3554,61 +3566,147 @@ def published_windows_cuda_attempts(
             continue
         artifacts_by_runtime.setdefault(artifact.runtime_line, []).append(artifact)
 
+    # Order the runtime lines to try. Legacy upstream-named bundles encode a CUDA
+    # minor in the filename and are driver-gated per minor. The fork's app-named
+    # bundles carry no minor: their runtime line (cuda12/cuda13) is gated at the
+    # CUDA *major* level (a 13.0 driver runs any cuda13 build) and by what torch
+    # actually provides on the host, preferring the torch line. Routing them
+    # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
+    legacy_minors: list[str] = []
+    for artifact in published_artifacts:
+        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        if m:
+            legacy_minors.append(m.group(1))
+    if legacy_minors:
+        ordered_lines = [
+            attempt.runtime_line
+            for attempt in windows_cuda_attempts(
+                host,
+                release.upstream_tag,
+                {
+                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+                    for minor in legacy_minors
+                },
+                preferred_runtime_line,
+                selection_log,
+            )
+            if attempt.runtime_line
+        ]
+    else:
+        detected, _ = detected_windows_runtime_lines()
+        compatible = compatible_windows_runtime_lines(host)
+        # Prefer lines whose runtime DLLs are on disk, but fall back to the
+        # driver-derived order when none are detected (Windows torch bundles
+        # cudart in torch/lib, which probing misses) or when detected DLLs are
+        # incompatible with the driver. The app bundle ships its own runtime, so
+        # the driver major is the real constraint. Mirrors the legacy
+        # windows_cuda_attempts fallback; without it a torch-only host gets no
+        # fork attempt and silently drops to the upstream build.
+        ordered_lines = [line for line in compatible if line in detected] or list(compatible)
+        if preferred_runtime_line and preferred_runtime_line in ordered_lines:
+            ordered_lines = [preferred_runtime_line] + [
+                line for line in ordered_lines if line != preferred_runtime_line
+            ]
+        selection_log.append(
+            "windows_cuda_selection: app-bundle runtime lines (major-gated)="
+            + (",".join(ordered_lines) if ordered_lines else "none")
+        )
+
+    host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
-    for ordered_attempt in runtime_order:
-        runtime_line = ordered_attempt.runtime_line
+    for runtime_line in ordered_lines:
         if not runtime_line:
             continue
-        candidates = sorted(
-            artifacts_by_runtime.get(runtime_line, []),
-            key = lambda artifact: (artifact.rank, artifact.asset_name),
-        )
-        for artifact in candidates:
+        # Pick the artifact whose SM coverage fits the host, preferring the
+        # tightest targeted bundle and falling back to portable -- the same
+        # policy as linux_cuda_choice_from_release. Without this, app-named
+        # bundles (no minor in the filename) skip the SM filter and the
+        # lowest-rank "older" bundle is chosen for every host, breaking newer
+        # GPUs (e.g. Blackwell sm120 on a cuda12-older bundle capped at sm89).
+        targeted: list[tuple[PublishedLlamaArtifact, str, re.Match[str] | None]] = []
+        portable: tuple[PublishedLlamaArtifact, str, re.Match[str] | None] | None = None
+        for artifact in artifacts_by_runtime.get(runtime_line, []):
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
             am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
-            # Gate the real published minor against the driver, so a published
-            # windows-cuda artifact can never bypass the driver-version gate.
+            # Legacy upstream-named bundles encode the minor; gate it against the
+            # driver. app-named bundles carry no minor and are driver-gated at the
+            # runtime-line level by windows_cuda_attempts above.
             if (
                 am is not None
                 and host.driver_cuda_version is not None
                 and (int(am.group(1)), int(am.group(2))) > host.driver_cuda_version
             ):
                 continue
-            # See windows_cuda_attempts: pair the cudart bundle for the real minor.
-            runtime_archive_name: str | None = None
-            runtime_archive_url: str | None = None
-            if am is not None and artifact.asset_name.startswith("llama-"):
-                runtime = f"{am.group(1)}.{am.group(2)}"
-                cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
-                cudart_url = release.assets.get(cudart_name)
-                if cudart_url and cudart_url != asset_url:
-                    runtime_archive_name = cudart_name
-                    runtime_archive_url = cudart_url
-            attempt_log = list(ordered_attempt.selection_log or []) + [
-                "windows_cuda_selection: selected published asset "
-                f"{artifact.asset_name} for runtime_line={runtime_line}"
-            ]
-            if runtime_archive_name:
-                attempt_log.append(
-                    f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
-                )
-            attempts.append(
-                AssetChoice(
-                    repo = release.repo,
-                    tag = release.release_tag,
-                    name = artifact.asset_name,
-                    url = asset_url,
-                    source_label = "published",
-                    install_kind = "windows-cuda",
-                    runtime_line = runtime_line,
-                    runtime_name = runtime_archive_name,
-                    runtime_url = runtime_archive_url,
-                    selection_log = attempt_log,
-                )
+            # Only SM-filter artifacts that declare full SM metadata (the app
+            # bundles). Legacy/upstream-named artifacts without it keep the old
+            # rank-based selection rather than being dropped.
+            has_sm_info = (
+                bool(artifact.supported_sms)
+                and artifact.min_sm is not None
+                and artifact.max_sm is not None
             )
-            break
+            if host_sms and has_sm_info and not _artifact_covers_sms(artifact, host_sms):
+                continue
+            if not host_sms and has_sm_info and artifact.coverage_class != "portable":
+                continue
+            if artifact.coverage_class == "portable":
+                portable = (artifact, asset_url, am)
+            else:
+                targeted.append((artifact, asset_url, am))
+        chosen: tuple[PublishedLlamaArtifact, str, re.Match[str] | None] | None = None
+        if targeted:
+            chosen = sorted(
+                targeted,
+                key = lambda item: (
+                    _sm_range(item[0]),
+                    item[0].rank,
+                    item[0].max_sm or 0,
+                ),
+            )[0]
+        elif portable is not None:
+            chosen = portable
+        if chosen is None:
+            continue
+        artifact, asset_url, am = chosen
+        # See windows_cuda_attempts: pair the cudart bundle for the real minor.
+        runtime_archive_name: str | None = None
+        runtime_archive_url: str | None = None
+        if am is not None and artifact.asset_name.startswith("llama-"):
+            runtime = f"{am.group(1)}.{am.group(2)}"
+            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+            cudart_url = release.assets.get(cudart_name)
+            if cudart_url and cudart_url != asset_url:
+                runtime_archive_name = cudart_name
+                runtime_archive_url = cudart_url
+        attempt_log = list(selection_log) + [
+            "windows_cuda_selection: selected published asset "
+            f"{artifact.asset_name} for runtime_line={runtime_line}"
+        ]
+        if runtime_archive_name:
+            attempt_log.append(
+                f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
+            )
+        attempts.append(
+            AssetChoice(
+                repo = release.repo,
+                tag = release.release_tag,
+                name = artifact.asset_name,
+                url = asset_url,
+                source_label = "published",
+                install_kind = "windows-cuda",
+                runtime_line = runtime_line,
+                runtime_name = runtime_archive_name,
+                runtime_url = runtime_archive_url,
+                bundle_profile = artifact.bundle_profile,
+                coverage_class = artifact.coverage_class,
+                supported_sms = artifact.supported_sms,
+                min_sm = artifact.min_sm,
+                max_sm = artifact.max_sm,
+                selection_log = attempt_log,
+            )
+        )
     return attempts
 
 
@@ -3642,15 +3740,10 @@ def resolve_linux_cuda_choice(
 
 
 def published_asset_choice_for_kind(
-    release: PublishedReleaseBundle,
-    install_kind: str,
+    release: PublishedReleaseBundle, install_kind: str
 ) -> AssetChoice | None:
     candidates = sorted(
-        (
-            artifact
-            for artifact in release.artifacts
-            if artifact.install_kind == install_kind
-        ),
+        (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
         key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
@@ -3666,9 +3759,7 @@ def published_asset_choice_for_kind(
             install_kind = install_kind,
             runtime_line = artifact.runtime_line,
             selection_log = list(release.selection_log)
-            + [
-                f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"
-            ],
+            + [f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"],
         )
     return None
 
@@ -3696,16 +3787,12 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 return int(parts[0]), int(parts[1])
         except Exception:
             pass
-    amd_smi = shutil.which("amd-smi")
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
-            result = subprocess.run(
-                [amd_smi, "version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            # Off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # hipconfig below and the version-file reads above cover that case.
+            result = run_capture([amd_smi, "version"], timeout = 5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
@@ -3725,11 +3812,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
                 parts = raw.split(".")
-                if (
-                    len(parts) >= 2
-                    and parts[0].isdigit()
-                    and parts[1].split("-")[0].isdigit()
-                ):
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
                     return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
@@ -3786,6 +3869,47 @@ def _lemonade_gfx_family(gfx_id: str) -> str | None:
     return None
 
 
+def published_rocm_choice_for_host(
+    release: PublishedReleaseBundle, host: HostInfo, install_kind: str
+) -> AssetChoice | None:
+    """Select the published ROCm bundle whose gfx target covers the host GPU.
+
+    The manifest's gfx_target uses the same umbrella family labels that
+    _lemonade_gfx_family produces (gfx110X, gfx120X, ...), so the host's detected
+    gfx is matched either to that family or to the bundle's concrete
+    mapped_targets list. Returns None when no published bundle covers the GPU, so
+    the caller can fall back (lemonade / upstream HIP)."""
+    if not host.rocm_gfx_target:
+        return None
+    gfx = host.rocm_gfx_target.lower().strip()
+    for artifact in release.artifacts:
+        if artifact.install_kind != install_kind:
+            continue
+        # Match on the concrete built-arch list, not the family prefix: an
+        # in-generation-but-unbuilt arch (e.g. gfx1033 in the gfx103 prefix) must
+        # NOT be served the family bundle. None makes the caller fall back to a
+        # source build for that GPU.
+        if gfx not in {target.lower() for target in artifact.mapped_targets}:
+            continue
+        asset_url = release.assets.get(artifact.asset_name)
+        if not asset_url:
+            continue
+        return AssetChoice(
+            repo = release.repo,
+            tag = release.release_tag,
+            name = artifact.asset_name,
+            url = asset_url,
+            source_label = "published",
+            install_kind = install_kind,
+            selection_log = list(release.selection_log)
+            + [
+                f"rocm_selection: gpu={host.rocm_gfx_target} "
+                f"selected published {artifact.asset_name}"
+            ],
+        )
+    return None
+
+
 def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     """Validate a release asset URL points at GitHub's expected hosts.
 
@@ -3814,6 +3938,12 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     if host == "github.com":
         return parsed.path.startswith(f"/{expected_repo}/releases/download/")
     return False
+
+
+# (gfx_target, asset_name) pairs already logged. resolve_lemonade_rocm_choice()
+# runs twice per install (direct planner + resolve_upstream_asset_choice), so
+# this stops its selection banner and hash-manifest NOTE printing twice.
+_lemonade_selection_logged: "set[tuple[str, str]]" = set()
 
 
 @functools.lru_cache(maxsize = 8)
@@ -3888,9 +4018,7 @@ def resolve_lemonade_rocm_choice(
         return None
     release_tag = release.get("tag_name") if isinstance(release, dict) else None
     if not isinstance(release_tag, str) or not release_tag:
-        log(
-            f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt"
-        )
+        log(f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt")
         return None
     assets = release_asset_map(release)
     asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx_family}-x64.zip"
@@ -3924,18 +4052,22 @@ def resolve_lemonade_rocm_choice(
     # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
     # generic glibc build that runs on any distro (Arch, Fedora, ...), so
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
-    log(
-        f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
-        f"trying lemonade-sdk ROCm prebuilt {asset_name} "
-        f"(works on any glibc Linux, not just Ubuntu)"
-    )
-    log(
-        f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
-        f"Unsloth approved-hash manifest; download integrity relies on "
-        f"functional validation (llama-bench / llama-server smoke tests) "
-        f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
-        f"lemonade and fall back to the upstream HIP build path."
-    )
+    # Log once per (gfx_target, asset); see _lemonade_selection_logged.
+    log_key = (host.rocm_gfx_target, asset_name)
+    if log_key not in _lemonade_selection_logged:
+        _lemonade_selection_logged.add(log_key)
+        log(
+            f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
+            f"trying lemonade-sdk ROCm prebuilt {asset_name} "
+            f"(works on any glibc Linux, not just Ubuntu)"
+        )
+        log(
+            f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
+            f"Unsloth approved-hash manifest; download integrity relies on "
+            f"functional validation (llama-bench / llama-server smoke tests) "
+            f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
+            f"lemonade and fall back to the upstream HIP build path."
+        )
     return AssetChoice(
         repo = LEMONADE_ROCM_REPO,
         tag = release_tag,
@@ -3946,7 +4078,16 @@ def resolve_lemonade_rocm_choice(
     )
 
 
-def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
+def resolve_upstream_asset_choice(
+    host: HostInfo,
+    llama_tag: str,
+    lemonade_tag: "str | None" = None,
+) -> AssetChoice:
+    # lemonade_tag: tag for the lemonade lookup only. The release scan pins
+    # llama_tag to per-release upstream tags (b9518, ...) that lemonade's own
+    # tag series (b1292, ...) never contains, so pinning lemonade to them 404s
+    # on every scanned release. Scan callers pass the original request
+    # (normally "latest") here; upstream asset names keep the pinned tag.
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
         # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
@@ -3957,7 +4098,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             # Try lemonade-sdk per-GPU prebuilt first: these are built against
             # specific gfx targets and bundle all required ROCm runtime libs.
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "ubuntu", "linux-rocm", llama_tag = llama_tag
+                host, "ubuntu", "linux-rocm", llama_tag = lemonade_tag or llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
@@ -3986,9 +4127,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
             if _host_rocm_version is not None:
                 _compatible = [
-                    item
-                    for item in rocm_candidates
-                    if item[0][:2] <= _host_rocm_version
+                    item for item in rocm_candidates if item[0][:2] <= _host_rocm_version
                 ]
             if rocm_candidates and not _compatible:
                 # Fall back to the newest candidate so a source build is
@@ -4045,16 +4184,14 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "windows", "windows-hip", llama_tag = llama_tag
+                host, "windows", "windows-hip", llama_tag = lemonade_tag or llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
 
             hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
             if hip_name in upstream_assets:
-                log(
-                    f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}"
-                )
+                log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -4063,9 +4200,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-hip",
                 )
-            log(
-                "AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU"
-            )
+            log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -4105,17 +4240,19 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             install_kind = "macos-x64",
         )
 
-    raise PrebuiltFallback(
-        f"no prebuilt policy exists for {host.system} {host.machine}"
-    )
+    raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
 
 
-def resolve_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
+def resolve_asset_choice(
+    host: HostInfo,
+    llama_tag: str,
+    lemonade_tag: "str | None" = None,
+) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
         raise PrebuiltFallback(
             "Linux CUDA installs require a compatible published bundle; upstream fallback is not available"
         )
-    return resolve_upstream_asset_choice(host, llama_tag)
+    return resolve_upstream_asset_choice(host, llama_tag, lemonade_tag = lemonade_tag)
 
 
 def resolve_release_asset_choice(
@@ -4123,6 +4260,7 @@ def resolve_release_asset_choice(
     llama_tag: str,
     release: PublishedReleaseBundle,
     checksums: ApprovedReleaseChecksums,
+    requested_tag: "str | None" = None,
 ) -> list[AssetChoice]:
     if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
         torch_preference = detect_torch_cuda_runtime_preference(host)
@@ -4153,14 +4291,15 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # AMD Windows hosts should prefer a hash-approved published
-        # Windows HIP bundle when one exists, but otherwise fall through
-        # to resolve_asset_choice() so the upstream HIP prebuilt is
-        # tried before the CPU fallback. Hard-pinning the published
-        # windows-cpu bundle here would make the new HIP path
-        # unreachable.
+        # AMD Windows hosts prefer the fork's per-gfx windows-rocm bundle when one
+        # covers the GPU; otherwise fall through to resolve_asset_choice(). Note
+        # that on the fork repo the upstream win-hip archive has no approved hash,
+        # so apply_approved_hashes drops it and an uncovered gfx lands on a HIP
+        # source build (auto-detecting its exact gfx) rather than an upstream
+        # prebuilt. We still avoid hard-pinning windows-cpu here so a CPU bundle
+        # never shadows that ROCm path.
         if host.has_rocm:
-            published_choice = published_asset_choice_for_kind(release, "windows-hip")
+            published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
@@ -4177,7 +4316,10 @@ def resolve_release_asset_choice(
                 f"{release.repo}@{release.release_tag} {published_choice.name} ({exc})"
             )
 
-    return apply_approved_hashes([resolve_asset_choice(host, llama_tag)], checksums)
+    return apply_approved_hashes(
+        [resolve_asset_choice(host, llama_tag, lemonade_tag = requested_tag)],
+        checksums,
+    )
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:
@@ -4185,18 +4327,14 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         normalized = member_name.replace("\\", "/")
         member_path = Path(normalized)
         if member_path.is_absolute():
-            raise PrebuiltFallback(
-                f"archive member used an absolute path: {member_name}"
-            )
+            raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
 
         target = (base / member_path).resolve()
         base_resolved = base.resolve()
         try:
             target.relative_to(base_resolved)
         except ValueError as exc:
-            raise PrebuiltFallback(
-                f"archive member escaped destination: {member_name}"
-            ) from exc
+            raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
         return target
 
     def _try_repair_missing_slash(
@@ -4242,11 +4380,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         return candidates[0][len(prefix) :]
 
     def safe_link_target(
-        base: Path,
-        member_name: str,
-        link_name: str,
-        target: Path,
-        archive_names: set[str],
+        base: Path, member_name: str, link_name: str, target: Path, archive_names: set[str]
     ) -> tuple[str, Path]:
         normalized = link_name.replace("\\", "/")
         repaired = _try_repair_missing_slash(member_name, normalized, archive_names)
@@ -4306,9 +4440,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 target.parent.mkdir(parents = True, exist_ok = True)
                 extracted = archive.extractfile(member)
                 if extracted is None:
-                    raise PrebuiltFallback(
-                        f"tar archive entry could not be read: {member.name}"
-                    )
+                    raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
                 with extracted, target.open("wb") as dst:
                     shutil.copyfileobj(extracted, dst)
 
@@ -4342,9 +4474,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 details = ", ".join(
                     f"{member.name} -> {member.linkname}" for member, _ in next_round
                 )
-                raise PrebuiltFallback(
-                    f"tar archive contained unresolved link entries: {details}"
-                )
+                raise PrebuiltFallback(f"tar archive contained unresolved link entries: {details}")
             unresolved = next_round
 
     destination.mkdir(parents = True, exist_ok = True)
@@ -4358,7 +4488,11 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 
 
 def copy_globs(
-    source_dir: Path, destination: Path, patterns: list[str], *, required: bool = True
+    source_dir: Path,
+    destination: Path,
+    patterns: list[str],
+    *,
+    required: bool = True,
 ) -> None:
     destination.mkdir(parents = True, exist_ok = True)
     matched_sources: dict[str, Path] = {}
@@ -4440,13 +4574,17 @@ def hydrate_source_tree(
     expected_sha256: str | None,
     source_label: str | None = None,
     exact_source: bool = False,
+    asset_url: str | None = None,
 ) -> None:
     archive_path = work_dir / f"llama.cpp-source-{source_ref}.tar.gz"
-    source_urls = (
+    repo_urls = (
         commit_source_archive_urls(source_repo, source_ref)
         if exact_source
         else upstream_source_archive_urls(source_ref)
     )
+    # Prefer the published release asset (the only copy of a mix build's merged
+    # tree); fall back to codeload/archive for vanilla builds whose commit is real.
+    source_urls = ([asset_url] if asset_url else []) + repo_urls
     label = source_label or f"llama.cpp source tree for {source_ref}"
     extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
 
@@ -4457,9 +4595,7 @@ def hydrate_source_tree(
         for index, source_url in enumerate(source_urls):
             try:
                 if index > 0:
-                    log(
-                        f"retrying source tree download from fallback URL: {source_url}"
-                    )
+                    log(f"retrying source tree download from fallback URL: {source_url}")
                 download_file_verified(
                     source_url,
                     archive_path,
@@ -4484,14 +4620,11 @@ def hydrate_source_tree(
             source_root / "gguf-py",
         ]
         missing = [
-            str(path.relative_to(source_root))
-            for path in required_paths
-            if not path.exists()
+            str(path.relative_to(source_root)) for path in required_paths if not path.exists()
         ]
         if missing:
             raise PrebuiltFallback(
-                "upstream source archive was missing required repo files: "
-                + ", ".join(missing)
+                "upstream source archive was missing required repo files: " + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
     except PrebuiltFallback:
@@ -4518,9 +4651,7 @@ def discover_installed_executable(install_dir: Path, executable_name: str) -> Pa
     direct = install_dir / executable_name
     if direct.exists() and direct.is_file():
         return direct
-    candidate = next(
-        (path for path in install_dir.rglob(executable_name) if path.is_file()), None
-    )
+    candidate = next((path for path in install_dir.rglob(executable_name) if path.is_file()), None)
     if candidate is None:
         raise PrebuiltFallback(f"{executable_name} was not installed")
     return candidate
@@ -4550,9 +4681,7 @@ def create_exec_entrypoint(entrypoint: Path, target: Path) -> None:
         write_exec_wrapper(entrypoint, target)
 
 
-def overlay_directory_for_choice(
-    install_dir: Path, choice: AssetChoice, host: HostInfo
-) -> Path:
+def overlay_directory_for_choice(install_dir: Path, choice: AssetChoice, host: HostInfo) -> Path:
     if host.is_windows or choice.install_kind.startswith("windows"):
         path = install_dir / "build" / "bin" / "Release"
     else:
@@ -4579,7 +4708,13 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # libraries between b9279 and b9283) without us re-enumerating
     # every new file. Studio only invokes llama-server and llama-quantize;
     # other CLIs upstream ships (llama-cli, llama-bench, ...) are skipped.
-    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm", "linux-arm64"}:
+    if choice.install_kind in {
+        "linux-cpu",
+        "linux-cuda",
+        "linux-arm64-cuda",
+        "linux-rocm",
+        "linux-arm64",
+    }:
         return ["llama-server", "llama-quantize", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
@@ -4587,12 +4722,11 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-cpu",
         "windows-cuda",
         "windows-hip",
+        "windows-rocm",
         "windows-arm64",
     }:
         return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
-    raise PrebuiltFallback(
-        f"unsupported install kind for runtime overlay: {choice.install_kind}"
-    )
+    raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
 
 
 def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
@@ -4603,10 +4737,7 @@ def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
     (hipblaslt/library/<gfx>/ and rocblas/library/<gfx>/) to sit next to
     their shared libraries at runtime.  These trees are multi-level and
     cannot be handled by copy_globs (filename-only matching, flat copy)."""
-    if choice.source_label == "lemonade" and choice.install_kind in {
-        "linux-rocm",
-        "windows-hip",
-    }:
+    if choice.install_kind in {"linux-rocm", "windows-rocm", "windows-hip"}:
         return ["hipblaslt", "rocblas"]
     return []
 
@@ -4801,9 +4932,36 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
     expected.append(install_dir / "UNSLOTH_PREBUILT_INFO.json")
     missing = [str(path) for path in expected if not path.exists()]
     if missing:
-        raise RuntimeError(
-            "activated install was missing expected files: " + ", ".join(missing)
-        )
+        raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
+
+
+def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
+    """Move a freshly extracted ``staging_dir`` onto ``dst``.
+
+    ``os.replace`` is attempted first as the fast path. On Windows ARM64 the
+    antivirus scanner can transiently hold a freshly extracted DLL open at the
+    moment ``MoveFileEx`` runs, surfacing as ``[WinError 5] Access is denied``;
+    a file-by-file copy bypasses the rename entirely.
+
+    This fallback is intentionally limited to staging trees we just extracted.
+    It must not be used to move an existing/active install aside: there an
+    ``os.replace`` failure means the directory is genuinely in use, and a
+    silent copy + ``rmtree`` could partially delete a live install.
+
+    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
+    else (disk full, cross-device, missing path) re-raises so it cannot leave
+    a partially copied install behind. A copy is preferred over retrying the
+    rename because antivirus scans of large DLLs can outlast any reasonable
+    retry window.
+    """
+    try:
+        os.replace(staging_dir, dst)
+    except OSError as exc:
+        if not is_busy_lock_error(exc):
+            raise
+        log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        remove_tree(staging_dir)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4817,7 +4975,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
-        os.replace(staging_dir, install_dir)
+        activate_staged_dir(staging_dir, install_dir)
         log(f"activated staged install at {install_dir}")
         log(f"confirming activated install tree at {install_dir}")
         confirm_install_tree(install_dir, host)
@@ -4926,15 +5084,11 @@ def install_from_archives(
                 expected_sha256 = choice.runtime_sha256,
                 label = f"prebuilt runtime archive {choice.runtime_name}",
             )
-            runtime_extract_dir = Path(
-                tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir)
-            )
+            runtime_extract_dir = Path(tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir))
             extract_archive(runtime_archive, runtime_extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
-        copy_globs(
-            source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
-        )
+        copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
@@ -4979,9 +5133,7 @@ def install_from_archives(
     source_server = build_bin / "llama-server"
     source_quantize = build_bin / "llama-quantize"
     if not source_server.exists() or not source_quantize.exists():
-        raise PrebuiltFallback(
-            "unix executables were not installed correctly into build/bin"
-        )
+        raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
 
@@ -5007,13 +5159,9 @@ def ensure_repo_shape(install_dir: Path) -> None:
         install_dir / "convert_hf_to_gguf.py",
         install_dir / "gguf-py",
     ]
-    missing = [
-        str(path.relative_to(install_dir)) for path in required if not path.exists()
-    ]
+    missing = [str(path.relative_to(install_dir)) for path in required if not path.exists()]
     if missing:
-        raise PrebuiltFallback(
-            "hydrated llama.cpp source tree was missing: " + ", ".join(missing)
-        )
+        raise PrebuiltFallback("hydrated llama.cpp source tree was missing: " + ", ".join(missing))
 
 
 def validation_model_cache_path(install_dir: Path) -> Path:
@@ -5028,10 +5176,49 @@ def validated_validation_model_bytes(data: bytes) -> bytes:
     digest = hashlib.sha256(data).hexdigest()
     if digest != TEST_MODEL_SHA256:
         raise RuntimeError(
-            "validation model checksum mismatch: "
-            f"expected={TEST_MODEL_SHA256} actual={digest}"
+            f"validation model checksum mismatch: expected={TEST_MODEL_SHA256} actual={digest}"
         )
     return data
+
+
+def _hf_resolve_url_parts(url: str) -> tuple[str, str, str] | None:
+    """Parse a huggingface.co .../resolve/<rev>/<path> URL into
+    (repo_id, revision, filename); None if it is not such a URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return None
+    if (parsed.netloc or "").lower() not in ("huggingface.co", "www.huggingface.co"):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    # <owner>/<name>/resolve/<rev>/<path...>
+    if len(parts) >= 5 and parts[2] == "resolve":
+        return f"{parts[0]}/{parts[1]}", parts[3], "/".join(parts[4:])
+    return None
+
+
+def _fetch_validation_model_bytes() -> bytes:
+    """Fetch the tiny GGUF validation model. Prefer huggingface_hub (completes
+    TLS chains via AIA fetching that bare urllib can't on some Windows/proxy
+    setups); fall back to the direct URL when hf_hub is unavailable or fails."""
+    parts = _hf_resolve_url_parts(TEST_MODEL_URL)
+    if parts is not None:
+        repo_id, revision, filename = parts
+        try:
+            from huggingface_hub import hf_hub_download
+            local = hf_hub_download(repo_id = repo_id, filename = filename, revision = revision)
+            return validated_validation_model_bytes(Path(local).read_bytes())
+        except Exception as exc:
+            log(
+                f"huggingface_hub fetch of validation model failed ({exc}); "
+                "falling back to direct URL"
+            )
+    return validated_validation_model_bytes(
+        download_bytes(
+            TEST_MODEL_URL,
+            progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+        )
+    )
 
 
 def download_validation_model(path: Path, cache_path: Path | None = None) -> None:
@@ -5042,18 +5229,11 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
                 data = validated_validation_model_bytes(cache_path.read_bytes())
                 log(f"using cached tiny GGUF validation model from {cache_path}")
             except Exception as exc:
-                log(
-                    f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})"
-                )
+                log(f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})")
                 data = None
         if data is None:
             log("downloading tiny GGUF validation model")
-            data = validated_validation_model_bytes(
-                download_bytes(
-                    TEST_MODEL_URL,
-                    progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
-                )
-            )
+            data = _fetch_validation_model_bytes()
             if cache_path is not None:
                 atomic_write_bytes(cache_path, data)
         atomic_write_bytes(path, data)
@@ -5133,9 +5313,7 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-def linux_missing_libraries(
-    binary_path: Path, *, env: dict[str, str] | None = None
-) -> list[str]:
+def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
     try:
         result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
     except Exception:
@@ -5292,9 +5470,7 @@ def _macho_slice_minos(data: bytes, offset: int) -> tuple[int, int] | None:
     return None
 
 
-def macho_minimum_macos(
-    path: Path, host: HostInfo | None = None
-) -> tuple[int, int] | None:
+def macho_minimum_macos(path: Path, host: HostInfo | None = None) -> tuple[int, int] | None:
     """Minimum macOS (major, minor) a Mach-O binary or dylib requires.
 
     Pure-Python so it works on consumer Macs without the Xcode command line
@@ -5333,9 +5509,7 @@ def macho_minimum_macos(
             return None
         if host is not None:
             want = (
-                _CPU_TYPE_ARM64
-                if host.is_arm64
-                else (_CPU_TYPE_X86_64 if host.is_x86_64 else None)
+                _CPU_TYPE_ARM64 if host.is_arm64 else (_CPU_TYPE_X86_64 if host.is_x86_64 else None)
             )
             for cputype, minos in slices:
                 if cputype == want:
@@ -5355,9 +5529,7 @@ def looks_like_macos_incompatibility(text: str) -> bool:
 
 
 def macos_binary_minos_issues(
-    binaries: Iterable[Path],
-    install_dir: Path,
-    host: HostInfo,
+    binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> list[str]:
     """Issue strings for every installed Mach-O whose minimum macOS exceeds the
     host. Scans the given executables plus every bundled .dylib next to them --
@@ -5387,9 +5559,7 @@ def macos_binary_minos_issues(
 
 
 def preflight_macos_installed_binaries(
-    binaries: Iterable[Path],
-    install_dir: Path,
-    host: HostInfo,
+    binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> None:
     """Reject a macos prebuilt whose minimum-OS is newer than the host. The
     upstream selector pins a loadable release up front, so here this is the
@@ -5400,15 +5570,12 @@ def preflight_macos_installed_binaries(
     issues = macos_binary_minos_issues(binaries, install_dir, host)
     if issues:
         raise PrebuiltFallback(
-            "macos prebuilt requires a newer macOS than this host:\n"
-            + "\n".join(issues)
+            "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
         )
 
 
 def preflight_linux_installed_binaries(
-    binaries: Iterable[Path],
-    install_dir: Path,
-    host: HostInfo,
+    binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> None:
     if not host.is_linux:
         return
@@ -5419,18 +5586,14 @@ def preflight_linux_installed_binaries(
         missing = linux_missing_libraries(binary_path, env = env)
         if not missing:
             continue
-        runtime_dirs = [
-            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
-        ]
+        runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         issues.append(
             f"{binary_path.name}: missing={','.join(missing)} "
             f"ld_library_path={','.join(runtime_dirs) if runtime_dirs else 'none'}"
         )
 
     if issues:
-        raise PrebuiltFallback(
-            "linux extracted binary preflight failed:\n" + "\n".join(issues)
-        )
+        raise PrebuiltFallback("linux extracted binary preflight failed:\n" + "\n".join(issues))
 
 
 def glob_paths(*patterns: str) -> list[str]:
@@ -5474,12 +5637,9 @@ def windows_runtime_dirs() -> list[str]:
 
 
 def windows_runtime_dirs_for_patterns(
-    required_patterns: Iterable[str],
-    candidate_dirs: Iterable[str] | None = None,
+    required_patterns: Iterable[str], candidate_dirs: Iterable[str] | None = None
 ) -> list[str]:
-    directories = (
-        list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
-    )
+    directories = list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
     matching_dirs: list[str] = []
     for pattern in required_patterns:
         matched_dirs = [
@@ -5500,6 +5660,33 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
     if not patterns:
         return []
     return windows_runtime_dirs_for_patterns(patterns)
+
+
+def _wsl_system_rocm_lib_dirs() -> list[str]:
+    """System ROCm lib dir(s) for binary_env to load before a prebuilt's HIP.
+
+    A prebuilt bundles a bare-metal HIP runtime that can't drive WSL's /dev/dxg
+    and segfaults on the first GPU call -> validation fails, install falls back
+    to a CPU build. Putting the system ROCm libs first loads the WSL-capable
+    HIP (libamdhip64 + librocdxg) while the bundle still supplies libggml-hip /
+    librocblas with the gfx1151 kernels. Strict no-op off WSL (needs /dev/dxg, a
+    "microsoft" /proc/version, and a librocdxg-providing ROCm).
+    """
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    out: list[str] = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            out.append(d)
+    return out
 
 
 def binary_env(
@@ -5523,20 +5710,17 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
-        existing = [
-            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
-        ]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(
-            dedupe_existing_dirs([*ld_dirs, *existing])
-        )
+        # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+        _wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if _wsl_rocm:
+            ld_dirs = [*_wsl_rocm, *ld_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
-        existing = [
-            part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part
-        ]
-        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
-            dedupe_existing_dirs([*dyld_dirs, *existing])
-        )
+        existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*dyld_dirs, *existing]))
     return env
 
 
@@ -5558,11 +5742,7 @@ def validate_quantize(
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
     )
-    if (
-        result.returncode != 0
-        or not quantized_path.exists()
-        or quantized_path.stat().st_size == 0
-    ):
+    if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         # Backstop for prebuilts the static minos scan could not read: a dyld
         # "built for macOS N" / missing Metal symbol failure means this binary
@@ -5572,9 +5752,7 @@ def validate_quantize(
             if looks_like_macos_incompatibility(combined)
             else ""
         )
-        raise PrebuiltFallback(
-            prefix + "llama-quantize validation failed:\n" + combined
-        )
+        raise PrebuiltFallback(prefix + "llama-quantize validation failed:\n" + combined)
 
 
 def validate_server(
@@ -5617,9 +5795,11 @@ def validate_server(
         # pass one (keeps backwards compatibility with older call sites).
         _gpu_kinds = {
             "linux-cuda",
+            "linux-arm64-cuda",
             "linux-rocm",
             "windows-cuda",
             "windows-hip",
+            "windows-rocm",
             "macos-arm64",
         }
         if install_kind is not None:
@@ -5630,9 +5810,7 @@ def validate_server(
             # is exercised against the actual hardware rather than the
             # CPU fallback. NVIDIA and macOS-arm64 are already covered.
             _enable_gpu_layers = (
-                host.has_usable_nvidia
-                or host.has_rocm
-                or (host.is_macos and host.is_arm64)
+                host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
             )
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
@@ -5648,9 +5826,7 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
-                    env = binary_env(
-                        server_path, install_dir, host, runtime_line = runtime_line
-                    ),
+                    env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **windows_hidden_subprocess_kwargs(),
                 )
                 deadline = time.time() + 60
@@ -5665,9 +5841,7 @@ def validate_server(
                         exited_quickly = (
                             time.time() - startup_started
                         ) <= SERVER_BIND_RETRY_WINDOW_SECONDS
-                        failure = PrebuiltFallback(
-                            "llama-server exited during startup:\n" + output
-                        )
+                        failure = PrebuiltFallback("llama-server exited during startup:\n" + output)
                         if (
                             port_attempt < SERVER_PORT_BIND_ATTEMPTS
                             and is_retryable_server_bind_error(
@@ -5684,9 +5858,7 @@ def validate_server(
                             break
                         raise failure
 
-                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode(
-                        "utf-8"
-                    )
+                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode("utf-8")
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/completion",
                         data = payload,
@@ -5698,9 +5870,7 @@ def validate_server(
                             response_body = response.read().decode("utf-8", "replace")
                             if status_code == 200:
                                 return
-                            last_error = RuntimeError(
-                                f"unexpected HTTP status {status_code}"
-                            )
+                            last_error = RuntimeError(f"unexpected HTTP status {status_code}")
                     except urllib.error.HTTPError as exc:
                         response_body = exc.read().decode("utf-8", "replace")
                         last_error = exc
@@ -5734,9 +5904,7 @@ def validate_server(
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
 
 
-def collect_system_report(
-    host: HostInfo, choice: AssetChoice | None, install_dir: Path
-) -> str:
+def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
     lines = [
         f"platform={host.system} machine={host.machine}",
         f"driver_cuda_version={host.driver_cuda_version}",
@@ -5750,8 +5918,7 @@ def collect_system_report(
     if host.is_linux and host.has_physical_nvidia:
         runtime_lines, runtime_dirs = detected_linux_runtime_lines()
         lines.append(
-            "linux_runtime_lines="
-            + (",".join(runtime_lines) if runtime_lines else "none")
+            "linux_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none")
         )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
@@ -5780,10 +5947,7 @@ def collect_system_report(
             server_env = binary_env(server_binary, install_dir, host)
             lines.append(
                 "linux_missing_libs="
-                + (
-                    ",".join(linux_missing_libraries(server_binary, env = server_env))
-                    or "none"
-                )
+                + (",".join(linux_missing_libraries(server_binary, env = server_env)) or "none")
             )
             lines.append(
                 "linux_runtime_dirs="
@@ -5791,9 +5955,7 @@ def collect_system_report(
                     ",".join(
                         [
                             part
-                            for part in server_env.get("LD_LIBRARY_PATH", "").split(
-                                os.pathsep
-                            )
+                            for part in server_env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
                             if part
                         ]
                     )
@@ -5801,21 +5963,16 @@ def collect_system_report(
                 )
             )
             try:
-                ldd = run_capture(
-                    ["ldd", str(server_binary)], timeout = 20, env = server_env
-                )
+                ldd = run_capture(["ldd", str(server_binary)], timeout = 20, env = server_env)
                 lines.append("ldd llama-server:")
                 lines.append((ldd.stdout + ldd.stderr).strip())
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
-        lines.append(
-            "windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none")
-        )
+        lines.append("windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none"))
         runtime_lines, runtime_dirs = detected_windows_runtime_lines()
         lines.append(
-            "windows_runtime_lines="
-            + (",".join(runtime_lines) if runtime_lines else "none")
+            "windows_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none")
         )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
@@ -5840,8 +5997,7 @@ def collect_system_report(
 
 
 def apply_approved_hashes(
-    attempts: Iterable[AssetChoice],
-    checksums: ApprovedReleaseChecksums,
+    attempts: Iterable[AssetChoice], checksums: ApprovedReleaseChecksums
 ) -> list[AssetChoice]:
     def approved_hash_for_attempt(attempt: AssetChoice) -> ApprovedArtifactHash | None:
         candidate_names = [attempt.name]
@@ -5949,8 +6105,7 @@ def preferred_source_archive(
 
 
 def selected_source_archive_metadata(
-    checksums: ApprovedReleaseChecksums,
-    llama_tag: str,
+    checksums: ApprovedReleaseChecksums, llama_tag: str
 ) -> tuple[str, str | None]:
     _source_repo, _source_ref, source_archive, _exact_source = preferred_source_archive(
         checksums, llama_tag
@@ -5961,12 +6116,9 @@ def selected_source_archive_metadata(
 
 
 def resolve_install_attempts(
-    llama_tag: str,
-    host: HostInfo,
-    published_repo: str,
-    published_release_tag: str,
+    llama_tag: str, host: HostInfo, published_repo: str, published_release_tag: str
 ) -> tuple[str, str, list[AssetChoice], ApprovedReleaseChecksums]:
-    requested_tag, plans = resolve_install_release_plans(
+    requested_tag, plans = _fork_manifest_release_plans(
         llama_tag,
         host,
         published_repo,
@@ -5978,7 +6130,50 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
-def resolve_install_release_plans(
+def _linux_published_attempts(
+    host: HostInfo, bundle: PublishedReleaseBundle, requested_tag: str
+) -> list[AssetChoice]:
+    """Build the install attempts for a fork Linux host from a manifest-described
+    bundle: CUDA (with a CPU fallback), per-gfx ROCm (with a lemonade fallback),
+    or CPU. Same selection the upstream filename path used, just sourced from the
+    manifest instead of reconstructed from asset names."""
+    attempts: list[AssetChoice] = []
+    if host.has_usable_nvidia:
+        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # libcudart), not the newest detected on disk. Without this a stray
+        # cuda13 runtime outranks the torch cuda12 the binary links against.
+        torch_preference = detect_torch_cuda_runtime_preference(host)
+        selection = linux_cuda_choice_from_release(
+            host,
+            bundle,
+            preferred_runtime_line = torch_preference.runtime_line,
+            selection_preamble = torch_preference.selection_log,
+        )
+        if selection is not None:
+            attempts.extend(selection.attempts)
+    if host.has_rocm and not host.has_usable_nvidia:
+        # Prefer the fork's own per-gfx ROCm bundle (hash-approved, ships the
+        # full ROCm runtime) and fall back to the external lemonade prebuilt.
+        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
+        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
+        # so the caller triggers the HIP source build, not silently install a
+        # CPU-only binary.
+        published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
+        if published_rocm is not None:
+            attempts.append(published_rocm)
+        lemonade_choice = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+        )
+        if lemonade_choice is not None:
+            attempts.append(lemonade_choice)
+    else:
+        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        if cpu_choice is not None:
+            attempts.append(cpu_choice)
+    return attempts
+
+
+def _fork_manifest_release_plans(
     llama_tag: str,
     host: HostInfo,
     published_repo: str,
@@ -5986,18 +6181,16 @@ def resolve_install_release_plans(
     *,
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
+    """Manifest-reading branch of resolve_simple_install_release_plans, used for
+    the fork's bundles whose GPU/arch coverage lives in
+    llama-prebuilt-manifest.json rather than in the filename: arm64 CUDA, Windows
+    CUDA, per-gfx ROCm, and macOS. Linux x64 takes the faster filename path."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
-    allow_older_release_fallback = (
-        requested_tag == "latest" and not published_release_tag
-    )
+    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     release_limit = max(1, max_release_fallbacks)
     # macOS may need to walk past a run of too-new prebuilts. Only when the host
     # version is known; otherwise keep the default (cannot tell up front).
-    if (
-        host.is_macos
-        and allow_older_release_fallback
-        and host.macos_version is not None
-    ):
+    if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
         release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
@@ -6011,20 +6204,22 @@ def resolve_install_release_plans(
         checksums = resolved_release.checksums
         resolved_tag = bundle.upstream_tag
         try:
-            if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
-                linux_cuda_selection = resolve_linux_cuda_choice(host, bundle)
-                attempts = apply_approved_hashes(
-                    linux_cuda_selection.attempts, checksums
-                )
+            if host.is_linux:
+                linux_attempts = _linux_published_attempts(host, bundle, requested_tag)
+                if not linux_attempts:
+                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                attempts = apply_approved_hashes(linux_attempts, checksums)
                 if not attempts:
-                    raise PrebuiltFallback("no compatible Linux CUDA asset was found")
-                log_lines(linux_cuda_selection.selection_log)
+                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                if attempts[0].selection_log:
+                    log_lines(attempts[0].selection_log)
             else:
                 attempts = resolve_release_asset_choice(
                     host,
                     resolved_tag,
                     bundle,
                     checksums,
+                    requested_tag = requested_tag,
                 )
                 if not attempts:
                     raise PrebuiltFallback("no compatible prebuilt asset was found")
@@ -6117,9 +6312,7 @@ def write_prebuilt_metadata(
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps(metadata, indent = 2) + "\n"
-    )
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
 
 
 def expected_install_fingerprint(
@@ -6182,7 +6375,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
-    if choice.install_kind == "linux-cuda":
+    if choice.install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6225,7 +6418,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
         return groups
-    if choice.install_kind == "windows-hip":
+    if choice.install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
     return []
 
@@ -6236,9 +6429,7 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
-def runtime_payload_is_healthy(
-    install_dir: Path, host: HostInfo, choice: AssetChoice
-) -> bool:
+def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
         return False
@@ -6326,9 +6517,7 @@ def existing_install_matches_choice(
 
 
 def existing_install_matches_plan(
-    install_dir: Path,
-    host: HostInfo,
-    plan: InstallReleasePlan,
+    install_dir: Path, host: HostInfo, plan: InstallReleasePlan
 ) -> bool:
     if not plan.attempts:
         return False
@@ -6359,10 +6548,17 @@ def validate_prebuilt_choice(
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
     )
-    if exact_source:
-        log(
-            f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}"
+    # For an exact (mix) source the merge commit lives only in the release asset,
+    # not in any repo, so fetch the asset directly; codeload stays the fallback.
+    asset_url = (
+        release_asset_download_url(
+            approved_checksums.repo, approved_checksums.release_tag, source_archive.asset_name
         )
+        if exact_source and source_archive is not None
+        else None
+    )
+    if exact_source:
+        log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
     else:
         log(f"hydrating upstream llama.cpp source for {llama_tag} into {install_dir}")
     hydrate_source_tree(
@@ -6377,11 +6573,10 @@ def validate_prebuilt_choice(
             else f"llama.cpp source tree for {llama_tag}"
         ),
         exact_source = exact_source,
+        asset_url = asset_url,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
-    server_path, quantize_path = install_from_archives(
-        choice, host, install_dir, work_dir
-    )
+    server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
@@ -6394,23 +6589,31 @@ def validate_prebuilt_choice(
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
-    validate_quantize(
-        quantize_path,
-        probe_path,
-        quantized_path,
-        install_dir,
-        host,
-        runtime_line = choice.runtime_line,
-    )
-    validate_server(
-        server_path,
-        probe_path,
-        host,
-        install_dir,
-        runtime_line = choice.runtime_line,
-        install_kind = choice.install_kind,
-    )
-    log(f"staged prebuilt validation succeeded for {choice.name}")
+    # Hashless external prebuilts (e.g. lemonade) are not in the approved-sha256
+    # manifest and rely on the functional smoke test as their only integrity gate,
+    # so they are always validated. For an approved bundle the sha256 manifest
+    # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
+    # costing minutes on Blackwell sm_100 -- is gated behind
+    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
+    # source-build fallback it triggers are kept intact; flip the flag to restore it.
+    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+        validate_quantize(
+            quantize_path,
+            probe_path,
+            quantized_path,
+            install_dir,
+            host,
+            runtime_line = choice.runtime_line,
+        )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            runtime_line = choice.runtime_line,
+            install_kind = choice.install_kind,
+        )
+        log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
 
 
@@ -6502,7 +6705,6 @@ def install_prebuilt(
     published_repo: str,
     published_release_tag: str,
     *,
-    simple_policy: bool = False,
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
@@ -6525,23 +6727,15 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            if simple_policy:
-                requested_tag, release_plans = resolve_simple_install_release_plans(
-                    llama_tag,
-                    host,
-                    published_repo,
-                    published_release_tag,
-                )
-            else:
-                requested_tag, release_plans = resolve_install_release_plans(
-                    llama_tag,
-                    host,
-                    published_repo,
-                    published_release_tag,
-                )
-            if release_plans and existing_install_matches_plan(
-                install_dir, host, release_plans[0]
-            ):
+            # Single resolver: linux-x64 takes the fast filename path internally,
+            # every other fork host reads the manifest.
+            requested_tag, release_plans = resolve_simple_install_release_plans(
+                llama_tag,
+                host,
+                published_repo,
+                published_release_tag,
+            )
+            if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 log(
                     "existing llama.cpp install already matches selected release "
@@ -6551,9 +6745,7 @@ def install_prebuilt(
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(
-                    probe_path, validation_model_cache_path(install_dir)
-                )
+                download_validation_model(probe_path, validation_model_cache_path(install_dir))
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
@@ -6643,11 +6835,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--simple-policy",
-        action = "store_true",
-        help = "Use the simplified platform-specific prebuilt selection policy.",
-    )
-    parser.add_argument(
         "--has-rocm",
         action = "store_true",
         default = False,
@@ -6699,6 +6886,16 @@ def parse_args() -> argparse.Namespace:
         nargs = "?",
         const = "latest",
         help = ("Resolve the source-build fallback plan."),
+    )
+    resolve_group.add_argument(
+        "--resolve-prebuilt",
+        nargs = "?",
+        const = "latest",
+        help = (
+            "Report whether an official prebuilt exists for this host without "
+            "downloading. Picks the host's published repo when --published-repo "
+            "is left at the default. Use --output-format json."
+        ),
     )
     parser.add_argument(
         "--output-format",
@@ -6759,9 +6956,7 @@ def main() -> int:
         )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(
-                    args.resolve_install_tag
-                ),
+                "requested_tag": normalized_requested_llama_tag(args.resolve_install_tag),
                 "llama_tag": resolved,
             },
             output_format = args.output_format,
@@ -6776,9 +6971,7 @@ def main() -> int:
         )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(
-                    args.resolve_source_build
-                ),
+                "requested_tag": normalized_requested_llama_tag(args.resolve_source_build),
                 "source_url": plan.source_url,
                 "source_ref_kind": plan.source_ref_kind,
                 "source_ref": plan.source_ref,
@@ -6788,16 +6981,58 @@ def main() -> int:
         )
         return EXIT_SUCCESS
 
+    if args.resolve_prebuilt is not None:
+        # Host-aware "is a prebuilt available" probe, no download. A default repo
+        # means "pick the repo for this host"; PrebuiltFallback == source build.
+        host = _apply_host_overrides(
+            detect_host(),
+            override_has_rocm = args.has_rocm,
+            override_rocm_gfx = args.rocm_gfx,
+            force_cpu = args.cpu_fallback,
+        )
+        # setup.sh routes Linux hosts with AMD tooling to the fork even when no GPU
+        # is probed; mirror that so a HIP source build is not offered a CPU prebuilt.
+        amd_tooling = host.is_linux and any(
+            shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo")
+        )
+        repo = (
+            published_repo_for_host(host, linux_amd_tooling_present = amd_tooling)
+            if args.published_repo == DEFAULT_PUBLISHED_REPO
+            else args.published_repo
+        )
+        try:
+            _requested, plans = resolve_simple_install_release_plans(
+                args.resolve_prebuilt, host, repo, args.published_release_tag or ""
+            )
+            choice = plans[0].attempts[0] if plans and plans[0].attempts else None
+            if choice is None:
+                payload = {"prebuilt_available": False, "repo": repo}
+            else:
+                payload = {
+                    "prebuilt_available": True,
+                    "repo": repo,
+                    "release_tag": plans[0].release_tag,
+                    "llama_tag": plans[0].llama_tag,
+                    "asset": choice.name,
+                    "install_kind": choice.install_kind,
+                }
+        except PrebuiltFallback:
+            payload = {"prebuilt_available": False, "repo": repo}
+        emit_resolver_output(payload, output_format = args.output_format)
+        return EXIT_SUCCESS
+
     if not args.install_dir:
         raise SystemExit(
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag, --resolve-install-tag, or --resolve-source-build is used"
         )
+    # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
+    global _LOG_TO_STDOUT
+    _LOG_TO_STDOUT = True
     install_prebuilt(
         install_dir = Path(args.install_dir).expanduser().resolve(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
-        simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,

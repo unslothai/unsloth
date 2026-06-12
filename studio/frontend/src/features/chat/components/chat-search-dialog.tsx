@@ -8,13 +8,28 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
-import { Cancel01Icon, Message01Icon, SearchIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { useEffect } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
+
+// cmdk's default fuzzy scorer keeps non-matching rows visible (issue #5572), so
+// require every whitespace token to be a substring of the item's keywords.
+// `value` is the unique thread id (cmdk selection); title/preview come via keywords.
+export function chatSearchFilter(
+  _value: string,
+  search: string,
+  keywords?: string[],
+): number {
+  const query = search.trim().toLowerCase();
+  if (query === "") return 1;
+  const haystack = (keywords ?? []).join(" ").toLowerCase();
+  const tokens = query.split(/\s+/);
+  return tokens.every((token) => haystack.includes(token)) ? 1 : 0;
+}
 
 function formatRelative(createdAt: number): string {
   const diff = Date.now() - createdAt;
@@ -49,13 +64,13 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px] border-0 ring-0 shadow-[0_10px_34px_rgba(0,0,0,0.12)] dark:border dark:border-border dark:ring-0 dark:shadow-none"
+      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-4xl p-0">
+      <Command className="rounded-3xl p-0" filter={chatSearchFilter}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
-            icon={SearchIcon}
+            icon={Search01Icon}
             strokeWidth={2}
             className="size-4 shrink-0 text-muted-foreground"
           />
@@ -72,7 +87,7 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="cmd-native-scrollbar max-h-[420px] p-1">
+        <CommandList className="cmd-native-scrollbar hover-scrollbar max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"
@@ -84,7 +99,8 @@ export function ChatSearchDialog() {
             {items.map((item) => (
               <CommandPrimitive.Item
                 key={item.id}
-                value={`${item.title} ${item.preview}`}
+                value={item.id}
+                keywords={[item.title, item.preview]}
                 onSelect={() => {
                   navigate({
                     to: "/chat",
@@ -101,7 +117,7 @@ export function ChatSearchDialog() {
                   });
                   close();
                 }}
-                className="relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
+                className="relative flex cursor-pointer select-none items-center gap-3 rounded-full px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Message01Icon}

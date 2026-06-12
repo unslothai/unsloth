@@ -125,7 +125,7 @@ function Sparkline({
   const w = 120;
   const gradientId = `sparkFill-${id}`;
 
-  // Build points with vertical padding so the stroke isn't clipped
+  // Vertical padding so the stroke isn't clipped.
   const pts = values.map((v, i) => ({
     x: (i / (values.length - 1)) * w,
     y: pad + (1 - (v - min) / range) * (h - pad * 2),
@@ -206,7 +206,7 @@ export function HistoryCardGrid({
   }, [runs.length]);
 
   const fetchRuns = useCallback(async (offset = 0, append = false, limit = PAGE_SIZE) => {
-    // Cancel any in-flight poll so its stale response can't clobber this fresher fetch
+    // Cancel any in-flight poll so its stale response can't clobber this fetch.
     pollControllerRef.current?.abort();
     userControllerRef.current?.abort();
     const controller = new AbortController();
@@ -261,7 +261,7 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
-  // Poll while any run is still "running" so the card shows live progress
+  // Poll while any run is "running" so cards show live progress.
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
   useEffect(() => {
@@ -275,11 +275,11 @@ export function HistoryCardGrid({
       try {
         const limit = Math.max(PAGE_SIZE, visibleCount);
         const result = await listTrainingRuns(limit, 0, controller.signal);
-        if (pollIdRef.current !== pid) return; // stale poll — discard
+        if (pollIdRef.current !== pid) return; // stale poll
         setRuns(result.runs);
         setTotal(result.total);
       } catch {
-        // silently handle — poll will retry
+        // ignore; poll will retry
       }
     }, RUNNING_POLL_INTERVAL_MS);
     return () => {
@@ -294,11 +294,11 @@ export function HistoryCardGrid({
     try {
       await deleteTrainingRun(deleteTarget);
       emitTrainingRunDeleted(deleteTarget);
-      // Re-fetch preserving visible count so offsets stay consistent for "Load more"
+      // Re-fetch preserving visible count so "Load more" offsets stay consistent.
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
       fetchRuns(0, false, limit).catch(() => {
-        // Refresh failed — card is already removed, no stale display
+        // Refresh failed; card is already removed, no stale display.
       });
     } catch {
       setDeleteError(translate("studio.history.deleteError"));

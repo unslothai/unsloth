@@ -45,9 +45,7 @@ def test_list_servers_ordered_by_created_at(tmp_path, monkeypatch):
 def test_update_server_coerces_bools(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
-    assert mcp_servers_db.update_server(
-        "srv1", {"is_enabled": False, "use_oauth": True}
-    )
+    assert mcp_servers_db.update_server("srv1", {"is_enabled": False, "use_oauth": True})
     row = mcp_servers_db.get_server("srv1")
     assert row["is_enabled"] == 0
     assert row["use_oauth"] == 1
@@ -81,7 +79,6 @@ def test_validate_url_accepts_http_and_https():
 @pytest.mark.parametrize("bad", ["", "   ", "ftp://x", "http://", "noscheme.com"])
 def test_validate_url_rejects_bad(bad):
     from routes.mcp_servers import _validate_url
-
     with pytest.raises(HTTPException) as exc:
         _validate_url(bad)
     assert exc.value.status_code == 400
@@ -90,9 +87,7 @@ def test_validate_url_rejects_bad(bad):
 def test_normalize_headers():
     from routes.mcp_servers import _normalize_headers
 
-    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {
-        "Auth": "Bearer x"
-    }
+    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {"Auth": "Bearer x"}
     assert _normalize_headers({"X": 42}) == {"X": "42"}
     assert _normalize_headers({}) is None
     assert _normalize_headers(None) is None
@@ -104,15 +99,12 @@ def test_changes_from_payload_tristate_headers():
     from models.mcp_servers import McpServerUpdate
 
     # omitted → key absent
-    assert "headers_json" not in _changes_from_payload(
-        McpServerUpdate(display_name = "x")
-    )
+    assert "headers_json" not in _changes_from_payload(McpServerUpdate(display_name = "x"))
     # null → stored as None (clear all headers)
     assert _changes_from_payload(McpServerUpdate(headers = None))["headers_json"] is None
     # dict → serialised JSON
     assert (
-        _changes_from_payload(McpServerUpdate(headers = {"a": "1"}))["headers_json"]
-        == '{"a": "1"}'
+        _changes_from_payload(McpServerUpdate(headers = {"a": "1"}))["headers_json"] == '{"a": "1"}'
     )
 
 
@@ -135,7 +127,6 @@ def test_mcp_specs_skip_oversized_names():
 
 def test_execute_tool_malformed_mcp_name():
     from core.inference.tools import execute_tool
-
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
@@ -143,11 +134,7 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-
-    assert (
-        execute_tool("mcp__missing__do_thing", {})
-        == "Error: MCP server 'missing' not found"
-    )
+    assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -160,15 +147,11 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     )
     from core.inference.tools import execute_tool
 
-    assert (
-        execute_tool("mcp__srv1__do_thing", {})
-        == "Error: MCP server 'srv1' is disabled"
-    )
+    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'srv1' is disabled"
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
-    """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; tools whose
-    names contain '.', '/', spaces, etc. would 400 the whole request."""
+    """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad names 400 the request."""
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -193,8 +176,7 @@ def test_mcp_specs_skip_empty_tool_name():
 
 
 def test_mcp_specs_drops_duplicate_names():
-    """Same tool name twice from one MCP server -> OpenAI rejects the
-    request as 'duplicates'. Drop the duplicate before forwarding."""
+    """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -204,8 +186,7 @@ def test_mcp_specs_drops_duplicate_names():
 
 
 def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
-    """cancel_event already set before the call -> immediate Error: cancelled
-    without making a network round-trip."""
+    """Pre-set cancel_event -> immediate cancellation, no network round-trip."""
     import threading
     from core.inference import mcp_client
 
@@ -219,8 +200,7 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 
         async def call_tool(self, name, args):
             import asyncio as _asyncio
-
-            await _asyncio.sleep(30)  # never finishes within the test
+            await _asyncio.sleep(30)  # never finishes during the test
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
 
@@ -238,8 +218,8 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 
 
 def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
-    """clear_oauth_tokens_async on a URL with no stored token must not raise --
-    the delete + update handlers call it best-effort regardless of prior state."""
+    """clear_oauth_tokens_async on a URL with no stored token must not raise;
+    the delete + update handlers call it best-effort regardless of state."""
     import asyncio
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -250,7 +230,7 @@ def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
 
 
 def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypatch):
-    """delete_mcp_server route helper should invoke clear_oauth_tokens_async
+    """delete_mcp_server route helper must call clear_oauth_tokens_async
     when the deleted row had use_oauth=true."""
     import asyncio
 
@@ -272,7 +252,7 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypat
         calls.append(url)
 
     monkeypatch.setattr(mcp_client, "clear_oauth_tokens_async", fake_clear)
-    # Re-import the route's binding through the module so the patch is seen.
+    # Patch the route's module binding too so it's seen.
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
@@ -309,7 +289,7 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
 
 def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
     """Changing the URL on an OAuth server must drop the old URL's tokens
-    so the new URL doesn't silently inherit credentials."""
+    so the new URL doesn't inherit credentials."""
     import asyncio
 
     _reset_db(tmp_path, monkeypatch)
@@ -398,7 +378,7 @@ def test_changes_from_payload_rejects_null_use_oauth():
 
 def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
     """POST /api/mcp/servers/test must 400 on invalid URL like create/update;
-    previously the same input returned 200 with {"ok": false}."""
+    it previously returned 200 with {"ok": false}."""
     import asyncio
 
     _reset_db(tmp_path, monkeypatch)
@@ -416,9 +396,8 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
 
 
 def test_tool_xml_parser_handles_hyphenated_parameter_names():
-    """MCP tool schemas commonly use hyphenated property names like
-    `issue-number` / `repo-name`; the XML parser's `<parameter=\\w+>` regex
-    dropped those keys. Verify hyphenated parameter names round-trip."""
+    """Hyphenated property names like `issue-number` must round-trip through the
+    XML parser (the old `<parameter=\\w+>` regex dropped them)."""
     from core.inference.tool_call_parser import parse_tool_calls_from_text
     import json as _json
 
@@ -434,21 +413,19 @@ def test_tool_xml_parser_handles_hyphenated_parameter_names():
 
 
 def test_tool_healing_strip_handles_hyphenated_function_names():
-    """GGUF's core/tool_healing.py has its own copy of the XML strip
-    regex; the round-4 fix to the shared parser missed this file."""
+    """core/tool_healing.py has its own copy of the XML strip regex that the
+    shared-parser fix missed."""
     from core.tool_healing import strip_tool_call_markup
 
     out = strip_tool_call_markup(
-        "before <function=mcp__srv__list-issues>"
-        "<parameter=q>x</parameter></function> after"
+        "before <function=mcp__srv__list-issues><parameter=q>x</parameter></function> after"
     )
     assert out == "before  after"
 
 
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
-    """When the model emits a tool call not in the per-request tool list
-    the GGUF agentic loop must refuse to dispatch -- mirroring the
-    safetensors path. Previously execute_tool ran the call regardless."""
+    """A tool call not in the per-request list must be refused by the GGUF
+    agentic loop (mirroring the safetensors path)."""
     from core.inference import tools as tools_mod
 
     captured: list[str] = []
@@ -459,8 +436,7 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 
     monkeypatch.setattr(tools_mod, "execute_tool", fake_execute)
 
-    # Re-create the allow-list check inline so we can unit-test the
-    # behavior without spinning up llama-server.
+    # Inline allow-list check to unit-test behavior without llama-server.
     def _gate(tools_advertised, called_name, args):
         allowed = {
             (t.get("function") or {}).get("name")
@@ -490,9 +466,8 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 
 
 def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
-    """cancel_event set BEFORE call_tool_sync runs -> no HTTP request
-    is made. Previously the call task was created before the cancel
-    check, opening a transport that the watcher then had to cancel."""
+    """Pre-set cancel_event -> no HTTP request (task used to open a transport
+    before the cancel check)."""
     from core.inference import mcp_client
 
     opened: list[str] = []
@@ -528,9 +503,8 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
 
 
 def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
-    """clear_oauth_tokens_async is best-effort; an OAuth constructor
-    failure (e.g. missing fastmcp.client.auth) must not bubble out into
-    a 500 from the delete / update routes."""
+    """clear_oauth_tokens_async is best-effort; an OAuth constructor failure
+    must not bubble into a 500 from the delete/update routes."""
     import asyncio
     from core.inference import mcp_client
 
@@ -552,15 +526,12 @@ def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
 
 
 def test_tool_xml_parser_handles_hyphenated_function_names():
-    """MCP tool names are advertised as `mcp__srv__list-issues` (the regex
-    fix allows '-'); the XML tool-call parser must parse them too,
-    otherwise the model can call the tool but Studio cannot dispatch."""
+    """Hyphenated tool names like `mcp__srv__list-issues` must parse, else the
+    model can call the tool but Studio can't dispatch."""
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
-        "<function=mcp__srv__list-issues>"
-        "<parameter=repo>octocat/hello</parameter>"
-        "</function>"
+        "<function=mcp__srv__list-issues><parameter=repo>octocat/hello</parameter></function>"
     )
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "mcp__srv__list-issues"
@@ -572,7 +543,7 @@ def test_tool_xml_parser_handles_hyphenated_function_names():
 
 def test_tool_xml_strip_handles_hyphenated_function_names():
     """routes/inference.py:_TOOL_XML_RE must strip a `<function=name-with-dash>`
-    block; otherwise hyphenated MCP tool-call XML leaks into chat history."""
+    block; else hyphenated MCP tool-call XML leaks into chat history."""
     import re as _re
     from pathlib import Path
 
@@ -584,18 +555,15 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
     rx = ns["_TOOL_XML_RE"]
     stripped = rx.sub(
         "",
-        "before <function=mcp__srv__list-issues>"
-        "<parameter=q>x</parameter></function> after",
+        "before <function=mcp__srv__list-issues><parameter=q>x</parameter></function> after",
     )
     assert stripped == "before  after"
 
 
 def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
-    """Document existing contract: at the safetensors_agentic layer,
-    tools=[] is still treated as "no constraint" (so existing callers
-    work unchanged). The real fix for the MCP-only-no-discovery case
-    lives at the route level in inference.py, which refuses to enter
-    use_tools when the resolved tool list is empty."""
+    """Contract: at the safetensors_agentic layer tools=[] means "no
+    constraint". The MCP-only-no-discovery fix lives at the route level in
+    inference.py, which refuses use_tools when the resolved list is empty."""
     import threading
     from core.inference.safetensors_agentic import run_safetensors_tool_loop
 

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the per-session cost calculator. Verifies math
-against ``core/inference/pricing.py`` and graceful degradation."""
+"""Unit tests for the per-session cost calculator: math against
+``core/inference/pricing.py`` plus graceful degradation."""
 
 import math
 
@@ -21,7 +21,11 @@ from core.inference.pricing import (
 )
 
 
-def _isclose(a, b, tol = 1e-6):
+def _isclose(
+    a,
+    b,
+    tol = 1e-6,
+):
     return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
 
 
@@ -241,9 +245,7 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
     )
     # 20k charged at full price, 80k charged at 0.1x
     assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * base)
-    assert _isclose(
-        out["cache_read_usd"], 80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT
-    )
+    assert _isclose(out["cache_read_usd"], 80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT)
 
 
 def test_openai_billable_input_tokens_does_not_double_count_cache_read():
@@ -390,9 +392,7 @@ def test_openai_web_search_charged_per_thousand():
             "openai_tool_use": {"web_search_requests": 250},
         },
     )
-    assert _isclose(
-        out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
-    )
+    assert _isclose(out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
     assert _isclose(out["total_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
 
 
@@ -426,8 +426,7 @@ def test_openai_tool_surcharges_added_to_total():
     expected_input = 100_000 / 1_000_000.0 * 5.0
     expected_output = 5_000 / 1_000_000.0 * 30.0
     expected_tools = (
-        3 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
-        + 0.25 * OPENAI_CONTAINER_USD_PER_HOUR
+        3 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K + 0.25 * OPENAI_CONTAINER_USD_PER_HOUR
     )
     assert _isclose(
         out["total_usd"],
@@ -463,12 +462,12 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
 
 
 # ── longest-prefix match: dated mini variant must not collide with the
-#    shorter family prefix. ──
+#    shorter family prefix ──
 
 
 def test_longest_prefix_match_wins_for_dated_mini_snapshot():
-    """`gpt-5.4-mini-2026-...` must inherit the mini rate, not the
-    shorter `gpt-5.4` rate (longest prefix wins)."""
+    """`gpt-5.4-mini-2026-...` inherits the mini rate, not the shorter
+    `gpt-5.4` rate (longest prefix wins)."""
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini-2026-04-23",
@@ -494,7 +493,7 @@ def test_longest_prefix_match_wins_for_dated_pro_snapshot():
 
 
 def test_openai_chat_style_usage_keys_priced_correctly():
-    """Chat-style envelope (`prompt_tokens` / `completion_tokens`) must
+    """Chat-style envelope (`prompt_tokens`/`completion_tokens`) must
     produce a non-zero cost (previously silently zeroed)."""
     out = calculate_cost(
         "openai",
@@ -578,7 +577,7 @@ def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
 
 def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
     """Chat-style envelope ships cached under prompt_tokens_details;
-    calculator must honour both this and input_tokens_details."""
+    calculator must honour both that and input_tokens_details."""
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     raw = calculate_cost(
         "openai",
@@ -600,10 +599,7 @@ def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
     )
     # Both envelopes must price identically.
     assert _isclose(chat_style["input_usd"], raw["input_usd"]), (chat_style, raw)
-    assert _isclose(chat_style["cache_read_usd"], raw["cache_read_usd"]), (
-        chat_style,
-        raw,
-    )
+    assert _isclose(chat_style["cache_read_usd"], raw["cache_read_usd"]), (chat_style, raw)
     # 80k at 0.1x base, 20k at full.
     assert _isclose(
         chat_style["cache_read_usd"],
