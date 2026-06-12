@@ -352,6 +352,13 @@ def test_load_model_sets_threads_once():
     assert src.count('cmd.extend(["--threads", str(') == 1
 
 
+def test_llama_cpp_annotations_stay_python39_safe():
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+    helper_src = inspect.getsource(_extra_args_set_any_flag)
+    assert "Generator[str | dict" not in src
+    assert "set[str] | frozenset[str]" not in helper_src
+
+
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
     # User --spec-type none suppressed auto-MTP; repeat /load must not re-promote.
     backend = _mtp_backend(

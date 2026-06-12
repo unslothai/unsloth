@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Generator, Iterable, List, Optional
+from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
 
 import httpx
 
@@ -587,7 +587,7 @@ def _extra_arg_flag_name(token: str) -> Optional[str]:
 
 
 def _extra_args_set_any_flag(
-    extra_args: Optional[Iterable[str]], flags: set[str] | frozenset[str]
+    extra_args: Optional[Iterable[str]], flags: Collection[str]
 ) -> bool:
     if not extra_args:
         return False
@@ -5495,7 +5495,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
-    ) -> Generator[str | dict, None, None]:
+    ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
 
