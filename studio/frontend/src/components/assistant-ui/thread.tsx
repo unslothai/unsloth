@@ -71,8 +71,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
+  composerDraftKey,
+  readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
+  writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
@@ -943,6 +946,31 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+
+  // Per-thread draft autosave: restore on mount, then mirror composer text
+  // into localStorage (debounced) so a half-typed message survives a
+  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
+  // text even when no draft exists keeps a thread from inheriting the
+  // previous thread's composer contents.
+  const draftKey = composerDraftKey(activeThreadId);
+  const lastDraftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    const draft = readComposerDraft(draftKey) ?? "";
+    const composer = aui.composer();
+    if (composer.getState().isEditing) {
+      composer.setText(draft);
+    }
+  }, [draftKey, aui]);
+  useEffect(() => {
+    // After a thread switch composerText can still hold the previous
+    // thread's text; skip that cycle so it isn't saved under the new key.
+    if (lastDraftKeyRef.current !== draftKey) {
+      lastDraftKeyRef.current = draftKey;
+      return;
+    }
+    const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    return () => clearTimeout(t);
+  }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =

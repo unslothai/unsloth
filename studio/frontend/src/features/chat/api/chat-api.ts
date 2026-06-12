@@ -139,6 +139,9 @@ export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
+  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
 }
 
 export async function getGgufDownloadProgress(
@@ -241,6 +244,9 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
+  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
 }
 
 export async function listCachedModels(): Promise<CachedModelRepo[]> {
