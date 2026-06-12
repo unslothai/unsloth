@@ -3211,9 +3211,7 @@ class TestRocmGfxForwarding:
 
 
 _INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
-_LLAMA_CPP_PATH = (
-    PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-)
+_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
 class TestWslSystemRocmLibDirs:
@@ -3290,9 +3288,7 @@ class TestBinaryEnvWslOrdering:
         # real dir to stand in for the system ROCm lib path.
         sys_rocm = tmp_path / "sysrocm"
         sys_rocm.mkdir()
-        with patch.object(
-            prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]
-        ):
+        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]):
             with patch.dict(os.environ, {}, clear = True):
                 env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
         ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
