@@ -965,9 +965,12 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
+                <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-primary-foreground">
+                  New
+                </span>
               </button>
             </div>
 
