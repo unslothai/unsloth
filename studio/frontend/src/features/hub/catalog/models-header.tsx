@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import {
   ChipIcon,
   Database02Icon,
-  Logout01Icon,
+  RemoveCircleIcon,
   PackageIcon,
   RamMemoryIcon,
 } from "@hugeicons/core-free-icons";
@@ -38,7 +38,7 @@ function StatPill({
           className={cn(
             "inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] transition-colors duration-150",
             tone === "active"
-              ? "rounded-[11px] bg-emerald-500/10 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 dark:text-emerald-300"
+              ? "rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 dark:text-emerald-300"
               : "hub-tag-soft text-muted-foreground hover:text-foreground/80",
           )}
         >
@@ -125,7 +125,7 @@ export function ModelsHeader({
               className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
-                icon={Logout01Icon}
+                icon={RemoveCircleIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />
