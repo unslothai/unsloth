@@ -50,9 +50,7 @@ def check_torch() -> tuple[int, int]:
     if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
         sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
-        print(
-            f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback."
-        )
+        print(f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback.")
     return cap
 
 
@@ -78,7 +76,6 @@ def check_imports() -> None:
     # smoke-tests both arches.
     try:
         import xformers
-
         print(f"xformers    {xformers.__version__}")
     except ImportError:
         print("xformers    (missing -- expected on arm64 [huggingface] extras)")
@@ -142,16 +139,12 @@ def check_tiny_train(cap: tuple[int, int]) -> None:
         "Q: Name a primary color.\nA:",
         "Q: Hello, who are you?\nA:",
     ] * 2
-    enc = tokenizer(
-        prompts, return_tensors = "pt", padding = True, truncation = True, max_length = 64
-    )
+    enc = tokenizer(prompts, return_tensors = "pt", padding = True, truncation = True, max_length = 64)
     enc = {k: v.cuda() for k, v in enc.items()}
     labels = enc["input_ids"].clone()
 
     model.train()
-    optim = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr = 1e-4
-    )
+    optim = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-4)
     for step in range(5):
         out = model(**enc, labels = labels)
         out.loss.backward()
