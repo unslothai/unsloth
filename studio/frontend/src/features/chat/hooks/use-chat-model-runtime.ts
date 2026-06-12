@@ -364,11 +364,7 @@ export function useChatModelRuntime() {
           // capability. Re-apply live status so attach gates survive a refresh.
           syncModelCapabilities(checkpointId, statusRes);
         }
-      } else if (
-        !statusRes.active_model &&
-        !isExternalSelectionActive &&
-        !userSelectedDuringPoll
-      ) {
+      } else if (!statusRes.active_model && !checkpointAfterPoll) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
