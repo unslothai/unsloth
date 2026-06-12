@@ -976,7 +976,7 @@ const Composer: FC<{
     (s) => s.setPendingImageEditReference,
   );
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers();
+    useImeComposerInputHandlers({ submitOnEnter: true });
   const composerText = useAuiState(({ composer }) => composer.text);
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
@@ -1166,7 +1166,10 @@ const Composer: FC<{
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
-      if (interceptSend(event)) return;
+      if (disabled || shouldBlockSend()) {
+        event.preventDefault();
+        return;
+      }
 
       if (threadIsRunning) {
         event.preventDefault();
@@ -1186,6 +1189,8 @@ const Composer: FC<{
         startPromptQueue([queuedPrompt], true);
         return;
       }
+
+      if (interceptSend(event)) return;
 
       if (overlay) {
         const trimmed = composerText.trim();
@@ -1241,6 +1246,7 @@ const Composer: FC<{
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      shouldBlockSend,
       threadIsRunning,
     ],
   );
@@ -1394,7 +1400,11 @@ function isNativeComposing(event: Event) {
 // pause but short enough to recover before the user notices Send is stuck.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
-function useImeComposerInputHandlers() {
+function useImeComposerInputHandlers({
+  submitOnEnter = false,
+}: {
+  submitOnEnter?: boolean;
+} = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -1488,12 +1498,12 @@ function useImeComposerInputHandlers() {
         refreshStuckTimer();
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.currentTarget.form?.requestSubmit();
       }
     },
-    [refreshStuckTimer],
+    [refreshStuckTimer, submitOnEnter],
   );
 
   return {
