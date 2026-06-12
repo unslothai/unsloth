@@ -2900,7 +2900,10 @@ if [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
-            "$VENV_DIR/bin/unsloth" studio -p 8888
+            # Detach stdin from the `curl | sh` pipe: as a foreground server the
+            # studio would otherwise drain the rest of this piped script, leaving
+            # the shell to die parsing the now-truncated tail (`unexpected fi`).
+            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
             _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
