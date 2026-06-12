@@ -169,7 +169,8 @@ const usePromptQueueUI = create<PromptQueueUIState>(() => ({
 }));
 
 type PromptQueueTarget = {
-  getThreadId: () => string | null;
+  getDocumentThreadId: () => string | null;
+  getRunningThreadIds: () => string[];
   append: (prompt: string) => void;
   cancel: () => void;
   isIndexing: () => boolean;
@@ -237,7 +238,7 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
   ) {
     return false;
   }
-  const threadId = item.target.getThreadId();
+  const threadId = item.target.getDocumentThreadId();
   if (!threadId) {
     return false;
   }
@@ -290,6 +291,33 @@ function appendTextToThread(prompt: string) {
   } as never;
 }
 
+function isPromptQueueTargetRunning(
+  target: PromptQueueTarget,
+  runningByThreadId: Record<string, boolean>,
+) {
+  const runningIds = Object.keys(runningByThreadId);
+  if (runningIds.length === 0) {
+    return false;
+  }
+
+  const targetIds = target.getRunningThreadIds();
+  if (targetIds.length === 0) {
+    return runningIds.length > 0;
+  }
+
+  return runningIds.some((threadId) => targetIds.includes(threadId));
+}
+
+function isActivePromptQueueTargetRunning(
+  runningByThreadId: Record<string, boolean>,
+) {
+  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
+  if (!activeItem) {
+    return false;
+  }
+  return isPromptQueueTargetRunning(activeItem.target, runningByThreadId);
+}
+
 function advancePromptQueue() {
   const nextIndex = promptQueueIndex + 1;
   if (nextIndex >= promptQueueItems.length) {
@@ -320,7 +348,7 @@ function startPromptQueueSubscription() {
       stopPromptQueueSubscription();
       return;
     }
-    const isRunning = Object.keys(state.runningByThreadId).length > 0;
+    const isRunning = isActivePromptQueueTargetRunning(state.runningByThreadId);
     const wasRunning = promptQueuePrevStoreRunning;
     promptQueuePrevStoreRunning = isRunning;
     if (wasRunning && !isRunning) {
@@ -328,8 +356,9 @@ function startPromptQueueSubscription() {
     }
   });
 
-  const isRunningNow =
-    Object.keys(useChatRuntimeStore.getState().runningByThreadId).length > 0;
+  const isRunningNow = isActivePromptQueueTargetRunning(
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
   if (promptQueuePrevStoreRunning && !isRunningNow) {
     promptQueuePrevStoreRunning = false;
     advancePromptQueue();
@@ -361,9 +390,10 @@ function startPromptQueue(
     return;
   }
 
+  const runningByThreadId = useChatRuntimeStore.getState().runningByThreadId;
   const shouldWaitForCurrentRun =
     waitForCurrentRun &&
-    Object.keys(useChatRuntimeStore.getState().runningByThreadId).length > 0;
+    isPromptQueueTargetRunning(target, runningByThreadId);
   promptQueueItems = filtered.map((prompt) =>
     createQueuedPrompt(prompt, target),
   );
@@ -1204,10 +1234,31 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
     const thread = aui.thread();
     const threadListItem = aui.threadListItem();
+    const initialState = threadListItem.getState();
+    const initialRunningThreadIds = [
+      initialState.id,
+      initialState.remoteId,
+      referenceThreadId,
+    ].filter((id): id is string => Boolean(id));
+    const initialDocumentThreadId =
+      initialState.remoteId ?? referenceThreadId ?? null;
     return {
-      getThreadId: () => {
+      getDocumentThreadId: () => {
         const state = threadListItem.getState();
-        return state.remoteId ?? referenceThreadId ?? state.id ?? null;
+        return state.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
+      },
+      getRunningThreadIds: () => {
+        const state = threadListItem.getState();
+        return Array.from(
+          new Set(
+            [
+              ...initialRunningThreadIds,
+              state.id,
+              state.remoteId,
+              referenceThreadId,
+            ].filter((id): id is string => Boolean(id)),
+          ),
+        );
       },
       append: (prompt) => {
         thread.append(appendTextToThread(prompt));
