@@ -386,7 +386,9 @@ class _IOReportEnergy:
             watts = _watts(energy, unit, elapsed_s)
             if watts is not None:
                 total = (total or 0.0) + watts
-        return round(total, 1) if total is not None else None
+        if total is None or total < 0:  # negative = counter reset; show -- not a bogus draw
+            return None
+        return round(total, 1)
 
 
 # ========== Public API (module singletons, failure-latched) ==========
