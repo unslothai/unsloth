@@ -20,9 +20,10 @@ def _validate_save_directory(value: str) -> str:
         raise ValueError("save_directory may not contain null bytes")
     if any(ch in raw for ch in ("\r", "\n")):
         raise ValueError("save_directory may not contain control characters")
-    if len(raw) > 255:
-        raise ValueError("save_directory must be <= 255 characters")
     path = Path(raw).expanduser()
+    path_parts = (*path.parts, *PureWindowsPath(raw).parts, *raw.replace("\\", "/").split("/"))
+    if any(len(part) > 255 for part in path_parts if part not in ("", ".", "/", "\\")):
+        raise ValueError("save_directory path components must be <= 255 characters")
     if (
         ".." in path.parts
         or ".." in PureWindowsPath(raw).parts

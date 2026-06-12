@@ -308,6 +308,27 @@ def test_save_directory_validator_rejects_windows_parent_segments(monkeypatch):
         export_models._validate_save_directory(r"E:\AI\..\secret")
 
 
+def test_save_directory_validator_allows_deep_absolute_paths(monkeypatch, tmp_path):
+    _install_pydantic_stub(monkeypatch)
+    export_models = _load_module("test_models_export_deep_path", "models/export.py", monkeypatch)
+
+    deep_path = tmp_path
+    for index in range(40):
+        deep_path /= f"segment-{index:02d}"
+    raw = str(deep_path)
+
+    assert len(raw) > 255
+    assert export_models._validate_save_directory(raw) == raw
+
+
+def test_save_directory_validator_rejects_long_path_component(monkeypatch, tmp_path):
+    _install_pydantic_stub(monkeypatch)
+    export_models = _load_module("test_models_export_long_component", "models/export.py", monkeypatch)
+
+    with pytest.raises(ValueError, match = "path components"):
+        export_models._validate_save_directory(str(tmp_path / ("a" * 256)))
+
+
 def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(tmp_path, monkeypatch):
     storage_roots = _load_module(
         "test_storage_roots_accept_external",
@@ -334,6 +355,22 @@ def test_resolve_export_write_dir_rejects_backslash_parent_segment():
 
     with pytest.raises(ValueError, match = r"\.\."):
         storage_roots.resolve_export_write_dir(r"exports\..\outside")
+
+
+def test_export_write_dir_handles_non_native_windows_absolute_as_relative(tmp_path, monkeypatch):
+    storage_roots = _load_module(
+        "test_storage_roots_non_native_windows_path",
+        "utils/paths/storage_roots.py",
+    )
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir()
+    monkeypatch.setattr(storage_roots, "exports_root", lambda: export_root)
+
+    if storage_roots.os.name == "nt":
+        pytest.skip("Windows drive paths are native on Windows")
+
+    assert storage_roots.resolve_export_write_dir(r"C:\exports\model") == export_root / r"C:\exports\model"
 
 
 def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch):

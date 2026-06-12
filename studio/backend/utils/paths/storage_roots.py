@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
 
@@ -331,7 +331,9 @@ def _has_parent_segment(raw: str, path: Path) -> bool:
 
 
 def _is_absolute_user_path(raw: str, path: Path) -> bool:
-    return path.is_absolute() or PureWindowsPath(raw).is_absolute()
+    if os.name == "nt":
+        return path.is_absolute() and PureWindowsPath(raw).is_absolute()
+    return path.is_absolute() and PurePosixPath(raw).is_absolute()
 
 
 def _assert_contained(resolved: Path, root: Path) -> None:
