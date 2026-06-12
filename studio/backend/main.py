@@ -965,9 +965,18 @@ async def get_hardware_info(current_subject: str = Depends(get_current_subject))
     /api/system/gpu-visibility is also auth-gated.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
+    from utils.llama_cpp_update import get_installed_llama_version
+    # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
+    # hosts list every device -- get_gpu_summary alone reports only the primary.
+    gpus = [
+        {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+        for d in get_backend_visible_gpu_info().get("devices", [])
+    ]
     return {
         "gpu": get_gpu_summary(),
+        "gpus": gpus,
         "versions": get_package_versions(),
+        "llama_cpp": get_installed_llama_version(),
     }
 
 

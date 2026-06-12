@@ -4,24 +4,40 @@
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 
+export interface GpuDevice {
+    name: string | null;
+    vramTotalGb: number | null;
+}
+
+interface ApiGpu {
+    name?: string | null;
+    vram_total_gb?: number | null;
+}
+
 export interface HardwareInfo {
     gpuName: string | null;
     vramTotalGb: number | null;
     vramFreeGb: number | null;
+    gpus: GpuDevice[];
     torch: string | null;
     cuda: string | null;
+    rocm: string | null;
     transformers: string | null;
     unsloth: string | null;
+    llamaCpp: string | null;
 }
 
 const DEFAULT: HardwareInfo = {
     gpuName: null,
     vramTotalGb: null,
     vramFreeGb: null,
+    gpus: [],
     torch: null,
     cuda: null,
+    rocm: null,
     transformers: null,
     unsloth: null,
+    llamaCpp: null,
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -41,10 +57,18 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 gpuName: data?.gpu?.gpu_name ?? null,
                 vramTotalGb: data?.gpu?.vram_total_gb ?? null,
                 vramFreeGb: data?.gpu?.vram_free_gb ?? null,
+                gpus: Array.isArray(data?.gpus)
+                    ? data.gpus.map((g: ApiGpu) => ({
+                        name: g?.name ?? null,
+                        vramTotalGb: g?.vram_total_gb ?? null,
+                    }))
+                    : [],
                 torch: data?.versions?.torch ?? null,
                 cuda: data?.versions?.cuda ?? null,
+                rocm: data?.versions?.rocm ?? null,
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
+                llamaCpp: data?.llama_cpp ?? null,
             };
             cached = info;
             return info;

@@ -179,6 +179,29 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     return n if n > 1 else None
 
 
+def get_installed_llama_version() -> Optional[str]:
+    """Display string for the active llama.cpp install (e.g. 'b9585' or
+    'b9601-mix-a0e2906'), or None.
+
+    Prefers the install marker's tag -- the authoritative installed identity,
+    same field the update banner shows as installed_tag -- so a '-mix-<commit>'
+    release reads back in full. Falls back to ``b<build>`` parsed from
+    ``llama-server --version`` for source/custom builds that have no marker.
+
+    Lightweight: reads the local marker and at most runs ``--version``. Does no
+    network or release-freshness work (unlike get_update_status), so it is safe
+    to call from latency-sensitive paths like the About panel.
+    """
+    binary = _find_binary()
+    marker = read_install_marker(binary)
+    if marker:
+        tag = marker.get("tag") or marker.get("release_tag")
+        if tag:
+            return tag
+    n = _installed_build_number(binary)
+    return f"b{n}" if n is not None else None
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         p, r = path.resolve(), root.resolve()
