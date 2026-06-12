@@ -29,9 +29,7 @@ import pytest
 # ---------------------------------------------------------------------------
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location(
-    "studio_install_llama_prebuilt", MODULE_PATH
-)
+SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MOD = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MOD
@@ -74,7 +72,12 @@ def make_host(*, system: str) -> HostInfo:
 BASH = "/bin/bash"
 
 
-def run_bash(script: str, *, timeout: int = 10, env: dict | None = None) -> str:
+def run_bash(
+    script: str,
+    *,
+    timeout: int = 10,
+    env: dict | None = None,
+) -> str:
     """Run a bash script fragment and return its stdout."""
     run_env = os.environ.copy()
     if env:
@@ -113,9 +116,7 @@ class TestBinaryEnvCrossPlatform:
         env = binary_env(binary_path, install_dir, host)
         ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
         assert str(bin_dir) in ld_dirs, f"build/bin not in LD_LIBRARY_PATH: {ld_dirs}"
-        assert (
-            str(install_dir) in ld_dirs
-        ), f"install_dir not in LD_LIBRARY_PATH: {ld_dirs}"
+        assert str(install_dir) in ld_dirs, f"install_dir not in LD_LIBRARY_PATH: {ld_dirs}"
 
     def test_linux_binary_parent_comes_before_install_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -134,9 +135,7 @@ class TestBinaryEnvCrossPlatform:
         ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
         bin_idx = ld_dirs.index(str(bin_dir))
         install_idx = ld_dirs.index(str(install_dir))
-        assert (
-            bin_idx < install_idx
-        ), "binary_path.parent should come before install_dir"
+        assert bin_idx < install_idx, "binary_path.parent should come before install_dir"
 
     def test_linux_deduplicates_when_binary_parent_equals_install_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -195,17 +194,13 @@ class TestBinaryEnvCrossPlatform:
         binary_path.write_bytes(b"MZ")
 
         host = make_host(system = "Windows")
-        monkeypatch.setattr(
-            MOD, "windows_runtime_dirs_for_runtime_line", lambda _rt: []
-        )
+        monkeypatch.setattr(MOD, "windows_runtime_dirs_for_runtime_line", lambda _rt: [])
 
         env = binary_env(binary_path, install_dir, host)
         path_dirs = env["PATH"].split(os.pathsep)
         assert str(bin_dir) in path_dirs, f"build/bin/Release not in PATH: {path_dirs}"
 
-    def test_macos_sets_dyld_library_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_macos_sets_dyld_library_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         install_dir = tmp_path / "llama.cpp"
         install_dir.mkdir(parents = True)
         bin_dir = install_dir / "build" / "bin"
@@ -218,12 +213,8 @@ class TestBinaryEnvCrossPlatform:
 
         env = binary_env(binary_path, install_dir, host)
         dyld_parts = [p for p in env["DYLD_LIBRARY_PATH"].split(os.pathsep) if p]
-        assert (
-            str(bin_dir) in dyld_parts
-        ), f"build/bin not in DYLD_LIBRARY_PATH: {dyld_parts}"
-        assert (
-            str(install_dir) in dyld_parts
-        ), f"install_dir not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        assert str(bin_dir) in dyld_parts, f"build/bin not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        assert str(install_dir) in dyld_parts, f"install_dir not in DYLD_LIBRARY_PATH: {dyld_parts}"
         # binary_path.parent (build/bin) should come before install_dir
         assert dyld_parts.index(str(bin_dir)) < dyld_parts.index(str(install_dir))
 
@@ -303,7 +294,11 @@ class TestResolveRequestedLlamaTag:
     ):
         captured = {}
 
-        def fake_resolve(requested_tag, published_repo, published_release_tag = ""):
+        def fake_resolve(
+            requested_tag,
+            published_repo,
+            published_release_tag = "",
+        ):
             captured["requested_tag"] = requested_tag
             captured["published_repo"] = published_repo
             captured["published_release_tag"] = published_release_tag
@@ -350,9 +345,7 @@ class TestResolveRequestedLlamaTag:
 
 
 class TestFetchJsonRetries:
-    def test_fetch_json_retries_invalid_github_api_json(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_fetch_json_retries_invalid_github_api_json(self, monkeypatch: pytest.MonkeyPatch):
         calls = {"count": 0}
 
         def fake_download_bytes(url, **kwargs):
@@ -593,11 +586,7 @@ class TestLatestTagResolution:
     """)
 
     def _run_resolve(
-        self,
-        tmp_path: Path,
-        requested_tag: str,
-        resolved_tag: str,
-        resolve_status: int,
+        self, tmp_path: Path, requested_tag: str, resolved_tag: str, resolve_status: int
     ) -> str:
         script = self.RESOLVE_TEMPLATE.format(
             requested_tag = requested_tag,
@@ -691,22 +680,31 @@ class TestSourceCodePatterns:
         content = SETUP_SH.read_text()
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
-        assert (
-            '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"'
-            in content
-        )
+        assert '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"' in content
         assert "--output-format json" in content
         assert "_RESOLVED_SOURCE_URL" in content
         assert "_RESOLVED_SOURCE_REF_KIND" in content
         assert "_RESOLVED_SOURCE_REF" in content
 
-    def test_setup_sh_prebuilt_install_uses_simple_policy_only(self):
-        """Shell prebuilt path should use the simplified helper install entrypoint."""
+    def test_setup_sh_prebuilt_install_entrypoint(self):
+        """Shell prebuilt path should call the helper install entrypoint, not the
+        old tag-resolution / releases-latest flow."""
         content = SETUP_SH.read_text()
-        assert "--simple-policy" in content
         assert "--resolve-install-tag" not in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_sh_routes_to_fork_only_on_usable_gpu(self):
+        """Linux fork-vs-ggml routing must gate NVIDIA on actual GPU usability,
+        not mere nvidia-smi presence, so CPU-only / hidden-GPU hosts (e.g.
+        CUDA_VISIBLE_DEVICES=-1) get the ggml CPU prebuilt instead of a source
+        build. Guards against a silent revert to the old presence-only loop."""
+        content = SETUP_SH.read_text()
+        assert '[ "$_setup_nvidia_usable" = true ]' in content
+        assert "CUDA_VISIBLE_DEVICES" in content
+        # nvidia-smi must NOT be back in the bare presence loop.
+        assert "for _GPU_TOOL in nvidia-smi" not in content
+        assert "for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo" in content
 
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
@@ -727,16 +725,13 @@ class TestSourceCodePatterns:
         assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
 
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
-        """If Metal configure or build fails, setup should retry with CPU fallback."""
+        """If Metal/CUDA/ROCm configure or build fails, setup retries a CPU
+        build. PR #5826 generalised the Metal-only wording via $_FB_LABEL; this
+        check stays label-agnostic so new GPU backends don't require edits."""
         content = SETUP_SH.read_text()
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
-        assert (
-            'substep "Metal configure failed; retrying CPU build..." "$C_WARN"'
-            in content
-        )
-        assert (
-            'substep "Metal build failed; retrying CPU build..." "$C_WARN"' in content
-        )
+        assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
+        assert 'build failed; retrying CPU build..." "$C_WARN"' in content
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
         # _TRY_METAL_CPU_FALLBACK must be reset to false in both fallback branches
@@ -745,18 +740,58 @@ class TestSourceCodePatterns:
             "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
             "(init + configure fallback + build fallback)"
         )
+        # The fallback helper must exist and Metal must reach it via the
+        # _TRY_METAL_CPU_FALLBACK shortcut so the macOS path stays covered.
+        assert "_gpu_fallback_label()" in content
+        assert 'echo "Metal"' in content
+
+    def test_setup_sh_exports_allow_unsupported_compiler(self):
+        """Headline fix for PR #5826: a fresh CUDA toolkit's host-compiler
+        whitelist lags the distro gcc/clang, so nvcc rejects the host with
+        "#error -- unsupported GNU version". setup.sh exports
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler (via env, not CMAKE_ARGS,
+        for word-splitting safety) so the build and compiler-id probe proceed."""
+        content = SETUP_SH.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via NVCC_PREPEND_FLAGS (covers the configure-time compiler
+        # probe too), not embedded in the word-split CMAKE_ARGS string.
+        assert "export NVCC_PREPEND_FLAGS=" in content
+        cmake_args_lines = [line for line in content.splitlines() if "CMAKE_ARGS=" in line]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
+
+    def test_setup_ps1_exports_allow_unsupported_compiler(self):
+        """Windows parity for the PR #5826 fix: a fresh CUDA toolkit's whitelist
+        also lags MSVC, so nvcc can reject the host with "#error -- unsupported
+        Microsoft Visual Studio version!". setup.ps1 sets
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA branch (via
+        env, out of $CmakeArgs) so the configure probe + build proceed."""
+        content = SETUP_PS1.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via the process environment, not the $CmakeArgs array, so it
+        # reaches both the configure-time compiler probe and `cmake --build`.
+        assert "$env:NVCC_PREPEND_FLAGS" in content
+        cmake_args_lines = [line for line in content.splitlines() if "$CmakeArgs +=" in line]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must not be pushed into the $CmakeArgs array"
+        # Must be scoped to the CUDA branch (guarded by the GPU/nvcc check),
+        # not set unconditionally for CPU-only builds.
+        flag_idx = content.index("-allow-unsupported-compiler")
+        cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
+        cuda_disable_idx = content.index("'-DGGML_CUDA=OFF'")
+        assert cuda_guard_idx < flag_idx < cuda_disable_idx, (
+            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, "
+            "before the GGML_CUDA=OFF (CPU) branch"
+        )
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
         """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
-        script = (
-            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
-            + _GPU_BACKEND_FRAGMENT
-        )
+        script = '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n' + _GPU_BACKEND_FRAGMENT
         output = run_bash(script)
         fallback_line = next(
-            line
-            for line in output.splitlines()
-            if line.startswith("CPU_FALLBACK_CMAKE_ARGS=")
+            line for line in output.splitlines() if line.startswith("CPU_FALLBACK_CMAKE_ARGS=")
         )
         assert "-DGGML_METAL=OFF" in fallback_line
         assert (
@@ -777,8 +812,7 @@ class TestSourceCodePatterns:
         assert (
             "x86_64"
             not in content[
-                content.find("-DGGML_METAL=ON") - 200 : content.find("-DGGML_METAL=ON")
-                + 200
+                content.find("-DGGML_METAL=ON") - 200 : content.find("-DGGML_METAL=ON") + 200
             ]
         )
 
@@ -808,14 +842,12 @@ class TestSourceCodePatterns:
                 # Allow git pull in other contexts
                 context = "\n".join(lines[max(0, i - 5) : i + 5])
                 if "LlamaCppDir" in context:
-                    pytest.fail(
-                        f"Found 'git pull' in llama.cpp build section at line {i+1}"
-                    )
+                    pytest.fail(f"Found 'git pull' in llama.cpp build section at line {i+1}")
 
-    def test_setup_ps1_prebuilt_install_uses_simple_policy_only(self):
-        """PS1 prebuilt path should use the simplified helper install entrypoint."""
+    def test_setup_ps1_prebuilt_install_entrypoint(self):
+        """PS1 prebuilt path should call the helper install entrypoint, not the
+        old tag-resolution / releases-latest flow."""
         content = SETUP_PS1.read_text()
-        assert '"--simple-policy"' in content
         assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
@@ -837,8 +869,7 @@ class TestSourceCodePatterns:
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
         assert (
-            '"--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp"'
-            in content
+            '"--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp"' in content
         )
         assert '--output-format", "json"' in content
         assert "$ResolvedSourceUrl" in content
@@ -852,10 +883,7 @@ class TestSourceCodePatterns:
         block = content[max(0, install_idx - 800) : install_idx + 800]
         assert "$PSNativeCommandUseErrorActionPreference = $false" in block
         assert "$restoreNativeErrorPreference = $true" in block
-        assert (
-            "$PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference"
-            in block
-        )
+        assert "$PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference" in block
 
     def test_setup_ps1_helper_disables_error_action_abort(self):
         """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
@@ -876,9 +904,7 @@ class TestSourceCodePatterns:
         """The unconstrained nvcc fallback should not sort toolkit dirs lexicographically."""
         content = SETUP_PS1.read_text()
         assert "Sort-Object Name | Select-Object -Last 1" not in content
-        assert (
-            "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
-        )
+        assert "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
@@ -939,10 +965,7 @@ class TestMacOSMetalBuildLogic:
 
     def test_macos_arm64_cmake_args_contain_metal_flags(self):
         """macOS arm64 should enable Metal, not CUDA."""
-        script = (
-            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
-            + _GPU_BACKEND_FRAGMENT
-        )
+        script = '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n' + _GPU_BACKEND_FRAGMENT
         output = run_bash(script)
         assert "-DGGML_METAL=ON" in output
         assert "-DGGML_CUDA=ON" not in output
@@ -950,10 +973,7 @@ class TestMacOSMetalBuildLogic:
 
     def test_intel_macos_no_metal_flags(self):
         """Intel macOS (not arm64) should not get Metal flags."""
-        script = (
-            '_IS_MACOS_ARM64=false\nNVCC_PATH=""\nGPU_BACKEND=""\n'
-            + _GPU_BACKEND_FRAGMENT
-        )
+        script = '_IS_MACOS_ARM64=false\nNVCC_PATH=""\nGPU_BACKEND=""\n' + _GPU_BACKEND_FRAGMENT
         output = run_bash(script)
         assert "-DGGML_METAL=ON" not in output
         assert "BUILD_DESC=building (CPU)" in output
@@ -1039,18 +1059,14 @@ class TestMacOSMetalBuildLogic:
         # Verify cmake args: first call has Metal ON, second has Metal OFF
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
-        assert (
-            "-DGGML_METAL=ON" in calls[0]
-        ), f"First cmake call should have Metal ON: {calls[0]}"
+        assert "-DGGML_METAL=ON" in calls[0], f"First cmake call should have Metal ON: {calls[0]}"
         assert (
             "-DGGML_METAL=OFF" in calls[1]
         ), f"Second cmake call should have Metal OFF: {calls[1]}"
         assert (
             "-DGGML_METAL=ON" not in calls[1]
         ), f"Second cmake call should NOT have Metal ON: {calls[1]}"
-        assert (
-            "@loader_path" not in calls[1]
-        ), f"CPU fallback should not have RPATH: {calls[1]}"
+        assert "@loader_path" not in calls[1], f"CPU fallback should not have RPATH: {calls[1]}"
         assert (
             "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[1]
         ), f"CPU fallback should not have RPATH build flag: {calls[1]}"
@@ -1158,9 +1174,7 @@ class TestMacOSMetalBuildLogic:
         # Third call: re-configure with Metal OFF and no RPATH flags
         assert "-DGGML_METAL=OFF" in calls[2]
         assert "-DGGML_METAL=ON" not in calls[2]
-        assert (
-            "@loader_path" not in calls[2]
-        ), f"CPU fallback should not have RPATH: {calls[2]}"
+        assert "@loader_path" not in calls[2], f"CPU fallback should not have RPATH: {calls[2]}"
         assert (
             "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[2]
         ), f"CPU fallback should not have RPATH build flag: {calls[2]}"

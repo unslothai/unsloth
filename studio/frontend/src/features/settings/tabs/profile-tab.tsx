@@ -2,14 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ProfilePersonalizationPanel } from "@/features/profile";
+import { useT } from "@/i18n";
 
 export function ProfileTab() {
+  const t = useT();
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">Profile</h1>
+        <h1 className="text-xl font-semibold font-heading">
+          {t("settings.profile.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Update how your profile appears in Studio.
+          {t("settings.profile.description")}
         </p>
       </header>
 

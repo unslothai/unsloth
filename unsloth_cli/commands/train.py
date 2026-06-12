@@ -41,8 +41,8 @@ def train(
 
     cfg.apply_overrides(**config_overrides)
 
-    # CLI/env tokens take precedence over config
-    # Handle case where typer.Option isn't resolved (decorator interaction)
+    # CLI/env tokens take precedence; guard against unresolved typer.Option
+    # (decorator interaction)
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):
@@ -65,17 +65,13 @@ def train(
         raise typer.Exit(code = 2)
 
     if not cfg.data.dataset and not cfg.data.local_dataset:
-        typer.echo(
-            "Error: provide --dataset or --local-dataset (or via --config)", err = True
-        )
+        typer.echo("Error: provide --dataset or --local-dataset (or via --config)", err = True)
         raise typer.Exit(code = 2)
 
-    # Check if the model path is a LoRA adapter (has adapter_config.json)
+    # A LoRA adapter dir has adapter_config.json
     model_path = Path(cfg.model) if cfg.model else None
     model_is_lora = (
-        model_path
-        and model_path.is_dir()
-        and (model_path / "adapter_config.json").exists()
+        model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
     )
     use_lora = cfg.training.training_type.lower() == "lora"
 
@@ -120,9 +116,7 @@ def train(
 
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
-    started = trainer.start_training(
-        dataset = ds, eval_dataset = eval_ds, **training_kwargs
-    )
+    started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err = True)
