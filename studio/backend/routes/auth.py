@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Authentication API routes
-"""
+"""Authentication API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
@@ -43,17 +41,12 @@ router = APIRouter()
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
-    Prefer the ABSOLUTE path to this install's ``unsloth`` launcher (a sibling
-    of the running interpreter) so the hint works even when the launcher's
-    directory is not on PATH -- e.g. a terminal opened before install, a stale
-    Windows PATH, or ``~/.local/bin`` not on PATH (the default on macOS) -- and
-    regardless of the current working directory.
+    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of
+    the running interpreter) so the hint works even when its dir isn't on PATH.
 
-    On POSIX the path is shell-quoted so spaces are handled. On Windows we only
-    use the bare absolute path when it has no spaces, because a quoted path needs
-    different syntax in cmd (``"..."``) vs PowerShell (``& "..."``); when it has
-    a space we fall back to the PATH-based form to stay unambiguous across
-    shells. If the launcher can't be located we fall back to the PATH form too.
+    POSIX paths are shell-quoted. On Windows we use the bare absolute path only
+    when it has no spaces (a quoted path differs between cmd and PowerShell);
+    otherwise, or if the launcher can't be located, fall back to the PATH form.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
@@ -72,7 +65,7 @@ def _reset_password_command() -> str:
 
 # Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
 # typos from blocking others; the aggregate stops username-rotation spray.
-# Single-process only -- multi-worker deployments need a shared store.
+# Single-process only; multi-worker deployments need a shared store.
 _LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
 _LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
@@ -80,18 +73,18 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow we prune stale entries; if still full the
-# failure folds into the per-IP aggregate only.
+# Bucket-dict cap. On overflow, prune stale entries; if still full the failure
+# folds into the per-IP aggregate only.
 _LOGIN_MAX_BUCKETS = 4096
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
-# into one slot so attacker cardinality cannot blow the bucket dict.
+# into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
 
 
 def _trust_forwarded_for() -> bool:
     """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set.
 
-    Off by default so a direct caller cannot spoof the header.
+    Off by default so a direct caller can't spoof the header.
     """
     return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
         "1",
@@ -112,7 +105,7 @@ def _normalize_forwarded_addr(value: str) -> str:
             return ""
         host = value[1:end]
     elif value.count(":") == 1:
-        # IPv4:port. Bare IPv6 has multiple colons and takes the else branch.
+        # IPv4:port. Bare IPv6 has multiple colons → else branch.
         head, _, tail = value.rpartition(":")
         host = head if tail.isdigit() and head else value
     else:
@@ -144,7 +137,7 @@ def _client_ip(request: Request | None) -> str:
                 return normalized
         fwd = request.headers.get("forwarded", "")
         if fwd:
-            # First element only -- multi-element headers cannot fork buckets.
+            # First element only; multi-element headers can't fork buckets.
             normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
@@ -190,7 +183,7 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
-        # Bucket dict is at its cap; per-IP cap still applies via ip_bucket.
+        # Bucket dict at cap; per-IP cap still applies via ip_bucket.
         return len(ip_bucket)
 
 
@@ -227,9 +220,7 @@ async def auth_status() -> AuthStatusResponse:
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(
-            storage.DEFAULT_ADMIN_USERNAME
-        )
+        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
         if storage.is_initialized()
         else True,
     )
@@ -244,19 +235,16 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            # IP is intentionally not interpolated into the body; behind a
-            # proxy or NAT it is either misleading or an info leak.
-            detail = (
-                f"Too many failed login attempts. "
-                f"Try again in {blocked_for} seconds."
-            ),
+            # IP not interpolated into the body; behind a proxy/NAT it's
+            # misleading or an info leak.
+            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
     record = storage.get_user_and_secret(payload.username)
     if record is None:
-        # Record under a single sentinel key per IP so attacker-controlled
-        # username cardinality does not allocate buckets without bound.
+        # Record under one sentinel key per IP so attacker-controlled username
+        # cardinality can't allocate unbounded buckets.
         _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -285,8 +273,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request,
-    current_subject: str = Depends(get_current_subject_allow_password_change),
+    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -335,9 +322,7 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
         access_token = new_access_token,
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False
-        if is_desktop
-        else storage.requires_password_change(username),
+        must_change_password = False if is_desktop else storage.requires_password_change(username),
     )
 
 
@@ -402,8 +387,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     expires_at = None
@@ -424,9 +408,7 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(
-    current_subject: str = Depends(get_current_subject),
-) -> ApiKeyListResponse:
+async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -435,10 +417,7 @@ async def list_api_keys(
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(
-    key_id: int,
-    current_subject: str = Depends(get_current_subject),
-) -> dict:
+async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

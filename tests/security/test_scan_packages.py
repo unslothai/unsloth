@@ -1,9 +1,8 @@
 """Regression tests for `scripts/scan_packages.py`.
 
-The scanner's primary entry point (`download_packages`) reaches PyPI;
-to keep the suite offline we exercise it via the module's public
-in-process helpers (`scan_archive`) and assert against the binary
-wheel / sdist fixtures committed under `tests/security/fixtures/`.
+`download_packages` reaches PyPI; to stay offline we drive the in-process
+`scan_archive` helper against the wheel/sdist fixtures under
+`tests/security/fixtures/`.
 """
 
 from __future__ import annotations
@@ -37,9 +36,8 @@ def test_fixture_files_exist():
 def test_fixture_bytes_are_deterministic(tmp_path):
     """Re-running `_build.py` must produce byte-identical archives.
 
-    The build helper sets every member's mtime/uid/gid/mode and emits
-    members in sorted order. We rebuild into a temp dir and compare
-    SHA-256 against the committed bytes.
+    The build helper pins each member's mtime/uid/gid/mode and sorts members.
+    Rebuild into a temp dir and compare SHA-256 against the committed bytes.
     """
     # Snapshot committed hashes.
     expected: dict[str, str] = {}
@@ -53,7 +51,7 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     builder_src = (FIXTURES / "_build.py").read_text()
     rebuilt_helper = rebuild_dir / "_build.py"
     rebuilt_helper.write_text(builder_src)
-    # Run with SOURCE_DATE_EPOCH=0 and HERE-override via a tiny shim.
+    # Run with SOURCE_DATE_EPOCH=0 and HERE override via a tiny shim.
     shim = rebuild_dir / "run.py"
     shim.write_text(
         "import sys, pathlib\n"
@@ -118,9 +116,7 @@ def test_clean_wheel_no_findings():
         str(FIXTURES / "clean_wheel.whl"),
         "clean_fixture",
     )
-    assert (
-        findings == []
-    ), f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
+    assert findings == [], f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
 
 
 # ---------------------------------------------------------------------------
@@ -170,20 +166,16 @@ def test_re_may12_ioc_catches_each_literal():
     reason = "Fork 1 (RE_MAY12_IOC integration) not merged yet",
 )
 def test_may12_ioc_caught_by_scan_archive():
-    """Once RE_MAY12_IOC is wired into check_py_file (per Fork 1's
-    plan), the malicious wheel's setup.py must produce a finding
-    that explicitly references the May-12 IOC string.
+    """Once RE_MAY12_IOC is wired into check_py_file, the malicious wheel's
+    setup.py must produce a finding referencing the May-12 IOC string.
     """
     findings = sp.scan_archive(
         str(FIXTURES / "malicious_wheel.whl"),
         "malicious_fixture",
     )
-    # The IOC literals are built at runtime so CodeQL's
-    # py/incomplete-url-substring-sanitization rule does not false-
-    # positive on the (literal `in` operand) pattern -- the operand is
-    # the scanner's own evidence string, not a URL being sanitized.
-    # Runtime construction also survives pre-commit reformatting that
-    # would otherwise detach an inline lgtm comment from the operator.
+    # IOC literals built at runtime so CodeQL's url-substring-sanitization
+    # rule doesn't false-positive on the `in` operand (it's evidence, not a
+    # URL), and so reformatting can't detach an inline lgtm comment.
     _ioc_host = "git-tanstack." + "com"
     _ioc_drop = "transformers." + "pyz"
     hit = any(
@@ -204,16 +196,11 @@ def test_may12_ioc_caught_by_scan_archive():
 
 
 def test_scan_packages_pip_download_failure_propagates(tmp_path):
-    """A pip download failure must NOT be silently swallowed into a
-    `0 findings, exit 0` report. Item (4) of the silent-failure
-    hardening: an obviously unresolvable spec is fed to the scanner
-    as a subprocess; the orchestrator must exit 2 (scan incomplete)
-    and the stderr must carry the SCAN INCOMPLETE banner.
+    """A pip download failure must NOT be swallowed into `0 findings, exit 0`.
 
-    The spec name is deliberately long + random-looking so it cannot
-    accidentally resolve on any real package index. We do not rely on
-    network reachability: even an offline runner will get a clean
-    "could not resolve" failure from pip.
+    Feeds an unresolvable spec to the scanner subprocess; it must exit 2
+    (scan incomplete) with a SCAN INCOMPLETE banner on stderr. The spec name
+    is long/random so it can't resolve on any index, even offline.
     """
     script = REPO_ROOT / "scripts" / "scan_packages.py"
     assert script.is_file(), script
@@ -235,9 +222,8 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
 
 
 def test_archive_corruption_produces_critical_finding(tmp_path):
-    """SF1: a corrupted wheel (truncated bytes) used to be silently
-    skipped by `except Exception: continue` inside iter_archive_files.
-    It must now yield a CRITICAL `archive_corrupted` finding.
+    """SF1: a corrupted wheel was silently skipped by `except: continue` in
+    iter_archive_files; it must now yield a CRITICAL `archive_corrupted`.
     """
     bad = tmp_path / "broken-0.0.1-py3-none-any.whl"
     bad.write_bytes(b"X")  # 1-byte "wheel" -- not a valid zip container
@@ -245,8 +231,7 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
     assert corrupted, (
-        "no archive_corrupted finding; got "
-        f"{[(f.severity, f.check) for f in findings]}"
+        "no archive_corrupted finding; got " f"{[(f.severity, f.check) for f in findings]}"
     )
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 

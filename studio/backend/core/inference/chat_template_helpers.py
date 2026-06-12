@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Dependency-light wrapper around tokenizer.apply_chat_template with a
-kwarg fallback for templates that reject reasoning/tools args.
+Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg
+fallback for templates that reject reasoning/tools args.
 """
 
 from typing import Optional
@@ -55,6 +55,4 @@ def apply_chat_template_for_generation(
             break
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError(
-        "apply_chat_template_for_generation: no attempt produced a result"
-    )
+    raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")

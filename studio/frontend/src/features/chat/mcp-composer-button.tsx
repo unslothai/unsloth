@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { McpServerIcon } from "@hugeicons/core-free-icons";
+import { McpServerIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { CheckIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -57,7 +57,7 @@ type McpPreset = {
 };
 
 // Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Add custom MCP".
+// Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "context7",
@@ -80,8 +80,8 @@ const MCP_PRESETS: readonly McpPreset[] = [
   },
 ] as const;
 
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset
-// toggle reuses its row instead of creating duplicates.
+// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle
+// reuses its row instead of duplicating.
 function normalizeMcpUrl(url: string): string {
   return (url || "").trim().toLowerCase().replace(/\/+$/, "");
 }
@@ -110,8 +110,8 @@ export function McpComposerButton({
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet MCP
-  // can still be pre-selected, matching the other composer tools.
+  // Grey out only when a loaded model lacks tool support; with no model yet,
+  // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(async () => {
@@ -178,10 +178,9 @@ export function McpComposerButton({
     }
   }
 
-  // One dropdown row. Enabled rows get a green underlay and a tick that
-  // becomes an X on hover so a click removes them. A hint shows as a tooltip
-  // driven by row hover; the tooltip anchor is pointer-events-none so the whole
-  // row stays clickable (a Radix TooltipTrigger would swallow the select).
+  // One dropdown row. Enabled rows get a green underlay and a tick that becomes
+  // an X on hover (click removes). The hint tooltip anchor is pointer-events-none
+  // so the row stays clickable (a Radix TooltipTrigger would swallow the select).
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -216,7 +215,9 @@ export function McpComposerButton({
       }
     >
       <span className="truncate">{opts.label}</span>
-      {opts.enabled ? <CheckIcon className="ml-auto" /> : null}
+      {opts.enabled ? (
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      ) : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
           <TooltipTrigger asChild={true}>
@@ -245,14 +246,36 @@ export function McpComposerButton({
             <button
               type="button"
               className="composer-pill-btn"
+              data-pill-label="MCP"
               data-active={active ? "true" : "false"}
               aria-label="MCP servers"
             >
-              <HugeiconsIcon
-                icon={McpServerIcon}
-                className="size-[15px]"
-                strokeWidth={2}
-              />
+              {/* Icon doubles as an off switch: hover swaps to an X; clicking
+                  it turns MCP off without opening the menu. In compact
+                  icon-only mode the glyph is the whole button, so clicks fall
+                  through to the trigger and open the menu instead. */}
+              <span
+                role="button"
+                aria-label="Turn off MCP"
+                tabIndex={-1}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                  setMcpEnabledForChat(false);
+                }}
+                className="composer-pill-glyph cursor-pointer"
+              >
+                <HugeiconsIcon
+                  icon={McpServerIcon}
+                  className="size-[15px]"
+                  strokeWidth={2}
+                />
+                <XIcon className="composer-pill-x" />
+              </span>
               <span>MCP</span>
               <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
             </button>
@@ -260,7 +283,7 @@ export function McpComposerButton({
           <DropdownMenuContent
             side={side}
             align="start"
-            sideOffset={2}
+            sideOffset={0}
             avoidCollisions={true}
             className="unsloth-plus-menu mcp-menu w-[232px]"
           >
@@ -296,7 +319,7 @@ export function McpComposerButton({
                 setDialogOpen(true);
               }}
             >
-              Add custom MCP
+              Manage MCP servers
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -331,7 +354,6 @@ export function McpComposerButton({
           // Resync after managing servers.
           if (!next) void refresh();
         }}
-        openToCreate={true}
       />
     </>
   );

@@ -1,30 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Shared pytest configuration for the backend test suite.
+"""Shared pytest configuration for the backend test suite.
 
-Responsibilities:
-1. Put the backend root on sys.path so `from models.inference import ...`
-   (and similar flat imports) resolve in test modules — mirrors how the
-   app itself is launched.
-2. Provide a hybrid ``studio_server`` session fixture for end-to-end tests
-   (see ``test_studio_api.py``). The fixture supports two invocation modes:
-
-   a. **External server.** If ``UNSLOTH_E2E_BASE_URL`` is set, tests point
-      at an already-running Studio instance. ``UNSLOTH_E2E_API_KEY`` must
-      also be set. This is the fast-iteration mode: start the server once
-      with ``unsloth studio run ...``, then run pytest against it many
-      times with no per-run GGUF load cost.
-
-   b. **Fixture-managed server.** Otherwise, the fixture launches a fresh
-      server via ``_start_server`` and tears it down at session end. This
-      is the one-shot mode for CI or a clean-slate verification run.
-
-   The model / variant for mode (b) come from ``--unsloth-model`` /
-   ``--unsloth-gguf-variant`` pytest options, then ``UNSLOTH_E2E_MODEL`` /
-   ``UNSLOTH_E2E_VARIANT`` env vars, then the defaults in
-   ``test_studio_api.py``.
+Puts the backend root on sys.path (mirrors app launch) and provides a hybrid
+``studio_server`` session fixture for end-to-end tests with two modes:
+external server (``UNSLOTH_E2E_BASE_URL``/``UNSLOTH_E2E_API_KEY``) for fast
+iteration, or a fixture-managed server started/torn down per session for CI.
+Model/variant for the managed mode resolve from ``--unsloth-model`` /
+``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
 import os
@@ -33,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-# Add backend root to sys.path (mirrors how the app itself is launched)
+# Add backend root to sys.path (mirrors app launch)
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# ── Pytest CLI options ───────────────────────────────────────────────
+# Pytest CLI options
 
 
 def pytest_addoption(parser):
@@ -71,25 +55,16 @@ def pytest_addoption(parser):
     )
 
 
-# ── E2E server fixtures ──────────────────────────────────────────────
+# E2E server fixtures
 
 
 @pytest.fixture(scope = "session")
 def studio_server(request):
     """Yield ``(base_url, api_key)`` for e2e tests.
 
-    Resolution order:
-
-    1. If ``UNSLOTH_E2E_BASE_URL`` is set → point at that server,
-       require ``UNSLOTH_E2E_API_KEY`` alongside (skip if missing).
-    2. Otherwise → start a fresh ``unsloth studio run`` subprocess via
-       the existing ``_start_server`` helper in ``test_studio_api.py``
-       and tear it down on session teardown.
-
-    Session-scoped so the expensive GGUF load happens at most once per
-    pytest invocation. Lazily instantiated — tests that don't request
-    the fixture (e.g. the unit tests in ``test_anthropic_messages.py``
-    or ``test_help_output``) do not trigger server startup.
+    Uses ``UNSLOTH_E2E_BASE_URL`` (requires ``UNSLOTH_E2E_API_KEY``) if set,
+    else starts/tears down a fresh server via ``_start_server``. Session-scoped
+    and lazy so the GGUF load happens at most once and only when requested.
     """
     external_url = os.environ.get("UNSLOTH_E2E_BASE_URL")
     if external_url:
@@ -103,9 +78,7 @@ def studio_server(request):
         yield external_url, api_key
         return
 
-    # Lazy import: pytest has already loaded test_studio_api into
-    # sys.modules by the time any test requests this fixture, so this
-    # is a cache hit, not a re-execution.
+    # Lazy import; pytest has already loaded test_studio_api, so this is a cache hit.
     import test_studio_api as _e2e
 
     model = (
@@ -136,3 +109,71 @@ def base_url(studio_server):
 def api_key(studio_server):
     """API key for the e2e Studio server (from ``studio_server``)."""
     return studio_server[1]
+
+
+# ── RAG fixtures ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def rag_home(tmp_path, monkeypatch):
+    """Isolate the RAG database under a fresh UNSLOTH_STUDIO_HOME per test.
+
+    Points the storage root at ``tmp_path`` and resets the lazy schema flag so
+    each test starts from an empty rag.db. Yields the temp home path.
+    """
+    from storage import rag_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    return tmp_path
+
+
+@pytest.fixture
+def rag_conn(rag_home):
+    """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    from storage import rag_db
+
+    conn = rag_db.get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def stub_embeddings(monkeypatch):
+    """Stub ``core.rag.embeddings`` with deterministic hash-based vectors.
+
+    Lets store / retrieval / ingestion tests run fast without downloading a
+    sentence-transformers model. Returns the fixed embedding dimension.
+    """
+    import hashlib
+    import math
+
+    from core.rag import embeddings
+
+    dim = 32
+
+    def _vec(text: str):
+        seed = hashlib.sha256(text.encode("utf-8")).digest()
+        raw = [seed[i % len(seed)] / 255.0 for i in range(dim)]
+        norm = math.sqrt(sum(x * x for x in raw)) or 1.0
+        return [x / norm for x in raw]
+
+    def fake_encode(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
+        return [_vec(t) for t in texts]
+
+    monkeypatch.setattr(embeddings, "encode", fake_encode)
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(
+        embeddings,
+        "token_counter",
+        lambda model_name = None: (lambda t: len(t.split())),
+    )
+    monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
+    return dim

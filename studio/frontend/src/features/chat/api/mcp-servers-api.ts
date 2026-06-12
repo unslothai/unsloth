@@ -21,6 +21,12 @@ export interface McpServerProbeResult {
   error: string | null;
 }
 
+export interface McpServerImportResult {
+  created: McpServerConfig[];
+  skipped: string[];
+  errors: string[];
+}
+
 function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
     const { detail, message } = body as { detail?: unknown; message?: unknown };
@@ -113,4 +119,13 @@ export function testMcpServer(payload: {
       use_oauth: payload.useOauth ?? false,
     },
   });
+}
+
+// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop,
+// Cursor, Cline, VS Code). The backend skips duplicates and reports per-entry
+// errors instead of failing the whole batch.
+export function importMcpServers(
+  config: unknown,
+): Promise<McpServerImportResult> {
+  return mcpRequest("/import", { method: "POST", body: { config } });
 }
