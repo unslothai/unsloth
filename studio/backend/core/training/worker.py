@@ -1389,6 +1389,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Force text-only for non-image datasets even on vision-capable models
     # (e.g. Qwen3.5-VL trained on plain alpaca text).
     _send("status", status_message = f"Loading {model_name}...")
+    # Pull through resume_from_checkpoint so MLXTrainer.train() can restore
+    # optimizer + step state and continue cleanly. Was previously dropped on
+    # the floor for the MLX path, so the Resume UI button silently restarted
+    # from step 0 (the CUDA path at lines 2729 / 3108 has been forwarding
+    # this all along).
+    resume_from_checkpoint = config.get("resume_from_checkpoint") or None
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
@@ -1859,7 +1865,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
-    trainer.train()
+    trainer.train(resume_from_checkpoint = resume_from_checkpoint)
 
     # ── 12. Save and finalize ──
     if trainer.stop_requested and not _stop_save[0]:
@@ -2463,7 +2469,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _on_progress(progress: TrainingProgress):
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if has_train_loss or has_eval_loss:
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
             event_queue.put(
                 {
                     "type": "progress",

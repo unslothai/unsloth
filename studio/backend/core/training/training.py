@@ -563,8 +563,19 @@ class TrainingBackend:
                 except (TypeError, ValueError):
                     logger.debug("Could not convert loss to float: %s", _raw_loss)
                     _safe_loss = None
-                if _safe_loss is not None and not math.isfinite(_safe_loss):
+                _loss_is_nonfinite = _safe_loss is not None and not math.isfinite(_safe_loss)
+                if _loss_is_nonfinite:
+                    # Drop the value rather than laundering it back to the last
+                    # finite loss; clients see loss=None at this step so the NaN
+                    # is not hidden behind a stale value. Training continues.
                     _safe_loss = None
+                    if not getattr(self._progress, "_nonfinite_loss_warned", False):
+                        self._progress._nonfinite_loss_warned = True
+                        logger.warning(
+                            "Training produced non-finite loss at step %s; "
+                            "loss field will report null until it recovers.",
+                            event.get("step", "?"),
+                        )
                 try:
                     _safe_lr = float(_raw_lr) if _raw_lr is not None else None
                 except (TypeError, ValueError):
@@ -574,6 +585,10 @@ class TrainingBackend:
                     _safe_lr = None
                 if _safe_loss is not None:
                     self._progress.loss = _safe_loss
+                elif _loss_is_nonfinite:
+                    # Clear stale finite loss so the API doesn't keep
+                    # reporting the last good value while NaN is happening.
+                    self._progress.loss = None
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
