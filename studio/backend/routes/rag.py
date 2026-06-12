@@ -82,10 +82,7 @@ def _remove_stored_upload(stored_path: str | None) -> None:
     try:
         uploads = os.path.realpath(str(rag_uploads_root()))
         target = os.path.realpath(stored_path)
-        if (
-            os.path.isfile(target)
-            and os.path.commonpath([uploads, target]) == uploads
-        ):
+        if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - DB/index deletion has already succeeded.
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)

@@ -39,11 +39,7 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
 
     conn = rag_db.get_connection()
     try:
-        assert store.get_document(conn, doc_id)["status"] in {
-            "pending",
-            "running",
-            "completed",
-        }
+        assert store.get_document(conn, doc_id)["status"] in {"pending", "running", "completed"}
     finally:
         conn.close()
 

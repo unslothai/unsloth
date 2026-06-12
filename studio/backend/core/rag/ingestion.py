@@ -45,10 +45,7 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         from utils.paths import rag_uploads_root
 
         uploads = os.path.realpath(str(rag_uploads_root()))
-        if (
-            os.path.isfile(target)
-            and os.path.commonpath([uploads, target]) == uploads
-        ):
+        if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
