@@ -596,9 +596,11 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -627,9 +629,11 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -1159,6 +1163,21 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
+    """Whether an inherited --split-mode should be stripped on reload.
+
+    The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
+    layer modes, so only strip when the toggle overrides it: tensor being turned
+    on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
+    survive. Shared by the inheritance strip and the already-loaded stale check
+    so they agree on what reload would do.
+    """
+    fields_set = getattr(request, "model_fields_set", set())
+    return "tensor_parallel" in fields_set and (
+        request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
+    )
+
+
 def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401."""
@@ -1168,6 +1187,24 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
+    ):
+        return False
+    # Reconcile a user --split-mode in extras into the effective tensor state.
+    # When the request omits llama_extra_args ("inherit"), compare using the
+    # stored extras stripped the way the reload strips them, so an extras-driven
+    # tensor load isn't seen as a mismatch that needlessly reloads the server.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    effective_extra = (
+        request.llama_extra_args
+        if request.llama_extra_args is not None
+        else strip_shadowing_flags(
+            backend_extra,
+            strip_split_mode = _should_strip_split_mode(request, backend_extra),
+        )
+    )
+    if (
+        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
+        != llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
@@ -1188,10 +1225,19 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
     # contain any shadow flag, so the reload path strips them rather than
-    # leaving a stale override in effect.
-    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
-        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+        # Mirror the reload's conditional split-mode strip, so a preserved
+        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
+        # trigger a needless reload of a healthy server.
+        if (
+            backend_extra
+            and strip_shadowing_flags(
+                backend_extra,
+                strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            )
+            != backend_extra
+        ):
             return False
     else:
         if list(request.llama_extra_args) != backend_extra:
@@ -1360,6 +1406,7 @@ async def load_model(
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
             if (
@@ -1490,6 +1537,9 @@ async def load_model(
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
+                        strip_split_mode = _should_strip_split_mode(
+                            request, llama_backend.extra_args
+                        ),
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
@@ -1514,22 +1564,25 @@ async def load_model(
             # during the (potentially long) GGUF download + llama-server start.
             _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
+            # Load kwargs common to HF and local modes; the two differ only by
+            # the model-source args (hf_repo/-token vs gguf_path/mmproj).
+            _common_load_kwargs = dict(
+                model_identifier = config.identifier,
+                is_vision = config.is_vision,
+                n_ctx = request.max_seq_length,
+                chat_template_override = request.chat_template_override,
+                cache_type_kv = request.cache_type_kv,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                n_parallel = _n_parallel,
+                extra_args = extra_llama_args,
+            )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -1548,8 +1601,7 @@ async def load_model(
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     mtp_draft_path = config.gguf_mtp_file,
@@ -1557,16 +1609,35 @@ async def load_model(
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
                     hf_variant = config.gguf_variant,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
+
+            # Run a single load attempt with the given tensor flag + extras.
+            async def _attempt_gguf_load(
+                tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
+            ) -> bool:
+                attempt_kwargs = {
+                    **_common_load_kwargs,
+                    "extra_args": attempt_extra_args,
+                }
+                return await asyncio.to_thread(
+                    llama_backend.load_model,
+                    **_source_load_kwargs,
+                    **attempt_kwargs,
+                    tensor_parallel = tensor_parallel,
+                )
+
+            # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
+            # outright (e.g. Gemma 3n aborts with a GGML_ASSERT). The helper auto-
+            # falls back to layer split so the checkbox never blocks a model from
+            # loading; the response reports the backend's actual tensor_parallel
+            # state so the UI toggle reflects the fallback.
+            success = await load_with_tensor_fallback(
+                _attempt_gguf_load,
+                requested_tensor = request.tensor_parallel,
+                extra_args = extra_llama_args,
+                label = config.identifier,
+                cancelled = llama_backend.load_cancelled,
+            )
 
             if not success:
                 raise HTTPException(
@@ -1612,6 +1683,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -2100,6 +2172,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
