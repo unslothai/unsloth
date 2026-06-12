@@ -1405,6 +1405,11 @@ class FastBaseModel:
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
             ):
+                print(
+                    "Unsloth: Explicit target_modules are constrained by the "
+                    "finetune_(vision|language|attention|mlp) filters; adapters "
+                    "attach only where both select."
+                )
                 target_modules = get_peft_regex(
                     model,
                     finetune_vision_layers = finetune_vision_layers,

@@ -205,6 +205,7 @@ async def start_training(
             "weight_decay": request.weight_decay,
             "max_grad_norm": request.max_grad_norm,
             "max_grad_value": request.max_grad_value,
+            "max_grad_leaf_norm": request.max_grad_leaf_norm,
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
