@@ -19,7 +19,7 @@ const DEFAULT_S3_CONFIG: S3Config = {
 };
 
 /**
- * Inline S3 dataset configuration card. Shown in the dataset section when the
+ * Inline S3 dataset configuration form. Shown in the dataset section when the
  * selected source is "s3"; reads and writes the shared training-config store.
  */
 export function S3ConfigForm() {
@@ -46,7 +46,7 @@ export function S3ConfigForm() {
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-lg border bg-muted/20 px-3.5 py-3">
+    <div className="flex min-w-0 flex-col gap-3">
       <div>
         <p className="text-xs font-medium text-foreground">
           {t("studio.dataset.s3.title")}
