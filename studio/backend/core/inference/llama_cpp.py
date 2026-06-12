@@ -2993,18 +2993,7 @@ class LlamaCppBackend:
         return str(mmproj)
 
     def _mmproj_vram_bytes(self, launch_mmproj_path: Optional[str]) -> int:
-        """VRAM (bytes) the resolved vision projector adds on the GPU.
-
-        ``launch_mmproj_path`` is the path returned by
-        :meth:`_resolve_launch_mmproj_path` (``None`` when no projector will
-        be launched). llama-server loads it onto the GPU via ``--mmproj``
-        alongside the weights, so its footprint must count toward the fit
-        budget that drives context auto-sizing and GPU selection -- counting
-        only the weight file made the budget too optimistic and tight loads
-        spilled to system RAM / OOM'd (#5825).
-
-        Returns 0 when no projector resolved or the file is unreadable.
-        """
+        """Return resolved mmproj VRAM bytes, or 0 when absent/unreadable."""
         if not launch_mmproj_path:
             return 0
         try:
@@ -3578,10 +3567,7 @@ class LlamaCppBackend:
                 effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
-                # Resolve the vision projector once. The fit budget below and
-                # the launch flags further down must agree on whether (and
-                # which) mmproj loads, so they share a single resolution
-                # rather than each re-deriving it (#5825).
+                # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
                 if not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
@@ -3599,10 +3585,7 @@ class LlamaCppBackend:
                     )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
-                    # The projector is loaded onto the GPU via --mmproj
-                    # alongside the weights, so fold it into the fit budget
-                    # that drives context auto-sizing + GPU selection;
-                    # otherwise tight vision loads over-promise VRAM (#5825).
+                    # Include GPU-loaded mmproj in the fit budget (#5825).
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
