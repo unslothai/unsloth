@@ -144,7 +144,11 @@ def test_preheader_send_cleanup_on_disconnect_and_cancel():
         started = asyncio.Event()
 
         class _Client:
-            async def send(self, req, stream = False):
+            async def send(
+                self,
+                req,
+                stream = False,
+            ):
                 started.set()
                 try:
                     await asyncio.Future()
