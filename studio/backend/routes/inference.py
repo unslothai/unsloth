@@ -3482,17 +3482,36 @@ async def openai_completions(
             client = httpx.AsyncClient(timeout = 600)
             resp = None
             bytes_iter = None
+            disconnect_event = threading.Event()
+            disconnect_watcher = None
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 resp = await client.send(req, stream = True)
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, disconnect_event)
+                )
                 bytes_iter = resp.aiter_bytes()
                 async for chunk in bytes_iter:
+                    if disconnect_event.is_set():
+                        break
+                    if await request.is_disconnected():
+                        disconnect_event.set()
+                        break
                     yield chunk
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+                if not disconnect_event.is_set():
+                    logger.error("openai_completions stream error: %s", e)
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
             finally:
+                if disconnect_watcher is not None:
+                    disconnect_watcher.cancel()
+                    try:
+                        await disconnect_watcher
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if bytes_iter is not None:
                     try:
                         await bytes_iter.aclose()
@@ -4038,6 +4057,8 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = 600)
         resp = None
         lines_iter = None
+        disconnect_event = threading.Event()
+        disconnect_watcher = None
         try:
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -4060,9 +4081,15 @@ async def _responses_stream(
                 yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
                 return
 
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, disconnect_event)
+            )
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
+                if disconnect_event.is_set():
+                    break
                 if await request.is_disconnected():
+                    disconnect_event.set()
                     break
                 if not raw_line:
                     continue
@@ -4158,9 +4185,18 @@ async def _responses_stream(
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+            if not disconnect_event.is_set():
+                logger.error("responses stream error: %s", e)
         except Exception as e:
             logger.error("responses stream error: %s", e)
         finally:
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -4175,6 +4211,9 @@ async def _responses_stream(
                 await client.aclose()
             except Exception:
                 pass
+
+        if disconnect_event.is_set():
+            return
 
         # ── Closing events for tool calls ──
         for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):

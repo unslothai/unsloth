@@ -470,14 +470,32 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes a
     single --spec-type (comma-separated to chain), so suppress
     auto-emit when this is true."""
+    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+
+
+_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset(
+    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
+)
+_THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _extra_arg_flag_name(token: str) -> Optional[str]:
+    if not token.startswith("-") or token in {"-", "--"}:
+        return None
+    if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
+        return None
+    return token.split("=", 1)[0]
+
+
+def _extra_args_set_any_flag(
+    extra_args: Optional[Iterable[str]],
+    flags: set[str] | frozenset[str],
+) -> bool:
     if not extra_args:
         return False
     for raw in extra_args:
-        tok = str(raw)
-        if not tok.startswith("--"):
-            continue
-        flag = tok.split("=", 1)[0]
-        if flag in ("--spec-type", "--spec-default"):
+        flag = _extra_arg_flag_name(str(raw))
+        if flag in flags:
             return True
     return False
 
@@ -2972,10 +2990,25 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1"])
                     fully_gpu_offloaded = True
 
+                offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                )
+                threads_overridden = _extra_args_set_any_flag(
+                    extra_args, _THREAD_OVERRIDE_FLAGS
+                )
+                full_offload_tuning_active = (
+                    fully_gpu_offloaded and not offload_overridden
+                )
+
                 # -1 = llama.cpp auto-detect (physical cores). Windows +
                 # full offload caps at 2 to stop OpenMP spin-wait burning
-                # CPU during GPU decode. #5692.
-                if sys.platform == "win32" and fully_gpu_offloaded:
+                # CPU during GPU decode. User pass-through offload/thread
+                # flags keep last-wins semantics. #5692.
+                if (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                ):
                     threads_arg = 2
                 else:
                     threads_arg = n_threads if n_threads is not None else -1
@@ -3115,7 +3148,7 @@ class LlamaCppBackend:
 
                 # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
                 # overhead). CPU/partial offload keeps prompt caching. #5692.
-                if sys.platform == "win32" and fully_gpu_offloaded:
+                if sys.platform == "win32" and full_offload_tuning_active:
                     cmd.extend(
                         [
                             "--cache-ram",
@@ -3123,8 +3156,6 @@ class LlamaCppBackend:
                             "--ctx-checkpoints",
                             "0",
                             "--no-cache-prompt",
-                            "--checkpoint-every-n-tokens",
-                            "-1",
                         ]
                     )
 
@@ -3163,9 +3194,10 @@ class LlamaCppBackend:
                     # Windows + full offload: PASSIVE OMP + 2 threads stop
                     # spin-wait burning CPU. CPU/partial offload keeps
                     # default OMP parallelism. #5692.
-                    if fully_gpu_offloaded:
+                    if full_offload_tuning_active:
                         env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
-                        env.setdefault("OMP_NUM_THREADS", "2")
+                        if not threads_overridden:
+                            env.setdefault("OMP_NUM_THREADS", "2")
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)

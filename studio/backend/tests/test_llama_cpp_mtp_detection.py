@@ -9,6 +9,7 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import inspect
 import struct
 import sys
 import types as _types
@@ -52,9 +53,12 @@ import pytest
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _GPU_OFFLOAD_OVERRIDE_FLAGS,
+    _THREAD_OVERRIDE_FLAGS,
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
     _canonicalize_spec_mode,
+    _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
 )
@@ -316,6 +320,33 @@ def test_extra_args_set_spec_type_detects_user_override(extra_args):
 )
 def test_extra_args_set_spec_type_passes_on_non_spec_type_args(extra_args):
     assert _extra_args_set_spec_type(extra_args) is False
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-ngl", "12"],
+        ["--gpu-layers", "12"],
+        ["--n-gpu-layers=12"],
+        ["-fit", "off"],
+        ["--fit=off"],
+    ],
+)
+def test_extra_args_detect_gpu_offload_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS) is True
+
+
+@pytest.mark.parametrize("extra_args", [["-t", "8"], ["--threads=8"]])
+def test_extra_args_detect_thread_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS) is True
+
+
+def test_windows_full_offload_flags_use_current_llama_server_args():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert '"--cache-ram"' in src
+    assert '"--ctx-checkpoints"' in src
+    assert '"--no-cache-prompt"' in src
+    assert "--checkpoint-every-n-tokens" not in src
 
 
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
