@@ -202,3 +202,20 @@ def test_ocr_defaults_mapping_is_case_insensitive():
     assert deepseek_defaults["inference"]["trust_remote_code"] is True
     assert glm_defaults["model"]["is_ocr"] is True
     assert glm_defaults["inference"]["trust_remote_code"] is True
+
+
+def test_unsloth_ocr_preset_defaults_resolve():
+    """The OCR presets point at the unsloth mirrors; each maps to its own
+    YAML with the canonical unsloth identifier and the right TRC flag
+    (the GLM mirror is native transformers, no custom code)."""
+    for ident, trc in [
+        ("unsloth/deepseek-ocr", True),
+        ("unsloth/DeepSeek-OCR-2", True),
+        ("unsloth/glm-ocr", False),
+        ("unsloth/PaddleOCR-VL", True),
+    ]:
+        defaults = model_config_module.load_model_defaults(ident)
+        assert defaults["model"]["is_ocr"] is True, ident
+        assert defaults["model"]["is_vision"] is True, ident
+        assert defaults["model"]["identifier"].startswith("unsloth/"), ident
+        assert defaults["inference"].get("trust_remote_code", False) is trc, ident

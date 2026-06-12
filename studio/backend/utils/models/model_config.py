@@ -348,6 +348,18 @@ MODEL_NAME_MAPPING = {
     "unsloth_PaddleOCR-VL.yaml": [
         "unsloth/PaddleOCR-VL",
     ],
+    "unsloth_DeepSeek-OCR.yaml": [
+        "unsloth/DeepSeek-OCR",
+        "unsloth/deepseek-ocr",
+    ],
+    "unsloth_DeepSeek-OCR-2.yaml": [
+        "unsloth/DeepSeek-OCR-2",
+        "unsloth/deepseek-ocr-2",
+    ],
+    "unsloth_GLM-OCR.yaml": [
+        "unsloth/GLM-OCR",
+        "unsloth/glm-ocr",
+    ],
     "deepseek-ai_DeepSeek-OCR.yaml": [
         "deepseek-ai/DeepSeek-OCR",
         "deepseek-ai/deepseek-ocr",

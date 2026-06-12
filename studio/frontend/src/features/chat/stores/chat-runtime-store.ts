@@ -136,7 +136,11 @@ function loadRagNumber(
  * the loaded chat VLM (else no override); "none" disables the override;
  * "custom" is a user-supplied HF id or local path (`customOcrModelId`).
  */
-export type OcrModelPresetId = "deepseek-ocr" | "glm-ocr" | "paddleocr-vl";
+export type OcrModelPresetId =
+  | "deepseek-ocr"
+  | "deepseek-ocr-2"
+  | "glm-ocr"
+  | "paddleocr-vl";
 export type OcrModelSelection =
   | OcrModelPresetId
   | "custom"
@@ -207,6 +211,7 @@ const VALID_OCR_SELECTIONS: ReadonlySet<OcrModelSelection> = new Set([
   "none",
   "custom",
   "deepseek-ocr",
+  "deepseek-ocr-2",
   "glm-ocr",
   "paddleocr-vl",
 ]);

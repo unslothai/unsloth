@@ -39,7 +39,15 @@ export const OCR_MODEL_PRESETS: readonly OcrModelPreset[] = [
   {
     id: "deepseek-ocr",
     label: "DeepSeek-OCR",
-    modelId: "deepseek-ai/DeepSeek-OCR",
+    modelId: "unsloth/DeepSeek-OCR",
+    requiresTrustRemoteCode: true,
+    defaultMaxSeqLength: 8192,
+    hint: "Custom-code vision model. Trust remote code must be enabled.",
+  },
+  {
+    id: "deepseek-ocr-2",
+    label: "DeepSeek-OCR-2",
+    modelId: "unsloth/DeepSeek-OCR-2",
     requiresTrustRemoteCode: true,
     defaultMaxSeqLength: 8192,
     hint: "Custom-code vision model. Trust remote code must be enabled.",
@@ -47,10 +55,10 @@ export const OCR_MODEL_PRESETS: readonly OcrModelPreset[] = [
   {
     id: "glm-ocr",
     label: "GLM-OCR",
-    modelId: "zai-org/GLM-OCR",
-    requiresTrustRemoteCode: true,
+    modelId: "unsloth/GLM-OCR",
+    requiresTrustRemoteCode: false,
     defaultMaxSeqLength: 8192,
-    hint: "GLM OCR vision model. Trust remote code must be enabled.",
+    hint: "GLM OCR vision model.",
   },
   {
     id: "paddleocr-vl",
