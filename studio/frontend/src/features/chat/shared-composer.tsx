@@ -913,7 +913,9 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
-      const specSettings = resolveSpeculativeSettingsForLoad();
+      const specSettings = resolveSpeculativeSettingsForLoad({
+        usePersistedPreference: true,
+      });
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");

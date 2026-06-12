@@ -1305,17 +1305,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
 
-export function resolveSpeculativeSettingsForLoad(): {
+export function resolveSpeculativeSettingsForLoad({
+  usePersistedPreference = false,
+}: {
+  usePersistedPreference?: boolean;
+} = {}): {
   speculativeType: string | null;
   specDraftNMax: number | null;
 } {
   const state = useChatRuntimeStore.getState();
-  const speculativeType =
-    state.speculativeType ?? readPersistedSpeculativeType();
+  const speculativeType = usePersistedPreference
+    ? readPersistedSpeculativeType()
+    : state.speculativeType ?? readPersistedSpeculativeType();
   return {
     speculativeType,
     specDraftNMax:
-      speculativeType === "mtp" || speculativeType === "mtp+ngram"
+      !usePersistedPreference &&
+      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
         ? state.specDraftNMax
         : null,
   };
