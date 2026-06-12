@@ -8,7 +8,7 @@ export interface StartValidationResult {
   message: string | null;
 }
 
-function validateS3Source(
+export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
   const s3 = config.s3Config;

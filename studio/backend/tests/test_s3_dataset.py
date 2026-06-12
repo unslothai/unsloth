@@ -122,6 +122,33 @@ def test_basename_collisions_are_disambiguated(monkeypatch, tmp_path):
     assert len(set(files)) == 2  # no overwrite
 
 
+def test_basename_collision_skips_existing_generated_suffix(monkeypatch, tmp_path):
+    client = _FakeS3Client(
+        [
+            "datasets/a/train.parquet",
+            "datasets/b/train_1.parquet",
+            "datasets/c/train.parquet",
+        ]
+    )
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+
+    assert [os.path.basename(f) for f in files] == [
+        "train.parquet",
+        "train_1.parquet",
+        "train_2.parquet",
+    ]
+    assert len(set(files)) == 3
+    assert (tmp_path / "train_1.parquet").read_text(encoding = "utf-8") == (
+        "content-of:datasets/b/train_1.parquet"
+    )
+    assert (tmp_path / "train_2.parquet").read_text(encoding = "utf-8") == (
+        "content-of:datasets/c/train.parquet"
+    )
+
+
 # ── S3Config model (camelCase aliases + credential validation) ──
 
 

@@ -493,7 +493,7 @@ export const en = {
       subset: "Subset",
       s3: {
         title: "S3 Configuration",
-        description: "Load datasets from Amazon S3 buckets",
+        description: "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
         bucket: "Bucket Name",
         bucketPlaceholder: "my-training-data-bucket",
         region: "AWS Region",

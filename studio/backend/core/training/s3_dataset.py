@@ -75,6 +75,18 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
     return keys
 
 
+def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
+    """Return an unused flattened path for an S3 object basename."""
+    stem, ext = os.path.splitext(filename)
+    candidate = os.path.join(target_dir, filename)
+    suffix = 1
+    while candidate in used_paths or os.path.exists(candidate):
+        candidate = os.path.join(target_dir, f"{stem}_{suffix}{ext}")
+        suffix += 1
+    used_paths.add(candidate)
+    return candidate
+
+
 def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list[str]:
     """Download supported dataset files from S3 to a local directory.
 
@@ -106,14 +118,11 @@ def download_s3_dataset(s3_config: dict, dest_dir: Optional[str] = None) -> list
     os.makedirs(target_dir, exist_ok = True)
 
     local_files: list[str] = []
+    used_paths: set[str] = set()
     for key in keys:
         # Flatten the key to a filename, keeping the basename and extension.
         filename = os.path.basename(key)
-        local_path = os.path.join(target_dir, filename)
-        # Disambiguate collisions from different prefixes sharing a basename.
-        if local_path in local_files:
-            stem, ext = os.path.splitext(filename)
-            local_path = os.path.join(target_dir, f"{stem}_{len(local_files)}{ext}")
+        local_path = _unique_local_path(target_dir, filename, used_paths)
         client.download_file(bucket, key, local_path)
         local_files.append(local_path)
 

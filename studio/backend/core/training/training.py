@@ -40,6 +40,34 @@ logger = get_logger(__name__)
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
+def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    db_config = {
+        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+    }
+    s3_config = config.get("s3_config")
+    if hasattr(s3_config, "model_dump"):
+        s3_config = s3_config.model_dump()
+    if isinstance(s3_config, dict) and s3_config:
+        db_config["dataset_source"] = "s3"
+        db_config["s3_dataset"] = {
+            "bucket": s3_config.get("bucket"),
+            "region": s3_config.get("region"),
+            "prefix": s3_config.get("prefix"),
+            "use_iam_role": bool(s3_config.get("use_iam_role")),
+        }
+    return db_config
+
+
+def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
+    if not isinstance(s3_dataset, dict):
+        return None
+    bucket = s3_dataset.get("bucket")
+    if not bucket:
+        return None
+    prefix = s3_dataset.get("prefix")
+    return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
+
+
 def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
     """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
 
@@ -310,9 +338,7 @@ class TrainingBackend:
         self._run_finalized = False
         self._db_run_created = False
         self._db_total_steps_set = False
-        self._db_config = {
-            k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
-        }
+        self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
         # Assign subprocess handles after state reset.
@@ -720,8 +746,11 @@ class TrainingBackend:
         try:
             from storage.studio_db import create_run
 
-            dataset_name = self._db_config.get("hf_dataset") or next(
-                iter(self._db_config.get("local_datasets") or []), "unknown"
+            dataset_name = (
+                self._db_config.get("hf_dataset")
+                or next(iter(self._db_config.get("local_datasets") or []), None)
+                or _s3_dataset_name(self._db_config.get("s3_dataset"))
+                or "unknown"
             )
             create_run(
                 id = self.current_job_id,

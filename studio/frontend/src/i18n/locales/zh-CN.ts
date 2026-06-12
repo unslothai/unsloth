@@ -459,7 +459,7 @@ export const zhCN = {
       subset: "子集",
       s3: {
         title: "S3 配置",
-        description: "从 Amazon S3 存储桶加载数据集",
+        description: "从 Amazon S3 加载 .parquet、.json、.jsonl 或 .csv 数据集",
         bucket: "存储桶名称",
         bucketPlaceholder: "my-training-data-bucket",
         region: "AWS 区域",

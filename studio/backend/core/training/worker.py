@@ -1509,6 +1509,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
         dataset = _slice(dataset)
+    elif config.get("s3_config"):
+        from core.training.s3_dataset import download_s3_dataset
+
+        _send("status", status_message = "Downloading dataset from S3...")
+        s3_local_datasets = download_s3_dataset(config["s3_config"])
+        dataset = _load_local(s3_local_datasets)
+        dataset = _slice(dataset)
     else:
         raise ValueError("No dataset specified")
 
