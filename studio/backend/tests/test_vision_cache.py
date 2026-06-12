@@ -143,9 +143,7 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(
-        self, mock_subprocess, tmp_path
-    ):
+    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(self, mock_subprocess, tmp_path):
         variant_dir = tmp_path / "BF16"
         variant_dir.mkdir()
         model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
