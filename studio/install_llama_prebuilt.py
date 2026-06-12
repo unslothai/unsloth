@@ -5641,19 +5641,14 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
 
 
 def _wsl_system_rocm_lib_dirs() -> list[str]:
-    """System ROCm lib dir(s) to prefer over a prebuilt's bundled HIP, on WSL.
+    """System ROCm lib dir(s) for binary_env to load before a prebuilt's HIP.
 
-    In WSL the GPU is reached through the system ROCm's librocdxg bridge over
-    /dev/dxg. A llama.cpp ROCm prebuilt bundles its own (often newer) HIP
-    runtime built for bare-metal Linux; that runtime cannot drive /dev/dxg and
-    segfaults on the first GPU call, so the prebuilt fails validation and the
-    install silently falls back to a CPU build. Returning the system ROCm lib
-    dir here lets binary_env put it AHEAD of the bundle, so the WSL-capable HIP
-    runtime (libamdhip64 + librocdxg) is loaded while the bundle still supplies
-    libggml-hip / librocblas with the gfx1151 kernels.
-
-    Strict no-op off WSL: requires both /dev/dxg and a "microsoft" /proc/version,
-    and a librocdxg-providing ROCm install. Bare-metal Linux returns [].
+    A prebuilt bundles a bare-metal HIP runtime that can't drive WSL's /dev/dxg
+    and segfaults on the first GPU call -> validation fails, install falls back
+    to a CPU build. Putting the system ROCm libs first loads the WSL-capable
+    HIP (libamdhip64 + librocdxg) while the bundle still supplies libggml-hip /
+    librocblas with the gfx1151 kernels. Strict no-op off WSL (needs /dev/dxg, a
+    "microsoft" /proc/version, and a librocdxg-providing ROCm).
     """
     try:
         if not os.path.exists("/dev/dxg"):
@@ -5693,9 +5688,7 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
-        # WSL ROCDXG: load the system HIP runtime ahead of the prebuilt's
-        # bundled one (which segfaults reaching the GPU over /dev/dxg). The
-        # bundle still provides libggml-hip / librocblas. No-op on bare metal.
+        # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
         _wsl_rocm = _wsl_system_rocm_lib_dirs()
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]

@@ -66,17 +66,12 @@ logger = get_logger(__name__)
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
 
-    In WSL the GPU is reached through the system ROCm's librocdxg bridge over
-    /dev/dxg. A llama.cpp ROCm prebuilt bundles its own (often newer) HIP
-    runtime built for bare-metal Linux, which cannot drive /dev/dxg and
-    segfaults on the first GPU call. Putting the system ROCm lib dir ahead of
-    the bundle on LD_LIBRARY_PATH loads the WSL-capable HIP runtime while the
-    bundle still supplies libggml-hip / librocblas (with the gfx1151 kernels).
-
+    The bundled bare-metal HIP can't drive WSL's /dev/dxg and segfaults on the
+    first GPU call; the system ROCm libs (libamdhip64 + librocdxg) can, while
+    the bundle still supplies libggml-hip / librocblas (gfx1151 kernels).
     Mirrors install_llama_prebuilt._wsl_system_rocm_lib_dirs so a prebuilt that
-    passed install validation runs identically at serve time. Strict no-op off
-    a ROCDXG WSL host (requires /dev/dxg, "microsoft" /proc/version, and a
-    librocdxg-providing /opt/rocm).
+    passed install validation runs the same at serve time. No-op off a ROCDXG
+    WSL host (needs /dev/dxg, "microsoft" /proc/version, librocdxg in /opt/rocm).
     """
     try:
         if not os.path.exists("/dev/dxg"):
@@ -3453,15 +3448,9 @@ class LlamaCppBackend:
                     import platform
 
                     lib_dirs = []
-                    # WSL ROCDXG: the system HIP runtime (libamdhip64 +
-                    # librocdxg) must load BEFORE the prebuilt's bundled one,
-                    # which is built for bare-metal and segfaults reaching the
-                    # GPU over /dev/dxg. The bundle still supplies libggml-hip /
-                    # librocblas (with the gfx1151 kernels). Must mirror
-                    # install_llama_prebuilt.binary_env, which validates the
-                    # prebuilt with this same ordering -- otherwise a prebuilt
-                    # that passed install validation would crash at runtime.
-                    # Strict no-op off a ROCDXG WSL host.
+                    # WSL: system HIP before the bundle's (which segfaults on
+                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
+                    # validates the prebuilt with this same ordering.
                     for _wsl_rocm in _wsl_system_rocm_lib_dirs():
                         lib_dirs.append(_wsl_rocm)
                     if lib_dirs:

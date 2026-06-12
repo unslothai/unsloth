@@ -2043,14 +2043,11 @@ _pick_radeon_wheel() {
 # CPU, non-Strix WSL) skips it and normal detection runs unchanged. NEVER aborts
 # the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
 # librocdxg), then sources the env it persisted so detection finds the GPU.
-# Persist the ROCm-on-WSL env to /etc/profile.d so non-login Studio / llama
-# launches inherit HSA_ENABLE_DXG_DETECTION + the rocm PATH/LD_LIBRARY_PATH.
-# Also exports the env into the current process. Idempotent: only (re)writes the
-# drop-in when it is missing. No-op unless librocdxg (the WSL bridge) is present,
-# so it never writes a WSL drop-in on a non-WSL or non-ROCDXG host.
-# /etc/profile.d is root-owned: a plain redirect fails for a non-root reinstall
-# (ROCm would silently disappear after this shell), so tee through sudo when not
-# root. Best-effort -- the current shell already has the env either way.
+# Export the ROCm-on-WSL env into this process and persist it to /etc/profile.d
+# so non-login Studio/llama launches inherit it. Idempotent (writes only when
+# the drop-in is missing); no-op without librocdxg, so never fires off WSL.
+# /etc/profile.d is root-owned -- sudo-tee when not root, else ROCm vanishes
+# after this shell on a non-root reinstall. Best-effort either way.
 _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
@@ -2090,13 +2087,10 @@ _maybe_bootstrap_rocm_wsl() {
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
-        # rocminfo sees the GPU -- but possibly ONLY because the line above
-        # (_ensure_rocm_probe_env) put a transient HSA/PATH env on THIS process.
-        # That env vanishes when the installer exits, so future login shells
-        # (Studio, llama.cpp) would still see no GPU. Persist the drop-in before
-        # returning so they inherit it. Without this, every reinstall over an
-        # existing /opt/rocm (the common case -- uninstall keeps shared ROCm but
-        # removes the drop-in) leaves the GPU invisible to Studio at runtime.
+        # rocminfo may work only via the transient env _ensure_rocm_probe_env
+        # just set, which dies with the installer. Persist the drop-in so login
+        # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
+        # existing /opt/rocm (uninstall keeps ROCm but drops it) loses the GPU.
         _persist_rocm_wsl_dropin
         return 0
     fi
