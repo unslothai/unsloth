@@ -145,6 +145,7 @@ export function ModelSection() {
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const localModelManagementRef = useRef<HTMLDivElement>(null);
 
   function handleModelSelect(id: string | null) {
     selectingRef.current = true;
@@ -416,7 +417,16 @@ export function ModelSection() {
                       : "./models/my-model"
                   }
                   className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
-                  onBlur={() => applyLocalModel(localModelInput)}
+                  onBlur={(event) => {
+                    const nextTarget = event.relatedTarget;
+                    if (
+                      nextTarget instanceof Node &&
+                      localModelManagementRef.current?.contains(nextTarget)
+                    ) {
+                      return;
+                    }
+                    applyLocalModel(localModelInput);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
                     event.preventDefault();
@@ -442,182 +452,184 @@ export function ModelSection() {
                   ) : (
                     <ComboboxEmpty>{t("studio.model.noLocalModelsFound")}</ComboboxEmpty>
                   )}
-                  <div className="flex items-center gap-1 px-2.5 py-1.5">
-                    <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      <HugeiconsIcon icon={Folder02Icon} className="size-3" />
-                      {t("studio.model.customFolders")}
-                    </span>
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        aria-label={
-                          showFolderInput
-                            ? "Cancel adding folder"
-                            : "Add scan folder by path"
-                        }
-                        title={
-                          showFolderInput ? "Cancel" : "Add by typing a path"
-                        }
-                        onClick={() => {
-                          setShowFolderInput((open) => {
-                            if (open) {
-                              setFolderInput("");
-                              setFolderError(null);
-                            }
-                            return !open;
-                          });
-                        }}
-                        className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={showFolderInput ? Cancel01Icon : Add01Icon}
-                          className="size-3"
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Browse for a folder on the server"
-                        title="Browse folders on the server"
-                        onClick={() => setShowFolderBrowser(true)}
-                        className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
-                      >
-                        <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
-                      </button>
-                    </div>
-                    <div className="ml-auto">
-                      <button
-                        type="button"
-                        aria-label={
-                          customFoldersCollapsed
-                            ? "Expand custom folders"
-                            : "Collapse custom folders"
-                        }
-                        title={customFoldersCollapsed ? "Expand" : "Collapse"}
-                        onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                        className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
-                      >
-                        {customFoldersCollapsed ? (
-                          <ChevronRightIcon className="size-3" />
-                        ) : (
-                          <ChevronDownIcon className="size-3" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {!customFoldersCollapsed &&
-                    scanFolders.map((folder) => (
-                      <div
-                        key={folder.id}
-                        className="group flex items-center gap-1.5 px-2.5 py-0.5"
-                      >
-                        <HugeiconsIcon
-                          icon={Folder02Icon}
-                          className="size-3 shrink-0 text-muted-foreground/40"
-                        />
-                        <span
-                          className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
-                          title={folder.path}
-                        >
-                          {folder.path}
-                        </span>
+                  <div ref={localModelManagementRef}>
+                    <div className="flex items-center gap-1 px-2.5 py-1.5">
+                      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        <HugeiconsIcon icon={Folder02Icon} className="size-3" />
+                        {t("studio.model.customFolders")}
+                      </span>
+                      <div className="flex items-center gap-0.5">
                         <button
                           type="button"
-                          onClick={() => handleRemoveFolder(folder.id)}
-                          aria-label={`Remove folder ${folder.path}`}
-                          className="shrink-0 rounded p-1 text-background/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive dark:text-foreground/70"
-                        >
-                          <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
-                        </button>
-                      </div>
-                    ))}
-
-                  {!customFoldersCollapsed && (() => {
-                    const registered = new Set(
-                      scanFolders.map((folder) => folder.path),
-                    );
-                    const unregistered = recommendedFolders.filter(
-                      (path) => !registered.has(path),
-                    );
-                    if (unregistered.length === 0) return null;
-                    return (
-                      <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
-                        {unregistered.map((path) => (
-                          <button
-                            key={path}
-                            type="button"
-                            onClick={() => void handleAddFolder(path)}
-                            disabled={folderLoading}
-                            title={`Add ${path}`}
-                            className="rounded-full border border-dashed border-background/20 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-background/40 hover:bg-background/10 hover:text-background disabled:opacity-40 dark:hover:border-foreground/30 dark:hover:bg-accent dark:hover:text-foreground"
-                          >
-                            <span className="text-[11px] font-semibold">+</span>{" "}
-                            {path.length > 30 ? `...${path.slice(-27)}` : path}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
-
-                  {!customFoldersCollapsed && showFolderInput && (
-                    <div className="px-2.5 pb-1 pt-0.5">
-                      <div className="flex items-center gap-1">
-                        <HugeiconsIcon
-                          icon={Folder02Icon}
-                          className="size-3 shrink-0 text-muted-foreground/40"
-                        />
-                        <input
-                          value={folderInput}
-                          onChange={(event) => {
-                            setFolderInput(event.target.value);
-                            setFolderError(null);
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
-                              void handleAddFolder();
-                            }
-                            if (event.key === "Escape") {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setShowFolderInput(false);
-                              setFolderInput("");
-                              setFolderError(null);
-                            }
-                          }}
-                          placeholder="/path/to/models"
-                          className="h-6 min-w-0 flex-1 rounded border border-background/20 bg-transparent px-1.5 font-mono text-[10px] text-background outline-none placeholder:text-muted-foreground/40 focus:border-background/40 dark:border-border/50 dark:focus:border-foreground/20"
-                          disabled={folderLoading}
-                          autoFocus={true}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowFolderBrowser(true)}
-                          disabled={folderLoading}
-                          aria-label="Browse for folder"
-                          title="Browse folders on the server"
-                          className="flex h-6 shrink-0 items-center justify-center rounded border border-background/20 px-1.5 text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent dark:hover:text-foreground"
-                        >
-                          <HugeiconsIcon icon={Search01Icon} className="size-3" />
-                        </button>
-                        <button
-                          type="button"
+                          aria-label={
+                            showFolderInput
+                              ? "Cancel adding folder"
+                              : "Add scan folder by path"
+                          }
+                          title={
+                            showFolderInput ? "Cancel" : "Add by typing a path"
+                          }
                           onClick={() => {
-                            void handleAddFolder();
+                            setShowFolderInput((open) => {
+                              if (open) {
+                                setFolderInput("");
+                                setFolderError(null);
+                              }
+                              return !open;
+                            });
                           }}
-                          disabled={folderLoading || !folderInput.trim()}
-                          className="h-6 shrink-0 rounded border border-background/20 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent"
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
                         >
-                          Add
+                          <HugeiconsIcon
+                            icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                            className="size-3"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Browse for a folder on the server"
+                          title="Browse folders on the server"
+                          onClick={() => setShowFolderBrowser(true)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
+                        >
+                          <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
                         </button>
                       </div>
-                      {folderError && (
-                        <p className="px-0.5 pt-0.5 text-[10px] text-destructive">
-                          {folderError}
-                        </p>
-                      )}
+                      <div className="ml-auto">
+                        <button
+                          type="button"
+                          aria-label={
+                            customFoldersCollapsed
+                              ? "Expand custom folders"
+                              : "Collapse custom folders"
+                          }
+                          title={customFoldersCollapsed ? "Expand" : "Collapse"}
+                          onClick={() => setCustomFoldersCollapsed((v) => !v)}
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
+                        >
+                          {customFoldersCollapsed ? (
+                            <ChevronRightIcon className="size-3" />
+                          ) : (
+                            <ChevronDownIcon className="size-3" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                  )}
+
+                    {!customFoldersCollapsed &&
+                      scanFolders.map((folder) => (
+                        <div
+                          key={folder.id}
+                          className="group flex items-center gap-1.5 px-2.5 py-0.5"
+                        >
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            className="size-3 shrink-0 text-muted-foreground/40"
+                          />
+                          <span
+                            className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
+                            title={folder.path}
+                          >
+                            {folder.path}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFolder(folder.id)}
+                            aria-label={`Remove folder ${folder.path}`}
+                            className="shrink-0 rounded p-1 text-background/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive dark:text-foreground/70"
+                          >
+                            <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                          </button>
+                        </div>
+                      ))}
+
+                    {!customFoldersCollapsed && (() => {
+                      const registered = new Set(
+                        scanFolders.map((folder) => folder.path),
+                      );
+                      const unregistered = recommendedFolders.filter(
+                        (path) => !registered.has(path),
+                      );
+                      if (unregistered.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
+                          {unregistered.map((path) => (
+                            <button
+                              key={path}
+                              type="button"
+                              onClick={() => void handleAddFolder(path)}
+                              disabled={folderLoading}
+                              title={`Add ${path}`}
+                              className="rounded-full border border-dashed border-background/20 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-background/40 hover:bg-background/10 hover:text-background disabled:opacity-40 dark:hover:border-foreground/30 dark:hover:bg-accent dark:hover:text-foreground"
+                            >
+                              <span className="text-[11px] font-semibold">+</span>{" "}
+                              {path.length > 30 ? `...${path.slice(-27)}` : path}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {!customFoldersCollapsed && showFolderInput && (
+                      <div className="px-2.5 pb-1 pt-0.5">
+                        <div className="flex items-center gap-1">
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            className="size-3 shrink-0 text-muted-foreground/40"
+                          />
+                          <input
+                            value={folderInput}
+                            onChange={(event) => {
+                              setFolderInput(event.target.value);
+                              setFolderError(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void handleAddFolder();
+                              }
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setShowFolderInput(false);
+                                setFolderInput("");
+                                setFolderError(null);
+                              }
+                            }}
+                            placeholder="/path/to/models"
+                            className="h-6 min-w-0 flex-1 rounded border border-background/20 bg-transparent px-1.5 font-mono text-[10px] text-background outline-none placeholder:text-muted-foreground/40 focus:border-background/40 dark:border-border/50 dark:focus:border-foreground/20"
+                            disabled={folderLoading}
+                            autoFocus={true}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowFolderBrowser(true)}
+                            disabled={folderLoading}
+                            aria-label="Browse for folder"
+                            title="Browse folders on the server"
+                            className="flex h-6 shrink-0 items-center justify-center rounded border border-background/20 px-1.5 text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent dark:hover:text-foreground"
+                          >
+                            <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleAddFolder();
+                            }}
+                            disabled={folderLoading || !folderInput.trim()}
+                            className="h-6 shrink-0 rounded border border-background/20 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent"
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {folderError && (
+                          <p className="px-0.5 pt-0.5 text-[10px] text-destructive">
+                            {folderError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   <ComboboxList className="p-1">
                     {(id: string) => {
