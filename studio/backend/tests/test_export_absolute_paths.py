@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import importlib.machinery
 import importlib.util
 import sys
 import types
@@ -223,7 +224,25 @@ def _install_export_backend_stubs(monkeypatch):
     unsloth.FastLanguageModel = object
     unsloth.FastVisionModel = object
     unsloth._IS_MLX = True
+    unsloth.__spec__ = importlib.machinery.ModuleSpec("unsloth", loader = None)
     monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+
+    unsloth_zoo = types.ModuleType("unsloth_zoo")
+    unsloth_zoo.__path__ = []
+    unsloth_zoo.__spec__ = importlib.machinery.ModuleSpec(
+        "unsloth_zoo",
+        loader = None,
+        is_package = True,
+    )
+    llama_cpp = types.ModuleType("unsloth_zoo.llama_cpp")
+    llama_cpp.LLAMA_CPP_DEFAULT_DIR = str(Path("/tmp/llama.cpp"))
+    llama_cpp._resolve_local_convert_script = lambda *args, **kwargs: None
+    llama_cpp.__spec__ = importlib.machinery.ModuleSpec(
+        "unsloth_zoo.llama_cpp",
+        loader = None,
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", unsloth_zoo)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", llama_cpp)
 
     huggingface_hub = types.ModuleType("huggingface_hub")
     huggingface_hub.HfApi = object
