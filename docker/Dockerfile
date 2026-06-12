@@ -400,6 +400,7 @@ FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
 # TARGETPLATFORM at this FROM line; no conditional needed.
 ARG TARGETARCH
 ARG PYTHON_VERSION
+ARG CUDA_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -425,14 +426,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ninja-build: flashinfer's cpp_ext JIT shells out to ninja; subprocesses
 # (e.g. `vllm serve` launched by unsloth.dataprep) do not always inherit the
 # venv bin on PATH, so the pip ninja alone is not reachable there.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# cuda-nvcc + cudart-dev: flash-linear-attention's TileLang backend (Qwen3.5
+# gated-delta-rule models in Studio) JIT-compiles CUDA kernels at runtime via
+# nvcc; the -base image ships only runtime libs, so without the compiler any
+# TileLang-allowlisted model dies with "[Errno 2] No such file or directory:
+# '/usr/local/cuda/bin/nvcc'" on its first backward pass.
+RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
+    && apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl wget git libgomp1 \
         gcc g++ zstd ffmpeg ninja-build \
+        "cuda-nvcc-${CUDA_PKG}" "cuda-cudart-dev-${CUDA_PKG}" \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
+    && test -x /usr/local/cuda/bin/nvcc \
     && rm -rf /var/lib/apt/lists/*
 # Why gcc + g++ + python3.12-dev in the RUNTIME stage:
 #   Triton's nvidia backend lazily compiles a small C extension (CudaUtils) on
