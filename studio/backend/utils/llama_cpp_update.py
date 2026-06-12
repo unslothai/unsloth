@@ -286,9 +286,10 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
-    update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
-    )
+    # `behind` compares the full release identity with a base-build guard, so a
+    # lagging /releases/latest or a mix-tagged latest can't show a false update
+    # (see llama_cpp_freshness.is_behind).
+    update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
     with _job_lock:
         job = dict(_job)
@@ -405,9 +406,17 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             tail = "".join(tail_lines).strip()[-1500:]
             raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
-        # status read reflects the freshly installed tag.
-        reset_caches()
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
+        # on-disk freshness caches, then re-prime the 24h disk cache with the
+        # true newest, so the banner can't linger on a stale same-base value
+        # after the swap. drop_disk matters when the refresh below can't reach
+        # GitHub: without it, latest_published_release would replay the stale
+        # disk value; with it, latest reads as None and the banner fails open.
+        reset_caches(drop_disk = True)
+        try:
+            latest_published_release(repo, force_refresh = True)
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
 
@@ -456,7 +465,24 @@ def start_update() -> dict:
             "job": get_update_status()["job"],
         }
 
+    # A job already in flight wins over any freshness re-check below (and skips
+    # its network call). The final lock block re-checks to close the TOCTOU.
+    with _job_lock:
+        if _job["state"] == _JOB_RUNNING:
+            return {"started": False, "reason": "already_running", "job": dict(_job)}
+
     if marker:
+        # Mirror the detection guard: a direct POST or a stale banner must not
+        # start an install when the latest is not actually newer (force a fresh
+        # check so a stale 24h cache can't wrongly block a real update either).
+        status = get_update_status(force_refresh = True)
+        if not status.get("update_available"):
+            return {
+                "started": False,
+                "reason": "up_to_date",
+                "message": "The installed llama.cpp build is already at the latest prebuilt.",
+                "job": status["job"],
+            }
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")

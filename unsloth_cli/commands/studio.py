@@ -184,6 +184,47 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
+_RUN_MODULE = None
+
+
+def _load_run_module():
+    """Import studio.backend.run without relying on package resolution.
+
+    `studio update` can leave a partial ``site-packages/studio/backend/``
+    tree (plugin build artefacts only). That shadowed tree wins over an
+    editable install and breaks ``from studio.backend.run import ...``.
+    Loading by file path sidesteps the conflict.
+    """
+    global _RUN_MODULE
+    if _RUN_MODULE is not None:
+        return _RUN_MODULE
+
+    run_py = _find_run_py()
+    if run_py is None:
+        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
+
+    loaded = sys.modules.get("studio.backend.run")
+    if loaded is not None:
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
+        if loaded_path == run_py.resolve():
+            _RUN_MODULE = loaded
+            return _RUN_MODULE
+
+    spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load studio backend from {run_py}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["studio.backend.run"] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("studio.backend.run", None)
+        raise
+    _RUN_MODULE = module
+    return _RUN_MODULE
+
+
 def _find_setup_script() -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
@@ -329,9 +370,11 @@ def _load_backend_auth_storage():
     auth_dir = backend_dir / "auth"
     storage_py = auth_dir / "storage.py"
     loaded = sys.modules.get("auth.storage")
-    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
-    if loaded is not None and loaded_path == storage_py:
-        return loaded
+    if loaded is not None:
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
+        if loaded_path == storage_py.resolve():
+            return loaded
 
     package = sys.modules.get("auth")
     package_paths = [Path(path).resolve() for path in getattr(package, "__path__", [])]
@@ -534,6 +577,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
@@ -549,6 +593,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if tensor_parallel:
+        payload["tensor_parallel"] = True
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
 
@@ -706,11 +752,11 @@ def studio_default(
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    from studio.backend.run import run_server
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     if not silent:
-        from studio.backend.run import _resolve_external_ip
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_kwargs = dict(
@@ -725,20 +771,17 @@ def studio_default(
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
 
-    from studio.backend.run import _shutdown_event
-
     try:
-        if _shutdown_event is not None:
+        if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C-level on Linux
             # and swallows SIGINT; loop with a 1s timeout instead.
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        from studio.backend.run import _graceful_shutdown, _server
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
@@ -900,6 +943,15 @@ def run(
         "--cloudflare/--no-cloudflare",
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
     ),
+    tensor_parallel: bool = typer.Option(
+        False,
+        "--tensor-parallel/--no-tensor-parallel",
+        help = (
+            "Split a GGUF across GPUs by tensor (--split-mode tensor) instead of "
+            "by layer. Multi-GPU only (no effect on one GPU); dense models gain "
+            "decode speed, MoE usually don't."
+        ),
+    ),
 ):
     """Start Studio, load a model, print an API key -- one-liner server.
 
@@ -916,6 +968,7 @@ def run(
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
+        unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
@@ -1021,6 +1074,7 @@ def run(
         args.extend(["--parallel", str(parallel)])
         # Forward the explicit polarity (same rationale as --load-in-4bit above).
         args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+        args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
@@ -1036,7 +1090,8 @@ def run(
             os.execvp(str(studio_bin), args)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
-    from studio.backend.run import run_server, _resolve_external_ip
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     run_kwargs = dict(
         host = host,
@@ -1085,6 +1140,7 @@ def run(
                 gguf_variant = gguf_variant,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
+                tensor_parallel = tensor_parallel,
                 llama_extra_args = extra_llama_args,
             )
         except RuntimeError as exc:
@@ -1099,7 +1155,7 @@ def run(
     context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (0.0.0.0 only).
@@ -1178,17 +1234,15 @@ def run(
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # 7. Wait for Ctrl+C.
-    from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
-
     try:
-        if _shutdown_event is not None:
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+        if run_mod._shutdown_event is not None:
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
