@@ -35,12 +35,12 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _remove_stale_upload(stored_path: str | None, *, keep_path: str) -> None:
+def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> None:
     if not stored_path:
         return
     try:
         target = os.path.realpath(stored_path)
-        if target == os.path.realpath(keep_path):
+        if keep_path is not None and target == os.path.realpath(keep_path):
             return
         from utils.paths import rag_uploads_root
 
@@ -50,8 +50,8 @@ def _remove_stale_upload(stored_path: str | None, *, keep_path: str) -> None:
             and os.path.commonpath([uploads, target]) == uploads
         ):
             os.remove(target)
-    except Exception:  # noqa: BLE001 - stale cleanup must not block a retry.
-        logger.warning("failed to remove stale RAG upload %s", stored_path, exc_info = True)
+    except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
 def _emit(job_id: str, event: dict) -> None:
@@ -187,6 +187,7 @@ def start_ingestion(
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
             job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+            _remove_upload(stored_path)
             with _jobs_lock:
                 _jobs[job_id] = queue.Queue()
             _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
@@ -194,7 +195,7 @@ def start_ingestion(
             return existing, job_id
         for failed in store.failed_documents_by_hash(conn, scope, sha):
             store.delete_document(conn, failed["id"])
-            _remove_stale_upload(failed.get("stored_path"), keep_path = stored_path)
+            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,

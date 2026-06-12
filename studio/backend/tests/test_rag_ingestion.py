@@ -87,6 +87,42 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
+def test_ingestion_dedupe_removes_duplicate_upload(rag_home, stub_embeddings):
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    uploads = ensure_dir(rag_uploads_root())
+    first_path = uploads / "doc.txt"
+    duplicate_path = uploads / "copy.txt"
+    first_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    duplicate_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    scope = store.project_scope("P1")
+
+    doc_id, job_id = ingestion.start_ingestion(
+        scope,
+        None,
+        None,
+        "doc.txt",
+        str(first_path),
+        project_id = "P1",
+    )
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    doc_id2, job_id2 = ingestion.start_ingestion(
+        scope,
+        None,
+        None,
+        "copy.txt",
+        str(duplicate_path),
+        project_id = "P1",
+    )
+    events = _drain(job_id2)
+    assert doc_id2 == doc_id
+    assert any(e.get("deduped") for e in events)
+    assert first_path.exists()
+    assert not duplicate_path.exists()
+
+
 def test_ingestion_retry_replaces_failed_hash(rag_home, stub_embeddings):
     from utils.paths import ensure_dir, rag_uploads_root
 
