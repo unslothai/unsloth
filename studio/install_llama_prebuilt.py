@@ -3835,10 +3835,7 @@ def published_rocm_choice_for_host(
     return None
 
 
-def resolve_upstream_asset_choice(
-    host: HostInfo,
-    llama_tag: str,
-) -> AssetChoice:
+def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
         # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
@@ -3980,10 +3977,7 @@ def resolve_upstream_asset_choice(
     raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
 
 
-def resolve_asset_choice(
-    host: HostInfo,
-    llama_tag: str,
-) -> AssetChoice:
+def resolve_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
         raise PrebuiltFallback(
             "Linux CUDA installs require a compatible published bundle; upstream fallback is not available"
@@ -5824,9 +5818,7 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
-def _linux_published_attempts(
-    host: HostInfo, bundle: PublishedReleaseBundle
-) -> list[AssetChoice]:
+def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA (with a CPU fallback), per-gfx ROCm, or CPU. Same selection the
     upstream filename path used, just sourced from the manifest instead of
