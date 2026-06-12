@@ -370,9 +370,11 @@ def _load_backend_auth_storage():
     auth_dir = backend_dir / "auth"
     storage_py = auth_dir / "storage.py"
     loaded = sys.modules.get("auth.storage")
-    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
-    if loaded is not None and loaded_path == storage_py:
-        return loaded
+    if loaded is not None:
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
+        if loaded_path == storage_py.resolve():
+            return loaded
 
     package = sys.modules.get("auth")
     package_paths = [Path(path).resolve() for path in getattr(package, "__path__", [])]
