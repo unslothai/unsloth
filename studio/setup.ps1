@@ -2414,6 +2414,9 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
 }
 
 # Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
+# Renaming a *running* exe is allowed on Windows -- that is the whole trick. A transient
+# sharing violation (Defender/AV scan, search indexer, Explorer preview, or a second
+# unsloth process) can still block the first attempt, so retry with a short backoff.
 $VenvScriptsDir = Join-Path $VenvDir "Scripts"
 $RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
 if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
@@ -2421,10 +2424,19 @@ if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
     if (Test-Path -LiteralPath $StaleUnslothExe) {
         Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
     }
-    try {
-        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
-    } catch {
-        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
+    $renameErr = $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
+            $renameErr = $null
+            break
+        } catch {
+            $renameErr = $_.Exception.Message
+            if ($attempt -lt 5) { Start-Sleep -Milliseconds 400 }
+        }
+    }
+    if ($renameErr) {
+        substep "could not rename unsloth.exe after retries ($renameErr); pip may fail with WinError 32" "Yellow"
     }
 }
 

@@ -1610,13 +1610,22 @@ def _release_self_exe_lock_windows() -> None:
     if not exe.exists():
         return
     stale = exe.with_suffix(".exe.deleteme")
-    try:
-        # os.replace is atomic-overwrite on Windows; os.rename would raise
-        # FileExistsError if a prior aborted update left a .deleteme behind.
-        os.replace(exe, stale)
-    except OSError as e:
-        # Not fatal; setup.ps1 retries from a sibling process.
-        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+    # Renaming a running exe is allowed on Windows, but a transient sharing
+    # violation (Defender/AV scan, search indexer, a second unsloth process)
+    # can block the first attempt -- retry briefly before giving up.
+    last_err: OSError | None = None
+    for attempt in range(5):
+        try:
+            # os.replace is atomic-overwrite on Windows; os.rename would raise
+            # FileExistsError if a prior aborted update left a .deleteme behind.
+            os.replace(exe, stale)
+            return
+        except OSError as e:
+            last_err = e
+            if attempt < 4:
+                time.sleep(0.4)
+    # Not fatal; setup.ps1 retries from a sibling process.
+    print(f"[update] could not rename {exe.name} -> {stale.name} after retries: {last_err}")
 
 
 def _restore_self_exe_lock_windows() -> None:
