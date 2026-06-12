@@ -400,6 +400,7 @@ function Find-VsBuildTools {
     if (Test-Path $vsw) {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        
         if ($info -and $path) {
             $y = $info.Trim()
             $n = $map[$y]
@@ -408,7 +409,6 @@ function Find-VsBuildTools {
             }
         }
     }
-
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
@@ -2804,6 +2804,12 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
             $restoreNativeErrorPreference = $true
+        }
+        if ([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "*systemprofile*") {
+            $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+            if ([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "*systemprofile*") {
+                $env:LOCALAPPDATA = "$env:USERPROFILE\AppData\Local"
+            }
         }
         try {
             if ($script:UnslothVerbose) {
