@@ -13,6 +13,7 @@ import importlib.util
 import io
 import sys
 import tarfile
+import types
 from pathlib import Path
 
 import pytest
@@ -423,3 +424,56 @@ def test_run_server_gates_tunnel_on_wildcard():
     source = _RUN_PY.read_text()
     assert "_cloudflare_enabled" in source
     assert 'host == "0.0.0.0"' in source
+
+
+def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable):
+    """Exec the real _print_cloudflare_line source in isolation (run.py has heavy
+    deps), with the two module globals injected and startup_banner stubbed."""
+    src = _RUN_PY.read_text()
+    tree = ast.parse(src)
+    func_src = next(
+        ast.get_source_segment(src, n)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_print_cloudflare_line"
+    )
+    stub = types.ModuleType("startup_banner")
+    stub.stdout_supports_color = lambda: False
+    monkeypatch.setitem(sys.modules, "startup_banner", stub)
+    captured: list[str] = []
+    ns = {
+        "_cloudflare_url": cloudflare_url,
+        "_public_reachable": public_reachable,
+        "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
+    }
+    exec(compile(func_src, "<print_cloudflare_line>", "exec"), ns)
+    ns["_print_cloudflare_line"]()
+    return "\n".join(captured)
+
+
+def test_cloudflare_line_reworded_when_public_unreachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = False
+    )
+    assert "Use the secure link access via Cloudflare instead: https://x.trycloudflare.com" in out
+
+
+def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = True
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Use the secure link" not in out
+
+
+def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
+    # Probe did not run / could not decide -> keep the existing wording.
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = None
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Use the secure link" not in out
+
+
+def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
+    out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
+    assert out == ""

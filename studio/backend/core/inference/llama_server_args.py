@@ -260,6 +260,28 @@ def resolve_cache_type_kv(
     return override if override is not None else fallback_cache_type_kv
 
 
+_MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-auto"})
+_MMPROJ_ENABLE_FLAGS: frozenset[str] = frozenset({"--mmproj-auto"})
+
+
+def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
+    """True when pass-through args opt out of vision mmproj loading.
+
+    llama-server parses --mmproj-auto / --no-mmproj / --no-mmproj-auto as one
+    boolean with last-wins semantics; mirror that here.
+    """
+    if not args:
+        return False
+    disabled = False
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_DISABLE_FLAGS:
+            disabled = True
+        elif flag in _MMPROJ_ENABLE_FLAGS:
+            disabled = False
+    return disabled
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,
