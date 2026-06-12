@@ -109,8 +109,10 @@ RUN set -eux \
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "from importlib.metadata import version; v = version('torch'); assert v.endswith('+${TORCH_FAMILY}'), 'Studio venv torch ' + v + ' does not match ${TORCH_FAMILY}'; print('Studio venv torch', v)" \
     # setup.sh may relink the root llama-quantize into build/bin; prove the
     # relinked quantizer still resolves its libraries, or GGUF export breaks
-    # at runtime with "No working quantizer found".
- && "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --version \
+    # at runtime with "No working quantizer found". Content check, not rc:
+    # llama-quantize exits nonzero on --help, while a loader failure prints
+    # "error while loading shared libraries" and no usage text.
+ && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache \
  && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
