@@ -32,14 +32,19 @@ if resolve_lemonade_rocm_choice is None or _LEMONADE_GFX_FAMILIES is None:
 
 @pytest.fixture(autouse = True)
 def _clear_lemonade_release_cache():
-    """Prevent cross-test pollution of the lemonade release lru_cache when
-    future tests vary the fetch_json mock return value."""
+    """Prevent cross-test pollution of the lemonade release lru_cache and
+    selection-log dedup set when tests vary the fetch_json mock return value."""
     _cache = getattr(_mod, "_fetch_lemonade_release_cached", None)
+    _logged: set | None = getattr(_mod, "_lemonade_selection_logged", None)
     if _cache is not None and hasattr(_cache, "cache_clear"):
         _cache.cache_clear()
+    if _logged is not None:
+        _logged.clear()
     yield
     if _cache is not None and hasattr(_cache, "cache_clear"):
         _cache.cache_clear()
+    if _logged is not None:
+        _logged.clear()
 
 
 _STUB_TAG = "b1262"

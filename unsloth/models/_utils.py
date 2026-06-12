@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.2"
+__version__ = "2026.6.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1287,6 +1287,18 @@ if is_openai_available():
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
+
+def _package_available(pkg_name: str) -> bool:
+    # transformers >= 5.x makes `_is_package_available` always return a
+    # `(exists, version)` tuple, which is truthy even when the package is
+    # absent; older versions returned a plain bool. Normalise to a bool so
+    # callers don't take "package present" branches for missing packages.
+    result = _is_package_available(pkg_name)
+    if isinstance(result, tuple):
+        return bool(result[0])
+    return bool(result)
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -1297,7 +1309,7 @@ if DEVICE_TYPE == "cuda":
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
-        if _is_package_available("flash_attn"):
+        if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
                 try:
@@ -1342,7 +1354,7 @@ if DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
+    if _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
             try:
@@ -2004,7 +2016,7 @@ def is_bfloat16_supported():
 
 
 def is_vLLM_available():
-    return _is_package_available("vllm")
+    return _package_available("vllm")
 
 
 # Patches models to add RoPE Scaling
