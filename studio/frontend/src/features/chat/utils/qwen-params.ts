@@ -14,7 +14,10 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
-  if (!checkpoint.includes("qwen3")) {
+  if (
+    !checkpoint.includes("qwen3") ||
+    store.activePresetSource !== "builtin-default"
+  ) {
     return;
   }
   const needsPresencePenalty =

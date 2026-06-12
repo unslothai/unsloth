@@ -72,7 +72,7 @@ function MenubarContent({
   className,
   align = "start",
   alignOffset = -4,
-  sideOffset = 8,
+  sideOffset = 0,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
   return (
@@ -242,7 +242,7 @@ function MenubarSubTrigger({
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
-        className="ml-auto size-4"
+        className="ml-auto size-[12px]"
       />
     </MenubarPrimitive.SubTrigger>
   );

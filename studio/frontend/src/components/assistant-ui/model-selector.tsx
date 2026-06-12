@@ -17,7 +17,7 @@ import {
   CloudIcon,
   DashboardSquare01Icon,
   FolderSearchIcon,
-  Logout01Icon,
+  RemoveCircleIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -146,14 +146,14 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "flex min-w-0 items-center gap-2 transition-colors",
+          "unsloth-model-selector-trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "muted" && "rounded-[10px] bg-muted hover:bg-muted/80",
-          size === "sm" && "h-8 px-3 text-xs",
-          size === "default" && "h-9 px-3.5 text-sm",
-          size === "lg" && "h-10 px-4 text-sm",
+          "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
+          size === "sm" && "h-8 px-2.5 text-xs",
+          size === "default" && "h-9 px-3 text-sm",
+          size === "lg" && "h-10 px-3.5 text-sm",
           className,
         )}
       >
@@ -189,7 +189,7 @@ function ModelSelectorTrigger({
           <HugeiconsIcon
             icon={ArrowDown01Icon}
             strokeWidth={1.75}
-            className="relative top-0.5 size-3.5 text-muted-foreground"
+            className="size-3.5 text-muted-foreground"
           />
         </span>
       </button>
@@ -268,11 +268,8 @@ function ModelSelectorContent({
     const isPickerSearchInput = target.matches(
       "[data-model-picker-search-input]",
     );
-    if (
-      target.closest('[role="listbox"]') ||
-      (!isPickerSearchInput &&
-        target.closest("input, textarea, [contenteditable='true']"))
-    ) {
+    const isTabTrigger = Boolean(target.closest('[role="tab"]'));
+    if (!isPickerSearchInput && !isTabTrigger) {
       return;
     }
 
@@ -284,10 +281,11 @@ function ModelSelectorContent({
   return (
     <PopoverContent
       align="start"
+      alignOffset={10}
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
         className,
       )}
     >
@@ -296,7 +294,7 @@ function ModelSelectorContent({
           <Tabs defaultValue={chatOnlyTabsDefault} className="w-full">
             <TabsList className="mb-2 w-full">
               <TabsTrigger value="hub">Hub models</TabsTrigger>
-              <TabsTrigger value="external">External</TabsTrigger>
+              <TabsTrigger value="external">Connected</TabsTrigger>
             </TabsList>
             <TabsContent value="hub" className="m-0">
               <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
@@ -317,7 +315,7 @@ function ModelSelectorContent({
           <TabsList className="mb-2 w-full">
             <TabsTrigger value="hub">Hub models</TabsTrigger>
             <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-            {hasExternal ? <TabsTrigger value="external">External</TabsTrigger> : null}
+            {hasExternal ? <TabsTrigger value="external">Connected</TabsTrigger> : null}
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
@@ -347,7 +345,7 @@ function ModelSelectorContent({
       )}
 
       {onPickLocalModel ? (
-        <div className="mt-2 border-t border-border/70 pt-2">
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
           <button
             type="button"
             onClick={onPickLocalModel}
@@ -360,14 +358,14 @@ function ModelSelectorContent({
         </div>
       ) : null}
       {hasSelection && onEject ? (
-        <div className="mt-2 border-t border-border/70 pt-2">
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
           <button
             type="button"
             onClick={onEject}
             className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
             title="Eject model"
           >
-            <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
+            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
             Eject loaded model
           </button>
         </div>
@@ -571,15 +569,22 @@ function ExternalModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search external models"
+          placeholder="Search models"
           className="h-9 pl-8"
         />
       </div>
       <div className="max-h-64 overflow-y-auto">
         <div className="space-y-2 p-1">
           {grouped.length === 0 ? (
-            <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No external models configured.
+            <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+              {externalModels.length === 0 ? (
+                <>
+                  No models from your connections. Set up in Settings →
+                  Connections.
+                </>
+              ) : (
+                "No models match your search."
+              )}
             </div>
           ) : (
             grouped.map((group) => (

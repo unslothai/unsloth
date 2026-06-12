@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { GithubIcon, PlayCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { FieldLabel } from "../dialogs/shared/field-label";
+import { LocalRecipeModelSelector } from "../dialogs/models/local-recipe-model-selector";
 import { GithubRepoSeedForm } from "../dialogs/seed/seed-dialog";
+import { FieldLabel } from "../dialogs/shared/field-label";
 import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
 
 type GithubCrawlerEasyViewProps = {
@@ -44,6 +45,21 @@ export function GithubCrawlerEasyView({
       ) ?? null,
     [configs],
   );
+  const localProviderNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const config of Object.values(configs)) {
+      if (config.kind === "model_provider" && config.is_local === true) {
+        names.add(config.name);
+      }
+    }
+    return names;
+  }, [configs]);
+  const isModelLinkedToLocal = modelConfig
+    ? localProviderNames.has(modelConfig.provider)
+    : false;
+  const modelValue = modelConfig?.model ?? "";
+  const localModelValue =
+    modelValue.trim().toLowerCase() === "local" ? "" : modelValue;
 
   // Local buffer for the Rows input so the user can hold transient invalid
   // state (empty while backspacing, partial digits, etc.) without the parent
@@ -52,17 +68,40 @@ export function GithubCrawlerEasyView({
   // blur we clamp back to a sane default if the user left it empty.
   const [rowsText, setRowsText] = useState(String(rows));
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- keep the draft input in sync when the parent resets rows.
     setRowsText(String(rows));
   }, [rows]);
 
   const handleSeedUpdate = (patch: Partial<SeedConfig>): void => {
-    if (!seedConfig) return;
+    if (!seedConfig) {
+      return;
+    }
     updateConfig(seedConfig.id, patch);
   };
 
   const handleModelChange = (value: string): void => {
-    if (!modelConfig) return;
-    updateConfig(modelConfig.id, { model: value });
+    if (!modelConfig) {
+      return;
+    }
+    updateConfig(modelConfig.id, {
+      model: value,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gguf_variant: undefined,
+    });
+  };
+
+  const handleLocalModelChange = (
+    model: string,
+    variant?: string | null,
+  ): void => {
+    if (!modelConfig) {
+      return;
+    }
+    updateConfig(modelConfig.id, {
+      model,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gguf_variant: variant ?? undefined,
+    });
   };
 
   if (!seedConfig) {
@@ -96,9 +135,8 @@ export function GithubCrawlerEasyView({
           <h2 className="text-base font-semibold">GitHub Crawler</h2>
           <p className="text-xs text-muted-foreground">
             Crawl real GitHub issues and PRs and turn each thread into a{" "}
-            <code>{"{User, Assistant}"}</code> training pair.
-            Defaults use the server's <code>GH_TOKEN</code> env var and the
-            bundled local model.
+            <code>{"{User, Assistant}"}</code> training pair. Defaults use the
+            server's <code>GH_TOKEN</code> env var and the bundled local model.
           </p>
         </div>
       </div>
@@ -149,15 +187,28 @@ export function GithubCrawlerEasyView({
           <div className="grid gap-1.5">
             <FieldLabel
               label="Model"
-              hint="OpenAI-compatible model id. Local GGUFs run on the bundled llama-server."
+              hint={
+                isModelLinkedToLocal
+                  ? "Choose the local model this recipe should load."
+                  : "OpenAI-compatible model id."
+              }
             />
-            <Input
-              className="nodrag font-mono text-xs"
-              value={modelConfig?.model ?? ""}
-              onChange={(event) => handleModelChange(event.target.value)}
-              placeholder="unsloth/gemma-4-E2B-it-GGUF"
-              disabled={!modelConfig}
-            />
+            {isModelLinkedToLocal ? (
+              <LocalRecipeModelSelector
+                value={localModelValue}
+                ggufVariant={modelConfig?.gguf_variant}
+                onChange={handleLocalModelChange}
+                disabled={!modelConfig}
+              />
+            ) : (
+              <Input
+                className="nodrag font-mono text-xs"
+                value={modelValue}
+                onChange={(event) => handleModelChange(event.target.value)}
+                placeholder="unsloth/gemma-4-E2B-it-GGUF"
+                disabled={!modelConfig}
+              />
+            )}
           </div>
         </div>
       </section>

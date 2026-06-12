@@ -140,6 +140,12 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
+  // Treat 404 as success: another tab already deleted this provider, so pruning
+  // the stale cache is correct. Otherwise the caller throws and the user is stuck
+  // with an entry they cannot remove from the UI.
+  if (response.status === 404) {
+    return;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(parseErrorText(response.status, body));
@@ -191,6 +197,7 @@ export async function testProviderConnection(payload: {
   providerType: string;
   apiKey: string;
   baseUrl?: string | null;
+  modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/test", {
@@ -200,6 +207,7 @@ export async function testProviderConnection(payload: {
         provider_type: payload.providerType,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        model_id: payload.modelId ?? null,
       }),
     });
     return parseJsonOrThrow<ProviderTestResult>(response);

@@ -137,7 +137,7 @@ export function WindowTitlebar({
       const appWindow = await getAppWindow();
       setMaximized(await appWindow.isMaximized());
     } catch {
-      // If a window permission is not ready yet, keep the previous visual state.
+      // Window permission not ready yet: keep previous visual state.
     }
   }, [enabled]);
 
