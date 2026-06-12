@@ -239,9 +239,7 @@ def test_custom_provider_test_endpoint_skips_models_call(monkeypatch):
     from pathlib import Path
 
     module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
-    spec = importlib.util.spec_from_file_location(
-        "_providers_route_under_test", module_path
-    )
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
     assert spec is not None
     assert spec.loader is not None
     providers_route = importlib.util.module_from_spec(spec)
