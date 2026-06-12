@@ -1042,6 +1042,10 @@ class LlamaCppBackend:
 
     @property
     def supports_tools(self) -> bool:
+        # DiffusionGemma serves via the visual runner, whose live per-step canvas
+        # frames are dropped by the agentic tool loop; never route it through tools.
+        if self._is_diffusion:
+            return False
         return self._supports_tools
 
     @property
