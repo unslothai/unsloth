@@ -3,9 +3,8 @@
 
 """Web update status helpers for browser-served Unsloth Studio.
 
-This module is intentionally side-effect light: no network work happens at
-import time or from /api/health. The PyPI check is lazy, cached, and only used
-for normal PyPI-managed installs.
+Side-effect light: no network work at import time or from /api/health.
+The PyPI check is lazy, cached, and only for PyPI-managed installs.
 """
 
 from __future__ import annotations
@@ -66,18 +65,14 @@ def reset_update_status_cache() -> None:
 def detect_install_source() -> str:
     """Return a coarse install source without exposing local paths.
 
-    Sources are intentionally conservative. PEP 610 local/vcs metadata wins.
-    Legacy source installs are treated as local only when package files resolve
-    outside site-packages/dist-packages and under a Git checkout.
+    Conservative: PEP 610 local/vcs metadata wins. Legacy source
+    installs count as local only when package files resolve outside
+    site-packages/dist-packages and under a Git checkout.
     """
     try:
         dist = distribution(PACKAGE_NAME)
     except PackageNotFoundError:
-        return (
-            "local_repo"
-            if _path_has_git_parent(_repo_root_from_this_file())
-            else "unknown"
-        )
+        return "local_repo" if _path_has_git_parent(_repo_root_from_this_file()) else "unknown"
 
     try:
         direct_url = dist.read_text("direct_url.json")
@@ -146,9 +141,7 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
             current_version = current_version,
             latest_version = None,
             install_source = install_source,
-            reason = "invalid_current_version"
-            if current_version != "dev"
-            else "dev_build",
+            reason = "invalid_current_version" if current_version != "dev" else "dev_build",
         )
     latest_result = get_latest_pypi_version()
     if latest_result.latest_version is None:
@@ -216,9 +209,7 @@ def get_latest_pypi_version() -> LatestVersionResult:
             error = "Could not check PyPI update metadata.",
         )
 
-    ttl = (
-        PYPI_SUCCESS_TTL_SECONDS if result.latest_version else PYPI_FAILURE_TTL_SECONDS
-    )
+    ttl = PYPI_SUCCESS_TTL_SECONDS if result.latest_version else PYPI_FAILURE_TTL_SECONDS
     with _cache_condition:
         _latest_version_cache = _LatestVersionCacheEntry(
             result = result,
@@ -262,9 +253,7 @@ def _fetch_latest_pypi_version() -> LatestVersionResult:
             error = "Could not reach PyPI for update metadata.",
         )
 
-    latest = (
-        payload.get("info", {}).get("version") if isinstance(payload, dict) else None
-    )
+    latest = payload.get("info", {}).get("version") if isinstance(payload, dict) else None
     if not isinstance(latest, str) or not latest.strip():
         return LatestVersionResult(
             latest_version = None,
@@ -366,9 +355,4 @@ def _parse_current_version(current_version: str) -> Version | None:
 
 
 def _utc_now_iso() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond = 0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).replace(microsecond = 0).isoformat().replace("+00:00", "Z")
