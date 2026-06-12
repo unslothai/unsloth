@@ -465,9 +465,9 @@ def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
         monkeypatch.setattr(
             models_route,
             "_all_hf_cache_scans",
-            lambda s=scans: [SimpleNamespace(repos=[s[0]]), SimpleNamespace(repos=[s[1]])],
+            lambda s = scans: [SimpleNamespace(repos = [s[0]]), SimpleNamespace(repos = [s[1]])],
         )
-        result = asyncio.run(models_route.list_cached_gguf(current_subject="t"))
+        result = asyncio.run(models_route.list_cached_gguf(current_subject = "t"))
         assert len(result["cached"]) == 1
         assert result["cached"][0]["last_modified"] == 9_000.0
 
