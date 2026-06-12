@@ -51,8 +51,7 @@ class _FakeStreamingRequest:
 
 
 def make_extract_result(**overrides):
-    """A fake high-level extraction result (what _extract_document returns)
-    with sensible defaults; pass overrides per test."""
+    """Fake _extract_document result with sensible defaults; pass overrides per test."""
     fields = {
         "markdown": "# Doc\n",
         "page_count": 1,
@@ -74,18 +73,14 @@ def _make_app(
     detect_vlm = None,
     llama_backend = None,
 ):
-    """FastAPI test client with the document-extraction seams stubbed.
-
-    `detect_vlm` overrides the probe result (default: no model loaded);
-    `llama_backend` stubs get_llama_cpp_backend for GGUF caption-auth tests.
-    """
+    """FastAPI test client with the document-extraction seams stubbed. `detect_vlm`
+    overrides the probe (default: no model); `llama_backend` stubs the GGUF backend."""
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
     monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
-    # CI may lack the optional pdf/docx parsers, which would 501 before the
-    # behavioural checks (415/413/422/...) run. Report every format
-    # available; "parser missing" tests patch this back to False.
+    # CI may lack the optional pdf/docx parsers (501 before the behavioural
+    # checks run); report all formats available. Parser-missing tests patch back.
     monkeypatch.setattr(
         route,
         "_document_parser_support",
@@ -699,9 +694,8 @@ def test_extract_document_endpoint_maps_extraction_errors(
 ) -> None:
     """Each extractor failure maps to a stable HTTP status (and detail)."""
     if alias_attr is not None:
-        # The route catches its own alias of the extractor exception; re-bind it
-        # to the real class the fake raises (a no-op when the import succeeded,
-        # but keeps the status mapping pinned to the real exception type).
+        # Re-bind the route's exception alias to the class the fake raises; no-op
+        # when the import succeeded, but pins the mapping to the real type.
         monkeypatch.setattr(route, alias_attr, type(make_exc()))
 
     async def fake_extract(*_args, **_kwargs):

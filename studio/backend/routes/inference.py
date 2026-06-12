@@ -7495,8 +7495,7 @@ _DOC_EXTRACTION_HTTP_ERRORS = (
 
 
 def _doc_exc_to_status_detail(exc: BaseException) -> tuple[int, str]:
-    """Map an extraction failure to (HTTP status, detail). Shared by the JSON
-    and NDJSON paths so the two never drift."""
+    """Map an extraction failure to (status, detail); shared by the JSON and NDJSON paths."""
     if isinstance(exc, _DocumentExtractionUnavailable):
         return 501, str(exc)
     if isinstance(exc, _DocumentExtractionTimeout):
@@ -7524,8 +7523,7 @@ def _page_limit_detail(page_count: int) -> str:
 
 
 async def _drain_cancelled_extraction(cancel_event, extraction_task) -> None:
-    """On disconnect, signal cancel, give the worker 10s to unwind, then
-    force-cancel and raise so the caller's handler emits the 499."""
+    """Signal cancel, give the worker 10s to unwind, then force-cancel into the 499 path."""
     cancel_event.set()
     with suppress(
         _DocumentExtractionCancelled,

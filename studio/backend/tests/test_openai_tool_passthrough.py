@@ -551,8 +551,7 @@ def _png_data_url() -> str:
 
 class TestOpenAIPassthroughImageSafety:
     def test_standard_path_image_decode_uses_size_guard(self, monkeypatch):
-        """_decode_guarded_chat_image (standard Unsloth path) shares the
-        byte/pixel guards used by the GGUF and Anthropic image paths."""
+        """The standard-path decode helper shares the GGUF/Anthropic byte/pixel guards."""
         monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS", 8)
         with pytest.raises(HTTPException) as exc:
             route._decode_guarded_chat_image("A" * 100)

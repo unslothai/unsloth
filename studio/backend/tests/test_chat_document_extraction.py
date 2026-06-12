@@ -34,10 +34,8 @@ def install_fake_extract(
     returns = None,
     extract = None,
 ):
-    """Mark extraction available and swap the _run_extract_sync seam. Pass
-    `returns` for a fixed (markdown, figures, pages, trunc, seen) tuple, or
-    `extract` for a custom (file_bytes, filename, options, content_type)
-    callable when the result depends on the options."""
+    """Mark extraction available and stub _run_extract_sync with a fixed `returns`
+    tuple (markdown, figures, pages, trunc, seen) or a custom `extract` callable."""
     from core.chat import document_extractor as de
 
     if extract is None:
@@ -60,9 +58,8 @@ def make_figures(
     encoded_until = None,
     size_with_payload = False,
 ):
-    """Build n ExtractedFigure rows. `encoded_until` (None = all) sets how
-    many carry image_mime/image_base64; `size_with_payload` ties width/height
-    to the payload instead of a constant 10."""
+    """Build n ExtractedFigure rows; `encoded_until` (None = all) sets how many
+    carry image payloads, `size_with_payload` ties width/height to the payload."""
     from core.chat.document_extractor import ExtractedFigure
 
     figs = []
@@ -456,8 +453,7 @@ async def test_max_figures_zero_sets_describe_skipped_reason(
 async def test_extract_document_clamps_visual_payloads_to_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Core clamps max_visual_payloads to MAX_DOCUMENT_VISUAL_PAYLOADS so
-    non-route callers cannot exceed the advertised cap."""
+    """Core clamps max_visual_payloads to the advertised cap for any caller."""
     from core.chat import document_extractor as de
 
     captured: dict[str, object] = {}

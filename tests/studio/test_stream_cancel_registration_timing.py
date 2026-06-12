@@ -38,8 +38,7 @@ def _collect_async_functions(tree: ast.AST):
 
 
 def _find_chat_impl_fn(tree: ast.AST):
-    """The streaming bodies live in ``_openai_chat_completions_impl`` (a thin
-    ``openai_chat_completions`` wrapper delegates to it); return the impl when
+    """Return ``_openai_chat_completions_impl`` (the wrapper delegates to it) when
     present, else the wrapper, so guards never vacuously pass."""
     top = None
     for n in ast.walk(tree):

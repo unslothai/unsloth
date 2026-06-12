@@ -41,8 +41,7 @@ _YAML_TRC_VISION_DEFAULTS = {
 
 
 def _patch_yaml_trc_vision(monkeypatch):
-    """Stub load_model_defaults to the TRC-vision YAML and make the live
-    vision probe an error, so a test fails loudly if resolution probes."""
+    """Stub TRC-vision YAML defaults; the live vision probe raises if touched."""
 
     def fail_vision(*_args, **_kwargs):
         raise AssertionError("YAML-known TRC VLM must not probe before opt-in")
