@@ -1245,25 +1245,15 @@ class LlamaCppBackend:
 
     # Datacenter / professional NVIDIA parts where the llama.cpp FP32-accumulation
     # and peer-to-peer tunings help (and where FP32-accum has negligible cost,
-    # unlike GeForce). Matched as case-insensitive substrings of the torch device
-    # name (e.g. "NVIDIA A100-SXM4-80GB", "NVIDIA H100 80GB HBM3",
-    # "NVIDIA RTX PRO 6000 Blackwell Server Edition").
-    _DATACENTER_GPU_MARKERS = (
-        "a100",
-        "a30",
-        "h100",
-        "h200",
-        "h800",
-        "gh200",
-        "b200",
-        "b100",
-        "b300",
-        "gb200",
-        "gb300",
-        "l40",
-        "l4",
-        "rtx pro 6000",
-        "rtx 6000 ada",
+    # unlike GeForce). Matched as whole-word (case-insensitive) patterns of the
+    # torch device name (e.g. "NVIDIA A100-SXM4-80GB", "NVIDIA H100 80GB HBM3",
+    # "NVIDIA RTX PRO 6000 Blackwell Server Edition"). The \b word boundaries keep
+    # the short markers from matching workstation/laptop parts as substrings: "a100"
+    # must not fire on "NVIDIA RTX A1000" nor "a30" on "NVIDIA RTX A3000" (there is
+    # no boundary between the trailing "0"s). "l40s?" matches both "L40" and "L40S".
+    _DATACENTER_GPU_RE = re.compile(
+        r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|"
+        r"l40s?|l4|rtx pro 6000|rtx 6000 ada)\b"
     )
 
     @staticmethod
@@ -1273,7 +1263,17 @@ class LlamaCppBackend:
         llama.cpp env tuning. NVIDIA-only and fails open to False, so consumer
         GeForce, ROCm, CPU and any error path are left untouched. A mixed box
         (one DC + one consumer GPU in the selection) is treated as non-DC so the
-        tuning never lands on a GeForce card."""
+        tuning never lands on a GeForce card.
+
+        ``gpu_indices`` carries PHYSICAL GPU ids: ``_get_gpu_free_memory``
+        translates torch visible ordinals back to physical ids via
+        ``CUDA_VISIBLE_DEVICES`` so the selection can be handed to the
+        llama-server child. ``torch.cuda.get_device_properties`` instead expects
+        ordinals relative to that mask, so we rebuild the same ordinal->physical
+        map here and key device names by physical id. Otherwise a masked host
+        (e.g. ``CUDA_VISIBLE_DEVICES=4,5,6,7`` with selection ``[4, 5]``) would
+        index out of range and silently drop the tuning on real datacenter GPUs,
+        or probe the wrong physical GPU on a mixed mask."""
         try:
             import torch
 
@@ -1282,18 +1282,41 @@ class LlamaCppBackend:
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
             count = torch.cuda.device_count()
-            indices = list(gpu_indices) if gpu_indices else list(range(count))
-            markers = LlamaCppBackend._DATACENTER_GPU_MARKERS
-            saw = False
-            for _i in indices:
-                if _i is None or _i < 0 or _i >= count:
-                    continue
+
+            # Mirror _get_gpu_free_memory: a numeric CUDA_VISIBLE_DEVICES mask
+            # maps visible ordinal -> physical id. An unset mask (or one we
+            # cannot parse as integers, e.g. UUID-style ids) leaves physical id
+            # == ordinal, consistent with the sibling helper.
+            physical_ids: Optional[list[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
                 try:
-                    name = (torch.cuda.get_device_properties(_i).name or "").lower()
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+
+            pattern = LlamaCppBackend._DATACENTER_GPU_RE
+            names_by_id: dict[int, str] = {}
+            for ordinal in range(count):
+                try:
+                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
                 except Exception:
                     continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names_by_id[pid] = name
+
+            indices = list(gpu_indices) if gpu_indices else list(names_by_id)
+            saw = False
+            for _i in indices:
+                name = names_by_id.get(_i)
+                if name is None:
+                    continue  # physical id not visible -> skip (fail conservative)
                 saw = True
-                if not any(marker in name for marker in markers):
+                if not pattern.search(name):
                     return False
             return saw
         except Exception:

@@ -41,6 +41,15 @@ def _fake_torch(
     return t
 
 
+@pytest.fixture(autouse = True)
+def _clear_cuda_visible_devices(monkeypatch):
+    """_is_datacenter_gpu now reads CUDA_VISIBLE_DEVICES to map physical GPU ids
+    back to torch ordinals. Tests that don't exercise masking must run as if the
+    process were unmasked (physical id == ordinal) regardless of the host's real
+    mask, so clear it by default; the masked-host tests set it explicitly."""
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+
 # ---------------------------------------------------------------------------
 # _is_datacenter_gpu
 # ---------------------------------------------------------------------------
@@ -68,6 +77,11 @@ def _fake_torch(
         (["NVIDIA GeForce RTX 3090"], False),
         (["NVIDIA GeForce RTX 2080 Ti"], False),
         (["NVIDIA GeForce GTX 1080"], False),
+        # Workstation / laptop Ampere: short markers must not match as substrings
+        # ("a100" in "A1000", "a30" in "A3000"). Whole-word matching rejects these.
+        (["NVIDIA RTX A1000 Laptop GPU"], False),
+        (["NVIDIA RTX A1000 6GB Laptop GPU"], False),
+        (["NVIDIA RTX A3000 Laptop GPU"], False),
         # Homogeneous multi-DC: all must match.
         (["NVIDIA B200", "NVIDIA B200"], True),
         (["NVIDIA H100 80GB HBM3", "NVIDIA H100 80GB HBM3"], True),
@@ -99,6 +113,53 @@ def test_is_datacenter_gpu_out_of_range_indices_skipped(monkeypatch):
     assert LlamaCppBackend._is_datacenter_gpu([0, 5, -1]) is True
     # Only invalid indices -> nothing seen -> False (fail closed for the flag).
     assert LlamaCppBackend._is_datacenter_gpu([5, 9]) is False
+
+
+def test_is_datacenter_gpu_masked_host_physical_ids(monkeypatch):
+    # CUDA_VISIBLE_DEVICES=4,5,6,7 -> torch ordinals 0..3 == physical 4..7 (all
+    # B200). gpu_indices carries PHYSICAL ids (from _get_gpu_free_memory), so the
+    # selection [4, 5] must resolve to ordinals 0, 1 rather than indexing out of
+    # range (the pre-fix bug, where 4 >= device_count silently skipped the GPU).
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    assert LlamaCppBackend._is_datacenter_gpu([4, 5]) is True
+    assert LlamaCppBackend._is_datacenter_gpu([4, 5, 6, 7]) is True
+    assert LlamaCppBackend._is_datacenter_gpu(None) is True
+    # Physical ids outside the mask are not visible -> skipped (fail conservative).
+    assert LlamaCppBackend._is_datacenter_gpu([0, 1]) is False
+
+
+def test_is_datacenter_gpu_masked_host_reordered(monkeypatch):
+    # A reordered mask must preserve order: ordinal 0 -> physical 7, 1 -> 4, ...
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,4,5,6")
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4)
+    )
+    assert LlamaCppBackend._is_datacenter_gpu([7, 4]) is True
+
+
+def test_is_datacenter_gpu_masked_host_mixed_class(monkeypatch):
+    # CUDA_VISIBLE_DEVICES=4,5 with physical 4 = GeForce, physical 5 = B200.
+    # The DC tuning must follow the actual selected physical GPU, not a same-
+    # numbered ordinal, so selecting the GeForce must not qualify.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch(["NVIDIA GeForce RTX 4090", "NVIDIA B200"]),
+    )
+    assert LlamaCppBackend._is_datacenter_gpu([4]) is False
+    assert LlamaCppBackend._is_datacenter_gpu([5]) is True
+    assert LlamaCppBackend._is_datacenter_gpu([4, 5]) is False
+
+
+def test_is_datacenter_gpu_unparsable_mask_falls_back(monkeypatch):
+    # A UUID / non-integer mask cannot be parsed to physical ids; we fall back to
+    # physical id == ordinal, mirroring _get_gpu_free_memory, so ordinal lookup
+    # still classifies the visible device.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abcdef12")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"]))
+    assert LlamaCppBackend._is_datacenter_gpu([0]) is True
 
 
 def test_is_datacenter_gpu_rocm_is_false(monkeypatch):
@@ -222,3 +283,17 @@ def test_apply_env_fail_open_on_detection_error(monkeypatch):
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0]) is False
     assert env == {}
+
+
+def test_apply_env_masked_host_multi_dc(monkeypatch):
+    # End-to-end on a masked multi-GPU host: CUDA_VISIBLE_DEVICES=4,5,6,7, 4x B200,
+    # physical selection [4, 5]. Pre-fix this returned no tuning (physical ids out
+    # of ordinal range); now all three multi-GPU flags must be applied.
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(env, [4, 5]) is True
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
+    assert env["GGML_CUDA_P2P"] == "1"
+    assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"
