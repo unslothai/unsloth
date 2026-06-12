@@ -165,6 +165,14 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+/** One live DiffusionGemma denoising snapshot: the current canvas text at a
+ *  given step of a given block (block/step are 0-based; total = steps in block). */
+export type DiffusionCanvasFrame = {
+  block: number;
+  step: number;
+  total: number;
+  text: string;
+};
 export type PendingImageEditReference = {
   threadId: string | null;
   openaiImageGenerationCallId: string;
@@ -524,6 +532,12 @@ type ChatRuntimeStore = {
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
   loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
+  /** Live denoising frame for the in-progress diffusion message. Transient: set
+   *  per step, cleared when the run ends, never persisted into the transcript. */
+  activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -600,6 +614,7 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
@@ -875,6 +890,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   toolStatus: null,
   generatingStatus: null,
+  activeDiffusionCanvas: null,
   autoHealToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
@@ -888,6 +904,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -1093,6 +1110,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
@@ -1103,6 +1121,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       tensorParallel: false,
       loadedTensorParallel: null,
       loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -1259,6 +1278,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragAutoInjectMinScore };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
+    set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {

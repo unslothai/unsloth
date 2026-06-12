@@ -1390,6 +1390,7 @@ async def load_model(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
@@ -1668,6 +1669,7 @@ async def load_model(
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
@@ -2151,6 +2153,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
+                is_diffusion = llama_backend.is_diffusion,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = _audio_type,
@@ -3974,6 +3977,10 @@ async def openai_chat_completions(
                                 _stream_usage = cumulative.get("usage")
                                 _stream_timings = cumulative.get("timings")
                                 _stream_finish = cumulative.get("finish_reason")
+                            elif cumulative.get("type") == "diffusion_frame":
+                                # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
+                                # tool_status channel. No assistant text, so it never enters the cumulative diff.
+                                yield f"data: {json.dumps(cumulative)}\n\n"
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",

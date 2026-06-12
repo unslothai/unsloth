@@ -117,6 +117,21 @@ interface ServerTimings {
   predicted_ms: number;
   predicted_per_token_ms: number;
   predicted_per_second: number;
+  // DiffusionGemma-only extras (present when serving a diffusion model; ignored otherwise).
+  diffusion?: boolean;
+  diffusion_blocks?: number;
+  diffusion_steps?: number;
+  diffusion_canvas?: number;
+  diffusion_prompt_n?: number;
+  diffusion_prompt_prepare_ms?: number;
+  diffusion_decode_ms?: number;
+  diffusion_wall_ms?: number;
+  // Honest throughput, matching the standalone diffusion CLI:
+  //   effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
+  diffusion_effective_tok_s?: number;
+  diffusion_parallel_tok_s?: number;
+  diffusion_output_tok_s?: number;
+  diffusion_steps_per_second?: number;
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
@@ -2519,6 +2534,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 continue;
               }
 
+              // Diffusion frame: a transient canvas snapshot. Route it to the transient
+              // store (the in-bubble renderer reads it) and skip it; it has no assistant
+              // text, so it never enters the transcript or the counters below.
+              const diffusionFrame = (
+                chunk as unknown as {
+                  _diffusionFrame?: {
+                    block?: number;
+                    step?: number;
+                    total?: number;
+                    text?: string;
+                  };
+                }
+              )._diffusionFrame;
+              if (diffusionFrame !== undefined) {
+                runtime.setActiveDiffusionCanvas({
+                  block: diffusionFrame.block ?? 0,
+                  step: diffusionFrame.step ?? 0,
+                  total: diffusionFrame.total ?? 0,
+                  text: diffusionFrame.text ?? "",
+                });
+                continue;
+              }
+
               // Emit tool-call content parts for assistant-ui.
               // tool_start: add a part (renders "running").
               // tool_end: set result on the part (transitions to "complete").
@@ -3211,6 +3249,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Drop the transient denoising canvas so the finished bubble shows only
+        // the committed markdown answer (cancellation/error included).
+        runtime.setActiveDiffusionCanvas(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
