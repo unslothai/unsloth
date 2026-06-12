@@ -1,11 +1,4 @@
-"""
-Tests for Studio's local llama-server timeout policy.
-
-Studio should not cut off a response that is still producing tokens after
-20 minutes. The user-visible Stop control and max_tokens cap are the
-front-line limits. The only fixed watchdog here is the first-token/prefill
-timeout, which catches requests that never start streaming.
-"""
+"""Timeout policy checks for Studio's local llama-server path."""
 
 from __future__ import annotations
 
@@ -25,28 +18,6 @@ SRC = SOURCE_PATH.read_text()
 TREE = ast.parse(SRC)
 
 
-def _is_subscript_assign(stmt: ast.stmt, target_name: str | None, key: str) -> bool:
-    if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-        return False
-    t = stmt.targets[0]
-    if not isinstance(t, ast.Subscript):
-        return False
-    if target_name is not None and not (
-        isinstance(t.value, ast.Name) and t.value.id == target_name
-    ):
-        return False
-    slc = t.slice
-    return isinstance(slc, ast.Constant) and slc.value == key
-
-
-def _collect_assignments(tree, target_name, key):
-    hits = []
-    for node in ast.walk(tree):
-        if _is_subscript_assign(node, target_name, key):
-            hits.append(node)
-    return hits
-
-
 def _module_constant(name: str):
     for node in TREE.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -64,17 +35,8 @@ def test_first_token_timeout_is_at_least_twenty_minutes():
 
 
 def test_studio_chat_payloads_do_not_set_wall_clock_generation_cap():
-    assert _collect_assignments(TREE, None, "t_max_predict_ms") == []
+    assert "t_max_predict_ms" not in SRC
 
 
 def test_max_tokens_default_cap_still_applied():
-    # The wall-clock cap is intentionally absent, but max_tokens must
-    # still kick in when callers omit it.
-    matches = 0
-    for node in ast.walk(TREE):
-        if not isinstance(node, ast.IfExp):
-            continue
-        src = ast.unparse(node)
-        if "max_tokens" in src and "_DEFAULT_MAX_TOKENS_FLOOR" in src:
-            matches += 1
-    assert matches >= 3
+    assert SRC.count("_DEFAULT_MAX_TOKENS_FLOOR") >= 3

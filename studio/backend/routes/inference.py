@@ -649,6 +649,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -682,6 +683,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -722,6 +724,102 @@ def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
         write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
     )
+
+
+def _llama_streaming_generation_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
+def _set_stream_response_read_timeout(
+    response: httpx.Response,
+    read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+) -> None:
+    try:
+        timeout_ext = response.request.extensions.get("timeout")
+        if isinstance(timeout_ext, dict):
+            timeout_ext["read"] = read_timeout_s
+    except Exception:
+        pass
+
+
+async def _wait_cancel_event(cancel_event) -> None:
+    while not cancel_event.is_set():
+        await asyncio.sleep(0.05)
+
+
+async def _send_stream_with_preheader_cancel(
+    client: httpx.AsyncClient,
+    req: httpx.Request,
+    cancel_event,
+) -> Optional[httpx.Response]:
+    if cancel_event is None:
+        return await client.send(req, stream = True)
+    if cancel_event.is_set():
+        return None
+
+    send_task = asyncio.create_task(client.send(req, stream = True))
+    cancel_task = asyncio.create_task(_wait_cancel_event(cancel_event))
+    try:
+        done, _pending = await asyncio.wait(
+            {send_task, cancel_task},
+            return_when = asyncio.FIRST_COMPLETED,
+        )
+        if send_task in done:
+            return await send_task
+
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+        send_task.cancel()
+        try:
+            await send_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return None
+    finally:
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _aiter_llama_stream_items(
+    async_iter,
+    *,
+    cancel_event = None,
+    request: Optional[Request] = None,
+    first_token_deadline: Optional[float] = None,
+):
+    if first_token_deadline is None:
+        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    last_item_at: Optional[float] = None
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        if request is not None and await request.is_disconnected():
+            if cancel_event is not None:
+                cancel_event.set()
+            return
+        try:
+            item = await anext(async_iter)
+        except StopAsyncIteration:
+            return
+        except httpx.ReadTimeout:
+            now = time.monotonic()
+            if last_item_at is None:
+                if now >= first_token_deadline:
+                    raise
+                continue
+            raise
+        last_item_at = time.monotonic()
+        yield item
 
 
 from models.inference import (
@@ -5011,6 +5109,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         )
 
     body = await request.json()
+    if body.get("max_tokens") is None:
+        body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
 
@@ -5028,20 +5128,26 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
             resp = None
             bytes_iter = None
             first_chunk_seen = False
             try:
                 req = client.build_request("POST", target_url, json = body)
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await client.send(req, stream = True)
                 if resp.status_code != 200:
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
                     raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
+                _set_stream_response_read_timeout(resp)
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                async for chunk in bytes_iter:
+                async for chunk in _aiter_llama_stream_items(
+                    bytes_iter,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                ):
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
@@ -5911,12 +6017,13 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+        client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
         first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
                 resp = await client.send(req, stream = True)
             except httpx.RequestError as e:
@@ -5966,10 +6073,13 @@ async def _responses_stream(
                 )
                 return
 
+            _set_stream_response_read_timeout(resp)
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if await request.is_disconnected():
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                request = request,
+                first_token_deadline = first_token_deadline,
+            ):
                 if not raw_line:
                     continue
                 if not raw_line.startswith("data: "):
@@ -7314,7 +7424,7 @@ async def _anthropic_passthrough_stream(
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
         client = httpx.AsyncClient(
-            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -7323,7 +7433,10 @@ async def _anthropic_passthrough_stream(
         first_chunk_seen = False
         try:
             req = client.build_request("POST", target_url, json = body)
-            resp = await client.send(req, stream = True)
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            resp = await _send_stream_with_preheader_cancel(client, req, cancel_event)
+            if resp is None:
+                return
 
             # Upstream client error (e.g. over-context 400) arrives before any
             # SSE. The 200 stream headers are already flushed, so surface it as
@@ -7346,18 +7459,19 @@ async def _anthropic_passthrough_stream(
                 )
                 return
 
+            _set_stream_response_read_timeout(resp)
             # See _openai_passthrough_stream for rationale: aiter_lines()
             # blocks during llama-server prefill, so the in-loop cancel
             # check is unreachable until the first SSE chunk arrives.
             # The watcher closes `resp` on cancel, raising in aiter_lines.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if cancel_event.is_set():
-                    break
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                cancel_event = cancel_event,
+                request = request,
+                first_token_deadline = first_token_deadline,
+            ):
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
                 data_str = raw_line[6:]
@@ -7835,7 +7949,7 @@ async def _openai_passthrough_stream(
         # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
         # rely on status codes to raise APIError/BadRequestError.
         client = httpx.AsyncClient(
-            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -7845,7 +7959,8 @@ async def _openai_passthrough_stream(
         while True:
             try:
                 req = client.build_request("POST", target_url, json = body)
-                resp = await client.send(req, stream = True)
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(client, req, cancel_event)
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
@@ -7861,6 +7976,21 @@ async def _openai_passthrough_stream(
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
+                )
+            if resp is None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                _tracker.__exit__(None, None, None)
+                return StreamingResponse(
+                    iter(()),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
 
             if resp.status_code == 200:
@@ -7905,13 +8035,14 @@ async def _openai_passthrough_stream(
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
             first_chunk_seen = False
             try:
+                _set_stream_response_read_timeout(resp)
                 lines_iter = resp.aiter_lines()
-                async for raw_line in lines_iter:
-                    if cancel_event.is_set():
-                        break
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        break
+                async for raw_line in _aiter_llama_stream_items(
+                    lines_iter,
+                    cancel_event = cancel_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                ):
                     if not raw_line:
                         continue
                     if not raw_line.startswith("data: "):

@@ -927,12 +927,6 @@ class TestOpenAICompatibilityHelpers:
 
 
 class TestFriendlyErrorHttpx:
-    """When llama-server is down, httpx RequestError strings lack the
-    "Lost connection to llama-server" substring the sync path keys off, so the
-    old substring-only `_friendly_error` returned a useless generic message.
-    These tests also pin timeout-specific messages.
-    """
-
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
