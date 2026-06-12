@@ -98,14 +98,28 @@ Hr
 Bold "3) Container runtime check"
 # Mirror docker_confirm.sh's GPU selector translation: bare indices and
 # comma lists become device= selectors (Docker reads a bare integer for
-# --gpus as a COUNT, not an index).
+# --gpus as a COUNT, not an index). Built as an args array so every docker
+# run call splats it identically.
+#
+# Comma lists are special: docker CSV-parses the --gpus value, so a list
+# must arrive as a literal "device=0,1" INCLUDING the double quotes. How
+# PowerShell passes embedded quotes to native commands changed in 7.3
+# (PSNativeCommandArgumentPassing), so pick the escaping per version;
+# single selectors need no quoting anywhere.
 $GPU_SELECTOR = "all"
 if ($GPUS -notin @("auto", "all", "none")) {
-  $GPU_SELECTOR = if ($GPUS -like "device=*") { $GPUS } else { "`"device=$GPUS`"" }
+  $sel = $GPUS -replace "^device=", ""
+  if ($sel -match ",") {
+    if ($PSVersionTable.PSVersion -ge [version]"7.3") { $GPU_SELECTOR = '"device=' + $sel + '"' }
+    else                                              { $GPU_SELECTOR = '\"device=' + $sel + '\"' }
+  } else {
+    $GPU_SELECTOR = "device=$sel"
+  }
 }
+$GpuRunArgs = @("--gpus", $GPU_SELECTOR)
 if ($GPU_MODE) {
   $log = Join-Path $WORK "gpu_check.log"
-  docker run --rm --gpus $GPU_SELECTOR $BASE_IMAGE python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, '-', torch.cuda.get_device_name(0))" *> $log
+  docker run --rm @GpuRunArgs $BASE_IMAGE python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, '-', torch.cuda.get_device_name(0))" *> $log
   if ($LASTEXITCODE -eq 0) {
     Ok ("torch.cuda available in-container: " + (Get-Content $log -Tail 1))
   } else {
@@ -131,7 +145,7 @@ Bold "4) Training smoke"
 if ($GPU_MODE -and -not $SKIP_TRAIN) {
   $log = Join-Path $WORK "train_smoke.log"
   $hfArgs = @(); if ($env:HF_TOKEN) { $hfArgs = @("-e", "HF_TOKEN") }
-  docker run --rm --gpus $GPU_SELECTOR --ipc=host @hfArgs $BASE_IMAGE python /workspace/smoke_test.py *> $log
+  docker run --rm @GpuRunArgs --ipc=host @hfArgs $BASE_IMAGE python /workspace/smoke_test.py *> $log
   if ($LASTEXITCODE -eq 0) {
     Ok "smoke_test.py: 5 LoRA steps completed"
     Select-String -Path $log -Pattern "^step|loss" | Select-Object -Last 5 | ForEach-Object { Info $_.Line }
@@ -160,7 +174,7 @@ Hr
 # 6) Studio + JupyterLab ------------------------------------------------------
 Bold "6) Studio + JupyterLab (full image)"
 $runArgs = @("-d", "-p", "${PORT_STUDIO}:8000", "-p", "${PORT_JUPYTER}:8888")
-if ($GPU_MODE) { $runArgs += @("--gpus", $GPU_SELECTOR) } else { $runArgs += @("-e", "UNSLOTH_ALLOW_CPU=1") }
+if ($GPU_MODE) { $runArgs += $GpuRunArgs } else { $runArgs += @("-e", "UNSLOTH_ALLOW_CPU=1") }
 $script:STUDIO_CID = (docker run @runArgs $IMAGE 2>(Join-Path $WORK "studio_run.err"))
 if (-not $script:STUDIO_CID) {
   Bad ("full image failed to start (see " + (Join-Path $WORK "studio_run.err") + ")")

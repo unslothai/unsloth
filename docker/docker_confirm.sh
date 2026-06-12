@@ -83,22 +83,24 @@ fi
 ok "docker daemon reachable ($(docker --version 2>/dev/null))"
 
 GPU_MODE=0
+NVRT_LISTED=0
 if [ "$GPUS" = "none" ]; then
   info "GPU mode  : disabled by GPUS=none"
 elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
   info "GPU(s)    :"
   nvidia-smi --query-gpu=index,name,compute_cap --format=csv,noheader 2>/dev/null | sed 's/^/           - /'
+  # `docker info | grep Runtimes:.*nvidia` misses CDI setups (docker 25+
+  # with nvidia-ctk cdi) and Docker Desktop's WSL2 backend, both of which
+  # expose GPUs without a host-visible runtime entry. Treat the listing as
+  # a hint only; phase 3 probes --gpus for real and demotes to CPU mode if
+  # the probe fails.
   if docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
-    ok "NVIDIA GPU visible and docker has the nvidia runtime"
-    GPU_MODE=1
-  elif [ "$OS" = "Linux" ] && [ "$IS_WSL" = "1" ]; then
-    # Docker Desktop's WSL2 backend exposes GPUs without a host-visible
-    # nvidia runtime entry; --gpus all still works. Probe it for real below.
-    warn "nvidia runtime not listed by docker info (normal under Docker Desktop WSL2) - probing --gpus all directly"
-    GPU_MODE=1
+    ok "NVIDIA GPU visible and docker lists the nvidia runtime"
+    NVRT_LISTED=1
   else
-    warn "NVIDIA GPU present but docker lacks the nvidia runtime - install nvidia-container-toolkit; falling back to CPU mode"
+    warn "nvidia runtime not listed by docker info (normal under CDI or Docker Desktop WSL2) - probing --gpus directly in phase 3"
   fi
+  GPU_MODE=1
 else
   info "no NVIDIA GPU on the host (or nvidia-smi missing)"
 fi
@@ -137,7 +139,11 @@ if [ "$GPU_MODE" = "1" ]; then
       >"$WORK/gpu_check.log" 2>&1; then
     ok "torch.cuda available in-container: $(tail -1 "$WORK/gpu_check.log")"
   else
-    bad "GPU passthrough failed (see $WORK/gpu_check.log) - falling back to CPU mode"
+    if [ "$NVRT_LISTED" = "1" ]; then
+      bad "GPU passthrough failed despite a listed nvidia runtime (see $WORK/gpu_check.log) - falling back to CPU mode"
+    else
+      warn "--gpus probe failed - docker has no nvidia runtime or CDI spec (install nvidia-container-toolkit); falling back to CPU mode"
+    fi
     tail -5 "$WORK/gpu_check.log" | sed 's/^/         /'
     GPU_MODE=0
   fi

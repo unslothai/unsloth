@@ -111,6 +111,24 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      # Mirror the unsloth tag into the zoo ONLY when that tag actually
+      # exists there. unsloth's v* tags are Studio releases the zoo never
+      # cuts (the zoo repo currently has no tags at all), so blindly
+      # mirroring github.ref_name made every tag publish fail inside the
+      # Dockerfile's zoo install.
+      - name: Resolve unsloth-zoo ref
+        id: zoo_ref
+        run: |
+          REF="${{ github.event.inputs.unsloth_zoo_ref }}"
+          if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+              if git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
+                  "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1; then
+                  REF="${{ github.ref_name }}"
+              fi
+          fi
+          echo "ref=${REF:-main}" >> "$GITHUB_OUTPUT"
+          echo "unsloth-zoo ref: ${REF:-main}"
+
       - name: Build and push (per-arch by digest)
         id: build
         uses: docker/build-push-action@v6
@@ -134,12 +152,11 @@ jobs:
             # scheduled runs: bake the triggering commit SHA. Falls back
             # to `main` for any other event class.
             UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
-            # UNSLOTH_ZOO_REF mirrors the tag case (unsloth-zoo cuts the same
-            # release tag, e.g. 2026.5.8, alongside unsloth) so release-tag
-            # images install a matched zoo. SHA-based branch pushes can't be
-            # mirrored -- the SHA doesn't exist in the zoo repo -- so they
-            # fall through to `main`. Workflow-dispatch can override.
-            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'main' }}
+            # UNSLOTH_ZOO_REF comes from the resolve step above: explicit
+            # workflow-dispatch input, else the pushed tag IF the zoo repo
+            # has it, else `main`. SHA-based branch pushes always fall to
+            # `main` -- the SHA doesn't exist in the zoo repo.
+            UNSLOTH_ZOO_REF=${{ steps.zoo_ref.outputs.ref }}
 
       # Stash the per-arch digest as an artifact for the merge job to pick up.
       # Filenames need to be unique across the matrix; `platform` contains a

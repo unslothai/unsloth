@@ -215,9 +215,18 @@ RUN set -eux \
         ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
             --upgrade "numpy>=2.4"; \
-        echo ">> vLLM installed (numpy re-upgraded post-vllm):"; \
+        # vLLM pins numba==0.61.2, which hard-refuses numpy >= 2.3 at import
+        # time -- and the rest of the stack needs numpy >= 2.3, so the numpy
+        # ceiling cannot move down. Lift numba to a release that supports
+        # numpy 2.4 (verified: numba 0.65 imports cleanly and vllm still
+        # imports). Same intentional-override class as the numpy bump above.
+        ${VENV}/bin/uv pip install \
+            --python ${VENV}/bin/python \
+            --upgrade "numba>=0.62"; \
+        echo ">> vLLM installed (numpy + numba re-upgraded post-vllm):"; \
         ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)"; \
         ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')"; \
+        ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')"; \
     else \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi
