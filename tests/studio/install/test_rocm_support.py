@@ -3220,6 +3220,118 @@ class TestRocmGfxForwarding:
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
 
+    # The two assertions above pin the guard *text*. The tests below *execute*
+    # the real routing block from setup.sh / setup.ps1 and assert the resolved
+    # release repo, so a refactor that keeps the literal but breaks (or drops)
+    # the inferred-gfx -> fork decision is still caught. All inputs are faked --
+    # no GPU, no ROCm tooling on PATH, no network.
+
+    @staticmethod
+    def _resolve_setup_sh_repo(
+        host_machine,
+        nvidia_usable,
+        setup_gfx,
+        rocm_gfx_arch_env = "",
+    ):
+        """Run setup.sh's release-repo routing block under bash and return the
+        resolved _HELPER_RELEASE_REPO. PATH is emptied so the rocminfo/amd-smi/
+        hipconfig/hipinfo `command -v` probes all miss (no ROCm tooling).
+        rocm_gfx_arch_env populates UNSLOTH_ROCM_GFX_ARCH for the env-forwarded
+        path that fires when no probe set _setup_gfx."""
+        import shutil
+
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash not available")
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        start = source.index("\n_LINUX_HAS_GPU=false\n") + 1
+        end = source.index("\nunset _GPU_TOOL", start) + len("\nunset _GPU_TOOL")
+        block = source[start:end]
+        assert "_HELPER_RELEASE_REPO" in block, "setup.sh routing anchors not found"
+        env = {
+            "PATH": "",  # no rocminfo/amd-smi/hipconfig/hipinfo discoverable
+            "ROUTING_BLOCK": block,
+            "_HOST_SYSTEM": "Linux",
+            "_HOST_MACHINE": host_machine,
+            "_setup_nvidia_usable": "true" if nvidia_usable else "false",
+            "_setup_gfx": setup_gfx,
+            "UNSLOTH_ROCM_GFX_ARCH": rocm_gfx_arch_env,
+        }
+        result = subprocess.run(
+            [bash, "-c", 'eval "$ROUTING_BLOCK"; printf "%s" "$_HELPER_RELEASE_REPO"'],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+            env = env,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_setup_sh_inferred_gfx_resolves_to_fork(self):
+        # No usable NVIDIA, no ROCm tooling on PATH, only a name-inferred gfx
+        # arch -> the host must still be treated as a GPU host and routed to the
+        # fork's per-gfx prebuilt, not ggml-org / a source build. Linux x64 and
+        # arm64 both go through the same fork branch.
+        assert self._resolve_setup_sh_repo("x86_64", False, "gfx1100") == "unslothai/llama.cpp"
+        assert self._resolve_setup_sh_repo("aarch64", False, "gfx1100") == "unslothai/llama.cpp"
+
+    def test_setup_sh_env_forwarded_gfx_resolves_to_fork(self):
+        # UNSLOTH_ROCM_GFX_ARCH set on a host where no probe fired (_setup_gfx
+        # empty, no usable NVIDIA, no ROCm tooling): setup.sh adopts the env arch
+        # and routes to the fork, same as the name-inference path.
+        repo = self._resolve_setup_sh_repo("x86_64", False, "", rocm_gfx_arch_env = "gfx1100")
+        assert repo == "unslothai/llama.cpp"
+
+    def test_setup_sh_cpu_host_still_resolves_to_ggml(self):
+        # Guard against over-correcting the fix: a real CPU host (no usable GPU,
+        # no inferred gfx, no env override) must keep routing to ggml-org for the
+        # CPU prebuilt.
+        assert self._resolve_setup_sh_repo("x86_64", False, "") == "ggml-org/llama.cpp"
+
+    @staticmethod
+    def _resolve_setup_ps1_repo(has_nvidia, has_rocm, gfx_arch):
+        """Run setup.ps1's $HelperReleaseRepo selection under pwsh and return the
+        resolved repo."""
+        import shutil
+
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            pytest.skip("pwsh not available")
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        line = next(
+            (
+                ln
+                for ln in source.splitlines()
+                if ln.strip().startswith("$HelperReleaseRepo = if (")
+            ),
+            None,
+        )
+        assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
+        harness = (
+            f"$HasNvidiaSmi = ${'true' if has_nvidia else 'false'}\n"
+            f"$HasROCm = ${'true' if has_rocm else 'false'}\n"
+            f"$script:ROCmGfxArch = '{gfx_arch}'\n"
+            f"{line}\n"
+            "Write-Output $HelperReleaseRepo"
+        )
+        result = subprocess.run(
+            [pwsh, "-NoProfile", "-Command", harness],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_setup_ps1_inferred_gfx_resolves_to_fork(self):
+        # Adrenalin-only Windows host: $HasROCm is false (no HIP runtime) but a
+        # gfx arch was inferred -> route to the fork's windows-rocm bundle.
+        assert self._resolve_setup_ps1_repo(False, False, "gfx1100") == "unslothai/llama.cpp"
+
+    def test_setup_ps1_cpu_host_still_resolves_to_ggml(self):
+        # No NVIDIA, no ROCm, no inferred gfx -> CPU host stays on ggml-org.
+        assert self._resolve_setup_ps1_repo(False, False, "") == "ggml-org/llama.cpp"
+
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
 # Honours CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES so a mixed-arch host installs
