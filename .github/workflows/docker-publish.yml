@@ -124,11 +124,6 @@ jobs:
           cache-from: type=gha,scope=build-${{ matrix.platform }}
           cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          # The llama.cpp prebuilt bake reads GITHUB_TOKEN (BuildKit secret,
-          # never a layer) so the resolver's GitHub API calls are not subject
-          # to the anonymous per-IP rate limit shared across Actions runners.
-          secrets: |
-            github_token=${{ github.token }}
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04

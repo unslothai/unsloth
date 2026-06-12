@@ -423,38 +423,31 @@ RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
 # Prebuilt llama.cpp so GGUF export works out of the box.
 #
 # unsloth_zoo's save_pretrained_gguf() calls check_llama_cpp(), which looks
-# for llama-quantize + convert_hf_to_gguf.py in $UNSLOTH_LLAMA_CPP_PATH
-# (default ~/.unsloth/llama.cpp). Without a baked install the first GGUF
-# export inside the container would hit install_llama_cpp()'s interactive
-# prompt and then a slow source build. We reuse Studio's own resolver
-# (studio/install_llama_prebuilt.py at the same UNSLOTH_REF baked into the
-# venv) to fetch the matching prebuilt from unslothai/llama.cpp releases:
+# for llama-quantize + convert_hf_to_gguf.py + gguf-py/ in
+# $UNSLOTH_LLAMA_CPP_PATH (default ~/.unsloth/llama.cpp). Without a baked
+# install the first GGUF export inside the container would hit
+# install_llama_cpp()'s interactive prompt and then a slow source build.
+#
+# Why NOT studio/install_llama_prebuilt.py here: that resolver selects a
+# bundle for the CURRENT host (nvidia-smi, /proc/driver/nvidia -- which
+# leaks through from a GPU build host even inside docker build -- and the
+# installed CUDA runtime). The build must never introspect the host, so we
+# pin release + asset by build target instead (see fetch_llama_prebuilt.py):
+#   * amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz   (sm_70..sm_120)
+#     arm64 -> app-<tag>-linux-arm64-cuda13-portable.tar.gz (sm_90..sm_121,
+#     DGX Spark / Grace)
+#   * portable bundles carry their own CUDA runtime libs and dlopen the
+#     CUDA backend, so the same binaries also run CPU-only
 #   * sha256-verified against the release's llama-prebuilt-sha256.json
-#   * no GPU on the build host -> the resolver picks the PORTABLE CUDA
-#     bundle, which carries its own CUDA runtime libs and runs on every
-#     supported arch at container runtime (same reasoning as the wheels)
-#   * amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz
-#     arm64 -> the linux-arm64-cuda13 bundle (DGX Spark / Grace)
-#   * the binaries + convert script land at the install dir ROOT, which is
-#     exactly the layout check_llama_cpp() expects
+#   * converter + gguf-py hydrated from the SAME release's source tarball
+#     so the python-side tensor mappings match the binaries
 # /opt (not /root) so the install survives a `docker run --user` override;
 # UNSLOTH_LLAMA_CPP_PATH makes zoo find it regardless of $HOME.
-#
-# The optional BuildKit secret raises the GitHub API rate limit on busy CI
-# runners (the resolver reads GITHUB_TOKEN); local builds work without it.
-ARG UNSLOTH_REF=main
-ADD https://raw.githubusercontent.com/unslothai/unsloth/${UNSLOTH_REF}/studio/install_llama_prebuilt.py /tmp/install_llama_prebuilt.py
-RUN --mount=type=secret,id=github_token \
-    set -eux \
- && if [ -s /run/secrets/github_token ]; then \
-        export GITHUB_TOKEN="$(cat /run/secrets/github_token)"; \
-    fi \
- && /opt/unsloth-venv/bin/python /tmp/install_llama_prebuilt.py \
-        --install-dir /opt/unsloth/llama.cpp \
- && rm -f /tmp/install_llama_prebuilt.py \
- && test -x /opt/unsloth/llama.cpp/llama-quantize \
- && test -x /opt/unsloth/llama.cpp/llama-server \
- && test -f /opt/unsloth/llama.cpp/convert_hf_to_gguf.py \
+ARG LLAMA_PREBUILT_TAG=b9596-mix-e6f2453
+COPY fetch_llama_prebuilt.py /tmp/fetch_llama_prebuilt.py
+RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
+        "${LLAMA_PREBUILT_TAG}" "${TARGETARCH:-amd64}" /opt/unsloth/llama.cpp \
+ && rm -f /tmp/fetch_llama_prebuilt.py \
  && cat /opt/unsloth/llama.cpp/UNSLOTH_PREBUILT_INFO.json
 ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
 
