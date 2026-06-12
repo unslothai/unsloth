@@ -194,6 +194,7 @@ const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
 let promptQueueItems: PromptQueueItem[] = [];
 let promptQueueIndex = 0;
 let promptQueueIsRunning = false;
+let promptQueueGeneration = 0;
 let promptQueuePrevStoreRunning = false;
 let promptQueueWaitingForTargetIdle = false;
 let promptQueueStoreUnsub: (() => void) | null = null;
@@ -218,6 +219,7 @@ function stopPromptQueueSubscription({
 }
 
 function resetPromptQueue(showToast = false) {
+  promptQueueGeneration += 1;
   promptQueueIsRunning = false;
   promptQueueItems = [];
   promptQueueIndex = 0;
@@ -267,18 +269,32 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
   }
 }
 
-function scheduleQueuedPromptDispatch(item: PromptQueueItem, delay: number) {
+function isActivePromptQueueItem(item: PromptQueueItem, generation: number) {
+  if (!promptQueueIsRunning || generation !== promptQueueGeneration) {
+    return false;
+  }
+  return promptQueueItems[Math.max(promptQueueIndex, 0)] === item;
+}
+
+function scheduleQueuedPromptDispatch(
+  item: PromptQueueItem,
+  delay: number,
+  generation = promptQueueGeneration,
+) {
   if (promptQueueRetryTimer) {
     clearTimeout(promptQueueRetryTimer);
   }
   promptQueueRetryTimer = setTimeout(() => {
     promptQueueRetryTimer = null;
-    void dispatchQueuedPrompt(item);
+    void dispatchQueuedPrompt(item, generation);
   }, delay);
 }
 
-async function dispatchQueuedPrompt(item: PromptQueueItem) {
-  if (!promptQueueIsRunning) {
+async function dispatchQueuedPrompt(
+  item: PromptQueueItem,
+  generation = promptQueueGeneration,
+) {
+  if (!isActivePromptQueueItem(item, generation)) {
     return;
   }
   if (
@@ -293,11 +309,15 @@ async function dispatchQueuedPrompt(item: PromptQueueItem) {
     startPromptQueueSubscription();
     return;
   }
-  if (await targetHasIndexingDocuments(item)) {
+  const hasIndexingDocuments = await targetHasIndexingDocuments(item);
+  if (!isActivePromptQueueItem(item, generation)) {
+    return;
+  }
+  if (hasIndexingDocuments) {
     scheduleQueuedPromptDispatch(item, PROMPT_QUEUE_INDEXING_RETRY_MS);
     return;
   }
-  if (!promptQueueIsRunning) {
+  if (!isActivePromptQueueItem(item, generation)) {
     return;
   }
   appendQueuedPrompt(item);
@@ -509,6 +529,7 @@ function startPromptQueue(
   const shouldWaitForCurrentRun =
     waitForCurrentRun &&
     isPromptQueueTargetRunning(target, runningByThreadId);
+  promptQueueGeneration += 1;
   promptQueueItems = filtered.map((prompt) =>
     createQueuedPrompt(prompt, target),
   );

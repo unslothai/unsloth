@@ -1022,14 +1022,14 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
-function stopActiveChatRuns() {
-  const { runningByThreadId, cancelByThreadId } = useChatRuntimeStore.getState();
-  for (const threadId of Object.keys(runningByThreadId)) {
-    try {
-      cancelByThreadId[threadId]?.();
-    } catch {
-      // The run may have ended while navigation was mounting.
-    }
+function stopChatRun(threadId: string | null | undefined) {
+  if (!threadId) {
+    return;
+  }
+  try {
+    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
+  } catch {
+    // The run may have ended while navigation was mounting.
   }
 }
 
@@ -1048,7 +1048,7 @@ function ThreadAutoSwitch({
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
         requestPromptQueueStop();
-        stopActiveChatRuns();
+        stopChatRun(mainThreadId);
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
@@ -1079,18 +1079,19 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
     if (isLoading) {
       return;
     }
     requestPromptQueueStop();
-    stopActiveChatRuns();
+    stopChatRun(mainThreadId);
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, nonce]);
+  }, [aui, isLoading, mainThreadId, nonce]);
 
   return null;
 }
