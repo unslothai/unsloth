@@ -1042,6 +1042,10 @@ class LlamaCppBackend:
 
     @property
     def supports_tools(self) -> bool:
+        # DiffusionGemma serves via the visual runner, whose live per-step canvas
+        # frames are dropped by the agentic tool loop; never route it through tools.
+        if self._is_diffusion:
+            return False
         return self._supports_tools
 
     @property
@@ -2523,6 +2527,10 @@ class LlamaCppBackend:
         ]
 
         env = child_env_without_native_path_secret()
+        # `python -m unsloth_zoo.diffusion_studio.shim` imports unsloth_zoo, which
+        # refuses to load unless UNSLOTH_IS_PRESENT is set (normally by `import
+        # unsloth`). The shim never imports unsloth, so set it here as unsloth does.
+        env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
@@ -2991,6 +2999,16 @@ class LlamaCppBackend:
             return None
 
         return str(mmproj)
+
+    def _mmproj_vram_bytes(self, launch_mmproj_path: Optional[str]) -> int:
+        """Return resolved mmproj VRAM bytes, or 0 when absent/unreadable."""
+        if not launch_mmproj_path:
+            return 0
+        try:
+            return self._get_gguf_size_bytes(launch_mmproj_path)
+        except OSError as e:
+            logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
+            return 0
 
     def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
         """Return mtp_draft_path iff it exists on disk, else None.
@@ -3557,8 +3575,29 @@ class LlamaCppBackend:
                 effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
+                # Keep fit-budget and launch-flag mmproj resolution in sync.
+                launch_mmproj_path = None
+                if not extra_args_disable_mmproj(extra_args):
+                    launch_mmproj_path = self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
+                # Need both a resolved mmproj AND the config vision flag; a stray
+                # mmproj passing the family-name heuristic must not flip a non-VLM
+                # GGUF into vision mode.
+                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                if is_vision and not effective_is_vision:
+                    logger.warning(
+                        "Vision-capable GGUF loaded without a usable mmproj; "
+                        "image input will be disabled for this session"
+                    )
                 try:
-                    model_size = self._get_gguf_size_bytes(model_path)
+                    gguf_size = self._get_gguf_size_bytes(model_path)
+                    # Include GPU-loaded mmproj in the fit budget (#5825).
+                    mmproj_size = (
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                    )
+                    model_size = gguf_size + mmproj_size
                     gpus = self._get_gpu_free_memory()
 
                     # Resolve effective context: 0 means let llama-server use
@@ -3798,8 +3837,12 @@ class LlamaCppBackend:
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
+                    mmproj_note = (
+                        f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
+                    )
                     logger.info(
-                        f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                        f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
+                        f"{mmproj_note}"
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
@@ -3809,22 +3852,6 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
-
-                launch_mmproj_path = None
-                if not extra_args_disable_mmproj(extra_args):
-                    launch_mmproj_path = self._resolve_launch_mmproj_path(
-                        model_path = model_path,
-                        mmproj_path = mmproj_path,
-                    )
-                # Need both a resolved mmproj AND the config vision flag; a stray
-                # mmproj passing the family-name heuristic must not flip a non-VLM
-                # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
-                    logger.warning(
-                        "Vision-capable GGUF loaded without a usable mmproj; "
-                        "image input will be disabled for this session"
-                    )
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
