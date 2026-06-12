@@ -610,7 +610,7 @@ export function AppSidebar() {
             side="bottom"
             align="start"
             sideOffset={0}
-            className="unsloth-plus-menu menu-flat-destructive w-52"
+            className="unsloth-plus-menu menu-flat-destructive w-56"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
@@ -949,7 +949,7 @@ export function AppSidebar() {
                 </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="px-1.5">
+                <SidebarGroupContent className="pl-1 pr-1.5">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -971,7 +971,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-2">
+              <SidebarGroupContent className="pl-1.5 pr-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active

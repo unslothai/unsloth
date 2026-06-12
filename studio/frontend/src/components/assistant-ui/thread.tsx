@@ -69,6 +69,11 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import {
+  PLUS_MENU_ORDER,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
+} from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
@@ -135,6 +140,7 @@ import {
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -2334,16 +2340,178 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
 
+  const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {
       const rows = await listPromptEntries();
-      setRecentPrompts(
-        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
-      );
+      const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+      // Pinned prompts take over the submenu; fall back to the 3 most recent
+      // when nothing is pinned.
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
+      const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
+      setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
     }
   }, []);
+
+  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
+  // level; the rest fall into the "More" overflow submenu. The core items
+  // (photos, web search, code) and "More" itself are always shown and live
+  // outside this map.
+  const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    chatWithFiles: (
+      <DropdownMenuItem
+        disabled={ragDisabled}
+        className={
+          ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
+        }
+        onSelect={() => setRagEnabled(!ragEnabled)}
+      >
+        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        Chat with Files
+        {ragEnabled && !ragDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    mcp: (
+      <DropdownMenuItem
+        disabled={mcpDisabled}
+        className={
+          mcpEnabledForChat && !mcpDisabled
+            ? "text-primary font-medium"
+            : undefined
+        }
+        onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+      >
+        <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+        MCP
+        {mcpEnabledForChat && !mcpDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    savedPrompts: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {recentPrompts.map((p) => (
+            <DropdownMenuItem
+              key={p.id}
+              onSelect={() => aui.composer().setText(p.text)}
+            >
+              <span className="truncate">{p.name}</span>
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+            All saved prompts…
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    compareChat: (
+      <DropdownMenuItem onSelect={() => startCompare()}>
+        <Columns2Icon />
+        Compare chat
+      </DropdownMenuItem>
+    ),
+    exportChat: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+          Export chat
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationRawJsonl(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            Raw JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationCsv(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            CSV
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationShareGPT(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            ShareGPT JSONL
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    canvas: (
+      <DropdownMenuItem
+        className={artifactsEnabled ? "text-primary font-medium" : undefined}
+        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+      >
+        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+        Canvas
+        {artifactsEnabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    projects: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          Projects
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+          <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+            New project
+          </DropdownMenuItem>
+          <DropdownMenuLabel>Recents</DropdownMenuLabel>
+          {recentProjects.length > 0 ? (
+            recentProjects.map((project) => (
+              <DropdownMenuItem
+                key={project.id}
+                onSelect={() => openProject(project.id)}
+              >
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <span className="truncate">{project.name}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem disabled={true}>
+              No recent projects
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+  };
+  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
+  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
 
   return (
     <>
@@ -2377,7 +2545,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[212px]"
+        className="unsloth-plus-menu w-[244px]"
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
@@ -2461,165 +2629,22 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          disabled={ragDisabled}
-          className={
-            ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
-          }
-          onSelect={() => setRagEnabled(!ragEnabled)}
-        >
-          <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-          Chat with Files
-          {ragEnabled && !ragDisabled ? (
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              strokeWidth={2}
-              className="ml-auto"
-            />
-          ) : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={mcpDisabled}
-          className={
-            mcpEnabledForChat && !mcpDisabled
-              ? "text-primary font-medium"
-              : undefined
-          }
-          onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
-        >
-          <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
-          MCP
-          {mcpEnabledForChat && !mcpDisabled ? (
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              strokeWidth={2}
-              className="ml-auto"
-            />
-          ) : null}
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <MoreHorizontalIcon className="size-4" />
-            More
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                Saved prompts
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                collisionPadding={16}
-                className="unsloth-plus-menu w-[176px]"
-              >
-                {recentPrompts.map((p) => (
-                  <DropdownMenuItem
-                    key={p.id}
-                    onSelect={() => aui.composer().setText(p.text)}
-                  >
-                    <span className="truncate">{p.name}</span>
-                  </DropdownMenuItem>
-                ))}
-                {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
-                <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-                  All saved prompts…
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger
-                disabled={!activeThreadId || messageCount === 0}
-              >
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                Export chat
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                collisionPadding={16}
-                className="unsloth-plus-menu w-[176px]"
-              >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationRawJsonl(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  Raw JSONL
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationCsv(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  CSV
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationShareGPT(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  ShareGPT JSONL
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem
-              className={
-                artifactsEnabled ? "text-primary font-medium" : undefined
-              }
-              onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-            >
-              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-              Canvas
-              {artifactsEnabled ? (
-                <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                  className="ml-auto"
-                />
-              ) : null}
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-            Projects
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
-              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
-              New project
-            </DropdownMenuItem>
-            <DropdownMenuLabel>Recents</DropdownMenuLabel>
-            {recentProjects.length > 0 ? (
-              recentProjects.map((project) => (
-                <DropdownMenuItem
-                  key={project.id}
-                  onSelect={() => openProject(project.id)}
-                >
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                  <span className="truncate">{project.name}</span>
-                </DropdownMenuItem>
-              ))
-            ) : (
-              <DropdownMenuItem disabled={true}>
-                No recent projects
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        {pinnedPlusItems.map((id) => (
+          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+        ))}
+        {overflowPlusItems.length > 0 ? (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <MoreHorizontalIcon className="size-4" />
+              More
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+              {overflowPlusItems.map((id) => (
+                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog
@@ -2936,10 +2961,10 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-full bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-full px-3 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>

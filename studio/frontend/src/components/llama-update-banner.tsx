@@ -5,13 +5,80 @@ import { Button } from "@/components/ui/button";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+// Backend progress is coarse (5% steps, ~0.9 max) and the extract tail emits no
+// signal. Creep toward this cap so the bar keeps moving rather than freezing.
+const RUNNING_CAP = 0.95;
+
+// Smoothed 0..1 bar progress: eases toward real `progress`, trickles toward a
+// ceiling when idle, animates to 100% when `done`. Resets to 0 on each start.
+function useSmoothedProgress(
+  active: boolean,
+  progress: number | null,
+  done: boolean,
+): number {
+  const [display, setDisplay] = useState(0);
+  const displayRef = useRef(0);
+  const progressRef = useRef<number | null>(progress);
+  const doneRef = useRef(done);
+  progressRef.current = progress;
+  doneRef.current = done;
+
+  useEffect(() => {
+    if (!active) {
+      displayRef.current = 0;
+      setDisplay(0);
+      return;
+    }
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      // rAF timestamps can predate the performance.now() captured above, so
+      // clamp dt at 0 to keep the first frame from stepping backwards.
+      const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+      last = now;
+      const current = displayRef.current;
+      const real = progressRef.current ?? 0;
+      let target: number;
+      let speed: number; // approach rate (fraction of remaining gap per second)
+      if (doneRef.current) {
+        target = 1;
+        speed = 5;
+      } else if (real > current) {
+        target = real; // catch up to a freshly observed milestone
+        speed = 4;
+      } else {
+        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        speed = 0.3;
+      }
+      const cap = doneRef.current ? 1 : RUNNING_CAP;
+      const next = Math.min(
+        current + (target - current) * Math.min(speed * dt, 1),
+        cap,
+      );
+      displayRef.current = next;
+      setDisplay(next);
+      if (doneRef.current && next > 0.999) {
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+
+  return display;
+}
 
 interface LlamaUpdateBannerProps {
   enabled?: boolean;
+  // false: fill the parent instead of self-anchoring, so banners can stack in a
+  // shared container. true (default) keeps standalone desktop mounts working.
+  positioned?: boolean;
 }
 
 /**
@@ -23,6 +90,7 @@ interface LlamaUpdateBannerProps {
  */
 export function LlamaUpdateBanner({
   enabled = true,
+  positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showBannerPref = useShowLlamaUpdateBanner();
   const { status, visible, applying, apply, dismiss, snooze } =
@@ -46,6 +114,13 @@ export function LlamaUpdateBanner({
   const show =
     visible && status != null && (status.update_available || applying);
   const updateProgress = status?.job.progress ?? null;
+  const jobSucceeded = status?.job.state === "success";
+  // Drives the bar so it animates continuously; aria reports the real value.
+  const displayProgress = useSmoothedProgress(
+    applying,
+    updateProgress,
+    jobSucceeded,
+  );
 
   return (
     <AnimatePresence>
@@ -55,7 +130,11 @@ export function LlamaUpdateBanner({
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
-          className="fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[340px]"
+          className={cn(
+            positioned
+              ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[340px]"
+              : "pointer-events-auto w-full",
+          )}
           data-testid="llama-update-banner"
         >
           <div className="relative overflow-hidden rounded-[24px] bg-white px-4 pb-[22px] pl-6 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
@@ -106,20 +185,14 @@ export function LlamaUpdateBanner({
                 aria-valuenow={
                   updateProgress != null
                     ? Math.round(updateProgress * 100)
-                    : undefined
+                    : Math.round(displayProgress * 100)
                 }
                 data-testid="llama-update-progress"
               >
-                {updateProgress != null && updateProgress > 0 ? (
-                  <div
-                    className="h-full rounded-full bg-primary transition-[width] duration-700 ease-out"
-                    style={{ width: `${Math.round(updateProgress * 100)}%` }}
-                  />
-                ) : (
-                  // No percent yet (resolving the release): sweep until the
-                  // first download progress arrives.
-                  <div className="loading-bar-slide h-full w-1/3 rounded-full bg-primary" />
-                )}
+                <div
+                  className="h-full rounded-full bg-primary"
+                  style={{ width: `${Math.max(displayProgress * 100, 2)}%` }}
+                />
               </div>
             ) : (
               <div className="mt-3 flex items-center gap-2">

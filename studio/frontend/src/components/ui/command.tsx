@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
-import { SearchIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Search01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Command({
@@ -86,7 +86,7 @@ function CommandInput({
         />
         <InputGroupAddon>
           <HugeiconsIcon
-            icon={SearchIcon}
+            icon={Search01Icon}
             strokeWidth={2}
             className="size-4 shrink-0 opacity-50"
           />
