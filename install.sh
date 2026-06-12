@@ -2043,6 +2043,40 @@ _pick_radeon_wheel() {
 # CPU, non-Strix WSL) skips it and normal detection runs unchanged. NEVER aborts
 # the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
 # librocdxg), then sources the env it persisted so detection finds the GPU.
+# Persist the ROCm-on-WSL env to /etc/profile.d so non-login Studio / llama
+# launches inherit HSA_ENABLE_DXG_DETECTION + the rocm PATH/LD_LIBRARY_PATH.
+# Also exports the env into the current process. Idempotent: only (re)writes the
+# drop-in when it is missing. No-op unless librocdxg (the WSL bridge) is present,
+# so it never writes a WSL drop-in on a non-WSL or non-ROCDXG host.
+# /etc/profile.d is root-owned: a plain redirect fails for a non-root reinstall
+# (ROCm would silently disappear after this shell), so tee through sudo when not
+# root. Best-effort -- the current shell already has the env either way.
+_persist_rocm_wsl_dropin() {
+    [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
+    _rw_rocm=/opt/rocm
+    export HSA_ENABLE_DXG_DETECTION=1
+    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+    case ":${PATH}:" in
+        *":${_rw_rocm}/bin:"*) ;;
+        *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
+    esac
+    export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
+    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
+    _rw_dropin="$(
+        printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
+        printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
+        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+        printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
+        printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+        printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
+    )"
+    if [ "$(id -u)" = "0" ]; then
+        printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+        printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+    fi
+}
+
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
@@ -2056,6 +2090,14 @@ _maybe_bootstrap_rocm_wsl() {
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+        # rocminfo sees the GPU -- but possibly ONLY because the line above
+        # (_ensure_rocm_probe_env) put a transient HSA/PATH env on THIS process.
+        # That env vanishes when the installer exits, so future login shells
+        # (Studio, llama.cpp) would still see no GPU. Persist the drop-in before
+        # returning so they inherit it. Without this, every reinstall over an
+        # existing /opt/rocm (the common case -- uninstall keeps shared ROCm but
+        # removes the drop-in) leaves the GPU invisible to Studio at runtime.
+        _persist_rocm_wsl_dropin
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
@@ -2073,31 +2115,8 @@ _maybe_bootstrap_rocm_wsl() {
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
             # librocdxg present but the env drop-in is gone (e.g. a Studio
-            # uninstall removed it while keeping shared ROCm). Restore the FULL
-            # env inline (so rocminfo is on PATH) and recreate the drop-in.
-            _rw_rocm=/opt/rocm
-            export HSA_ENABLE_DXG_DETECTION=1
-            export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-            export PATH="${_rw_rocm}/bin:${PATH}"
-            export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
-            # Persist the drop-in so later non-login Studio launches get the env
-            # too. /etc/profile.d is root-owned: a plain redirect fails for a
-            # non-root reinstall (ROCm would silently disappear after this shell),
-            # so tee through sudo when not root. Best-effort -- the current shell
-            # already has the env, so the install proceeds either way.
-            _rw_dropin="$(
-                printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
-                printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
-                printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
-                printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
-                printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
-                printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
-            )"
-            if [ "$(id -u)" = "0" ]; then
-                printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
-            elif command -v sudo >/dev/null 2>&1; then
-                printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
-            fi
+            # uninstall removed it while keeping shared ROCm). Restore the env.
+            _persist_rocm_wsl_dropin
         fi
         return 0
     fi
