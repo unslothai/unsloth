@@ -3534,6 +3534,15 @@ class LlamaCppBackend:
                     )
 
             if not binary:
+                # distinguish a transiently locked binary (antivirus / in-flight
+                # install) from a missing one so the user retries, not reinstalls
+                locked = self._find_llama_server_binary(include_denied = True)
+                if locked:
+                    raise RuntimeError(
+                        f"llama-server at {locked} is temporarily unavailable "
+                        "(access-denied; antivirus or an in-flight install). "
+                        "Retry the load once it is released."
+                    )
                 raise RuntimeError(
                     "llama-server binary not found. "
                     "Run setup.sh to build it, install llama.cpp, "
