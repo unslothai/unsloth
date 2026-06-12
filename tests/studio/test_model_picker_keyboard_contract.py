@@ -3,10 +3,10 @@
 
 """Pin the model picker keyboard navigation contract.
 
-The Hub and Fine-tuned picker lists keep a roving tab stop without presenting
-native buttons as ARIA listbox options. This lets keyboard users Tab into the
-visible model list once, then use ArrowUp / ArrowDown / Home / End to move
-between model buttons.
+The Hub and Fine-tuned picker lists keep model rows as native buttons in DOM
+Tab order, with delete controls as separate actions. ArrowUp / ArrowDown /
+Home / End still provide fast row-to-row navigation without presenting native
+buttons as ARIA listbox options.
 """
 
 from __future__ import annotations
@@ -20,14 +20,15 @@ PICKERS_TSX = (
 SELECTOR_TSX = REPO / "studio/frontend/src/components/assistant-ui/model-selector.tsx"
 
 
-def test_model_picker_rows_use_real_buttons_with_roving_tabindex():
+def test_model_picker_rows_are_real_buttons_in_dom_tab_order():
     src = PICKERS_TSX.read_text()
     assert "function useRovingModelList" in src
     assert 'role: "listbox" as const' not in src
     assert 'role: "option"' not in src
     assert '"aria-activedescendant"' not in src
-    assert "tabIndex: optionKey === activeOptionKey ? 0 : -1" in src
+    assert "tabIndex: 0" in src
     assert '"data-model-picker-option": true' in src
+    assert '"data-model-picker-active-option":' in src
     assert '"data-model-picker-list": true' in src
     assert '"aria-current": selected ? "true" : undefined' in src
 
@@ -61,7 +62,7 @@ def test_expanded_gguf_variants_join_keyboard_navigation():
     assert "parentOptionKey={optionKey}" in src
     assert "onNavigatePastStart" in src
     assert "onNavigatePastEnd" in src
-    assert "suspendTabStop" in src
+    assert "suspendTabStop" not in src
 
 
 def test_visible_delete_buttons_stay_out_of_roving_order():
@@ -78,7 +79,8 @@ def test_arrow_down_from_tab_or_search_enters_active_model_list():
     pickers = PICKERS_TSX.read_text()
     assert "function handlePickerEntryKeyDown" in src
     assert 'event.key !== "ArrowDown"' in src
-    assert '[data-model-picker-option][tabindex="0"]' in src
+    assert '[data-model-picker-active-option="true"]' in src
+    assert '[data-model-picker-option]' in src
     assert "data-model-picker-search-input" in pickers
     assert "isPickerSearchInput" in src
     assert "isTabTrigger" in src

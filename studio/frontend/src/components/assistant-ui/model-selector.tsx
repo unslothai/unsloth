@@ -244,10 +244,16 @@ function ModelSelectorContent({
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
       root.querySelector<HTMLElement>(
-        '[role="tabpanel"]:not([hidden]) [data-model-picker-option][tabindex="0"]',
+        '[role="tabpanel"]:not([hidden]) [data-model-picker-active-option="true"]',
       ) ??
       root.querySelector<HTMLElement>(
-        '[data-model-picker-option][tabindex="0"]',
+        '[data-model-picker-active-option="true"]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        '[role="tabpanel"]:not([hidden]) [data-model-picker-option]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        "[data-model-picker-option]",
       );
     if (!option) {
       return false;

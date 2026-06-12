@@ -109,6 +109,7 @@ type ModelRowOptionProps = {
   onFocus: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
   "data-model-picker-option": true;
+  "data-model-picker-active-option"?: "true";
   "aria-current"?: "true";
 };
 
@@ -116,32 +117,27 @@ function useRovingModelList({
   label,
   optionKeys,
   selectedOptionKey,
-  initialTabStop = true,
   onNavigatePastStart,
   onNavigatePastEnd,
 }: {
   label: string;
   optionKeys: string[];
   selectedOptionKey?: string;
-  initialTabStop?: boolean;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
 }) {
   const rawListboxId = useId();
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
-  const [hasTabStop, setHasTabStop] = useState(initialTabStop);
 
   const preferredOptionKey =
     selectedOptionKey && optionKeys.includes(selectedOptionKey)
       ? selectedOptionKey
       : (optionKeys[0] ?? null);
   const activeOptionKey =
-    hasTabStop && rovingOptionKey && optionKeys.includes(rovingOptionKey)
+    rovingOptionKey && optionKeys.includes(rovingOptionKey)
       ? rovingOptionKey
-      : hasTabStop
-        ? preferredOptionKey
-        : null;
+      : preferredOptionKey;
 
   const getOptionDomId = useCallback(
     (optionKey: string) => {
@@ -175,19 +171,13 @@ function useRovingModelList({
       let nextIndex = currentIndex === -1 ? 0 : currentIndex;
       if (direction === "next") {
         if (currentIndex >= optionKeys.length - 1) {
-          if (onNavigatePastEnd) {
-            setHasTabStop(false);
-            onNavigatePastEnd();
-          }
+          onNavigatePastEnd?.();
           return;
         }
         nextIndex = Math.min(optionKeys.length - 1, nextIndex + 1);
       } else if (direction === "previous") {
         if (currentIndex <= 0) {
-          if (onNavigatePastStart) {
-            setHasTabStop(false);
-            onNavigatePastStart();
-          }
+          onNavigatePastStart?.();
           return;
         }
         nextIndex = Math.max(0, nextIndex - 1);
@@ -198,7 +188,6 @@ function useRovingModelList({
       }
 
       const nextOptionKey = optionKeys[nextIndex];
-      setHasTabStop(true);
       setRovingOptionKey(nextOptionKey);
       focusOption(nextOptionKey);
     },
@@ -208,9 +197,8 @@ function useRovingModelList({
   const getOptionProps = useCallback(
     (optionKey: string, selected: boolean): ModelRowOptionProps => ({
       id: getOptionDomId(optionKey) ?? `${listboxId}-option-missing`,
-      tabIndex: optionKey === activeOptionKey ? 0 : -1,
+      tabIndex: 0,
       onFocus: () => {
-        setHasTabStop(true);
         setRovingOptionKey(optionKey);
       },
       onKeyDown: (event) => {
@@ -229,6 +217,8 @@ function useRovingModelList({
         }
       },
       "data-model-picker-option": true,
+      "data-model-picker-active-option":
+        optionKey === activeOptionKey ? "true" : undefined,
       "aria-current": selected ? "true" : undefined,
     }),
     [activeOptionKey, getOptionDomId, listboxId, moveFocus],
@@ -239,7 +229,6 @@ function useRovingModelList({
     focusOption,
     getOptionProps,
     moveFocus,
-    suspendTabStop: () => setHasTabStop(false),
     listboxProps: {
       id: listboxId,
       "data-model-picker-list": true,
@@ -551,7 +540,6 @@ function GgufVariantExpander({
   const variantList = useRovingModelList({
     label: `${repoId} quantizations`,
     optionKeys: variantOptionKeys,
-    initialTabStop: false,
     onNavigatePastStart,
     onNavigatePastEnd,
   });
@@ -1289,7 +1277,6 @@ export function HubModelPicker({
                           expandedGguf === c.repo_id
                             ? () => {
                                 const focused = focusFirstChildOption(optionKey);
-                                if (focused) hubModelList.suspendTabStop();
                                 return focused;
                               }
                             : undefined
@@ -1401,7 +1388,6 @@ export function HubModelPicker({
                         expandedGguf === m.id
                           ? () => {
                               const focused = focusFirstChildOption(optionKey);
-                              if (focused) hubModelList.suspendTabStop();
                               return focused;
                             }
                           : undefined
@@ -1625,7 +1611,6 @@ export function HubModelPicker({
                         expandedGguf === m.id
                           ? () => {
                               const focused = focusFirstChildOption(optionKey);
-                              if (focused) hubModelList.suspendTabStop();
                               return focused;
                             }
                           : undefined
@@ -1700,7 +1685,6 @@ export function HubModelPicker({
                           expandedGguf === id
                             ? () => {
                                 const focused = focusFirstChildOption(optionKey);
-                                if (focused) hubModelList.suspendTabStop();
                                 return focused;
                               }
                             : undefined
@@ -1774,7 +1758,6 @@ export function HubModelPicker({
                         expandedGguf === id
                           ? () => {
                               const focused = focusFirstChildOption(optionKey);
-                              if (focused) hubModelList.suspendTabStop();
                               return focused;
                             }
                           : undefined
@@ -1851,7 +1834,6 @@ export function HubModelPicker({
                           expandedGguf === id
                             ? () => {
                                 const focused = focusFirstChildOption(optionKey);
-                                if (focused) hubModelList.suspendTabStop();
                                 return focused;
                               }
                             : undefined
@@ -2084,7 +2066,6 @@ export function LoraModelPicker({
                               expandedGguf === adapter.id
                                 ? () => {
                                     const focused = focusFirstChildOption(optionKey);
-                                    if (focused) loraModelList.suspendTabStop();
                                     return focused;
                                   }
                                 : undefined
