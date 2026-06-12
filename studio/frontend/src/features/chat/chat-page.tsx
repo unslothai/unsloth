@@ -968,7 +968,7 @@ function ProjectLanding({
                 className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
-                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
+                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
                   New
                 </span>
               </button>
