@@ -328,9 +328,7 @@ def test_start_after_stop_does_not_spawn(monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(
-        ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1]
-    )
+    monkeypatch.setattr(ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1])
     t.stop()  # proc is None -> no-op terminate, but marks the tunnel stopped
     t.start()  # must short-circuit before Popen
     assert spawned == []

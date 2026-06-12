@@ -1028,6 +1028,7 @@ def run_server(
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
+
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
