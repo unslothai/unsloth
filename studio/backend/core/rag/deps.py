@@ -42,7 +42,6 @@ def missing_packages() -> list[str]:
 
 def status() -> dict:
     from storage import rag_db
-
     return {
         "available": rag_db.RAG_AVAILABLE,
         "installing": _installing,
@@ -109,6 +108,4 @@ def ensure_async(*, force: bool = False) -> None:
             rag_db.refresh_rag_available()
             return
         _installing, _error = True, None
-    threading.Thread(
-        target = _install, args = (missing,), name = "rag-deps-install", daemon = True
-    ).start()
+    threading.Thread(target = _install, args = (missing,), name = "rag-deps-install", daemon = True).start()

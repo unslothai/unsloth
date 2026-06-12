@@ -82,15 +82,18 @@ def test_status_shape(monkeypatch):
 def test_pip_install_cmd_prefers_uv(monkeypatch):
     monkeypatch.setattr(deps.shutil, "which", lambda name: "/usr/bin/uv")
     assert deps._pip_install_cmd("x==1") == [
-        "uv", "pip", "install", "--python", sys.executable, "x==1",
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "x==1",
     ]
 
 
 def test_pip_install_cmd_falls_back_to_pip(monkeypatch):
     monkeypatch.setattr(deps.shutil, "which", lambda name: None)
-    assert deps._pip_install_cmd("x==1") == [
-        sys.executable, "-m", "pip", "install", "x==1",
-    ]
+    assert deps._pip_install_cmd("x==1") == [sys.executable, "-m", "pip", "install", "x==1"]
 
 
 # _install body
