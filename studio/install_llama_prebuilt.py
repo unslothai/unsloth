@@ -6306,7 +6306,7 @@ def validate_prebuilt_choice(
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
-    # Hashless external prebuilts (e.g. lemonade) are not in the approved-sha256
+    # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
     # so they are always validated. For an approved bundle the sha256 manifest
     # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
