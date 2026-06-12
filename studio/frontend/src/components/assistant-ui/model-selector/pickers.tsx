@@ -39,11 +39,11 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
-import { ChevronDownIcon, ChevronRightIcon, StarIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -1231,7 +1231,7 @@ export function HubModelPicker({
           {!showHfSection && cachedReady ? (
             <>
               <ListLabel
-                icon={<StarIcon className="size-3" />}
+                icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}
                 collapsed={recommendedCollapsed}
                 onToggle={() => setRecommendedCollapsed((v) => !v)}
               >Recommended</ListLabel>
@@ -1292,7 +1292,7 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel icon={<StarIcon className="size-3" />}>Recommended</ListLabel>
+              <ListLabel icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 return (
