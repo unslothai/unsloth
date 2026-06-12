@@ -35,6 +35,25 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _remove_stale_upload(stored_path: str | None, *, keep_path: str) -> None:
+    if not stored_path:
+        return
+    try:
+        target = os.path.realpath(stored_path)
+        if target == os.path.realpath(keep_path):
+            return
+        from utils.paths import rag_uploads_root
+
+        uploads = os.path.realpath(str(rag_uploads_root()))
+        if (
+            os.path.isfile(target)
+            and os.path.commonpath([uploads, target]) == uploads
+        ):
+            os.remove(target)
+    except Exception:  # noqa: BLE001 - stale cleanup must not block a retry.
+        logger.warning("failed to remove stale RAG upload %s", stored_path, exc_info = True)
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
         q = _jobs.get(job_id)
@@ -173,6 +192,9 @@ def start_ingestion(
             _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
             _emit(job_id, None)
             return existing, job_id
+        for failed in store.failed_documents_by_hash(conn, scope, sha):
+            store.delete_document(conn, failed["id"])
+            _remove_stale_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,

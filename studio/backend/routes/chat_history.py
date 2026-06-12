@@ -350,12 +350,13 @@ async def delete_project(
                     rag_store.delete_document(conn, doc["id"])
                     stored = full.get("stored_path")
                     # Also remove the uploaded file; confined to the uploads root.
-                    if (
-                        stored
-                        and os.path.isfile(stored)
-                        and os.path.realpath(stored).startswith(uploads)
-                    ):
-                        os.remove(stored)
+                    if stored:
+                        target = os.path.realpath(stored)
+                        if (
+                            os.path.isfile(target)
+                            and os.path.commonpath([uploads, target]) == uploads
+                        ):
+                            os.remove(target)
             finally:
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion

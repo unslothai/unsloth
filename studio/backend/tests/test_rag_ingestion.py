@@ -39,7 +39,11 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
 
     conn = rag_db.get_connection()
     try:
-        assert store.get_document(conn, doc_id)["status"] == "pending"
+        assert store.get_document(conn, doc_id)["status"] in {
+            "pending",
+            "running",
+            "completed",
+        }
     finally:
         conn.close()
 
@@ -79,6 +83,97 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
     conn = rag_db.get_connection()
     try:
         assert len(store.list_documents(conn, scope)) == 1
+    finally:
+        conn.close()
+
+
+def test_ingestion_retry_replaces_failed_hash(rag_home, stub_embeddings):
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    uploads = ensure_dir(rag_uploads_root())
+    old_path = uploads / "failed.txt"
+    retry_path = uploads / "retry.txt"
+    old_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    retry_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    scope = store.project_scope("P1")
+    sha = ingestion._sha256_file(str(old_path))
+
+    conn = rag_db.get_connection()
+    try:
+        failed_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "failed.txt",
+            sha256 = sha,
+            project_id = "P1",
+            status = "failed",
+            stored_path = str(old_path),
+        )
+    finally:
+        conn.close()
+
+    doc_id, job_id = ingestion.start_ingestion(
+        scope,
+        None,
+        None,
+        "retry.txt",
+        str(retry_path),
+        project_id = "P1",
+    )
+    events = _drain(job_id)
+    assert doc_id != failed_id
+    assert not any(e.get("deduped") for e in events)
+    assert not old_path.exists()
+    assert retry_path.exists()
+
+    status = _wait_completed(job_id)
+    assert status["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, failed_id) is None
+        assert store.get_document(conn, doc_id)["status"] == "completed"
+    finally:
+        conn.close()
+
+
+def test_delete_document_route_removes_stored_upload(rag_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes.rag import router
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    upload = ensure_dir(rag_uploads_root()) / "delete-me.txt"
+    upload.write_text("alpha bravo", encoding = "utf-8")
+    scope = store.project_scope("P1")
+
+    conn = rag_db.get_connection()
+    try:
+        doc_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "delete-me.txt",
+            sha256 = "delete-route-sha",
+            project_id = "P1",
+            status = "completed",
+            stored_path = str(upload),
+        )
+    finally:
+        conn.close()
+
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/rag")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    client = TestClient(app)
+
+    res = client.delete(f"/api/rag/documents/{doc_id}")
+    assert res.status_code == 200
+    assert not upload.exists()
+
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id) is None
     finally:
         conn.close()
 

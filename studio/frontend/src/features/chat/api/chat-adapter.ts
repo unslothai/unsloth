@@ -1080,14 +1080,11 @@ async function resolveProjectInstructions(
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
-  let projectId: string | null | undefined;
   if (threadId) {
     const thread = await getStoredChatThread(threadId).catch(() => null);
-    projectId = thread?.projectId ?? null;
+    return thread?.projectId ?? null;
   }
-  if (!projectId) {
-    projectId = useChatRuntimeStore.getState().activeProjectId;
-  }
+  const projectId = useChatRuntimeStore.getState().activeProjectId;
   if (!projectId) {
     return null;
   }

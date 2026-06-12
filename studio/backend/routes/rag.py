@@ -75,6 +75,22 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     return stored_path, filename
 
 
+def _remove_stored_upload(stored_path: str | None) -> None:
+    """Best-effort cleanup for files saved by _save_upload."""
+    if not stored_path:
+        return
+    try:
+        uploads = os.path.realpath(str(rag_uploads_root()))
+        target = os.path.realpath(stored_path)
+        if (
+            os.path.isfile(target)
+            and os.path.commonpath([uploads, target]) == uploads
+        ):
+            os.remove(target)
+    except Exception:  # noqa: BLE001 - DB/index deletion has already succeeded.
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+
+
 def _doc_view(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -285,9 +301,11 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     _require_rag()
     conn = rag_db.get_connection()
     try:
-        if store.get_document(conn, document_id) is None:
+        doc = store.get_document(conn, document_id)
+        if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
         store.delete_document(conn, document_id)
+        _remove_stored_upload(doc.get("stored_path"))
         return {"ok": True}
     finally:
         conn.close()

@@ -85,6 +85,7 @@ export function useRagDocuments(
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
+          sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",

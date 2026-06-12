@@ -163,9 +163,19 @@ def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
 
 def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str | None:
     row = conn.execute(
-        "SELECT id FROM documents WHERE scope=? AND sha256=?", (scope, sha256)
+        "SELECT id FROM documents WHERE scope=? AND sha256=? AND status!='failed' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (scope, sha256),
     ).fetchone()
     return row["id"] if row else None
+
+
+def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, stored_path FROM documents WHERE scope=? AND sha256=? AND status='failed'",
+        (scope, sha256),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def add_chunks(
