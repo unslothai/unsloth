@@ -128,9 +128,8 @@ def _grouped_gemm_dX_kernel(
                     block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
                 )
 
-            # Lower bound and upper bound are defined relative to the total tiles processed so far
-            # This ensures that we are only processing tiles for the current expert group AND
-            # we never exceed the total number of tiles for all expert groups
+            # Bounds are relative to tiles processed so far, so we only handle
+            # this expert's tiles and never exceed the total across experts.
             while tidx >= processed_tiles and tidx < (processed_tiles + num_tiles_per_expert):
                 group_index = tidx - processed_tiles
 

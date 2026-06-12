@@ -194,7 +194,7 @@ class _DummyTrainer:
                 break
             except TypeError:
                 continue
-        # Ensure attributes exist even if the constructor did not accept them
+        # Ensure attributes exist even if the constructor rejected them.
         if not hasattr(self.data_collator, "padding_free"):
             self.data_collator.padding_free = True
         if not hasattr(self.data_collator, "return_position_ids"):

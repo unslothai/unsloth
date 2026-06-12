@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for `_TOOL_XML_RE` (routes/inference.py) -- strips tool-call
-XML that leaks past the speculative buffer in core/inference/llama_cpp.py
-when the open/close pair is split across the visible/DRAIN boundary.
+"""Tests for `_TOOL_XML_RE` (routes/inference.py) -- strips tool-call XML that
+leaks past the speculative buffer in core/inference/llama_cpp.py when the
+open/close pair is split across the visible/DRAIN boundary.
 """
 
 from __future__ import annotations
@@ -27,9 +27,23 @@ assert _m, "could not extract _TOOL_XML_RE source"
 _ns = {"_re": _re}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+_helper = _re.search(
+    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
+    r"(?:    .+\n)+",
+    _src,
+)
+assert _helper, "could not extract _strip_tool_xml_for_display source"
+exec(_helper.group(0), _ns)
+_strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
 
 # ── Well-formed pairs ─────────────────────────────────────────────
+
+
+def test_route_display_strip_respects_disabled_auto_heal_contract():
+    text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
 def test_strips_well_formed_tool_call():
@@ -134,7 +148,7 @@ def test_strips_tail_only_parameter_orphan_no_trailing_ws():
 
 
 def test_preserves_mid_string_parameter_in_code_sample():
-    # Tail-anchor on `</parameter>` is required so doc/example prose survives.
+    # Tail-anchor on `</parameter>` so doc/example prose survives.
     text = (
         "Here is the Qwen tool-call format:\n"
         "```xml\n"
@@ -207,8 +221,8 @@ def test_real_world_sweep_leaks_get_stripped(leak):
 # ── Real-world tail-only </parameter> from gdpval sweep ──────────
 
 
-# All end-anchored: outer </function></tool_call> truncated by EOS,
-# inner <parameter=...> open DRAINED, leaving bare </parameter> tail.
+# All end-anchored: outer </function></tool_call> truncated by EOS, inner
+# <parameter=...> open DRAINED, leaving bare </parameter> tail.
 GDPVAL_PARAMETER_LEAKS = [
     # Qwen3.5-27B Q8_0 / worldbank s00
     "the page contains image data and the text is not readable.\n</parameter>\n\n",

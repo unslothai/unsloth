@@ -25,9 +25,8 @@ const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
 
 /**
- * Reject anything that is not a real http(s) URL. Web-search / web-fetch
- * output is provider-controlled, so hostile ``javascript:`` / ``data:``
- * lines must not reach the Source badge's <a href>.
+ * Reject non-http(s) URLs. Web-search/fetch output is provider-controlled,
+ * so hostile `javascript:` / `data:` lines must not reach a Source <a href>.
  */
 function isSafeHttpUrl(raw: string): boolean {
   const value = raw.trim();

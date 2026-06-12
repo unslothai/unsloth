@@ -334,8 +334,8 @@ export function GithubRepoSeedForm({
         />
         <p id={tokenHelpId} className="text-xs text-muted-foreground">
           {usingEnvToken
-            ? "Studio detected a server env token, so saved/shared recipes can leave this blank."
-            : "Blank is safest for saved/shared recipes because Studio will read the server environment at run time."}
+            ? "Unsloth detected a server env token, so saved/shared recipes can leave this blank."
+            : "Blank is safest for saved/shared recipes because Unsloth will read the server environment at run time."}
         </p>
         {hasToken && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
@@ -450,7 +450,7 @@ export function GithubRepoSeedForm({
       </fieldset>
 
       <p className="text-xs text-muted-foreground">
-        Backed by Studio's built-in <code>github_repo</code> seed reader. Large
+        Backed by Unsloth's built-in <code>github_repo</code> seed reader. Large
         repos can take minutes, so start with small limits for previews.
       </p>
     </div>

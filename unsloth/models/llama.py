@@ -156,34 +156,13 @@ def _offload_frozen_module_for_training(
     device_type: str,
     offload_device: Optional[str] = "cpu",
 ) -> None:
+    """Move the trainable copy to ``device_type`` and offload the frozen original.
+
+    float16 is promoted to float32 for GPU compatibility (e.g. Tesla T4).
+    ``offload_device`` currently only supports "cpu"; None leaves the frozen
+    module in place. Modifies ``module`` in-place.
+    See https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32).
     """
-    Offload frozen module to CPU and configure trainable copy for mixed precision training.
-
-    This function optimizes memory usage by:
-    1. Moving the trainable copy to the target device with appropriate precision
-    2. Optionally offloading the original frozen module to CPU/disk to free VRAM
-    3. Converting float16 to float32 for compatibility with certain GPUs (e.g., Tesla T4)
-
-    Args:
-        module: The module to configure. Must be a ModulesToSaveWrapper with a
-            `modules_to_save` attribute containing trainable and original modules.
-        device_type: Target device string for training (e.g., "cuda:0", "xpu:0")
-        offload_device: Device to offload frozen parameters (default: "cpu").
-            If None, the original frozen module remains on its current device.
-            Note: Currently only "cpu" is supported; disk offloading is planned.
-
-    Returns:
-        None (modifies module in-place)
-
-    Note:
-        - Float16 weights are automatically promoted to float32 for GPU compatibility
-        - When offload_device is specified, frozen parameters are moved to free VRAM
-        - Future versions will support disk-based offloading for even larger models
-
-    See Also:
-        - https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32 requirement)
-    """
-    # Early return with explicit None if module doesn't support mixed precision training
     if not hasattr(module, "modules_to_save"):
         return None
 
@@ -213,8 +192,7 @@ def _fast_prepare_inputs_for_generation(
     past_key_values = kwargs.get("past_key_values", None)
     original_attention_mask = attention_mask
 
-    # Handle inputs_embeds - only use on FIRST generation step (no cache)
-    # This fixes GitHub issue #3798: inputs_embeds was ignored
+    # Only use inputs_embeds on the first step (no cache). Fixes issue #3798.
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
     if input_ids is not None and input_ids.numel() > 0:
@@ -470,11 +448,10 @@ def LlamaAttention_fast_forward_inference(
 
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
-    # ensure correct shape
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
-    # Transformers 5.x generate() accumulates position_ids as [batch, full_seq_len]
-    # across decode steps. In single-token inference we only need the last position.
+    # Transformers 5.x accumulates position_ids as [batch, full_seq_len] across
+    # decode steps; single-token inference only needs the last position.
     if position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     position_ids = position_ids.to(Qn.device)
@@ -1152,12 +1129,8 @@ def LlamaModel_fast_forward(
         IS_ATTENTION_REFACTOR
         and (hasattr(self, "rotary_emb") or not hasattr(self.layers[0].self_attn, "rotary_emb"))
     ) or IS_GRANITE:
-        # Transformers main has made it mandatory to pass position_embeddings
-        # https://github.com/huggingface/transformers/pull/34858
-        # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
-        # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
-        # so let granite always use the attention refactor implementation.
-
+        # position_embeddings is mandatory on main: https://github.com/huggingface/transformers/pull/34858
+        # granite always had the attention refactor, so let it always use this path.
         self.rotary_emb.extend_rope_embedding(hidden_states, self.config.max_position_embeddings)
         position_embeddings = self.rotary_emb.get_cached(
             self.config.max_position_embeddings, hidden_states.device.index
@@ -1264,8 +1237,7 @@ def _LlamaModel_fast_forward_inference(
     attention_fast_forward_inference = LlamaAttention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
-    # This makes the attention and MLP customisable.
-    # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
+    # Makes attention and MLP customisable for models like qwen3/cohere.
     def LlamaModel_fast_forward_inference_custom(
         self,
         input_ids,
@@ -1533,8 +1505,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         if self.config.model_type == "granite":
-            # granite uses logit_scaling as key and they divide by the scale unlike cohere
-            # notice that for granite, logits_scale is 16 and for cohere it is 0.125 (aka 1/8) in their respective configs
+            # granite divides by logits_scaling (16) unlike cohere which multiplies by 0.125.
             # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
             # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
@@ -1651,6 +1622,93 @@ def _get_rope_theta(config, default = 10000.0):
     return default
 
 
+def _rope_scaling_as_dict(rope_scaling):
+    """Normalize config.rope_scaling (dict or config object) to a dict; {} on failure."""
+    if isinstance(rope_scaling, dict):
+        return rope_scaling
+    for converter in ("to_dict", "dict"):
+        fn = getattr(rope_scaling, converter, None)
+        if callable(fn):
+            try:
+                d = fn()
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+    try:
+        return {k: v for k, v in vars(rope_scaling).items() if not k.startswith("_")}
+    except TypeError:
+        return {}
+
+
+def _llama3_inv_freq_from_config(
+    config,
+    rope_scaling,
+    device = "cpu",
+):
+    """llama3 inv_freq with factors from config; fallback when modeling_rope_utils is missing."""
+    base = _get_rope_theta(config, default = 10000.0)
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        dim = int(config.hidden_size // config.num_attention_heads)
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim)
+    )
+
+    scale_factor = rope_scaling.get("factor", 8.0)
+    low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
+    high_freq_factor = rope_scaling.get("high_freq_factor", 4.0)
+    old_context_len = rope_scaling.get("original_max_position_embeddings", 8192)
+
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+    assert low_freq_wavelen != high_freq_wavelen
+
+    # Vectorized meta-llama bands: high freqs kept, low divided by factor, medium blended.
+    wavelen = 2 * math.pi / inv_freq
+    scaled = torch.where(wavelen > low_freq_wavelen, inv_freq / scale_factor, inv_freq)
+    smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    smoothed = (1 - smooth) * inv_freq / scale_factor + smooth * inv_freq
+    is_medium = (wavelen >= high_freq_wavelen) & (wavelen <= low_freq_wavelen)
+    return torch.where(is_medium, smoothed, scaled)
+
+
+def _compute_config_rope_inv_freq(config, rope_scaling):
+    """(inv_freq, attention_scaling) per config.rope_scaling via transformers'
+    ROPE_INIT_FUNCTIONS, with an inline llama3 fallback; (None, 1.0) on failure."""
+    original_rope_scaling = rope_scaling
+    rope_scaling = _rope_scaling_as_dict(rope_scaling)
+    rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+        rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
+        try:
+            inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
+        except Exception:
+            # Object-style rope_scaling: retry with a config copy carrying the plain dict.
+            if isinstance(original_rope_scaling, dict):
+                raise
+            import copy as _copy
+
+            config_copy = _copy.copy(config)
+            config_copy.rope_scaling = rope_scaling
+            inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
+        return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
+    except Exception as exception:
+        if rope_type == "llama3":
+            try:
+                return _llama3_inv_freq_from_config(config, rope_scaling), 1.0
+            except Exception:
+                pass
+        logger.warning_once(
+            f"Unsloth: Could not apply RoPE scaling '{rope_type}' from config "
+            f"({type(exception).__name__}: {exception}); falling back to unscaled RoPE. "
+            "Long-context generation may degrade."
+        )
+        return None, 1.0
+
+
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
 # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
@@ -1669,6 +1727,12 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
+        self.attention_scaling = 1.0
+        # Base-class-from-config path (modern transformers): derive inv_freq like
+        # transformers so config.rope_scaling is not dropped (#2405). Scaled
+        # subclasses are excluded to avoid double-scaling.
+        config_inv_freq = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
@@ -1681,6 +1745,13 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 
+            rope_scaling = getattr(config, "rope_scaling", None)
+            if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
+                config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
+                    config,
+                    rope_scaling,
+                )
+
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
@@ -1689,12 +1760,17 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
-        # Normal Llama-3 RoPE
-        inv_freq = 1.0 / (
-            self.base
-            ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
-        )
-        inv_freq = self._apply_inv_freq_scaling(inv_freq)
+        if config_inv_freq is not None:
+            inv_freq = config_inv_freq  # already scaled; skip subclass scaling
+        else:
+            # Normal Llama-3 RoPE
+            inv_freq = 1.0 / (
+                self.base
+                ** (
+                    torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim
+                )
+            )
+            inv_freq = self._apply_inv_freq_scaling(inv_freq)
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
@@ -1733,8 +1809,10 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim = -1)
-        cos = emb.cos().to(dtype = dtype, device = device, non_blocking = True)
-        sin = emb.sin().to(dtype = dtype, device = device, non_blocking = True)
+        # Applied here so attention_scaling survives extend_rope_embedding rebuilds;
+        # default 1.0 keeps unscaled paths bit-identical.
+        cos = (emb.cos() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
+        sin = (emb.sin() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -2019,11 +2097,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
-    # If the model starts out in training mode, restore training mode after generation
+    # Restore training mode after generation if we started in it
     restore_training_mode = self.training
-    # why: snapshot the actual GC mode value (e.g. "unsloth") before for_inference
-    # clears it, so the post-generate restore preserves the caller's configured GC
-    # mode rather than collapsing it to a plain bool.
+    # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it,
+    # so the restore preserves it rather than collapsing to a plain bool.
     use_gradient_checkpointing = next(
         (v for v in (getattr(m, "gradient_checkpointing", False) for m in self.modules()) if v),
         False,
@@ -2031,11 +2108,9 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     FastLlamaModel.for_inference(self)
 
-    # Unpack BatchEncoding passed as input_ids for backwards compatibility.
-    # Old notebooks do model.generate(input_ids=tokenizer(...)) where the tokenizer
-    # output is a BatchEncoding (dict-like). Transformers v5 generate() calls
-    # .shape on it directly and crashes. Unpack into separate kwargs so both
-    # v4 and v5 work transparently.
+    # Unpack BatchEncoding passed as input_ids (old notebooks do
+    # generate(input_ids=tokenizer(...))). v5 generate() calls .shape on it and
+    # crashes; unpack into separate kwargs so v4 and v5 both work.
     _maybe_encoding = kwargs.get("input_ids", None)
     if (
         _maybe_encoding is not None
@@ -2067,8 +2142,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep.
-    # Pop both, re-emit under the spelling forward() accepts.
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep; pop both,
+    # re-emit under the spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)
     _provided_logits = kwargs.pop("logits_to_keep", None)
     _provided = _provided_logits if _provided_logits is not None else _provided_num
@@ -2378,12 +2453,10 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
-            # For pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit),
-            # transformers uses the quantization_config baked into the
-            # checkpoint's config.json and ignores the runtime BitsAndBytesConfig
-            # we pass via kwargs. Merge our skip list into that bundled config
-            # so task heads like `score` (for *ForSequenceClassification) stay
-            # in the compute dtype. See unslothai/unsloth#5027.
+            # Pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit) use the
+            # quantization_config baked into config.json, ignoring our runtime
+            # BitsAndBytesConfig. Merge our skip list into the bundled config so
+            # task heads like `score` stay in compute dtype. See unslothai/unsloth#5027.
             if _ckpt_quant_method == "bitsandbytes" and _ckpt_qcfg is not None:
                 if isinstance(_ckpt_qcfg, dict):
                     _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
@@ -2436,10 +2509,8 @@ class FastLlamaModel:
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
-            # Defensive: make sure the task head ended up in a floating dtype.
-            # The primary protection is SKIP_QUANTIZATION_MODULES plus the skip
-            # list merge above; this guards against a downstream path accidentally
-            # leaving the head in an integer storage. See unslothai/unsloth#5027.
+            # Defensive: ensure the task head is in a floating dtype, guarding
+            # against any path leaving it as integer storage. See unslothai/unsloth#5027.
             for _head_name in ("score", "classifier", "qa_outputs"):
                 _head = getattr(model, _head_name, None)
                 if (
@@ -2712,12 +2783,10 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
-        # lm_head. When weights are tied, zeroing the padding row also zeros
-        # the corresponding lm_head row, forcing logit = 0 for the pad token.
-        # This is higher than the (negative) logits for real tokens in models
-        # like Gemma, causing the decoder to emit <pad> and produce gibberish.
-        # Skip entirely if eos_token == pad_token to avoid zeroing EOS embedding.
+        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when
+        # tied, zeroing the row forces pad logit = 0, which beats the (negative)
+        # logits of real tokens (e.g. Gemma) and makes the decoder emit <pad>.
+        # Skip if eos_token == pad_token to avoid zeroing the EOS embedding.
         eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
         pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
         if tokenizer is not None and eos_token_id != pad_token_id:
@@ -3505,6 +3574,14 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = False
+
+        # Restore use_cache values that prepare_model_for_training disabled
+        # for gradient checkpointing (older unsloth_zoo has no restore helper)
+        try:
+            from unsloth_zoo.training_utils import restore_use_cache
+            restore_use_cache(model)
+        except ImportError:
+            pass
         return model
 
     @staticmethod
@@ -3552,6 +3629,18 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = True
+
+        # Re-disable use_cache if prepare_model_for_training had disabled it
+        # and for_inference restored it (record only exists after a disable)
+        if (
+            use_gradient_checkpointing
+            and getattr(model, "_unsloth_use_cache_originals", None) is not None
+        ):
+            try:
+                from unsloth_zoo.training_utils import disable_use_cache
+                disable_use_cache(model)
+            except ImportError:
+                pass
         return model
 
 

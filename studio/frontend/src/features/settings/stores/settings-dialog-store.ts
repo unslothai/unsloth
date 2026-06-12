@@ -15,10 +15,10 @@ export type SettingsTab =
 interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
-  // Element focused at the moment openDialog() ran. Radix's FocusScope
-  // would normally track this, but the rAF-scheduled focus() in
-  // settings-dialog.tsx races its previous-focus capture, leaving focus
-  // on <body> after close. We restore explicitly via onCloseAutoFocus.
+  // Element focused when openDialog() ran. Radix's FocusScope normally tracks
+  // this, but the rAF-scheduled focus() in settings-dialog.tsx races its
+  // previous-focus capture, leaving focus on <body> after close. We restore
+  // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   openDialog: (tab?: SettingsTab) => void;
   closeDialog: () => void;

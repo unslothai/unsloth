@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for training run history and metrics.
+"""SQLite storage for training run history and metrics.
 
-Follows the same pattern as auth/storage.py — module-level functions,
-raw sqlite3, per-function connections. Enhancements over auth:
-  - WAL mode for concurrent read/write access
-  - PRAGMA foreign_keys = ON for CASCADE deletes
+Like auth/storage.py (module-level functions, raw sqlite3, per-function
+connections) plus WAL mode and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
 import json
@@ -34,8 +31,7 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
-        # so include the /private variants to avoid bypasses.
+        # macOS realpath() resolves /etc -> /private/etc etc; include /private variants.
         return [
             "/System",
             "/Library",
@@ -174,9 +170,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
-    # Use COLLATE NOCASE on Windows so C:\Models and c:\models dedup via the
-    # UNIQUE constraint.  On Linux/macOS (case-sensitive FS) keep the default
-    # BINARY collation so /Models and /models remain distinct.
+    # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
+    # case-sensitive BINARY so /Models and /models stay distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
         f"""
@@ -287,15 +282,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Server-side import ledger so a studio.db wipe correctly re-triggers
-    # the legacy Dexie import. The previous boolean localStorage sentinel
-    # (`unsloth_chat_legacy_imported_to_studio_db`) is non-recoverable:
-    # if studio.db is recreated while the browser keeps the flag, legacy
-    # Dexie threads are silently hidden from the sidebar. The ledger
-    # lives inside studio.db so it disappears together with the data it
-    # is supposed to track, which is the recovery the boolean lacked.
-    # Keyed by legacy thread id; per-thread is sufficient because Dexie
-    # is read-only after this PR (a thread's message set does not grow).
+    # Import ledger inside studio.db (vs. a localStorage boolean) so a db wipe
+    # re-triggers the legacy Dexie import instead of silently hiding threads.
+    # Keyed by legacy thread id; Dexie is read-only so per-thread suffices.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_legacy_imports (
@@ -304,6 +293,195 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_entries (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_entries_created_at ON prompt_entries(created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_lists (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            items_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
+    )
+
+
+def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "text": row["text"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_prompt_entries() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM prompt_entries ORDER BY created_at DESC").fetchall()
+        return [_prompt_entry_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_prompt_entry(entry: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO prompt_entries (id, name, text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                text = excluded.text,
+                updated_at = excluded.updated_at
+            """,
+            (
+                entry["id"],
+                entry["name"],
+                entry["text"],
+                entry["createdAt"],
+                entry["updatedAt"],
+            ),
+        )
+        conn.commit()
+        return entry
+    finally:
+        conn.close()
+
+
+def delete_prompt_entry(entry_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM prompt_entries WHERE id = ?", (entry_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
+    if not entries:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO prompt_entries (id, name, text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                text = excluded.text,
+                updated_at = excluded.updated_at
+            """,
+            [(e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"]) for e in entries],
+        )
+        conn.commit()
+        return len(entries)
+    finally:
+        conn.close()
+
+
+def _prompt_list_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "items": json.loads(row["items_json"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_prompt_lists_db() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM prompt_lists ORDER BY created_at DESC").fetchall()
+        return [_prompt_list_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_prompt_list(lst: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO prompt_lists (id, name, items_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                items_json = excluded.items_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                lst["id"],
+                lst["name"],
+                json.dumps(lst["items"]),
+                lst["createdAt"],
+                lst["updatedAt"],
+            ),
+        )
+        conn.commit()
+        return lst
+    finally:
+        conn.close()
+
+
+def delete_prompt_list_db(list_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM prompt_lists WHERE id = ?", (list_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
+    if not lists:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO prompt_lists (id, name, items_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                items_json = excluded.items_json,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    lst["id"],
+                    lst["name"],
+                    json.dumps(lst["items"]),
+                    lst["createdAt"],
+                    lst["updatedAt"],
+                )
+                for lst in lists
+            ],
+        )
+        conn.commit()
+        return len(lists)
+    finally:
+        conn.close()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -313,7 +491,7 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    # foreign_keys is session-scoped, must be set per connection
+    # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
     if not _schema_ready:
         with _schema_lock:
@@ -701,9 +879,8 @@ def add_scan_folder(path: str) -> dict:
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
 
-    # On Windows, use normcase for denylist comparison but store the
-    # original-cased path so downstream consumers see the native
-    # drive-letter casing the user expects (e.g. C:\Models, not c:\models).
+    # Windows: normcase for the denylist check but store original casing
+    # so consumers see the native drive-letter casing (e.g. C:\Models).
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
@@ -713,8 +890,7 @@ def add_scan_folder(path: str) -> dict:
     conn = get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        # On Windows, use case-insensitive lookup so C:\Models and c:\models
-        # dedup correctly while preserving the originally-stored casing.
+        # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
                 "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
@@ -734,9 +910,8 @@ def add_scan_folder(path: str) -> dict:
             )
             conn.commit()
         except sqlite3.IntegrityError:
-            pass  # duplicate -- fall through to SELECT
-        # Use the same collation as the pre-check so we find the row even
-        # when a concurrent writer stored it with different casing (Windows).
+            pass  # duplicate; fall through to SELECT
+        # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
             "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
@@ -1408,8 +1583,8 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
-    """Atomic read-merge-write under BEGIN IMMEDIATE so two concurrent writers
-    cannot drop one another's updates."""
+    """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
+    cannot drop each other's updates."""
     if not updates:
         return list_chat_settings()
     conn = get_connection()
@@ -1455,11 +1630,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_chat_legacy_imports() -> list[str]:
-    """Return the legacy_thread_id of every thread already imported.
-
-    Cheap: scans a single small PK-only table. The frontend stuffs the
-    result into a Set before walking Dexie, so the diff is O(|Dexie|).
-    """
+    """Return the legacy_thread_id of every thread already imported."""
     conn = get_connection()
     try:
         rows = conn.execute("SELECT legacy_thread_id FROM chat_legacy_imports").fetchall()
@@ -1471,13 +1642,8 @@ def list_chat_legacy_imports() -> list[str]:
 def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
     """Mark each given legacy thread id as imported. Idempotent.
 
-    Returns (accepted, inserted):
-      - accepted: number of non-empty deduped input ids
-      - inserted: number of rows that were actually new (not already in ledger)
-
-    ON CONFLICT DO NOTHING keeps the existing imported_at when an id is
-    recorded twice. INSERT...RETURNING reports only the rows that were
-    actually inserted, so callers can distinguish first-time imports
+    Returns (accepted, inserted): count of deduped non-empty input ids, and
+    count of rows actually new. RETURNING lets callers tell first-time imports
     from idempotent re-runs without an extra SELECT.
     """
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))

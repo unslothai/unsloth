@@ -160,10 +160,8 @@ def _quantize_q2_k_l(
     n_threads: int,
     print_output: bool = True,
 ):
-    # "Q2_K_L" is a Unsloth-side preset, not a native llama.cpp ftype. It
-    # maps to the `q2_k` ftype with `--output-tensor-type q8_0` and
-    # `--token-embedding-type q8_0` so the output/embedding tensors retain
-    # higher precision than a plain Q2_K quant.
+    # "Q2_K_L" is an Unsloth preset, not a native llama.cpp ftype: q2_k with
+    # output/token-embedding tensors kept at q8_0 for higher precision.
     command = [
         str(quantizer_location),
         "--output-tensor-type",
@@ -1045,9 +1043,8 @@ def unsloth_save_model(
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to organization!
-        # Sadly .save_pretrained doesn't work :(
-        # We first save it via .save_pretrained, then upload manually!
+        # Pushing to organization: .save_pretrained doesn't work, so save
+        # locally first then upload manually.
         save_pretrained_settings["save_directory"] = new_save_directory
         save_pretrained_settings["push_to_hub"] = False
         internal_model.save_pretrained(**save_pretrained_settings)
@@ -1095,7 +1092,6 @@ def unsloth_save_model(
     gc.collect()
 
     # Remove temporary location
-    import shutil
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
@@ -1227,7 +1223,6 @@ def install_llama_cpp_old(version = -10):
         for i in range(30):
             print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
             time.sleep(1)
-        import shutil
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
 
@@ -2226,9 +2221,8 @@ def unsloth_save_pretrained_gguf(
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}")
     else:
-        # Non-PEFT model — checkpoint files already exist on disk.
-        # Point save_to_gguf at the original checkpoint path instead of
-        # re-saving to a temporary "model" subdirectory.
+        # Non-PEFT model: checkpoint files already exist; point save_to_gguf
+        # at the original path instead of re-saving to a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
         if original_path and os.path.isdir(original_path):
             print(
@@ -2498,7 +2492,6 @@ def unsloth_push_to_hub_gguf(
 
     except Exception as e:
         if cleanup_temp:
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 try:
                     shutil.rmtree(d)
@@ -2685,7 +2678,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         # Clean up temporary directory
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
-            import shutil
             for d in [save_directory, f"{save_directory}_gguf"]:
                 if os.path.exists(d):
                     try:
@@ -3004,10 +2996,8 @@ def unsloth_generic_save(
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
-    # Full-finetuned models (no LoRA) cannot use merge_and_overwrite_lora
-    # since there are no adapters to merge. Fall back to save_pretrained.
-    # This mirrors the non-PeftModel handling in save_pretrained_torchao
-    # and the GGUF save path.
+    # Full-finetuned models (no LoRA) have no adapters to merge, so fall back
+    # to save_pretrained, mirroring the torchao and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
         if not is_main_process:

@@ -315,14 +315,10 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
     )
 
 
-# ---------------------------------------------------------------------------
-# Classifier unit tests: feed hand-crafted snippets directly into classify()
-# and assert the returned kind. Covers sneaky import shapes that an
-# adversarial / careless dev might use to obscure a real usage.
-# ---------------------------------------------------------------------------
+# Classifier unit tests: feed hand-crafted snippets into classify() and assert
+# the returned kind. Covers sneaky import shapes used to obscure a real usage.
 
-# Import the script's classify() by file path so this test does not need
-# the package to be installed.
+# Import classify() by file path so this test needs no installed package.
 import importlib.util as _ilu
 
 _spec = _ilu.spec_from_file_location("_dep_check", str(SCRIPT))
@@ -739,11 +735,9 @@ def run_classify_unit_tests() -> int:
     return 0 if passed == len(CLASSIFY_CASES) else 1
 
 
-# ---------------------------------------------------------------------------
-# Adversarial end-to-end cases: drop a sneaky synthetic file into src/,
-# run the checker, then clean up. Catches the case where pattern detection
-# regresses for a real grep+classify pipeline (not just classify in isolation).
-# ---------------------------------------------------------------------------
+# Adversarial end-to-end cases: drop a sneaky synthetic file into src/, run the
+# checker, then clean up. Catches detection regressions in the full
+# grep+classify pipeline (not just classify in isolation).
 
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
 
@@ -894,14 +888,9 @@ ADV_CASES: list[AdvCase] = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # package.json field-reference cases: simulate `prettier: "@x/config"`,
-# `eslintConfig.extends`, `overrides`, `peerDependenciesMeta`, etc.
-# These test the package_json_extra_refs() coverage. Cross-checked against
-# the patterns used by Tailwind, Stylelint, Prettier, Next.js, Astro,
-# TypeScript, ESLint, SvelteKit, Storybook, Vite, and TanStack/Query
-# manifests.
-# ---------------------------------------------------------------------------
+# `eslintConfig.extends`, `overrides`, `peerDependenciesMeta`, etc., testing
+# package_json_extra_refs() coverage across common tool manifests.
 
 
 @dataclass
@@ -1205,9 +1194,7 @@ def run_adversarial_cases() -> int:
     return 0 if passed == len(ADV_CASES) else 1
 
 
-# ---------------------------------------------------------------------------
-# Dead-dep enumeration cases.
-# ---------------------------------------------------------------------------
+# Dead-dep enumeration cases
 
 
 @dataclass
@@ -1383,14 +1370,9 @@ def run_enum_cases() -> int:
     return 0 if passed == len(ENUM_CASES) else 1
 
 
-# ---------------------------------------------------------------------------
-# Script-wrapper cases: exercise scripts_bin_refs / _next_real_bin so a
-# package.json script like `cross-env CI=1 biome check` correctly credits
-# `@biomejs/biome` rather than the wrapper itself. The 10x reviewer flagged
-# the original "first non-env token" heuristic as too narrow: any project
-# using cross-env / dotenv / dotenvx / env-cmd / a quoted env value would
-# bypass the bin-name check.
-# ---------------------------------------------------------------------------
+# Script-wrapper cases: exercise scripts_bin_refs / _next_real_bin so a script
+# like `cross-env CI=1 biome check` credits `@biomejs/biome`, not the wrapper.
+# The original "first non-env token" heuristic missed cross-env / dotenv / etc.
 
 
 @dataclass
