@@ -750,6 +750,7 @@ def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
         return "is_integrated", True
     name_upper = (getattr(props, "name", "") or "").upper()
     import re
+
     for token in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK"):
         # Whole-token match so "GB10" does not match a discrete "GB100"/"GB10X".
         if re.search(r"(?<![A-Z0-9])" + re.escape(token) + r"(?![A-Z0-9])", name_upper):
@@ -2458,6 +2459,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                     _names_u = (_smi.stdout or "").upper()
                     import re as _re
+
                     _spark_smi = any(
                         _re.search(r"(?<![A-Z0-9])" + _re.escape(t) + r"(?![A-Z0-9])", _names_u)
                         for t in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK")
