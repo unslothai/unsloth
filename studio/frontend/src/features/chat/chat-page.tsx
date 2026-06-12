@@ -1045,12 +1045,6 @@ export function ChatPage(): ReactElement {
   const incognitoLabel = incognito
     ? "Turn off temporary chat"
     : "Turn on temporary chat";
-  const createNavigationNonce = useCallback(() => {
-    if (typeof globalThis.crypto?.randomUUID === "function") {
-      return globalThis.crypto.randomUUID();
-    }
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }, []);
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     store.setIncognito(!store.incognito);
@@ -1068,8 +1062,8 @@ export function ChatPage(): ReactElement {
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
     store.setActiveProjectId(null);
-    navigate({ to: "/chat", search: { new: createNavigationNonce() } });
-  }, [createNavigationNonce, navigate, search]);
+    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
