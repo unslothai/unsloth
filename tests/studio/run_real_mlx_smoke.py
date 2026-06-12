@@ -4,58 +4,24 @@
 """
 End-to-end MLX smoke test on real Apple Silicon -- multi-process driver.
 
-Two subcommands so the workflow can drive cold-start reloads in fresh
-Python processes (the way real users hit the load path):
+Two subcommands let the workflow drive cold-start reloads in fresh
+processes (the way real users hit the load path):
 
     python run_real_mlx_smoke.py train  --workdir DIR
     python run_real_mlx_smoke.py reload --format {lora|merged|gguf} --dir D
 
-The `train` subcommand:
-  1. Loads `unsloth/gemma-3-270m-it` via FastMLXModel.from_pretrained.
-  2. Applies LoRA r=8 on q/k/v/o.
-  3. Computes pre-training loss + grad norm via mx.nn.value_and_grad.
-  4. Trains 7 deterministic steps on a dataset of the SAME row repeated
-     ("<<HELLO!!>> My name is Unsloth!"), with batch_size=2 and
-     gradient_accumulation_steps=3 so each step processes 6 sequences
-     and the run sees 42 sequences total.
-  5. Computes post-training loss + grad norm.
-  6. Generates from "<<HELLO!!>> My name is " and asserts "Unsloth"
-     appears in the in-memory completion.
-  7. Saves the trained model in three formats:
-       - LoRA adapter (save_pretrained_merged save_method="lora")
-       - Merged 16-bit (save_pretrained_merged save_method="merged_16bit")
-       - GGUF (save_pretrained_gguf, best-effort -- skipped with a
-         clear reason if save raises; e.g. llama.cpp's
-         convert_hf_to_gguf currently asserts on Gemma-3-270m's
-         tokenizer vocab. Soft-skipped so the LoRA + merged checks
-         continue to gate the PR.)
-  8. Emits `train_metrics.json` with per-phase timing / peak GPU /
-     peak RSS / per-step losses / pre+post grad norms / generations
-     / gguf_supported flag, for regression detection across CI runs.
+`train` loads gemma-3-270m-it, applies LoRA, probes pre/post loss+grad,
+overfits one repeated row, generates, saves in lora/merged_16bit/gguf
+(gguf best-effort), and writes train_metrics.json. `reload` reopens each
+saved format in a fresh process and writes <format>_reload_metrics.json.
 
-Reloads run as separate workflow steps so each is a fresh Python
-process. For lora / merged the reload uses
-FastMLXModel.from_pretrained directly. For gguf the reload spawns
-the llama-cli binary built by save_pretrained_gguf and parses
-stdout. Each subcommand emits `<format>_reload_metrics.json` next
-to the saved dir.
+GGUF export and LoRA reload fixes land in unslothai/unsloth-zoo#627.
 
-The two upstream unsloth_zoo bugs the earlier draft of this script
-worked around are fixed in unslothai/unsloth-zoo#627: GGUF export
-no longer raises NotImplementedError on Apple Silicon (llama_cpp.py
-catches it from the device_type module-level call) and LoRA reload
-via FastMLXModel.from_pretrained(lora_dir) works without an external
-config.json copy (mlx_loader.py preserves local_path when config.json
-is missing so the adapter_config.json branch can run).
+Determinism: seeds random/numpy/mlx.core.random and forwards SEED to
+from_pretrained / get_peft_model / MLXTrainingConfig. Metal has minor
+reduction-order nondeterminism, so loss assertions are bounds, not exact.
 
-Determinism: seeds Python `random`, `numpy`, and `mlx.core.random` in
-every process before any MLX operation. Forwards `random_state=SEED`
-to FastMLXModel.from_pretrained / get_peft_model and `seed=SEED` to
-MLXTrainingConfig. Metal still has minor reduction-order
-nondeterminism, so loss assertions are bounds rather than exact.
-
-Only runnable on a real Apple Silicon host; invoked from
-.github/workflows/mlx-ci.yml on the macos-14 runner.
+Apple-Silicon only; invoked from .github/workflows/mlx-ci.yml.
 """
 
 from __future__ import annotations
@@ -99,13 +65,8 @@ def _peak_gpu_gb() -> float:
 
     if not mx.metal.is_available():
         return 0.0
-    # Newer MLX deprecates mx.metal.get_peak_memory in favour of the
-    # top-level mx.get_peak_memory; fall back to the old API for
-    # compatibility with older MLX versions still present in the
-    # environment.
-    getter = getattr(mx, "get_peak_memory", None) or getattr(
-        mx.metal, "get_peak_memory", None
-    )
+    # Newer MLX moved get_peak_memory to top-level; fall back to mx.metal for old versions.
+    getter = getattr(mx, "get_peak_memory", None) or getattr(mx.metal, "get_peak_memory", None)
     if getter is None:
         return 0.0
     try:
@@ -115,8 +76,7 @@ def _peak_gpu_gb() -> float:
 
 
 def _peak_rss_gb() -> float:
-    """Peak resident set size for this process. macOS getrusage returns
-    bytes; Linux returns kilobytes."""
+    """Peak RSS for this process (macOS getrusage = bytes, Linux = KB)."""
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return float(rss) / (1024**3)
@@ -124,8 +84,7 @@ def _peak_rss_gb() -> float:
 
 
 class Phase:
-    """Wall-clock + memory tracker for a named phase. Records into a
-    metrics dict so we can later JSON-dump for regression detection."""
+    """Wall-clock + memory tracker for a named phase; records into a metrics dict."""
 
     def __init__(self, name: str, metrics: dict):
         self.name = name
@@ -156,8 +115,7 @@ class Phase:
 
 
 def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, float]:
-    """One forward+backward of next-token cross-entropy on `text`.
-    Returns (loss, ||grad||_2)."""
+    """One fwd+bwd of next-token CE on `text`. Returns (loss, ||grad||_2)."""
     import mlx.core as mx
     import mlx.nn as nn
     from mlx.utils import tree_flatten
@@ -186,26 +144,13 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     return float(loss_val.item()), float(mx.sqrt(norm_sq).item())
 
 
-def _teacher_forced_completion_loss(
-    model, tokenizer, prompt: str, completion: str
-) -> float:
-    """Mean next-token CE loss on `completion` tokens given `prompt` (teacher
-    forced -- no decoding, no sampling, no greedy argmax).
+def _teacher_forced_completion_loss(model, tokenizer, prompt: str, completion: str) -> float:
+    """Mean next-token CE on `completion` given `prompt`, teacher-forced.
 
-    Decouples the memorisation check from greedy-decode geometry. A 47-round,
-    13-seed sweep on this fixture showed greedy `completion in output` lands
-    in the 46-77% range across MLX configs (config-fragile), while
-    post_train_loss is < 0.1 in 100% of configs that reach the basin. Teacher-
-    forced completion loss is a subset of post_train_loss so it inherits the
-    same reliability AND is more specific: it asserts *what* the model
-    memorised, not just *that* it reached low loss on the full row.
-
-    Args:
-      model:       the LoRA-trained MLX model
-      tokenizer:   the tokenizer used during training (must match)
-      prompt:      the conditioning text (e.g. PROMPT)
-      completion:  the substring the model should have learnt to emit
-                   after `prompt` (e.g. EXPECT_IN_OUTPUT + "!")
+    Decouples the memorisation check from greedy-decode geometry: a sweep
+    found greedy `completion in output` lands at 46-77% across MLX configs
+    while post_train_loss is < 0.1 whenever the run reaches the basin. This
+    asserts *what* the model memorised, not just that loss is low.
 
     Returns mean cross-entropy over the completion's tokens.
     """
@@ -229,9 +174,7 @@ def _teacher_forced_completion_loss(
     start = len(prompt_ids) - 1
     completion_logits = logits[:, start:, :]
     completion_targets = targets[:, start:]
-    loss = nn.losses.cross_entropy(
-        completion_logits, completion_targets, reduction = "mean"
-    )
+    loss = nn.losses.cross_entropy(completion_logits, completion_targets, reduction = "mean")
     return float(loss.item())
 
 
@@ -281,13 +224,9 @@ def cmd_train(args) -> int:
     mx.random.seed(SEED)
 
     with Phase("apply_lora", metrics):
-        # Standard unsloth LoRA target set (q/k/v/o + gate/up/down).
-        # With bs=2 grad_accum=3 (effective batch 6) the q/k/v/o-only
-        # LoRA collapsed in 7 steps -- training loss kept dropping but
-        # inference output the structural skeleton ("My name") without
-        # recovering the specific "Unsloth" token. Including the MLP
-        # projections gives the LoRA enough capacity to memorize the
-        # training row at the larger effective batch.
+        # Standard unsloth LoRA target set (q/k/v/o + gate/up/down). q/k/v/o
+        # alone collapsed in 7 steps (loss dropped but "Unsloth" wasn't
+        # recovered); MLP projections add the capacity to memorize the row.
         model = FastMLXModel.get_peft_model(
             model,
             r = 8,
@@ -320,29 +259,19 @@ def cmd_train(args) -> int:
         config = MLXTrainingConfig(
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 3,
-            # 47-round mlx-parity-probes sweep (PR #5498 / staging-2#119)
-            # found 7 steps is below the convergence horizon at any clip
-            # setting -- the trainer hasn't memorized the train row yet
-            # when the smoke probes loss/generation. At 30 steps every
-            # seed tested hits post_train_loss=0 across all clip
-            # configurations, so 30 is the seed-robust gate.
+            # Sweep (PR #5498) found 7 steps is below the convergence horizon
+            # at any clip; at 30 steps every seed hits post_train_loss=0, so
+            # 30 is the seed-robust gate.
             max_steps = 30,
             learning_rate = 1e-3,
             warmup_steps = 0,
             lr_scheduler_type = "constant",
             optim = "adamw",
             weight_decay = 0.0,
-            # max_grad_value (elementwise) is materially cheaper than
-            # max_grad_norm on MLX -- norm clip needs a cross-tree
-            # reduction + materializing all grad tensors at full
-            # precision, value clip is tree_map(mx.clip) per leaf.
-            # MLXTrainingConfig defaults to max_grad_value=1.0 for
-            # exactly this reason; pin both explicitly here so the
-            # configured clip matches what runs (the trainer prints a
-            # notice when both > 0 and value wins, so disable norm).
-            # Empirical 13-seed pass rate at this fixture: value=1.0
-            # 62%, norm=1.0 46%, value=5.0 33%, value=0.5 77% -- the
-            # cheaper default is also the higher-pass-rate default.
+            # Elementwise value clip is cheaper than norm clip on MLX (no
+            # cross-tree reduction) and has a higher 13-seed pass rate at this
+            # fixture (value=1.0 62%, norm=1.0 46%). Pin both: value wins when
+            # both > 0, so disable norm.
             max_grad_norm = 0.0,
             max_grad_value = 1.0,
             logging_steps = 1,
@@ -364,7 +293,15 @@ def cmd_train(args) -> int:
         )
 
         def _on_step(
-            step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens, grad_norm = None
+            step,
+            total,
+            loss,
+            lr,
+            tok_s,
+            peak_gb,
+            elapsed,
+            num_tokens,
+            grad_norm = None,
         ):
             losses_per_step.append(round(float(loss), 4))
             grad_text = f"  grad={grad_norm:.4f}" if grad_norm is not None else ""
@@ -608,9 +545,7 @@ def cmd_reload(args) -> int:
             in_mem_loss = None
     metrics["in_memory_generation_ref"] = in_mem_out
     metrics["in_memory_post_train_loss"] = in_mem_loss
-    metrics["reload_completion_matches_in_memory"] = (
-        in_mem_out is not None and out == in_mem_out
-    )
+    metrics["reload_completion_matches_in_memory"] = in_mem_out is not None and out == in_mem_out
     if isinstance(in_mem_loss, (int, float)) and math.isfinite(in_mem_loss):
         reload_loss, _ = _compute_loss_and_grad_norm(m, t, TRAIN_TEXT)
         metrics["reload_post_train_loss"] = round(reload_loss, 4)
@@ -625,8 +560,7 @@ def cmd_reload(args) -> int:
         # workdir layouts): keep a non-empty-completion gate.
         body = out.replace(PROMPT, "", 1).strip()
         assert len(body) >= 4, (
-            f"reload {args.format!r} produced no usable output for "
-            f"{PROMPT!r}: {out!r}"
+            f"reload {args.format!r} produced no usable output for " f"{PROMPT!r}: {out!r}"
         )
 
     metrics["final_peak_gpu_gb"] = round(_peak_gpu_gb(), 3)
@@ -677,9 +611,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
 
     print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush = True)
     if proc.returncode != 0:
-        raise SystemExit(
-            f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}"
-        )
+        raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
     # llama.cpp uses different tokenisation + sampling internals than
     # mlx_lm, so the GGUF reload completion does not have to match the
     # in-memory completion exactly. Require non-empty, non-prompt-only
@@ -689,8 +621,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     body = (proc.stdout or "").replace(PROMPT, "", 1).strip()
     metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in (proc.stdout or "")
     assert len(body) >= 4, (
-        f"GGUF reload produced no usable output for {PROMPT!r}: "
-        f"{proc.stdout[:400]!r}"
+        f"GGUF reload produced no usable output for {PROMPT!r}: " f"{proc.stdout[:400]!r}"
     )
 
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)

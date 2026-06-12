@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "@/lib/toast";
 import {
   Dialog,
@@ -12,25 +13,61 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  EXPORT_FORMATS_LIST,
+  bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
   downloadChatExport,
+  importConversationsFromFile,
+  useChatRuntimeStore,
 } from "@/features/chat";
-import { Delete02Icon, Download02Icon } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
+import {
+  Delete02Icon,
+  Download01Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
 export function ChatTab() {
+  const t = useT();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const collapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.collapseHtmlArtifacts,
+  );
+  const setCollapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.setCollapseHtmlArtifacts,
+  );
+  const allowArtifactNetworkAccess = useChatRuntimeStore(
+    (state) => state.allowArtifactNetworkAccess,
+  );
+  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
+    (state) => state.setAllowArtifactNetworkAccess,
+  );
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (state) => state.hydratePersistedSettings,
+  );
 
   useEffect(() => {
     void countAllChats().then(setCount);
-  }, []);
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -38,6 +75,25 @@ export function ChatTab() {
       await downloadChatExport();
     } finally {
       setExporting(false);
+    }
+  };
+
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const handleImport = async (file: File) => {
+    try {
+      const imported = await importConversationsFromFile(file, null);
+      if (imported === 0) {
+        toast.info(t("settings.chat.importNoConversations"));
+      } else {
+        toast.success(
+          imported === 1
+            ? t("settings.chat.importedOneChat")
+            : t("settings.chat.importedChatCount", { count: imported }),
+        );
+        setCount(await countAllChats().catch(() => count));
+      }
+    } catch {
+      toast.error(t("settings.chat.importFailed"));
     }
   };
 
@@ -53,8 +109,10 @@ export function ChatTab() {
         setConfirmOpen(false);
         toast.success(
           clearedCount === 0
-            ? "Cleared all chats"
-            : `Cleared ${clearedCount} chat${clearedCount === 1 ? "" : "s"}`,
+            ? t("settings.chat.clearedAllChats")
+            : clearedCount === 1
+              ? t("settings.chat.clearedOneChat")
+              : t("settings.chat.clearedChatCount", { count: clearedCount }),
         );
         return;
       }
@@ -66,20 +124,29 @@ export function ChatTab() {
       const remaining = await countAllChats().catch(() => fallbackRemaining);
       setCount(remaining);
       setConfirmOpen(false);
-      toast.warning("Some chats could not be cleared", {
+      toast.warning(t("settings.chat.someChatsCouldNotBeCleared"), {
         description:
           result.failedThreadIds.length > 0
-            ? `${clearedCount} chat${clearedCount === 1 ? "" : "s"} cleared; ${
-                result.failedThreadIds.length
-              } chat${result.failedThreadIds.length === 1 ? "" : "s"} remain. Please retry.`
-            : `A storage clear failed; ${remaining} chat${
-                remaining === 1 ? "" : "s"
-              } may remain. Please retry.`,
+            ? clearedCount === 1 && result.failedThreadIds.length === 1
+              ? t("settings.chat.oneChatClearedRemainOne")
+              : clearedCount === 1
+                ? t("settings.chat.oneChatClearedRemain", {
+                    remainingCount: result.failedThreadIds.length,
+                  })
+                : result.failedThreadIds.length === 1
+                  ? t("settings.chat.chatsClearedRemainOne", { clearedCount })
+                  : t("settings.chat.chatsClearedRemain", {
+                      clearedCount,
+                      remainingCount: result.failedThreadIds.length,
+                    })
+            : remaining === 1
+              ? t("settings.chat.storageClearFailedOne")
+              : t("settings.chat.storageClearFailed", { count: remaining }),
       });
     } catch (error) {
       const remaining = await countAllChats().catch(() => count);
       setCount(remaining);
-      toast.error("Failed to clear chats", {
+      toast.error(t("settings.chat.failedToClearChats"), {
         description: error instanceof Error ? error.message : undefined,
       });
     } finally {
@@ -90,16 +157,43 @@ export function ChatTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">Chat</h1>
+        <h1 className="text-lg font-semibold font-heading">
+          {t("settings.chat.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Manage your chat history stored on this device.
+          {t("settings.chat.description")}
         </p>
       </header>
 
-      <SettingsSection title="Data">
+      <SettingsSection title={t("settings.chat.artifacts.title")}>
         <SettingsRow
-          label="Export chat history"
-          description="Download all chats and messages as a JSON file."
+          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+          description={t(
+            "settings.chat.artifacts.collapseHtmlBlocksDescription",
+          )}
+        >
+          <Switch
+            checked={collapseHtmlArtifacts}
+            onCheckedChange={setCollapseHtmlArtifacts}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.artifacts.allowNetworkAccess")}
+          description={t(
+            "settings.chat.artifacts.allowNetworkAccessDescription",
+          )}
+        >
+          <Switch
+            checked={allowArtifactNetworkAccess}
+            onCheckedChange={setAllowArtifactNetworkAccess}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.data")}>
+        <SettingsRow
+          label={t("settings.chat.exportHistory")}
+          description={t("settings.chat.exportHistoryDescription")}
         >
           <Button
             variant="outline"
@@ -107,20 +201,107 @@ export function ChatTab() {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download02Icon} className="size-3.5 mr-1.5" />
-            {exporting ? "Exporting…" : "Export"}
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
+            {exporting
+              ? t("settings.chat.exportingAction")
+              : t("settings.chat.exportAction")}
           </Button>
         </SettingsRow>
 
         <SettingsRow
+          label={t("settings.chat.exportConversations")}
+          description={t("settings.chat.exportConversationsDescription")}
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button variant="outline" size="sm" disabled={count === 0}>
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+                {t("settings.chat.exportConversationsAction")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {(
+                [
+                  { scope: "recents", label: "exportScopeRecents" },
+                  { scope: "all", label: "exportScopeAll" },
+                ] as const
+              ).map(({ scope, label }) => (
+                <DropdownMenuSub key={scope}>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon
+                      icon={Download01Icon}
+                      className="size-3.5 mr-1"
+                    />
+                    {t(`settings.chat.${label}`)}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-m-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, true)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-s-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, false)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.chat.importChats")}
+          description={t("settings.chat.importChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => importInputRef.current?.click()}
+          >
+            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            {t("settings.chat.importChatsAction")}
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".jsonl,.ndjson,.csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void handleImport(file);
+            }}
+          />
+        </SettingsRow>
+
+        <SettingsRow
           destructive
-          label="Clear all chats"
+          label={t("settings.chat.clearAllChats")}
           description={
             count === null
-              ? "Permanently delete every chat on this device."
+              ? t("settings.chat.clearAllChatsDescription")
               : count === 0
-                ? "No chats to clear."
-                : `Permanently delete all ${count} chat${count === 1 ? "" : "s"} on this device.`
+                ? t("settings.chat.noChatsToClear")
+                : count === 1
+                  ? t("settings.chat.clearOneChatDescription")
+                  : t("settings.chat.clearChatCountDescription", { count })
           }
         >
           <Button
@@ -131,7 +312,7 @@ export function ChatTab() {
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
-            Clear chats
+            {t("settings.chat.clearChatsAction")}
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -140,16 +321,17 @@ export function ChatTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              Clear {count ?? 0} chat{count === 1 ? "" : "s"}?
+              {count === 1
+                ? t("settings.chat.clearOneChatTitle")
+                : t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
             </DialogTitle>
             <DialogDescription>
-              This permanently deletes every chat and message stored on this
-              device. This cannot be undone.
+              {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={handleClear}
@@ -157,8 +339,12 @@ export function ChatTab() {
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {clearing
-                ? "Clearing…"
-                : `Clear ${count ?? 0} chat${count === 1 ? "" : "s"}`}
+                ? t("settings.chat.clearingAction")
+                : count === 1
+                  ? t("settings.chat.clearOneChatAction")
+                  : t("settings.chat.clearChatCountAction", {
+                      count: count ?? 0,
+                    })}
             </Button>
           </DialogFooter>
         </DialogContent>

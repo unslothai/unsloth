@@ -77,7 +77,6 @@ def _safe_parse(path: pathlib.Path):
         return _PARSE_CACHE[key]
     try:
         import warnings as _w
-
         with _w.catch_warnings():
             # Suppress SyntaxWarning emitted while parsing third-party files
             # that contain invalid escape sequences in regex / docstrings.
@@ -180,9 +179,7 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     return arity, accepts_var
 
 
-def discover_producers(
-    roots: list[pathlib.Path],
-) -> dict[str, list[tuple[pathlib.Path, int]]]:
+def discover_producers(roots: list[pathlib.Path]) -> dict[str, list[tuple[pathlib.Path, int]]]:
     """Walk every .py under each root and return {cb_list_attr: [(file, arity), ...]}."""
     producers: dict[str, list[tuple[pathlib.Path, int]]] = {}
     for root in roots:
@@ -307,7 +304,6 @@ def test_no_callback_signature_drift():
     producers = discover_producers(roots)
     if not producers:
         import pytest
-
         pytest.skip(
             "no callback producer pattern (self._*_callbacks + cb(...)) found in "
             "unsloth or unsloth_zoo. Set UNSLOTH_ZOO_SRC=<path-to-unsloth-zoo-git-checkout> "

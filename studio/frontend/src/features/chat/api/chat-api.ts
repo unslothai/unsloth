@@ -3,7 +3,12 @@
 
 import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
-import type { MessageRecord, ModelType, ThreadRecord } from "../types";
+import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -136,9 +141,8 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   /**
-   * Resolved on-disk path of the snapshot dir (or cache repo root if no
-   * snapshot exists yet). Null when nothing has been written to the
-   * cache for this repo.
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
+   * Null when nothing has been written to the cache for this repo.
    */
   cache_path: string | null;
 }
@@ -163,9 +167,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-   * Load phase: ``"mmap"`` while the llama-server subprocess is paging
-   * weight shards into RAM, ``"ready"`` once it has reported healthy,
-   * or ``null`` when no load is in flight.
+   * Load phase: "mmap" while llama-server pages weight shards into RAM,
+   * "ready" once healthy, or null when no load is in flight.
    */
   phase: ModelLoadPhase;
   bytes_loaded: number;
@@ -174,10 +177,9 @@ export interface LoadProgressResponse {
 }
 
 /**
- * Fetch the active GGUF load's mmap/upload progress. Complements
- * ``getDownloadProgress`` / ``getGgufDownloadProgress`` for the window
- * between "download complete" and "chat ready", which for large MoE
- * models can be several minutes of otherwise-opaque spinning.
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download
+ * progress endpoints for the "download complete" -> "chat ready" window, which
+ * for large MoE models can be several minutes of otherwise-opaque spinning.
  */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
   const response = await authFetch(`/api/inference/load-progress`);
@@ -287,19 +289,23 @@ export async function listChatThreads(
   args: {
     modelType?: ModelType;
     pairId?: string;
+    projectId?: string | null;
     includeArchived?: boolean;
   } = {},
 ): Promise<ThreadRecord[]> {
   const params = new URLSearchParams();
   if (args.modelType) params.set("model_type", args.modelType);
   if (args.pairId) params.set("pair_id", args.pairId);
+  if (args.projectId) params.set("project_id", args.projectId);
   if (args.includeArchived !== undefined) {
     params.set("include_archived", String(args.includeArchived));
   }
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  return data.threads;
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.threads) ? data.threads : [];
 }
 
 export async function getChatThread(
@@ -350,6 +356,76 @@ export async function deleteChatThreads(threadIds: string[]): Promise<void> {
     body: JSON.stringify({ ids: threadIds }),
   });
   await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  const params = new URLSearchParams();
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.projects) ? data.projects : [];
+}
+
+export async function getChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function saveChatProject(
+  project: ProjectRecord,
+): Promise<ProjectRecord> {
+  const response = await authFetch("/api/chat/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  const saved = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return saved;
+}
+
+export async function updateChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return project;
+}
+
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (args.deleteFiles) params.set("delete_files", "true");
+  const qs = params.toString();
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatHistoryUpdated();
 }
 
@@ -464,6 +540,7 @@ export async function buildBackendChatExport(): Promise<{
   exportedAt: string;
   version: number;
   threadCount: number;
+  projects?: ProjectRecord[];
   threads: ThreadRecord[];
   messages: MessageRecord[];
 }> {
@@ -471,16 +548,14 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
-// Legacy-Dexie import ledger. The server-side source of truth that
-// replaces the boolean localStorage sentinel
-// (`unsloth_chat_legacy_imported_to_studio_db`) so a studio.db wipe
-// makes the import recoverable.
+// Legacy-Dexie import ledger: server-side source of truth replacing the
+// boolean localStorage sentinel, so a studio.db wipe keeps the import
+// recoverable.
 export async function listChatImportLedger(): Promise<Set<string>> {
   const response = await authFetch("/api/chat/import-ledger");
-  // Backend deployments that don't have this endpoint yet behave the
-  // same as an empty ledger -- caller treats every legacy thread as
-  // un-imported and tries to import. The UPSERT semantics in
-  // syncChatMessages prevent duplicates, so this fallback is safe.
+  // Backends without this endpoint behave like an empty ledger -- caller
+  // re-imports every legacy thread. syncChatMessages UPSERTs prevent
+  // duplicates, so this fallback is safe.
   if (response.status === 404 || response.status === 405) return new Set();
   const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
   return new Set(data.threadIds);
@@ -489,9 +564,9 @@ export async function listChatImportLedger(): Promise<Set<string>> {
 export interface RecordChatImportLedgerResult {
   accepted: number;
   inserted: number;
-  // false when the backend predates /api/chat/import-ledger (404/405/501)
-  // so the caller can avoid poisoning the localStorage perf hint -- the
-  // next launch will retry the (idempotent) import.
+  // false when the backend predates /api/chat/import-ledger (404/405/501) so
+  // the caller avoids poisoning the localStorage perf hint; next launch
+  // retries the (idempotent) import.
   supported: boolean;
 }
 
@@ -553,11 +628,10 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so that a
-  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
-  // hidden-toggle clicks) actually cancels the in-flight HTTP request
-  // server-side, instead of merely dropping the response client-side
-  // while the backend keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled
+  // FolderBrowser navigation actually cancels the in-flight request
+  // server-side, instead of just dropping the response while the backend
+  // keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,

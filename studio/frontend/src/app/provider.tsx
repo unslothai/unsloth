@@ -9,7 +9,10 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { LlamaUpdateBanner } from "@/components/llama-update-banner";
+import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -26,6 +29,9 @@ interface AppProviderProps {
 type TauriWindowMode = "setup" | "app";
 type WindowLayoutGuard = () => boolean;
 
+const MIN_WINDOW_WIDTH = 900;
+const MIN_WINDOW_HEIGHT = 600;
+
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   if (!isCurrent()) return;
@@ -39,35 +45,52 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
 
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { restoreStateCurrent, StateFlags } = await import("@tauri-apps/plugin-window-state");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  const monitor = await currentMonitor();
+  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
+  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
+  // set_size on a hidden window is deferred until show(), so innerSize() reads a
+  // stale value and a baseline fallback would overwrite the queued restore. On
+  // macOS the same probe works, hence the inconsistency between prior iterations.
+  const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
-  let finalW = 900;
-  let finalH = 600;
-
-  if (monitor) {
-    const scale = monitor.scaleFactor;
-    const screenW = monitor.size.width / scale;
-    const screenH = monitor.size.height / scale;
-
-    finalW = Math.max(900, Math.round(screenW * 0.75));
-    const targetH = Math.max(600, Math.round(finalW / 1.618));
-    finalH = Math.min(targetH, Math.round(screenH * 0.85));
-  }
-
-  if (!isCurrent()) return;
-  await win.setSize(new LogicalSize(finalW, finalH));
-  if (!isCurrent()) return;
-  await win.setSizeConstraints({ minWidth: 900, minHeight: 600 });
-  if (!isCurrent()) return;
   await win.setResizable(true);
   if (!isCurrent()) return;
-  await win.center();
+
+  if (hasSavedState) {
+    // Subsequent launch: plugin restores size/position/maximized, with built-in
+    // off-screen protection for positions saved on a now-disconnected display.
+    await restoreStateCurrent(
+      StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
+    );
+  } else {
+    // First launch: fit to the current monitor and center.
+    const monitor = await currentMonitor();
+    if (!isCurrent()) return;
+    let finalW = MIN_WINDOW_WIDTH;
+    let finalH = MIN_WINDOW_HEIGHT;
+    if (monitor) {
+      const scale = monitor.scaleFactor;
+      const screenW = monitor.size.width / scale;
+      const screenH = monitor.size.height / scale;
+      finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
+      const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
+      finalH = Math.min(targetH, Math.round(screenH * 0.85));
+    }
+    await win.setSize(new LogicalSize(finalW, finalH));
+    if (!isCurrent()) return;
+    await win.center();
+  }
   if (!isCurrent()) return;
   await win.show();
+  if (!isCurrent()) return;
+  // Apply constraints after restore/show: doing so before plugin restore can emit
+  // a Resized event and overwrite the plugin's cached saved size.
+  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -235,7 +258,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
+        <DownloadManagerPanel />
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+        <LlamaUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
   }
@@ -252,6 +277,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
+      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen
@@ -270,7 +296,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  if (!shouldUseCustomWindowTitlebar()) return content;
+  if (!shouldUseCustomWindowTitlebar()) {
+    // macOS desktop uses the native titlebar and returns here before the
+    // custom-titlebar branch, so mount the updater banner on this path too.
+    return (
+      <>
+        {content}
+        <LlamaUpdateBanner
+          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+        />
+      </>
+    );
+  }
 
   const showSidebarSurface =
     showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
@@ -281,6 +318,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {content}
       </div>
+      <LlamaUpdateBanner
+        enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+      />
     </div>
   );
 }
@@ -288,17 +328,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
-      <TauriWrapper>
-        {children}
-      </TauriWrapper>
-      <Toaster
-        position="top-right"
-        visibleToasts={2}
-        expand={true}
-        closeButton={true}
-        // Clear the chat header buttons on the right.
-        offset={{ top: 12, right: 64 }}
-      />
+      <TooltipProvider>
+        <TauriWrapper>
+          {children}
+        </TauriWrapper>
+        <Toaster
+          position="top-right"
+          visibleToasts={2}
+          expand={true}
+          closeButton={true}
+          // Clear the chat header buttons on the right.
+          offset={{ top: 12, right: 64 }}
+        />
+      </TooltipProvider>
     </ThemeProvider>
   );
 }

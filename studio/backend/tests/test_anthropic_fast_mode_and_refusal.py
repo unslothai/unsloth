@@ -3,9 +3,9 @@
 
 """Tests for Anthropic fast-mode wiring and streaming refusal handling.
 
-fast_mode=True on Opus 4.6/4.7 attaches the ``fast-mode-2026-02-01``
-beta header and sets ``speed: "fast"``; unsupported models drop both.
-Streaming ``stop_reason: "refusal"`` surfaces a user notice before the
+fast_mode=True on Opus 4.6/4.7 attaches the ``fast-mode-2026-02-01`` beta
+header and sets ``speed: "fast"``; unsupported models drop both. Streaming
+``stop_reason: "refusal"`` surfaces a user notice before the
 ``content_filter`` finish chunk.
 https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
 """
@@ -58,8 +58,12 @@ def _refusal_sse() -> bytes:
     )
 
 
-def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
-    """Install a MockTransport, drive one streamed call, return body+lines."""
+def _capture(
+    monkeypatch,
+    sse: bytes = b"",
+    **kwargs,
+) -> tuple[dict, list[str]]:
+    """Install a MockTransport, drive one streamed call; return body+lines."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -153,12 +157,12 @@ def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch)
 
 def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
     """Refused turns emit an out-of-band `_toolEvent` that the chat-adapter
-    latches into assistant `metadata.custom.anthropicRefusal`, driving
-    the next-request prune. Tool event (not text) prevents spoofing.
+    latches into assistant `metadata.custom.anthropicRefusal`, driving the
+    next-request prune. Tool event (not text) prevents spoofing.
     """
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
-    # Visible refusal text must not embed a sentinel that could spoof
-    # a context reset if echoed by another assistant message.
+    # Visible refusal text must not embed a sentinel that could spoof a
+    # context reset if echoed by another assistant message.
     assert "studio:anthropic-refusal" not in body, body
