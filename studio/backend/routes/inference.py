@@ -596,9 +596,11 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -627,9 +629,11 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -678,6 +682,8 @@ from models.inference import (
     ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputReasoningContent,
     ResponsesOutputFunctionCall,
     ResponsesUsage,
     ResponsesResponse,
@@ -1159,6 +1165,21 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
+    """Whether an inherited --split-mode should be stripped on reload.
+
+    The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
+    layer modes, so only strip when the toggle overrides it: tensor being turned
+    on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
+    survive. Shared by the inheritance strip and the already-loaded stale check
+    so they agree on what reload would do.
+    """
+    fields_set = getattr(request, "model_fields_set", set())
+    return "tensor_parallel" in fields_set and (
+        request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
+    )
+
+
 def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401."""
@@ -1168,6 +1189,24 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
+    ):
+        return False
+    # Reconcile a user --split-mode in extras into the effective tensor state.
+    # When the request omits llama_extra_args ("inherit"), compare using the
+    # stored extras stripped the way the reload strips them, so an extras-driven
+    # tensor load isn't seen as a mismatch that needlessly reloads the server.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    effective_extra = (
+        request.llama_extra_args
+        if request.llama_extra_args is not None
+        else strip_shadowing_flags(
+            backend_extra,
+            strip_split_mode = _should_strip_split_mode(request, backend_extra),
+        )
+    )
+    if (
+        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
+        != llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
@@ -1188,10 +1227,19 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
     # contain any shadow flag, so the reload path strips them rather than
-    # leaving a stale override in effect.
-    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
-        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+        # Mirror the reload's conditional split-mode strip, so a preserved
+        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
+        # trigger a needless reload of a healthy server.
+        if (
+            backend_extra
+            and strip_shadowing_flags(
+                backend_extra,
+                strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            )
+            != backend_extra
+        ):
             return False
     else:
         if list(request.llama_extra_args) != backend_extra:
@@ -1360,6 +1408,7 @@ async def load_model(
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
             if (
@@ -1490,6 +1539,9 @@ async def load_model(
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
+                        strip_split_mode = _should_strip_split_mode(
+                            request, llama_backend.extra_args
+                        ),
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
@@ -1514,22 +1566,25 @@ async def load_model(
             # during the (potentially long) GGUF download + llama-server start.
             _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
+            # Load kwargs common to HF and local modes; the two differ only by
+            # the model-source args (hf_repo/-token vs gguf_path/mmproj).
+            _common_load_kwargs = dict(
+                model_identifier = config.identifier,
+                is_vision = config.is_vision,
+                n_ctx = request.max_seq_length,
+                chat_template_override = request.chat_template_override,
+                cache_type_kv = request.cache_type_kv,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                n_parallel = _n_parallel,
+                extra_args = extra_llama_args,
+            )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -1548,8 +1603,7 @@ async def load_model(
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     mtp_draft_path = config.gguf_mtp_file,
@@ -1557,16 +1611,35 @@ async def load_model(
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
                     hf_variant = config.gguf_variant,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
+
+            # Run a single load attempt with the given tensor flag + extras.
+            async def _attempt_gguf_load(
+                tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
+            ) -> bool:
+                attempt_kwargs = {
+                    **_common_load_kwargs,
+                    "extra_args": attempt_extra_args,
+                }
+                return await asyncio.to_thread(
+                    llama_backend.load_model,
+                    **_source_load_kwargs,
+                    **attempt_kwargs,
+                    tensor_parallel = tensor_parallel,
+                )
+
+            # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
+            # outright (e.g. Gemma 3n aborts with a GGML_ASSERT). The helper auto-
+            # falls back to layer split so the checkbox never blocks a model from
+            # loading; the response reports the backend's actual tensor_parallel
+            # state so the UI toggle reflects the fallback.
+            success = await load_with_tensor_fallback(
+                _attempt_gguf_load,
+                requested_tensor = request.tensor_parallel,
+                extra_args = extra_llama_args,
+                label = config.identifier,
+                cancelled = llama_backend.load_cancelled,
+            )
 
             if not success:
                 raise HTTPException(
@@ -1612,6 +1685,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -2100,6 +2174,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
@@ -5001,6 +5076,149 @@ def _responses_tool_output_text(output: Union[str, list]) -> str:
     return "(no output)"
 
 
+_RESPONSES_THINK_OPEN = "<think>"
+_RESPONSES_THINK_CLOSE = "</think>"
+_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _coerce_responses_reasoning_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_coerce_responses_reasoning_text(part) for part in value)
+    if isinstance(value, dict):
+        for key in ("text", "reasoning_text", "content"):
+            text = _coerce_responses_reasoning_text(value.get(key))
+            if text:
+                return text
+        return ""
+    return json.dumps(value)
+
+
+def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
+    """Number of trailing chars to retain because they may start a marker."""
+    for size in range(min(len(text), max(len(m) for m in markers) - 1), 0, -1):
+        suffix = text[-size:]
+        if any(marker.startswith(suffix) for marker in markers):
+            return size
+    return 0
+
+
+class _ResponsesReasoningExtractor:
+    """Split local <think> markup into Responses reasoning and visible text."""
+
+    def __init__(self, *, parse_think_markers: bool = False) -> None:
+        self._buffer = ""
+        self._in_reasoning = False
+        self._parse_think_markers = parse_think_markers
+
+    def feed(
+        self,
+        text: str = "",
+        reasoning_content: Any = None,
+    ) -> tuple[str, str]:
+        reasoning_parts: list[str] = []
+        visible_parts: list[str] = []
+        structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
+        if structured_reasoning:
+            reasoning_parts.append(structured_reasoning)
+        if text:
+            self._buffer += text
+        if not self._parse_think_markers:
+            visible_parts.append(self._buffer)
+            self._buffer = ""
+            return "".join(reasoning_parts), "".join(visible_parts)
+
+        while self._buffer:
+            if self._in_reasoning:
+                close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+                if close_idx != -1:
+                    reasoning_parts.append(self._buffer[:close_idx])
+                    self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    self._in_reasoning = False
+                    continue
+                keep = _responses_marker_holdback(self._buffer, (_RESPONSES_THINK_CLOSE,))
+                if keep == len(self._buffer):
+                    break
+                reasoning_parts.append(self._buffer[:-keep] if keep else self._buffer)
+                self._buffer = self._buffer[-keep:] if keep else ""
+                break
+
+            open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)
+            close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                visible_parts.append(self._buffer[:close_idx])
+                self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                continue
+            if open_idx != -1:
+                visible_parts.append(self._buffer[:open_idx])
+                self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
+                self._in_reasoning = True
+                continue
+
+            keep = _responses_marker_holdback(
+                self._buffer,
+                (_RESPONSES_THINK_OPEN, _RESPONSES_THINK_CLOSE),
+            )
+            if keep == len(self._buffer):
+                break
+            visible_parts.append(self._buffer[:-keep] if keep else self._buffer)
+            self._buffer = self._buffer[-keep:] if keep else ""
+            break
+
+        return "".join(reasoning_parts), "".join(visible_parts)
+
+    def finish(self) -> tuple[str, str]:
+        if not self._buffer:
+            return "", ""
+        remaining = self._buffer
+        self._buffer = ""
+        if not self._parse_think_markers:
+            return "", remaining
+        if self._in_reasoning:
+            self._in_reasoning = False
+            return remaining, ""
+        return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
+
+
+def _extract_responses_reasoning(
+    text: str = "",
+    reasoning_content: Any = None,
+    *,
+    parse_think_markers: bool = False,
+) -> tuple[str, str]:
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = parse_think_markers)
+    reasoning, visible = extractor.feed(text, reasoning_content)
+    final_reasoning, final_visible = extractor.finish()
+    return reasoning + final_reasoning, visible + final_visible
+
+
+def _responses_should_parse_think_markers(
+    chat_req: ChatCompletionRequest, llama_backend: Any = None
+) -> bool:
+    if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
+        if getattr(llama_backend, "reasoning_always_on", False):
+            return True
+        if not getattr(llama_backend, "supports_reasoning", False):
+            return False
+    if chat_req.enable_thinking is True:
+        return True
+    return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
+
+
+def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+    kwargs: dict[str, Any] = {
+        "status": "completed",
+        "summary": [],
+        "content": [ResponsesOutputReasoningContent(text = reasoning_text)],
+    }
+    if item_id is not None:
+        kwargs["id"] = item_id
+    return ResponsesOutputReasoning(**kwargs).model_dump()
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
@@ -5159,6 +5377,33 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
+    # ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``) arrives via
+    # the Responses extra-body: ResponsesRequest has ``extra="allow"``, so the
+    # OpenAI SDK's ``extra_body`` spread lands the dict in ``model_extra``. The
+    # downstream Chat Completions paths consume the typed ``enable_thinking``
+    # field -- the non-streaming path lifts it in ``openai_chat_completions``
+    # only when it is still ``None``, and the streaming pass-through reads
+    # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
+    # handler, to cover both Responses paths.
+    explicit_enable_thinking = False
+    _extra = getattr(payload, "model_extra", None)
+    if isinstance(_extra, dict):
+        _tpl_kw = _extra.get("chat_template_kwargs")
+        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
+            chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
+            explicit_enable_thinking = True
+
+    if isinstance(payload.reasoning, dict):
+        effort = payload.reasoning.get("effort")
+        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+            if not explicit_enable_thinking:
+                chat_kwargs["reasoning_effort"] = effort
+                chat_kwargs["enable_thinking"] = effort != "none"
+            elif chat_kwargs.get("enable_thinking") is False:
+                chat_kwargs["reasoning_effort"] = "none"
+            elif effort != "none":
+                chat_kwargs["reasoning_effort"] = effort
+
     return ChatCompletionRequest(**chat_kwargs)
 
 
@@ -5202,10 +5447,18 @@ async def _responses_non_streaming(
 
     choices = body.get("choices", [])
     text = ""
+    reasoning_text = ""
     tool_calls: list[dict] = []
     if choices:
         msg = choices[0].get("message", {}) or {}
-        text = msg.get("content", "") or ""
+        raw_content = msg.get("content", "") or ""
+        raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+        llama_backend = get_llama_cpp_backend()
+        reasoning_text, text = _extract_responses_reasoning(
+            raw_text,
+            msg.get("reasoning_content"),
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+        )
         tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
@@ -5219,6 +5472,10 @@ async def _responses_non_streaming(
     # the model produced content, so clients expecting a pure tool-call turn
     # (finish_reason="tool_calls") don't see a spurious empty message item.
     output_items: list[dict] = []
+    if reasoning_text and not text and not tool_calls:
+        text = reasoning_text
+    if reasoning_text:
+        output_items.append(_responses_reasoning_output_item(reasoning_text))
     if text:
         msg_id = f"msg_{uuid.uuid4().hex[:12]}"
         output_items.append(
@@ -5266,16 +5523,15 @@ async def _responses_stream(
     avoids that. Non-GGUF falls back to the wrapper (which doesn't use httpx, so
     the issue doesn't apply).
 
-    Text deltas arrive as ``response.output_text.delta`` on a single
-    ``message`` output item at ``output_index=0``. Each tool call from
+    Output items are allocated as upstream deltas appear. Reasoning/text deltas
+    open top-level ``reasoning`` / ``message`` items; each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
-    output item (one per distinct ``tool_calls[].index``) and relayed as
+    item (one per distinct ``tool_calls[].index``) and relayed as
     ``response.function_call_arguments.delta`` / ``.done`` events so clients
     (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
     with a ``function_call_output`` item next turn.
     """
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
@@ -5315,61 +5571,166 @@ async def _responses_stream(
 
     async def event_generator():
         full_text = ""
+        full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
+        extractor = _ResponsesReasoningExtractor(
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
+        )
+        reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
+        message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
         # stable across chunks for the same call. Values:
         #   {output_index, item_id, call_id, name, arguments, opened}
         tool_call_state: dict[int, dict] = {}
-        # Text message lives at output_index 0; tool calls claim 1, 2, ...
-        next_output_index = 1
+        next_output_index = 0
+
+        def _sse(event_name: str, payload: dict) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+
+        def _claim_output_index() -> int:
+            nonlocal next_output_index
+            output_index = next_output_index
+            next_output_index += 1
+            return output_index
+
+        def _ensure_reasoning_open() -> list[str]:
+            if reasoning_state["opened"]:
+                return []
+            reasoning_state["output_index"] = _claim_output_index()
+            reasoning_state["item_id"] = f"rs_{uuid.uuid4().hex[:12]}"
+            reasoning_state["opened"] = True
+            output_index = reasoning_state["output_index"]
+            item_id = reasoning_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "reasoning",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "summary": [],
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": ""},
+                    },
+                ),
+            ]
+
+        def _ensure_message_open() -> list[str]:
+            if message_state["opened"]:
+                return []
+            message_state["output_index"] = _claim_output_index()
+            message_state["item_id"] = f"msg_{uuid.uuid4().hex[:12]}"
+            message_state["opened"] = True
+            output_index = message_state["output_index"]
+            item_id = message_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "message",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []},
+                    },
+                ),
+            ]
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
-            items: list[dict] = [
-                {
-                    "type": "message",
-                    "id": msg_id,
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [
+            indexed_items: list[tuple[int, dict]] = []
+            if reasoning_state["opened"]:
+                indexed_items.append(
+                    (
+                        reasoning_state["output_index"],
                         {
-                            "type": "output_text",
-                            "text": full_text,
-                            "annotations": [],
-                        }
-                    ],
-                }
-            ]
-            for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
-                items.append(
-                    {
-                        "type": "function_call",
-                        "id": st["item_id"],
-                        "status": "completed",
-                        "call_id": st["call_id"],
-                        "name": st["name"],
-                        "arguments": st["arguments"],
-                    }
+                            "type": "reasoning",
+                            "id": reasoning_state["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    )
                 )
-            return items
+            if message_state["opened"]:
+                indexed_items.append(
+                    (
+                        message_state["output_index"],
+                        {
+                            "type": "message",
+                            "id": message_state["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": full_text,
+                                    "annotations": [],
+                                }
+                            ],
+                        },
+                    )
+                )
+            for st in tool_call_state.values():
+                indexed_items.append(
+                    (
+                        st["output_index"],
+                        {
+                            "type": "function_call",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "call_id": st["call_id"],
+                            "name": st["name"],
+                            "arguments": st["arguments"],
+                        },
+                    )
+                )
+            return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
         # ── Preamble events ──
-        yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
-
-        # output_item.added (text message at output_index 0)
-        output_item = {
-            "type": "message",
-            "id": msg_id,
-            "status": "in_progress",
-            "role": "assistant",
-            "content": [],
-        }
-        yield f"event: response.output_item.added\ndata: {json.dumps({'type': 'response.output_item.added', 'output_index': 0, 'item': output_item})}\n\n"
-
-        # content_part.added
-        content_part = {"type": "output_text", "text": "", "annotations": []}
-        yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
+        yield _sse(
+            "response.created",
+            {
+                "type": "response.created",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "in_progress",
+                    "model": payload.model,
+                    "output": [],
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                },
+            },
+        )
 
         # ── Direct httpx lifecycle to llama-server ──
         # Full same-task open + close, same pattern as
@@ -5386,7 +5747,21 @@ async def _responses_stream(
                 resp = await client.send(req, stream = True)
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {"code": 502, "message": _friendly_error(e)},
+                        },
+                    },
+                )
                 return
 
             if resp.status_code != 200:
@@ -5397,7 +5772,24 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {
+                                "code": resp.status_code,
+                                "message": f"llama-server error: {err_text[:500]}",
+                            },
+                        },
+                    },
+                )
                 return
 
             lines_iter = resp.aiter_lines()
@@ -5427,17 +5819,38 @@ async def _responses_stream(
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
-                content = delta.get("content")
-                if content:
-                    full_text += content
-                    delta_event = {
-                        "type": "response.output_text.delta",
-                        "item_id": msg_id,
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": content,
-                    }
-                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+                reasoning_delta, visible_delta = extractor.feed(
+                    delta.get("content") or "",
+                    delta.get("reasoning_content"),
+                )
+                if reasoning_delta:
+                    for event in _ensure_reasoning_open():
+                        yield event
+                    full_reasoning += reasoning_delta
+                    yield _sse(
+                        "response.reasoning_text.delta",
+                        {
+                            "type": "response.reasoning_text.delta",
+                            "item_id": reasoning_state["item_id"],
+                            "output_index": reasoning_state["output_index"],
+                            "content_index": 0,
+                            "delta": reasoning_delta,
+                        },
+                    )
+                if visible_delta:
+                    for event in _ensure_message_open():
+                        yield event
+                    full_text += visible_delta
+                    yield _sse(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": message_state["item_id"],
+                            "output_index": message_state["output_index"],
+                            "content_index": 0,
+                            "delta": visible_delta,
+                        },
+                    )
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
@@ -5447,14 +5860,13 @@ async def _responses_stream(
                         # First chunk for this tool call -- allocate an
                         # output_index and emit output_item.added.
                         st = {
-                            "output_index": next_output_index,
+                            "output_index": _claim_output_index(),
                             "item_id": f"fc_{uuid.uuid4().hex[:12]}",
                             "call_id": tc.get("id") or "",
                             "name": fn.get("name") or "",
                             "arguments": "",
                             "opened": False,
                         }
-                        next_output_index += 1
                         tool_call_state[idx] = st
                     else:
                         # Later chunks sometimes carry id/name only once; merge
@@ -5477,7 +5889,7 @@ async def _responses_stream(
                                 "arguments": "",
                             },
                         }
-                        yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                        yield _sse("response.output_item.added", item_added)
                         st["opened"] = True
 
                     arg_delta = fn.get("arguments") or ""
@@ -5489,7 +5901,7 @@ async def _responses_stream(
                             "output_index": st["output_index"],
                             "delta": arg_delta,
                         }
-                        yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                        yield _sse("response.function_call_arguments.delta", args_delta_event)
                     elif arg_delta:
                         # Buffer args until we can open the item (some models
                         # send id/name in the same chunk as the first arg delta;
@@ -5518,8 +5930,134 @@ async def _responses_stream(
             except Exception:
                 pass
 
-        # ── Closing events for tool calls ──
-        for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+        final_reasoning, final_visible = extractor.finish()
+        if final_reasoning:
+            for event in _ensure_reasoning_open():
+                yield event
+            full_reasoning += final_reasoning
+            yield _sse(
+                "response.reasoning_text.delta",
+                {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_state["item_id"],
+                    "output_index": reasoning_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_reasoning,
+                },
+            )
+        if final_visible:
+            for event in _ensure_message_open():
+                yield event
+            full_text += final_visible
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_visible,
+                },
+            )
+        if full_reasoning and not full_text and not tool_call_state:
+            for event in _ensure_message_open():
+                yield event
+            full_text = full_reasoning
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": full_text,
+                },
+            )
+
+        close_items: list[tuple[int, str, dict[str, Any]]] = []
+        if reasoning_state["opened"]:
+            close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
+        if message_state["opened"]:
+            close_items.append((message_state["output_index"], "message", message_state))
+        close_items.extend((st["output_index"], "tool", st) for st in tool_call_state.values())
+
+        for _, kind, st in sorted(close_items, key = lambda item: item[0]):
+            if kind == "reasoning":
+                yield _sse(
+                    "response.reasoning_text.done",
+                    {
+                        "type": "response.reasoning_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_reasoning,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": full_reasoning},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "reasoning",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    },
+                )
+                continue
+
+            if kind == "message":
+                yield _sse(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_text,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": full_text, "annotations": []},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "message",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": full_text, "annotations": []}
+                            ],
+                        },
+                    },
+                )
+                continue
+
             # If id/name never arrived (malformed upstream), synthesise so the
             # client still sees a coherent frame sequence.
             if not st["opened"]:
@@ -5537,20 +6075,16 @@ async def _responses_stream(
                         "arguments": "",
                     },
                 }
-                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                yield _sse("response.output_item.added", item_added)
                 if st["arguments"]:
-                    yield (
-                        "event: response.function_call_arguments.delta\n"
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": st["item_id"],
-                                "output_index": st["output_index"],
-                                "delta": st["arguments"],
-                            }
-                        )
-                        + "\n\n"
+                    yield _sse(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": st["arguments"],
+                        },
                     )
                 st["opened"] = True
 
@@ -5561,7 +6095,7 @@ async def _responses_stream(
                 "name": st["name"],
                 "arguments": st["arguments"],
             }
-            yield f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done)}\n\n"
+            yield _sse("response.function_call_arguments.done", args_done)
 
             item_done = {
                 "type": "response.output_item.done",
@@ -5575,14 +6109,7 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
-            yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
-
-        # ── Closing events for text message ──
-        yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
-
-        yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
-
-        yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
+            yield _sse("response.output_item.done", item_done)
 
         # response.completed
         total_tokens = input_tokens + output_tokens
@@ -5602,7 +6129,7 @@ async def _responses_stream(
                 },
             },
         }
-        yield f"event: response.completed\ndata: {json.dumps(completed_response)}\n\n"
+        yield _sse("response.completed", completed_response)
 
     return StreamingResponse(
         event_generator(),

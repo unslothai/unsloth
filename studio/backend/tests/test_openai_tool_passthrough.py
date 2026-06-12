@@ -28,11 +28,13 @@ from models.inference import (
     ChatMessage,
     CompletionChoice,
     CompletionMessage,
+    ResponsesRequest,
 )
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
+    _build_chat_request,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -786,6 +788,22 @@ class TestPassthroughReasoningKwargs:
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
 
+    def test_reasoning_effort_none_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False, reasoning_effort = "none"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "none"}
+
+    def test_reasoning_effort_minimal_maps_to_low_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = True, reasoning_effort = "minimal"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
     def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
             self._payload(enable_thinking = False),
@@ -1396,3 +1414,47 @@ class TestGgufVisionToolRouting:
 
         assert seen_seeds == expected
         assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+
+
+# =====================================================================
+# Responses API -> Chat Completions translation: chat_template_kwargs
+# (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
+# reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
+# otherwise /v1/responses silently ignores reasoning control (issue #6198).
+# =====================================================================
+
+
+class TestResponsesChatTemplateKwargs:
+    _messages = [ChatMessage(role = "user", content = "What is 100 - 67?")]
+
+    def test_enable_thinking_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "What is 100 - 67?",
+            chat_template_kwargs = {"enable_thinking": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is True
+
+    def test_enable_thinking_false_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": False},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+        assert chat_req.enable_thinking is False
+
+    def test_no_chat_template_kwargs_leaves_enable_thinking_unset(self):
+        payload = ResponsesRequest(model = "qwen-local", input = "hi")
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None
+
+    def test_chat_template_kwargs_without_enable_thinking_is_ignored(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"some_other_flag": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None

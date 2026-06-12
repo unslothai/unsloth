@@ -2462,7 +2462,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _on_progress(progress: TrainingProgress):
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if has_train_loss or has_eval_loss:
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
             event_queue.put(
                 {
                     "type": "progress",
