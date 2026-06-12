@@ -1313,16 +1313,16 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes, like Gemini: container radius =
-		   item radius (12px) + side gutter (10px), so the curves run parallel.
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 22px !important;
+		border-radius: 21px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
-		/* Side gutter so item hover boxes sit inset from the menu edge, like
-		   Gemini's menus (more breathing room than a hairline gutter). */
-		padding-left: 10px;
-		padding-right: 10px;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 

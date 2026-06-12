@@ -11,8 +11,8 @@ import {
 import {
   ArrowDown01Icon,
   Folder01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { ProjectRecord } from "../types";
