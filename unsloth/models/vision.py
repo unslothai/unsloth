@@ -37,6 +37,7 @@ from ._utils import (
     _get_text_only_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    set_task_config_attr,
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
@@ -601,6 +602,10 @@ class FastBaseModel:
         text_only = False,
         **kwargs,
     ):
+        user_config = kwargs.pop("config", None)
+        if auto_config is None and user_config is not None:
+            auto_config = user_config
+
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
                 "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
@@ -959,11 +964,14 @@ class FastBaseModel:
             # Move config-level attributes onto the config object directly.
             _num_labels = kwargs.pop("num_labels", None)
             if _num_labels is not None:
-                model_config.num_labels = _num_labels
-            for _cfg_key in ("id2label", "label2id", "max_position_embeddings"):
+                set_task_config_attr(model_config, "num_labels", _num_labels)
+            for _cfg_key in ("id2label", "label2id", "problem_type"):
                 _cfg_val = kwargs.pop(_cfg_key, None)
                 if _cfg_val is not None:
-                    setattr(model_config, _cfg_key, _cfg_val)
+                    set_task_config_attr(model_config, _cfg_key, _cfg_val)
+            _cfg_val = kwargs.pop("max_position_embeddings", None)
+            if _cfg_val is not None:
+                setattr(model_config, "max_position_embeddings", _cfg_val)
             model = auto_model.from_pretrained(
                 model_name,
                 config = model_config,
