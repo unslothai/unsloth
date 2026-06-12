@@ -263,8 +263,8 @@ export interface ScanFolderInfo {
   created_at: string;
 }
 
-export async function listScanFolders(): Promise<ScanFolderInfo[]> {
-  const response = await authFetch("/api/models/scan-folders");
+export async function listScanFolders(signal?: AbortSignal): Promise<ScanFolderInfo[]> {
+  const response = await authFetch("/api/models/scan-folders", { signal });
   const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
   return data.folders;
 }
@@ -613,8 +613,8 @@ export interface BrowseFoldersResponse {
   model_files_here?: number;
 }
 
-export async function listRecommendedFolders(): Promise<string[]> {
-  const response = await authFetch("/api/models/recommended-folders");
+export async function listRecommendedFolders(signal?: AbortSignal): Promise<string[]> {
+  const response = await authFetch("/api/models/recommended-folders", { signal });
   const data = await parseJsonOrThrow<{ folders: string[] }>(response);
   return data.folders;
 }

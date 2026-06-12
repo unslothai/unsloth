@@ -182,9 +182,10 @@ export function ModelSection() {
       });
   }, []);
 
-  const refreshScanFolders = useCallback(() => {
-    listScanFolders()
+  const refreshScanFolders = useCallback((signal?: AbortSignal) => {
+    listScanFolders(signal)
       .then((folders) => {
+        if (signal?.aborted) return;
         _scanFoldersCache = folders;
         setScanFolders(folders);
       })
@@ -250,10 +251,15 @@ export function ModelSection() {
   }, [refreshLocalModelsList]);
 
   useEffect(() => {
-    refreshScanFolders();
-    listRecommendedFolders()
-      .then(setRecommendedFolders)
+    const controller = new AbortController();
+    refreshScanFolders(controller.signal);
+    listRecommendedFolders(controller.signal)
+      .then((folders) => {
+        if (controller.signal.aborted) return;
+        setRecommendedFolders(folders);
+      })
       .catch(() => {});
+    return () => controller.abort();
   }, [refreshScanFolders]);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
@@ -613,17 +619,6 @@ export function ModelSection() {
                     </div>
                   )}
 
-                  <FolderBrowser
-                    open={showFolderBrowser}
-                    onOpenChange={setShowFolderBrowser}
-                    initialPath={folderInput.trim() || undefined}
-                    onSelect={(picked) => {
-                      setFolderInput(picked);
-                      setFolderError(null);
-                      void handleAddFolder(picked);
-                    }}
-                  />
-
                   <ComboboxList className="p-1">
                     {(id: string) => {
                       const model = localMetaById.get(id);
@@ -659,6 +654,16 @@ export function ModelSection() {
                   </ComboboxList>
                 </ComboboxContent>
               </Combobox>
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  void handleAddFolder(picked);
+                }}
+              />
             </div>
             {isLoadingLocalModels ? (
               <p className="text-[10px] text-muted-foreground">
