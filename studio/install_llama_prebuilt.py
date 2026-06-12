@@ -4548,7 +4548,9 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         shutil.copy2(canonical, legacy)
 
 
-def ensure_diffusion_visual_server(install_dir: Path, host: HostInfo, release_tag: str | None) -> None:
+def ensure_diffusion_visual_server(
+    install_dir: Path, host: HostInfo, release_tag: str | None
+) -> None:
     """Best-effort placement of the DiffusionGemma visual-server binary next to
     llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
     without any DG_* env. This is an Unsloth artifact (not a ggml-org one), so it
@@ -4570,8 +4572,10 @@ def ensure_diffusion_visual_server(install_dir: Path, host: HostInfo, release_ta
         return
 
     if not release_tag:
-        log("diffusion visual server not bundled (no release tag); build it from llama.cpp "
-            "PR #24423 and set DG_VISUAL_BIN if you want native DiffusionGemma serving")
+        log(
+            "diffusion visual server not bundled (no release tag); build it from llama.cpp "
+            "PR #24423 and set DG_VISUAL_BIN if you want native DiffusionGemma serving"
+        )
         return
 
     try:
@@ -4588,8 +4592,10 @@ def ensure_diffusion_visual_server(install_dir: Path, host: HostInfo, release_ta
             match = (asset_name, url)
             break
         if match is None:
-            log("diffusion visual server not found in the published release; native "
-                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build")
+            log(
+                "diffusion visual server not found in the published release; native "
+                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
         download_file(match[1], target)
@@ -4597,9 +4603,11 @@ def ensure_diffusion_visual_server(install_dir: Path, host: HostInfo, release_ta
             target.chmod(0o755)
         log(f"installed diffusion visual server: {match[0]}")
     except Exception as exc:
-        log("diffusion visual server fetch skipped "
+        log(
+            "diffusion visual server fetch skipped "
             f"({textwrap.shorten(str(exc), width = 160, placeholder = '...')}); "
-            "set DG_VISUAL_BIN or build from llama.cpp PR #24423 for native serving")
+            "set DG_VISUAL_BIN or build from llama.cpp PR #24423 for native serving"
+        )
 
 
 def extracted_archive_root(extract_dir: Path) -> Path:

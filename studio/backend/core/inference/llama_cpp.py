@@ -2458,7 +2458,11 @@ class LlamaCppBackend:
         if spec is not None and spec.submodule_search_locations:
             pkg_dir = Path(list(spec.submodule_search_locations)[0])
             if (pkg_dir / "diffusion_studio" / "shim.py").is_file():
-                return ([sys.executable, "-m", "unsloth_zoo.diffusion_studio.shim"], visual_bin, None)
+                return (
+                    [sys.executable, "-m", "unsloth_zoo.diffusion_studio.shim"],
+                    visual_bin,
+                    None,
+                )
 
         return None
 
@@ -2498,11 +2502,16 @@ class LlamaCppBackend:
         gpu = os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
-            "--gguf", model_path,
-            "--host", "127.0.0.1",
-            "--port", str(self._port),
-            "--gpu", gpu,
-            "--maxtok", str(maxtok),
+            "--gguf",
+            model_path,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self._port),
+            "--gpu",
+            gpu,
+            "--maxtok",
+            str(maxtok),
         ]
 
         env = child_env_without_native_path_secret()
@@ -2530,6 +2539,7 @@ class LlamaCppBackend:
         # process, so a Studio crash/restart never orphans a GPU process.
         popen_kwargs = dict(_windows_hidden_subprocess_kwargs())
         if os.name == "posix":
+
             def _pdeathsig():
                 try:
                     import ctypes
@@ -2537,6 +2547,7 @@ class LlamaCppBackend:
                     ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, _signal.SIGTERM)
                 except Exception:
                     pass
+
             popen_kwargs["preexec_fn"] = _pdeathsig
 
         self._process = subprocess.Popen(
