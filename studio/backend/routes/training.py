@@ -246,22 +246,9 @@ async def start_training(
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
 
-        # Free GPU memory: shut down any running inference/export subprocesses
-        # before training (they'd compete for VRAM otherwise).
-        try:
-            from core.inference import get_inference_backend
-            inf_backend = get_inference_backend()
-            if inf_backend.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for training",
-                    inf_backend.active_model_name,
-                )
-                inf_backend._shutdown_subprocess()
-                inf_backend.active_model_name = None
-                inf_backend.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
-
+        # Always free the export subprocess first (transient GPU work, not an
+        # interactive session) so its VRAM is reflected when we size the chat
+        # coexistence decision below.
         try:
             from core.export import get_export_backend
             exp_backend = get_export_backend()
@@ -273,6 +260,48 @@ async def start_training(
                 exp_backend.is_peft = False
         except Exception as e:
             logger.warning("Could not shut down export subprocess: %s", e)
+
+        # Keep a resident chat model loaded only if there's enough free VRAM to
+        # run training alongside it (so the user can train and chat at once);
+        # otherwise unload it across all inference backends. Never block a
+        # training start on a coordination failure.
+        try:
+            from routes.training_vram import (
+                can_keep_chat_during_training,
+                free_chat_models_for_training,
+                summarize_resident_chat,
+            )
+
+            resident = summarize_resident_chat()
+            if resident["any"]:
+                keep, info = can_keep_chat_during_training(
+                    model_name = training_kwargs["model_name"],
+                    hf_token = training_kwargs["hf_token"],
+                    training_type = training_kwargs["training_type"],
+                    load_in_4bit = training_kwargs["load_in_4bit"],
+                    batch_size = training_kwargs["batch_size"],
+                    max_seq_length = training_kwargs["max_seq_length"],
+                    lora_rank = training_kwargs["lora_r"],
+                    target_modules = training_kwargs["target_modules"],
+                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                    optimizer = training_kwargs["optim"],
+                    gpu_ids = training_kwargs["gpu_ids"],
+                )
+                if keep:
+                    logger.info(
+                        "Keeping chat model(s) loaded during training "
+                        "(free ~%s GB, needs ~%s GB): %s",
+                        info.get("usable_gb"),
+                        info.get("required_gb"),
+                        resident,
+                    )
+                else:
+                    freed = free_chat_models_for_training(
+                        reason = "insufficient VRAM to run training alongside chat",
+                    )
+                    logger.info("Freed chat model(s) for training: %s", freed)
+        except Exception as e:
+            logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
         # start_training spawns a subprocess (non-blocking).
         success = backend.start_training(job_id = job_id, **training_kwargs)
