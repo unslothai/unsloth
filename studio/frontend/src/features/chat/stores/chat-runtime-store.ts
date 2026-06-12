@@ -326,8 +326,8 @@ function saveString(key: string, value: string): void {
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
-// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Mirrors backend
-// _canonicalize_spec_mode so legacy response values round-trip.
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
 ): string | null {
@@ -336,14 +336,17 @@ export function normalizeSpeculativeType(
   if (!s) return null;
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
-  if (s === "ngram-simple") return "ngram-simple";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod") return "ngram";
+  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
+    return "ngram";
+  }
   if (s === "mtp+ngram") return "mtp+ngram";
   // Comma-chained legacy values (e.g. from older backend echoes).
   const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
+  const hasNgram = parts.some(
+    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
+  );
   if (hasMtp && hasNgram) return "mtp+ngram";
   if (hasMtp) return "mtp";
   if (hasNgram) return "ngram";
