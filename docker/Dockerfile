@@ -222,6 +222,18 @@ RUN set -eux \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi
 
+# JupyterLab so the published image runs unslothai/notebooks out of the box:
+#   docker run --gpus all -p 8888:8888 unsloth/unsloth \
+#       jupyter lab --ip 0.0.0.0 --port 8888 --allow-root --no-browser
+# Installed as a separate pass AFTER the torch-pinned resolves on purpose:
+# jupyterlab's dependency closure is pure-Python (tornado, jinja2, nbconvert,
+# nbclient, ipykernel, ...) and never names torch, so uv cannot disturb the
+# cu128 pin set here. Naming torch in this pass would be actively dangerous:
+# without the cu128 extra index uv could swap in the PyPI CPU wheel.
+RUN ${VENV}/bin/uv pip install \
+        --python ${VENV}/bin/python \
+        jupyterlab notebook ipywidgets
+
 # 5) Emit an informational pin record so downstream consumers can see exactly
 #    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
 #    captures version strings but not wheel hashes, and several deps (unsloth,
@@ -408,8 +420,50 @@ RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         fi; \
     fi
 
+# Prebuilt llama.cpp so GGUF export works out of the box.
+#
+# unsloth_zoo's save_pretrained_gguf() calls check_llama_cpp(), which looks
+# for llama-quantize + convert_hf_to_gguf.py in $UNSLOTH_LLAMA_CPP_PATH
+# (default ~/.unsloth/llama.cpp). Without a baked install the first GGUF
+# export inside the container would hit install_llama_cpp()'s interactive
+# prompt and then a slow source build. We reuse Studio's own resolver
+# (studio/install_llama_prebuilt.py at the same UNSLOTH_REF baked into the
+# venv) to fetch the matching prebuilt from unslothai/llama.cpp releases:
+#   * sha256-verified against the release's llama-prebuilt-sha256.json
+#   * no GPU on the build host -> the resolver picks the PORTABLE CUDA
+#     bundle, which carries its own CUDA runtime libs and runs on every
+#     supported arch at container runtime (same reasoning as the wheels)
+#   * amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz
+#     arm64 -> the linux-arm64-cuda13 bundle (DGX Spark / Grace)
+#   * the binaries + convert script land at the install dir ROOT, which is
+#     exactly the layout check_llama_cpp() expects
+# /opt (not /root) so the install survives a `docker run --user` override;
+# UNSLOTH_LLAMA_CPP_PATH makes zoo find it regardless of $HOME.
+#
+# The optional BuildKit secret raises the GitHub API rate limit on busy CI
+# runners (the resolver reads GITHUB_TOKEN); local builds work without it.
+ARG UNSLOTH_REF=main
+ADD https://raw.githubusercontent.com/unslothai/unsloth/${UNSLOTH_REF}/studio/install_llama_prebuilt.py /tmp/install_llama_prebuilt.py
+RUN --mount=type=secret,id=github_token \
+    set -eux \
+ && if [ -s /run/secrets/github_token ]; then \
+        export GITHUB_TOKEN="$(cat /run/secrets/github_token)"; \
+    fi \
+ && /opt/unsloth-venv/bin/python /tmp/install_llama_prebuilt.py \
+        --install-dir /opt/unsloth/llama.cpp \
+ && rm -f /tmp/install_llama_prebuilt.py \
+ && test -x /opt/unsloth/llama.cpp/llama-quantize \
+ && test -x /opt/unsloth/llama.cpp/llama-server \
+ && test -f /opt/unsloth/llama.cpp/convert_hf_to_gguf.py \
+ && cat /opt/unsloth/llama.cpp/UNSLOTH_PREBUILT_INFO.json
+ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
+
 WORKDIR /workspace
 RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
+
+# JupyterLab lives in the venv (see builder stage). Persistent notebooks
+# should be bind-mounted onto /workspace.
+EXPOSE 8888
 
 COPY smoke_test.py /workspace/smoke_test.py
 COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint

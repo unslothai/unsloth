@@ -23,9 +23,25 @@
 #                                                         ($PWD is mounted at
 #                                                          /workspace/host)
 #
+# The full image (unsloth/unsloth:latest) starts Studio (8000) + JupyterLab
+# (8888) by default; publish the ports when you want them:
+#   UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
+# JupyterLab on the lean base image (unsloth/unsloth:base):
+#   UNSLOTH_PORTS="-p 8888:8888" UNSLOTH_IMAGE=unsloth/unsloth:base \
+#       bash docker/run.sh jupyter lab --ip 0.0.0.0 --port 8888 --allow-root
+# CPU-only hosts (Docker Desktop on macOS, Windows without WSL2 GPU, plain
+# CPU Linux): no --gpus and set UNSLOTH_ALLOW_CPU=1. Training is unavailable
+# but Studio chat / Data Recipes, Jupyter and GGUF tooling work:
+#   UNSLOTH_GPUS=none UNSLOTH_ALLOW_CPU=1 \
+#       UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
+#
 # Overridable env:
 #   UNSLOTH_IMAGE=unsloth/unsloth:latest    image and tag to pull/run
-#   UNSLOTH_GPUS=all                        GPUs to expose ("all" | "0" | "0,1")
+#   UNSLOTH_GPUS=all                        GPUs to expose ("all" | "0" | "0,1"
+#                                           | "none" to run without GPU)
+#   UNSLOTH_ALLOW_CPU=                      set to 1 to allow GPU-less runs
+#   UNSLOTH_PORTS=                          extra -p publish flags, e.g.
+#                                           "-p 8000:8000 -p 8888:8888"
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=$HOME/.cache/unsloth-triton
 #                                           host Triton cache dir to mount
@@ -39,11 +55,14 @@ GPUS="${UNSLOTH_GPUS:-all}"
 # integer for --gpus as a COUNT, not an INDEX, so `UNSLOTH_GPUS=0` would
 # expose zero GPUs and the entrypoint would refuse to start. `all` and
 # already-quoted `device=...` / `"device=..."` selectors pass through.
+# "none" omits --gpus entirely (CPU mode; pair with UNSLOTH_ALLOW_CPU=1).
+GPU_FLAG=(--gpus "$GPUS")
 case "$GPUS" in
-    all|"")                            ;;
-    \"device=*|device=*)               ;;
-    *[!0-9]*) GPUS="\"device=${GPUS}\"" ;;  # contains a non-digit (comma, UUID-prefix, etc.)
-    *)        GPUS="\"device=${GPUS}\"" ;;  # bare integer: treat as an INDEX, per docstring
+    none)     GPU_FLAG=()                ;;
+    all|"")                              ;;
+    \"device=*|device=*)                 ;;
+    *[!0-9]*) GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # comma list / UUID
+    *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
@@ -68,9 +87,17 @@ fi
 # `ps auxe` / `/proc/<pid>/cmdline` for the lifetime of the docker CLI
 # process.
 declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
-[[ -n "${HF_TOKEN:-}"        ]] && ENV_FORWARD+=(-e HF_TOKEN)
-[[ -n "${WANDB_API_KEY:-}"   ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
-[[ -n "${UNSLOTH_LICENSE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
+[[ -n "${HF_TOKEN:-}"          ]] && ENV_FORWARD+=(-e HF_TOKEN)
+[[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
+[[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
+[[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+
+# Extra publish flags for the service ports (Studio 8000, Jupyter 8888).
+declare -a PORT_FLAGS=()
+if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
+    # shellcheck disable=SC2206  # intentional word splitting of "-p X -p Y"
+    PORT_FLAGS=(${UNSLOTH_PORTS})
+fi
 
 # Only attach -t when our own stdin/stdout are a TTY; CI / piped invocations
 # otherwise hit `the input device is not a TTY` and never reach the entrypoint.
@@ -83,7 +110,7 @@ fi
 # values do not get echoed to stdout/CI logs. The forwarded env vars are
 # already in ENV_FORWARD; printing them again was a secret leak.
 exec docker run --rm "${TTY_FLAG[@]}" \
-    --gpus "$GPUS" \
+    "${GPU_FLAG[@]}" \
     --ipc=host \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
@@ -91,4 +118,5 @@ exec docker run --rm "${TTY_FLAG[@]}" \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     "${ENV_FORWARD[@]}" \
+    "${PORT_FLAGS[@]}" \
     "$IMAGE" "$@"

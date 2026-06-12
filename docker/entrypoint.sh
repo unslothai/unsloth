@@ -32,6 +32,22 @@ fi
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
+# CPU mode for hosts that cannot pass a GPU into a Linux container at all:
+# Docker Desktop on macOS (no Metal passthrough), Docker Desktop on Windows
+# without WSL2 GPU support, plain CPU Linux boxes, and CI runners. Training
+# needs an NVIDIA GPU, but Jupyter, GGUF tooling (the baked llama.cpp), and
+# Studio chat / Data Recipes all work on CPU. With UNSLOTH_ALLOW_CPU=1 a
+# missing GPU degrades to a warning instead of the hard pre-flight failure;
+# when a GPU IS visible the normal checks below still run so a broken GPU
+# setup is not silently ignored.
+if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
+    if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+        warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
+        warn "Training requires an NVIDIA GPU. CPU mode covers Jupyter, GGUF tooling and Studio chat."
+        exec "$@"
+    fi
+fi
+
 # --- Check 1: nvidia-smi present and can enumerate at least one GPU ---------
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     err "nvidia-smi not found inside the container."

@@ -124,6 +124,11 @@ jobs:
           cache-from: type=gha,scope=build-${{ matrix.platform }}
           cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # The llama.cpp prebuilt bake reads GITHUB_TOKEN (BuildKit secret,
+          # never a layer) so the resolver's GitHub API calls are not subject
+          # to the anonymous per-IP rate limit shared across Actions runners.
+          secrets: |
+            github_token=${{ github.token }}
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
@@ -153,7 +158,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          name: digests-base-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -170,11 +175,17 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      # Multi-arch manifest digest of the just-published base image. The
+      # build-studio job FROMs this exact digest so the Studio image always
+      # layers on the bits published by THIS run, not whatever `base`
+      # happens to point at when the job is scheduled.
+      digest: ${{ steps.manifest_digest.outputs.digest }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-base-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
@@ -191,10 +202,148 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Only tag :latest when the workflow ran on the default branch
+            # The lean training image publishes under the base- prefix; the
+            # full Studio image (build-studio/merge-studio below) owns
+            # :latest, matching what the previous production image shipped.
+            # Only tag :base when the workflow ran on the default branch
             # AND the operator did NOT override unsloth_ref on dispatch.
             # Without the second condition a maintainer testing a feature
-            # SHA from main could overwrite :latest with non-main source.
+            # SHA from main could overwrite :base with non-main source.
+            type=raw,value=base,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag,prefix=base-
+            type=schedule,pattern=base-nightly
+            type=sha,prefix=base-sha-,format=short
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+      - name: Export manifest digest
+        id: manifest_digest
+        run: |
+          TAG="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test -n "$DIGEST"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "base manifest: ${TAG} @ ${DIGEST}"
+
+  # ---------------------------------------------------------------------------
+  # Full image: base + Unsloth Studio + JupyterLab + sshd (Dockerfile.studio).
+  # This is what :latest points at, matching the service set of the previous
+  # production image. Same by-digest build + manifest-merge pattern as the
+  # base. FROMs the exact base manifest digest published by the merge job.
+  # The arm64 leg builds Studio's vite frontend natively on the arm runner;
+  # that is the long pole, hence the larger timeout.
+  # ---------------------------------------------------------------------------
+  build-studio:
+    needs: merge
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner:   ubuntu-latest
+          - platform: linux/arm64
+            runner:   ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push (per-arch by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.studio
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=studio-${{ matrix.platform }}
+          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=max
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
+            # Mirror of the base job's UNSLOTH_REF resolution so the Studio
+            # tree matches the unsloth baked into the base venv.
+            UNSLOTH_STUDIO_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-studio:
+    runs-on: ubuntu-latest
+    needs: build-studio
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-studio-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # The full Studio image owns the unprefixed namespace, headed by
+            # :latest. Same :latest gating rationale as the base job.
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
@@ -220,25 +369,51 @@ jobs:
   # registered. Architecture matches whatever the runner is.
   # ---------------------------------------------------------------------------
   smoke-test:
-    needs: merge
+    needs: [merge, merge-studio]
     if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
     runs-on: [self-hosted, gpu]
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       # Re-compute the tag list deterministically from the same metadata-action
       # config the merge job used, so tag/schedule/SHA runs pull the image
-      # they just published instead of an unrelated `:latest` from a prior run.
-      # IMPORTANT: keep this `enable=` expression byte-identical to the merge
-      # job's :latest gate above. The two used to differ
+      # they just published instead of an unrelated tag from a prior run.
+      # IMPORTANT: keep the `enable=` expressions byte-identical to the
+      # corresponding merge jobs' gates above. The two used to differ
       # (merge: ref + unsloth_ref guard; smoke: is_default_branch only),
       # which meant workflow_dispatch with unsloth_ref defaulting to "main"
       # would skip :latest on merge but still emit :latest as tags[0] on
       # smoke -- so docker pull would fetch a previously-published :latest
       # from Docker Hub, not the image just merged.
-      - name: Resolve published tag
-        id: meta
+      - name: Resolve published base tag
+        id: meta_base
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=base,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag,prefix=base-
+            type=schedule,pattern=base-nightly
+            type=sha,prefix=base-sha-,format=short
+
+      - name: Pull and smoke-test the base image
+        run: |
+          # Use the first tag from the metadata output -- that is the image we
+          # just published. Falls back to :base only when the metadata is
+          # empty (defensive; should not happen on default-branch runs).
+          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
+          if [ -z "$TAG" ]; then
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:base"
+          fi
+          echo "smoke-testing $TAG"
+          docker pull "$TAG"
+          docker run --rm --gpus all "$TAG" python /workspace/smoke_test.py
+        env:
+          STEPS_META_BASE_JSON: ${{ steps.meta_base.outputs.json }}
+
+      - name: Resolve published studio tag
+        id: meta_studio
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -248,15 +423,25 @@ jobs:
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
 
-      - name: Pull and smoke-test
+      - name: Boot the full image and probe Studio + Jupyter
         run: |
-          # Use the first tag from the metadata output -- that is the image we
-          # just published. Falls back to :latest only when the metadata is
-          # empty (defensive; should not happen on default-branch runs).
-          TAG="$(jq -r '.tags[0] // ""' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_STUDIO_JSON")"
           if [ -z "$TAG" ]; then
               TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           fi
-          echo "smoke-testing $TAG"
+          echo "booting $TAG"
           docker pull "$TAG"
-          docker run --rm --gpus all "$TAG" python /workspace/smoke_test.py
+          CID="$(docker run -d --gpus all -p 18000:8000 -p 18888:8888 "$TAG")"
+          trap 'docker logs --tail 100 "$CID"; docker rm -f "$CID"' EXIT
+          ok_studio=0; ok_jupyter=0
+          for i in $(seq 1 60); do
+              if curl -fsS http://localhost:18000/api/health >/dev/null 2>&1; then ok_studio=1;  fi
+              if curl -fsS http://localhost:18888/api        >/dev/null 2>&1; then ok_jupyter=1; fi
+              [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
+              sleep 5
+          done
+          [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
+          [ "$ok_jupyter" = 1 ] || { echo "Jupyter /api never responded"; exit 1; }
+          echo "Studio + Jupyter healthy"
+        env:
+          STEPS_META_STUDIO_JSON: ${{ steps.meta_studio.outputs.json }}
