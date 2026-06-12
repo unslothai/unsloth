@@ -1023,10 +1023,13 @@ shell.Run cmd, 0, False
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
-        $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            # Prefer the requested $PythonVersion, then newest-first fallback.
-            $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+        # Prefer the requested $PythonVersion, then newest-first fallback.
+        $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+        # Enumerate every py.exe on PATH with -All (Windows PowerShell 5.1
+        # returns only the first launcher without it) and search each for a
+        # supported, non-conda interpreter.
+        foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
             foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1926,7 +1929,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.2" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -1940,7 +1943,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.2" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1987,7 +1990,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.2" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
@@ -1999,7 +2002,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.2" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.3" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2027,7 +2030,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.2" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.3" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2142,6 +2145,11 @@ shell.Run cmd, 0, False
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
+    # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
+    # resolved and built the venv with, instead of re-probing the system (which
+    # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
+    # though the venv is fine). setup.ps1 Test-Path-guards this before use.
+    $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -2152,6 +2160,7 @@ shell.Run cmd, 0, False
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
+        Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
     if ($setupExit -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
