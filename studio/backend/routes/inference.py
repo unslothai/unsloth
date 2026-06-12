@@ -5123,8 +5123,7 @@ def _extract_responses_reasoning(
 
 
 def _responses_should_parse_think_markers(
-    chat_req: ChatCompletionRequest,
-    llama_backend: Any = None,
+    chat_req: ChatCompletionRequest, llama_backend: Any = None
 ) -> bool:
     if (
         llama_backend is not None

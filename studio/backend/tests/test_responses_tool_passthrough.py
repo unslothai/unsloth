@@ -610,7 +610,11 @@ class TestResponsesNonStreamingAdapter:
         pass
 
     @staticmethod
-    def _run_with_message(monkeypatch, message, payload = None):
+    def _run_with_message(
+        monkeypatch,
+        message,
+        payload = None,
+    ):
         import routes.inference as inf_mod
 
         async def fake_chat_completions(chat_req, request):
