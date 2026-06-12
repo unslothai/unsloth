@@ -51,6 +51,14 @@ def _is_hidden_model(*values: str | None) -> bool:
     return any(v and any(n in v.lower() for n in needles) for v in values)
 
 
+def _safe_resolve(path: Path) -> Optional[str]:
+    """resolve() to a string, or None when the path is inaccessible."""
+    try:
+        return str(path.resolve())
+    except OSError:
+        return None
+
+
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
@@ -676,9 +684,9 @@ async def list_local_models(
     # trusted Path objects are used for FS access; the user string is
     # used for matching only, never for path construction.
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
-    if legacy_hf.is_dir():
+    if _safe_is_dir(legacy_hf):
         allowed_roots.append(legacy_hf)
-    if hf_default.is_dir():
+    if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
     try:
         from utils.paths import studio_root, outputs_root
@@ -702,15 +710,20 @@ async def list_local_models(
     try:
         local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
 
+        # Resolve once; an inaccessible aux cache must skip that scan, not 500.
+        hf_cache_real = _safe_resolve(hf_cache_dir)
+        legacy_real = _safe_resolve(legacy_hf)
+        default_real = _safe_resolve(hf_default)
+
         # Scan legacy Unsloth HF cache for backward compatibility.
-        if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
+        if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
             local_models += _scan_hf_cache(legacy_hf)
 
         # Scan HF system default cache (may differ under env overrides).
         if (
-            hf_default.is_dir()
-            and hf_default.resolve() != hf_cache_dir.resolve()
-            and hf_default.resolve() != legacy_hf.resolve()
+            _safe_is_dir(hf_default)
+            and default_real != hf_cache_real
+            and default_real != legacy_real
         ):
             local_models += _scan_hf_cache(hf_default)
 
@@ -2164,16 +2177,26 @@ async def get_gguf_download_progress(
         for entry in cache_dir.iterdir():
             if entry.name.lower() == target:
                 # Completed .gguf files for this variant in snapshots.
+                # Exclude mmproj so a vision adapter can't satisfy a same-label
+                # main variant (e.g. mmproj-F16 vs an F16 weight).
                 for f in _iter_gguf_paths(entry):
+                    if _is_mmproj_filename(f.name):
+                        continue
                     fname = f.name.lower().replace("-", "").replace("_", "")
                     if not variant_lower or variant_lower in fname:
-                        downloaded_bytes += f.stat().st_size
+                        try:
+                            downloaded_bytes += f.stat().st_size
+                        except OSError:
+                            continue  # broken symlink / unreadable: skip
                 # In-progress (.incomplete) downloads in blobs.
                 blobs_dir = entry / "blobs"
                 if blobs_dir.is_dir():
                     for f in blobs_dir.iterdir():
                         if f.is_file() and f.name.endswith(".incomplete"):
-                            in_progress_bytes += f.stat().st_size
+                            try:
+                                in_progress_bytes += f.stat().st_size
+                            except OSError:
+                                continue
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes

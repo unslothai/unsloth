@@ -501,3 +501,24 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     flags = {v.quant: v.downloaded for v in result.variants}
     assert flags["Q4_K_M"] is True
     assert flags["F16"] is False
+
+
+def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
+    """A cached mmproj adapter must not count toward a same-label main
+    variant's download progress (mmproj-F16 vs an F16 weight)."""
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # only the adapter on disk
+
+    result = asyncio.run(
+        models_route.get_gguf_download_progress(
+            repo_id = "org/repo", variant = "F16", expected_bytes = 20_000,
+            current_subject = "test-user",
+        )
+    )
+
+    assert result["downloaded_bytes"] == 0
+    assert result["progress"] == 0

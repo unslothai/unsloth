@@ -771,6 +771,10 @@ export function HubModelPicker({
     return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
   }, [sortedCachedModels, showHfSection, debouncedQuery]);
 
+  // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
+  // logic must use this (not visibleCachedModels) or the picker can go blank.
+  const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
+
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -939,7 +943,7 @@ export function HubModelPicker({
           {!cachedReady &&
           !showHfSection &&
           visibleCachedGguf.length === 0 &&
-          visibleCachedModels.length === 0 ? (
+          visibleCachedModelRows.length === 0 ? (
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
@@ -949,8 +953,7 @@ export function HubModelPicker({
           ) : null}
 
           {/* Downloaded stays visible (filtered) while searching. */}
-          {visibleCachedGguf.length > 0 ||
-          (!chatOnly && visibleCachedModels.length > 0) ? (
+          {visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0 ? (
             <>
               <ListLabel
                 icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
@@ -986,8 +989,8 @@ export function HubModelPicker({
                   )}
                 </div>
               ))}
-              {!downloadedCollapsed && !chatOnly &&
-                visibleCachedModels.map((c) => (
+              {!downloadedCollapsed &&
+                visibleCachedModelRows.map((c) => (
                   <div key={c.repo_id} className="flex items-center gap-0.5">
                     <div className="min-w-0 flex-1">
                       <ModelRow
@@ -1386,7 +1389,7 @@ export function HubModelPicker({
               {hfIds.length === 0 && !isLoading ? (
                 filteredRecommendedIds.length === 0 &&
                 visibleCachedGguf.length === 0 &&
-                visibleCachedModels.length === 0 ? (
+                visibleCachedModelRows.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">
                     No matching models.
                   </div>
