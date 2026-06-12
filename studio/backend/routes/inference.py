@@ -4967,7 +4967,11 @@ class _ResponsesReasoningExtractor:
         self._buffer = ""
         self._in_reasoning = False
 
-    def feed(self, text: str = "", reasoning_content: Any = None) -> tuple[str, str]:
+    def feed(
+        self,
+        text: str = "",
+        reasoning_content: Any = None,
+    ) -> tuple[str, str]:
         reasoning_parts: list[str] = []
         visible_parts: list[str] = []
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
@@ -5026,9 +5030,7 @@ class _ResponsesReasoningExtractor:
         return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
-def _extract_responses_reasoning(
-    text: str = "", reasoning_content: Any = None
-) -> tuple[str, str]:
+def _extract_responses_reasoning(text: str = "", reasoning_content: Any = None) -> tuple[str, str]:
     extractor = _ResponsesReasoningExtractor()
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
@@ -5782,10 +5784,7 @@ async def _responses_stream(
             close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
         if message_state["opened"]:
             close_items.append((message_state["output_index"], "message", message_state))
-        close_items.extend(
-            (st["output_index"], "tool", st)
-            for st in tool_call_state.values()
-        )
+        close_items.extend((st["output_index"], "tool", st) for st in tool_call_state.values())
 
         for _, kind, st in sorted(close_items, key = lambda item: item[0]):
             if kind == "reasoning":

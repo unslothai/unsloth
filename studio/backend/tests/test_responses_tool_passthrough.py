@@ -627,7 +627,9 @@ class TestResponsesNonStreamingAdapter:
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
-            response = await _responses_non_streaming(payload, messages, TestResponsesNonStreamingAdapter._Request())
+            response = await _responses_non_streaming(
+                payload, messages, TestResponsesNonStreamingAdapter._Request()
+            )
             return json.loads(response.body.decode())
 
         return asyncio.run(run())
