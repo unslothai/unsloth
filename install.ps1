@@ -1220,6 +1220,21 @@ shell.Run cmd, 0, False
         }
     }
 
+    # A freshly installed uv can sit later on PATH than an older one (active
+    # venv, Scoop/pipx shim). Prefer a just-installed uv from a known location.
+    if (-not (Test-UvVersionOk)) {
+        $origPath = $env:PATH
+        foreach ($d in @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
+                         (Join-Path $env:USERPROFILE ".local\bin"),
+                         (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"))) {
+            if ($d -and (Test-Path $d)) {
+                $env:PATH = "$d;$origPath"
+                if (Test-UvVersionOk) { break }
+                $env:PATH = $origPath
+            }
+        }
+    }
+
     if (-not (Test-UvVersionOk)) {
         step "uv" "could not be installed" "Red"
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
