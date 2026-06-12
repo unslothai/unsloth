@@ -140,21 +140,41 @@ def main() -> None:
                 os.link(source, os.path.join(build_bin, entry))
             except OSError:
                 shutil.copy2(source, os.path.join(build_bin, entry))
+        elif os.path.islink(source):
+            # Mirror same-directory soname symlinks (libllama.so.0 -> ...).
+            # Without these, a binary relinked into build/bin fails $ORIGIN
+            # resolution: the loader wants the soname, not the real file.
+            target = os.readlink(source)
+            dest = os.path.join(build_bin, entry)
+            if "/" not in target and not os.path.lexists(dest):
+                os.symlink(target, dest)
 
     # Sanity: the server binary must execute on a GPU-less host (the CUDA
-    # backend is a dlopen'd plugin, so --version works anywhere).
-    out = subprocess.run(
-        [os.path.join(install_dir, "llama-server"), "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+    # backend is a dlopen'd plugin, so --version works anywhere). Check the
+    # quantizer from BOTH roots: Studio's setup.sh relinks the root
+    # llama-quantize to build/bin/llama-quantize, so the build/bin copy must
+    # resolve its libraries standalone.
+    checks = (
+        # llama-quantize has no --version; a healthy run prints usage with
+        # rc 0, while a loader failure prints to stderr with rc 127.
+        (os.path.join(install_dir, "llama-server"), "version"),
+        (os.path.join(install_dir, "llama-quantize"), "usage"),
+        (os.path.join(build_bin, "llama-quantize"), "usage"),
     )
-    banner = (out.stdout + out.stderr).strip()
-    print(banner.splitlines()[0] if banner else "(no version banner)")
-    if "version" not in banner:
-        raise SystemExit(
-            f"FAIL: llama-server --version did not report a version: rc={out.returncode}"
+    for binary, expect in checks:
+        out = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
+        banner = (out.stdout + out.stderr).strip()
+        print(os.path.relpath(binary, install_dir), "->",
+              banner.splitlines()[0] if banner else "(no output)")
+        if expect not in banner:
+            raise SystemExit(
+                f"FAIL: {binary} did not print '{expect}': rc={out.returncode}\n{banner[:400]}"
+            )
     for required in (
         "llama-quantize",
         "convert_hf_to_gguf.py",

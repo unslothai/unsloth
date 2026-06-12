@@ -107,6 +107,10 @@ RUN set -eux \
     # wheels with no sm_100/sm_120 kernels). metadata check only: importing
     # torch needs native libs, which QEMU arm64 builds cannot load.
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "from importlib.metadata import version; v = version('torch'); assert v.endswith('+${TORCH_FAMILY}'), 'Studio venv torch ' + v + ' does not match ${TORCH_FAMILY}'; print('Studio venv torch', v)" \
+    # setup.sh may relink the root llama-quantize into build/bin; prove the
+    # relinked quantizer still resolves its libraries, or GGUF export breaks
+    # at runtime with "No working quantizer found".
+ && "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --version \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache \
  && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
