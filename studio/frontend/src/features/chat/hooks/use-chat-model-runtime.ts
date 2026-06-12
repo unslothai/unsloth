@@ -76,6 +76,17 @@ const MODEL_LOADED_TOAST_CLASSNAMES = {
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
+/** Baseline mount poll when the server reports no in-flight CLI load. */
+const CLI_LOAD_POLL_IDLE_MS = 60_000;
+/** Safety cap so a wedged poll cannot run forever. */
+const CLI_LOAD_POLL_MAX_MS = 600_000;
+
+function inferenceStatusShowsLoadInFlight(
+  status: InferenceStatusResponse | null,
+): boolean {
+  return (status?.loading?.length ?? 0) > 0;
+}
+
 function parseTrailingEpoch(input: string): number | undefined {
   const match = input.match(LORA_SUFFIX_RE);
   if (!match) {
@@ -307,13 +318,18 @@ export function useChatModelRuntime() {
         : null;
 
       if (shouldPollForCliLoad) {
-        const deadline = Date.now() + 60_000;
+        const started = Date.now();
         while (
-          Date.now() < deadline &&
           !polledStatus?.active_model &&
           // Stop early if the user picks a model while we are polling.
-          !useChatRuntimeStore.getState().params.checkpoint
+          !useChatRuntimeStore.getState().params.checkpoint &&
+          Date.now() - started < CLI_LOAD_POLL_MAX_MS
         ) {
+          const elapsed = Date.now() - started;
+          const inFlight = inferenceStatusShowsLoadInFlight(polledStatus);
+          if (elapsed >= CLI_LOAD_POLL_IDLE_MS && !inFlight) {
+            break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 500));
           try {
             polledStatus = await getInferenceStatus();
