@@ -305,7 +305,6 @@ export function AppSidebar() {
     () => allChatItems.filter((item) => !item.projectId),
     [allChatItems],
   );
-  const chatItems = allChatItems;
   const [archivedOpen, setArchivedOpen] = useState(false);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
