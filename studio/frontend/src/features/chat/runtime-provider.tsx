@@ -68,6 +68,7 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
@@ -1021,6 +1022,17 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
+function stopActiveChatRuns() {
+  const { runningByThreadId, cancelByThreadId } = useChatRuntimeStore.getState();
+  for (const threadId of Object.keys(runningByThreadId)) {
+    try {
+      cancelByThreadId[threadId]?.();
+    } catch {
+      // The run may have ended while navigation was mounting.
+    }
+  }
+}
+
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1034,6 +1046,10 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
+      if (syncActiveThreadId) {
+        requestPromptQueueStop();
+        stopActiveChatRuns();
+      }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
@@ -1068,6 +1084,8 @@ function ThreadNewChatSwitch({
     if (isLoading) {
       return;
     }
+    requestPromptQueueStop();
+    stopActiveChatRuns();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
