@@ -82,10 +82,10 @@ def can_keep_chat_during_training(
     batch_size: int,
     max_seq_length: int,
     lora_rank: int,
-    target_modules: Optional[list],
+    target_modules: Optional[List[str]],
     gradient_checkpointing: str,
     optimizer: str,
-    gpu_ids: Optional[list],
+    gpu_ids: Optional[List[int]],
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide whether a resident chat model can coexist with a training run
     given current free VRAM.
@@ -128,11 +128,18 @@ def can_keep_chat_during_training(
         if gpu_ids:
             # Explicit GPUs: the selector does no VRAM math (it just shards over
             # the requested set), so size it here against those GPUs' free VRAM.
-            required_gb, _ = estimate_required_model_memory_gb(model_name, **est_kwargs)
+            try:
+                resolved = resolve_requested_gpu_ids(gpu_ids)
+            except ValueError:
+                # Invalid selection (ids outside the visible set, or a UUID/MIG
+                # mask): start_training rejects the request with a 400 before it
+                # runs, so leave the resident chat model untouched.
+                return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
+
+            required_gb, est_meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
             if required_gb is None:
                 return False, {"mode": "explicit", "reason": "estimate_unavailable"}
 
-            resolved = resolve_requested_gpu_ids(gpu_ids)
             devices = get_visible_gpu_utilization().get("devices", [])
             free_by_index: Dict[int, float] = {}
             for device in devices:
@@ -143,13 +150,28 @@ def can_keep_chat_during_training(
                 free_by_index[device["index"]] = max(total_gb - used_gb, 0.0)
 
             # A requested GPU missing from the device list contributes 0.
-            frees = sorted((free_by_index.get(i, 0.0) for i in resolved), reverse = True)
-            usable_gb = frees[0] + sum(f * _MULTI_GPU_OVERHEAD for f in frees[1:]) if frees else 0.0
-            keep = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+            free_vals = [free_by_index.get(i, 0.0) for i in resolved]
+            ranked = sorted(free_vals, reverse = True)
+            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:]) if ranked else 0.0
+            aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+
+            # Activations don't shard, so each GPU needs its own weight shard plus
+            # the full activation cost. Mirror auto_select_gpu_ids' per-GPU floor
+            # so a tight GPU in the explicit set can't be kept into an OOM (the
+            # aggregate check alone would miss an uneven split like free [45, 10]).
+            per_gpu_fits = True
+            min_free_gb = min(free_vals) if free_vals else 0.0
+            if len(resolved) > 1:
+                min_per_gpu_gb = est_meta.get("vram_breakdown", {}).get(f"min_per_gpu_{len(resolved)}")
+                if min_per_gpu_gb is not None:
+                    per_gpu_fits = min_free_gb >= min_per_gpu_gb
+
+            keep = aggregate_fits and per_gpu_fits
             return keep, {
                 "mode": "explicit",
                 "required_gb": required_gb,
                 "usable_gb": round(usable_gb, 3),
+                "min_free_gb": round(min_free_gb, 3),
             }
 
         # Auto: this is the identical call start_training makes later. Reuse its

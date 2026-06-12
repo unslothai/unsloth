@@ -213,19 +213,22 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, *, required, devices, resolved, gpu_ids):
+    def _run(self, *, required, devices, resolved, gpu_ids, est_meta = None, resolve_side_effect = None):
         kw = {**_BASE_KW, "gpu_ids": gpu_ids}
+        resolve_kwargs = (
+            {"side_effect": resolve_side_effect} if resolve_side_effect else {"return_value": resolved}
+        )
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "utils.hardware.estimate_required_model_memory_gb",
-                return_value = (required, {}),
+                return_value = (required, est_meta or {}),
             ),
             patch(
                 "utils.hardware.get_visible_gpu_utilization",
                 return_value = {"devices": devices},
             ),
-            patch("utils.hardware.resolve_requested_gpu_ids", return_value = resolved),
+            patch("utils.hardware.resolve_requested_gpu_ids", **resolve_kwargs),
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
@@ -272,6 +275,45 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             keep, info = tv.can_keep_chat_during_training(**{**_BASE_KW, "gpu_ids": [0]})
         self.assertFalse(keep)
         self.assertEqual(info["reason"], "estimate_unavailable")
+
+    def test_per_gpu_floor_blocks_uneven_explicit_split(self):
+        # free [45, 10], required 40: aggregate usable = 45 + 10*0.85 = 53.5 >=
+        # 40*1.15+4 = 50 (passes), but GPU 1 has only 10 GB free while each GPU
+        # needs min_per_gpu_2 = 25 -> per-GPU floor fails -> unload (the tight GPU
+        # would OOM otherwise).
+        devices = [
+            {"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 35.0},  # 45 free
+            {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},  # 10 free
+        ]
+        keep, info, _ = self._run(
+            required = 40.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1],
+            est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
+        )
+        self.assertFalse(keep)
+        self.assertAlmostEqual(info["min_free_gb"], 10.0, places = 3)
+
+    def test_per_gpu_floor_passes_when_even(self):
+        # Same aggregate, but both GPUs clear the 25 GB per-GPU floor -> keep.
+        devices = [
+            {"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 45.0},  # 35 free
+            {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 50.0},  # 30 free
+        ]
+        keep, _, _ = self._run(
+            required = 40.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1],
+            est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
+        )
+        self.assertTrue(keep)
+
+    def test_invalid_gpu_ids_keeps_chat_instead_of_unloading(self):
+        # resolve_requested_gpu_ids raising means the request will be rejected
+        # (400) before training runs, so the resident chat model must be left
+        # alone rather than torn down.
+        keep, info, _ = self._run(
+            required = 5.0, devices = [], resolved = None, gpu_ids = [99],
+            resolve_side_effect = ValueError("Invalid gpu_ids [99]"),
+        )
+        self.assertTrue(keep)
+        self.assertEqual(info["reason"], "invalid_gpu_ids")
 
 
 # ── free_chat_models_for_training ────────────────────────────────────────────
