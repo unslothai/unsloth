@@ -169,6 +169,8 @@ export function DatasetSection() {
     setUploadedEvalFile,
     hfToken,
     modelType,
+    isVisionModel,
+    isAudioModel,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -193,6 +195,8 @@ export function DatasetSection() {
       setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
@@ -295,6 +299,11 @@ export function DatasetSection() {
   }
 
   const effectiveModelType = modelType ?? "text";
+  const isMultimodalModel =
+    effectiveModelType === "vision" ||
+    effectiveModelType === "audio" ||
+    isVisionModel ||
+    isAudioModel;
 
   const {
     results: hfResults,
@@ -375,6 +384,12 @@ export function DatasetSection() {
     selectedLocalDataset,
     selectLocalDataset,
   ]);
+
+  useEffect(() => {
+    if (datasetSource === "s3" && isMultimodalModel) {
+      selectHfDataset(dataset);
+    }
+  }, [dataset, datasetSource, isMultimodalModel, selectHfDataset]);
 
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
   const comboboxItems =
@@ -584,6 +599,7 @@ export function DatasetSection() {
               } else if (value === "upload") {
                 selectLocalDataset(uploadedFile);
               } else if (value === "s3") {
+                if (isMultimodalModel) return;
                 selectS3Source();
               }
             }}
@@ -594,7 +610,9 @@ export function DatasetSection() {
               <TabsTrigger value="upload">
                 {t("studio.dataset.localTab")}
               </TabsTrigger>
-              <TabsTrigger value="s3">Amazon S3</TabsTrigger>
+              {!isMultimodalModel && (
+                <TabsTrigger value="s3">Amazon S3</TabsTrigger>
+              )}
             </TabsList>
           </Tabs>
 

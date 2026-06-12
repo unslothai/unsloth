@@ -11,6 +11,17 @@ export interface StartValidationResult {
 export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
+  if (
+    config.modelType === "vision" ||
+    config.modelType === "audio" ||
+    config.isVisionModel ||
+    config.isAudioModel
+  ) {
+    return {
+      ok: false,
+      message: "S3 datasets are not supported for vision or audio training yet.",
+    };
+  }
   const s3 = config.s3Config;
   if (!s3 || !s3.bucket.trim()) {
     return { ok: false, message: "Enter an S3 bucket name first." };
