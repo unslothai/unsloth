@@ -2,7 +2,7 @@
 Tests for Studio's local llama-server timeout policy.
 
 Studio should not cut off a response that is still producing tokens after
-10 minutes. The user-visible Stop control and max_tokens cap are the
+20 minutes. The user-visible Stop control and max_tokens cap are the
 front-line limits. The only fixed watchdog here is the first-token/prefill
 timeout, which catches requests that never start streaming.
 """
@@ -58,9 +58,9 @@ def _module_constant(name: str):
     raise AssertionError(f"{name} constant missing")
 
 
-def test_first_token_timeout_is_at_least_ten_minutes():
+def test_first_token_timeout_is_at_least_twenty_minutes():
     value = _module_constant("_DEFAULT_FIRST_TOKEN_TIMEOUT_S")
-    assert value >= 600.0
+    assert value >= 1200.0
 
 
 def test_studio_chat_payloads_do_not_set_wall_clock_generation_cap():

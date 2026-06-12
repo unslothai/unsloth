@@ -950,7 +950,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "first token within 10 minutes" in _friendly_error(exc)
+        assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_read_timeout_after_stream_started_mapped_as_stall(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())

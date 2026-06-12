@@ -126,7 +126,8 @@ _MAX_REPROMPTS = 1
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
 # fails. Keep max_tokens as the front-line limiter; do not add a fixed
 # wall-clock cutoff for Studio chat because very slow CPU/GPU-offload
-# generations can legitimately keep producing useful tokens past 10 min.
+# generations can legitimately keep producing useful tokens past the
+# first-token timeout.
 #
 # The cap is the model's effective context length when we know it,
 # falling back to a generous floor when metadata is unavailable. 4096 was
@@ -134,7 +135,7 @@ _MAX_REPROMPTS = 1
 # OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
 # curl) sees responses silently truncated mid-sentence.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
-_DEFAULT_FIRST_TOKEN_TIMEOUT_S = 600.0  # 10 min
+_DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
