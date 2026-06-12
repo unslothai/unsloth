@@ -1331,6 +1331,23 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
@@ -1345,7 +1362,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):
