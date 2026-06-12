@@ -70,6 +70,9 @@ import {
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -901,6 +904,7 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
+      const specSettings = resolveSpeculativeSettingsForLoad();
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -942,7 +946,10 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
         });
+        saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -958,6 +965,7 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual

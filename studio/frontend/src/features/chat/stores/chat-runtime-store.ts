@@ -324,6 +324,53 @@ function saveString(key: string, value: string): void {
   }
 }
 
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Mirrors backend
+// _canonicalize_spec_mode so legacy response values round-trip.
+export function normalizeSpeculativeType(
+  v: string | null | undefined,
+): string | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "ngram-simple") return "ngram-simple";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod") return "ngram";
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older backend echoes).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
+}
+
+export function resolveLoadedSpeculativeSettings(response: {
+  speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
+}): {
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+} {
+  const loadedSpeculativeType = normalizeSpeculativeType(
+    response.speculative_type,
+  );
+  const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  return {
+    speculativeType: loadedSpeculativeType,
+    loadedSpeculativeType,
+    specDraftNMax: loadedSpecDraftNMax,
+    loadedSpecDraftNMax,
+  };
+}
+
 // The user's standing preference, sanitized to the universal set.
 export function readPersistedSpeculativeType(): string {
   const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
@@ -1174,3 +1221,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+export function resolveSpeculativeSettingsForLoad(): {
+  speculativeType: string | null;
+  specDraftNMax: number | null;
+} {
+  const state = useChatRuntimeStore.getState();
+  const speculativeType =
+    state.speculativeType ?? readPersistedSpeculativeType();
+  return {
+    speculativeType,
+    specDraftNMax:
+      speculativeType === "mtp" || speculativeType === "mtp+ngram"
+        ? state.specDraftNMax
+        : null,
+  };
+}

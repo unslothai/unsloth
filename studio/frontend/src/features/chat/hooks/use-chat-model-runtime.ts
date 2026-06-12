@@ -26,6 +26,7 @@ import { formatEta, formatRate } from "../utils/format-transfer";
 import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
+  normalizeSpeculativeType,
   readPersistedSpeculativeType,
   type ReasoningEffort,
   resolveToolsEnabledOnLoad,
@@ -211,30 +212,6 @@ function toLoraSummary(lora: {
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
-}
-
-// Canonicalises any backend/persisted value onto the Speculative Decoding
-// dropdown's modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Mirrors
-// backend _canonicalize_spec_mode so legacy persisted values round-trip.
-function normalizeSpeculativeType(v: string | null | undefined): string | null {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
-  if (s === "ngram-simple") return "ngram-simple";
-  if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod") return "ngram";
-  if (s === "mtp+ngram") return "mtp+ngram";
-  // Comma-chained legacy values (e.g. from older persisted state).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
-  if (hasMtp && hasNgram) return "mtp+ngram";
-  if (hasMtp) return "mtp";
-  if (hasNgram) return "ngram";
-  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
-  return "auto";
 }
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -646,12 +623,12 @@ export function useChatModelRuntime() {
             // preference rather than null so a per-session forced MTP mode
             // can't follow the user onto a model without an MTP head.
             // spec_draft_n_max is MTP-only and always resets. The loaded
-            // shadows stay null so a failed-switch rollback's refresh() still
-            // re-hydrates the backend's actual spec mode.
+            // shadow is seeded too, preventing a transient dirty Apply state.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
+              const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
-                speculativeType: readPersistedSpeculativeType(),
-                loadedSpeculativeType: null,
+                speculativeType: persistedSpeculativeType,
+                loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
@@ -857,6 +834,8 @@ export function useChatModelRuntime() {
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  loadedSpeculativeType: null,
+                  loadedSpecDraftNMax: null,
                 });
                 await refresh();
               } catch {
