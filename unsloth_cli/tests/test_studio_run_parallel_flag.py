@@ -426,6 +426,10 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    # run() loads the backend via _load_run_module() (by file path), which
+    # ignores a sys.modules mock with no matching __file__; inject it as the
+    # cached run module so the stubbed run_server is used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
 
