@@ -586,9 +586,7 @@ def _extra_arg_flag_name(token: str) -> Optional[str]:
     return token.split("=", 1)[0]
 
 
-def _extra_args_set_any_flag(
-    extra_args: Optional[Iterable[str]], flags: Collection[str]
-) -> bool:
+def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
     if not extra_args:
         return False
     for raw in extra_args:
