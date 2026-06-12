@@ -6571,8 +6571,9 @@ def install_prebuilt(
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
+                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
                     if existing_install_matches_plan(install_dir, host, plan):
-                        if diffusion_visual_server_backfill_needed(install_dir, host, choice):
+                        if backfill:
                             log(
                                 f"existing install matches fallback {plan.release_tag} but is missing "
                                 "the DiffusionGemma visual-server; re-extracting to backfill it"
@@ -6600,7 +6601,9 @@ def install_prebuilt(
                             release_tag = plan.release_tag,
                             approved_checksums = plan.approved_checksums,
                             initial_fallback_used = release_index > 0,
-                            existing_install_dir = install_dir,
+                            # a backfill must reinstall, so do not let the inner
+                            # existing-install match short-circuit the re-extract
+                            existing_install_dir = None if backfill else install_dir,
                         )
                     except ExistingInstallSatisfied:
                         return
