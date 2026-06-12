@@ -347,11 +347,14 @@ class _IOReportEnergy:
         )
         if not self._sub:
             raise OSError("IOReportCreateSubscription failed")
+        # Sample with the channels IOReport subscribes us to, not the requested
+        # group (matches macmon); fall back if the OS leaves it unset.
+        self._sample_channels = subscribed if subscribed else self._channels
         self._channels_key = _cfstr(self._cf, "IOReportChannels")
         self._prev: Optional[tuple[int, float]] = None  # (sample ref, monotonic s)
 
     def gpu_power_w(self) -> Optional[float]:
-        sample = self._ior.IOReportCreateSamples(self._sub, self._channels, None)
+        sample = self._ior.IOReportCreateSamples(self._sub, self._sample_channels, None)
         if not sample:
             return None
         now = time.monotonic()
