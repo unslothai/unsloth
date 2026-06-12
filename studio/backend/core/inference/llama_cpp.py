@@ -722,6 +722,11 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
+        # runner, not llama-server. Set from the GGUF architecture at load.
+        self._architecture: Optional[str] = None
+        self._is_diffusion: bool = False
+        self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -827,6 +832,11 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def is_diffusion(self) -> bool:
+        """True when the loaded GGUF is a block-diffusion model (DiffusionGemma)."""
+        return self._is_diffusion
 
     @property
     def hf_variant(self) -> Optional[str]:
@@ -2218,11 +2228,16 @@ class LlamaCppBackend:
         self._ssm_state_size = None
         self._shared_kv_layers = None
         self._nextn_predict_layers = None
+        self._architecture = None
+        self._is_diffusion = False
 
         try:
+            canvas_seen = False
             WANTED = {
                 "general.architecture",
                 "tokenizer.chat_template",
+                # Block-diffusion marker (DiffusionGemma); routes to the diffusion runner.
+                "diffusion.canvas_length",
                 # Source-repo hints for the SWA resolver's HF fallback.
                 "general.source.huggingface.repository",
                 "general.source.url",
@@ -2277,6 +2292,7 @@ class LlamaCppBackend:
                                     general[key] = val_s
                                 if key == "general.architecture":
                                     arch = val_s
+                                    self._architecture = val_s
                                     arch_keys = {
                                         f"{arch}.context_length": "context_length",
                                         f"{arch}.block_count": "n_layers",
@@ -2305,6 +2321,8 @@ class LlamaCppBackend:
                                     if vtype == 4
                                     else struct.unpack("<Q", f.read(8))[0]
                                 )
+                                if key == "diffusion.canvas_length":
+                                    canvas_seen = True
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -2372,6 +2390,17 @@ class LlamaCppBackend:
                     hf_repo_candidates,
                 )
 
+            # Block-diffusion models (DiffusionGemma) report a diffusion arch
+            # and/or a diffusion.canvas_length KV; they need the diffusion runner.
+            self._is_diffusion = bool(
+                (arch and arch.lower().startswith("diffusion")) or canvas_seen
+            )
+            if self._is_diffusion:
+                logger.info(
+                    f"GGUF metadata: diffusion model detected (architecture={arch}); "
+                    "will serve via the diffusion runner"
+                )
+
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
             if self._chat_template:
@@ -2389,6 +2418,188 @@ class LlamaCppBackend:
                 self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
+
+    # ── Diffusion runner (DiffusionGemma) ──
+
+    def _find_diffusion_assets(self) -> Optional[tuple[list, str, Optional[str]]]:
+        """Resolve how to launch the DiffusionGemma runner: (shim argv prefix,
+        visual-server binary, optional extra PYTHONPATH dir for the file override).
+
+        Shim: UNSLOTH_DG_SHIM (a .py file) first, else the installed
+        unsloth_zoo.diffusion_studio.shim. Binary: DG_VISUAL_BIN first, else
+        alongside llama-server. Returns None if neither can be found.
+        """
+        import importlib.util
+        import os
+        import sys
+
+        # Visual-server binary: env override, else the install tree (sibling of llama-server).
+        visual_bin = os.environ.get("DG_VISUAL_BIN")
+        if not visual_bin:
+            base = self._find_llama_server_binary()
+            if base:
+                cand = Path(base).parent / "llama-diffusion-gemma-visual-server"
+                if cand.is_file():
+                    visual_bin = str(cand)
+        if not (visual_bin and Path(visual_bin).is_file()):
+            return None
+
+        # Shim: a file override (its dir goes on PYTHONPATH), else the zoo package via -m.
+        shim_file = os.environ.get("UNSLOTH_DG_SHIM")
+        if shim_file and Path(shim_file).is_file():
+            return ([sys.executable, shim_file], visual_bin, str(Path(shim_file).parent))
+
+        # Find the installed shim without importing the heavy unsloth_zoo package
+        # (find_spec on the top-level package does not run its __init__).
+        try:
+            spec = importlib.util.find_spec("unsloth_zoo")
+        except Exception:
+            spec = None
+        if spec is not None and spec.submodule_search_locations:
+            pkg_dir = Path(list(spec.submodule_search_locations)[0])
+            if (pkg_dir / "diffusion_studio" / "shim.py").is_file():
+                return ([sys.executable, "-m", "unsloth_zoo.diffusion_studio.shim"], visual_bin, None)
+
+        return None
+
+    def _start_diffusion_server(
+        self,
+        *,
+        model_path: str,
+        gguf_path: Optional[str],
+        hf_repo: Optional[str],
+        hf_variant: Optional[str],
+        model_identifier: str,
+        n_ctx: int,
+        extra_args: Optional[List[str]],
+    ) -> bool:
+        """Launch the OpenAI-compat diffusion shim (which drives the on-device
+        visual decoder) and wait for health. Presents the same /v1 + /health
+        interface as llama-server, so the rest of Studio is unchanged.
+        """
+        import os
+
+        assets = self._find_diffusion_assets()
+        if assets is None:
+            raise RuntimeError(
+                "DiffusionGemma runner not found. Install unsloth_zoo (which ships "
+                "unsloth_zoo.diffusion_studio.shim) or set UNSLOTH_DG_SHIM to a shim "
+                "file, and provide the visual-server binary via DG_VISUAL_BIN or next "
+                "to llama-server in the install tree."
+            )
+        shim_cmd, visual_bin, extra_pythonpath = assets
+        self._diffusion_visual_bin = visual_bin
+
+        self._kill_process()
+        self._port = self._find_free_port()
+        # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
+        # (capped at the training context). An explicit in-range n_ctx overrides it.
+        maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
+        gpu = os.environ.get("DG_GPU", "0")
+
+        cmd = list(shim_cmd) + [
+            "--gguf", model_path,
+            "--host", "127.0.0.1",
+            "--port", str(self._port),
+            "--gpu", gpu,
+            "--maxtok", str(maxtok),
+        ]
+
+        env = child_env_without_native_path_secret()
+        env["DG_VISUAL_BIN"] = visual_bin
+        env["DG_GPU"] = gpu
+        # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
+        # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
+        if extra_pythonpath:
+            env["PYTHONPATH"] = extra_pythonpath + os.pathsep + env.get("PYTHONPATH", "")
+
+        logger.info(f"Starting DiffusionGemma runner: {' '.join(cmd)}")
+        self._stdout_lines = []
+        self._llama_log_fh = None
+        self._llama_log_path = None
+        try:
+            log_dir = _swa_cache_path().parent / "logs" / "diffusion-server"
+            log_dir.mkdir(parents = True, exist_ok = True)
+            self._llama_log_path = log_dir / f"diffusion-{int(time.time())}-port-{self._port}.log"
+            self._llama_log_fh = open(self._llama_log_path, "w", encoding = "utf-8", buffering = 1)
+            logger.info(f"diffusion runner stdout/stderr -> {self._llama_log_path}")
+        except OSError as e:
+            logger.debug(f"Could not open diffusion runner log file: {e}")
+
+        # PR_SET_PDEATHSIG: the shim (and its visual server) die with this backend
+        # process, so a Studio crash/restart never orphans a GPU process.
+        popen_kwargs = dict(_windows_hidden_subprocess_kwargs())
+        if os.name == "posix":
+            def _pdeathsig():
+                try:
+                    import ctypes
+                    import signal as _signal
+                    ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, _signal.SIGTERM)
+                except Exception:
+                    pass
+            popen_kwargs["preexec_fn"] = _pdeathsig
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = env,
+            **popen_kwargs,
+        )
+        self._stdout_thread = threading.Thread(
+            target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
+        )
+        self._stdout_thread.start()
+
+        # Publish state before the health wait (mirrors the llama-server path).
+        self._gguf_path = model_path
+        self._hf_repo = hf_repo
+        self._is_vision = False
+        self._model_identifier = model_identifier
+        self._cache_type_kv = None
+        self._gpu_offload_active = True
+        if hf_variant:
+            self._hf_variant = hf_variant
+        elif gguf_path:
+            try:
+                from utils.models.model_config import _extract_quant_label
+                self._hf_variant = _extract_quant_label(gguf_path)
+            except Exception:
+                self._hf_variant = None
+        else:
+            self._hf_variant = None
+        # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
+        self._effective_context_length = maxtok or self._context_length
+        self._max_context_length = self._context_length or maxtok or None
+
+        healthy = self._wait_for_health(timeout = 600.0)
+        if healthy:
+            self._healthy = True
+            self._gpu_offload_active = True
+            if extra_args is not None:
+                self._extra_args = list(extra_args)
+                self._extra_args_source = (model_identifier, hf_variant)
+            # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
+            # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
+            chosen = maxtok
+            try:
+                import re as _re
+                for _ln in reversed(self._stdout_lines):
+                    _m = _re.search(r"MAXTOK=(\d+)", _ln)
+                    if _m:
+                        chosen = int(_m.group(1))
+                        break
+            except Exception:
+                pass
+            if chosen and chosen > 0:
+                self._effective_context_length = chosen
+                self._max_context_length = chosen
+            self._requested_n_ctx = int(n_ctx)
+        else:
+            self._healthy = False
+            logger.error("DiffusionGemma runner failed to become healthy")
+        return healthy
 
     # ── HF download (no lock held) ───────────────────────────────
 
@@ -3180,13 +3391,9 @@ class LlamaCppBackend:
             with self._lock:
                 self._kill_process()
 
+            # Resolve llama-server now but defer a not-found error: a block-diffusion
+            # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
-            if not binary:
-                raise RuntimeError(
-                    "llama-server binary not found. "
-                    "Run setup.sh to build it, install llama.cpp, "
-                    "or set LLAMA_SERVER_PATH environment variable."
-                )
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -3240,6 +3447,30 @@ class LlamaCppBackend:
             if self._cancel_event.is_set():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
+            # serve them with the diffusion runner (same OpenAI-compat interface).
+            if self._is_diffusion:
+                with self._lock:
+                    if self._cancel_event.is_set():
+                        logger.info("Load cancelled before diffusion server start")
+                        return False
+                    return self._start_diffusion_server(
+                        model_path = model_path,
+                        gguf_path = gguf_path,
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        model_identifier = model_identifier,
+                        n_ctx = n_ctx,
+                        extra_args = extra_args,
+                    )
+
+            if not binary:
+                raise RuntimeError(
+                    "llama-server binary not found. "
+                    "Run setup.sh to build it, install llama.cpp, "
+                    "or set LLAMA_SERVER_PATH environment variable."
+                )
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -5241,6 +5472,12 @@ class LlamaCppBackend:
 
                             try:
                                 data = json.loads(line[6:])
+                                # Diffusion frame (per-step canvas) from the shim: forward untouched so
+                                # the frontend renders it in place. No assistant text, so it never enters
+                                # the cumulative content.
+                                if data.get("type") == "diffusion_frame":
+                                    yield data
+                                    continue
                                 # Capture server timings/usage from final chunks.
                                 _chunk_timings = data.get("timings")
                                 if _chunk_timings:
