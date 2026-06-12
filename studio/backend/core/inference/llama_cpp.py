@@ -1088,9 +1088,23 @@ class LlamaCppBackend:
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
+        def _is_file(p: Path) -> bool:
+            # is_file() returns False for an absent path but *raises*
+            # PermissionError (WinError 5) when the path exists yet is momentarily
+            # inaccessible -- an antivirus lock, an install replace in flight, or
+            # an elevated-install ACL. Treat that as present so discovery returns
+            # the real binary (the caller retries the exec) instead of skipping it
+            # and reporting "not found". Other stat errors fall back to "not here".
+            try:
+                return p.is_file()
+            except PermissionError:
+                return True
+            except OSError:
+                return False
+
         # 1. Env var: direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
-        if env_path and Path(env_path).is_file():
+        if env_path and _is_file(Path(env_path)):
             return env_path
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
@@ -1099,16 +1113,16 @@ class LlamaCppBackend:
             custom_dir = Path(custom_llama_cpp)
             # Root dir (make builds)
             root_bin = custom_dir / binary_name
-            if root_bin.is_file():
+            if _is_file(root_bin):
                 return str(root_bin)
             # build/bin/ (cmake on Linux)
             cmake_bin = custom_dir / "build" / "bin" / binary_name
-            if cmake_bin.is_file():
+            if _is_file(cmake_bin):
                 return str(cmake_bin)
             # build/bin/Release/ (cmake on Windows)
             if sys.platform == "win32":
                 win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
-                if win_bin.is_file():
+                if _is_file(win_bin):
                     return str(win_bin)
 
         # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
@@ -1142,29 +1156,29 @@ class LlamaCppBackend:
                 _unique_roots.append(r)
         for unsloth_home in _unique_roots:
             home_root = unsloth_home / binary_name
-            if home_root.is_file():
+            if _is_file(home_root):
                 return str(home_root)
             home_linux = unsloth_home / "build" / "bin" / binary_name
-            if home_linux.is_file():
+            if _is_file(home_linux):
                 return str(home_linux)
             if sys.platform == "win32":
                 home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-                if home_win.is_file():
+                if _is_file(home_win):
                     return str(home_win)
 
         # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1)
         project_root = Path(__file__).resolve().parents[4]
         # Root dir (make builds)
         root_path = project_root / "llama.cpp" / binary_name
-        if root_path.is_file():
+        if _is_file(root_path):
             return str(root_path)
         # build/bin/ (cmake builds)
         build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
-        if build_path.is_file():
+        if _is_file(build_path):
             return str(build_path)
         if sys.platform == "win32":
             win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
-            if win_path.is_file():
+            if _is_file(win_path):
                 return str(win_path)
 
         # 7. System PATH
@@ -1174,7 +1188,7 @@ class LlamaCppBackend:
 
         # 8. Legacy: extracted to bin/
         bin_path = project_root / "bin" / binary_name
-        if bin_path.is_file():
+        if _is_file(bin_path):
             return str(bin_path)
 
         return None
