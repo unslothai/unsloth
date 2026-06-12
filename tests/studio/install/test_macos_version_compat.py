@@ -20,9 +20,7 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location(
-    "studio_install_llama_prebuilt_macos", MODULE_PATH
-)
+SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_macos", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ILP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ILP
@@ -54,7 +52,12 @@ def make_macos_host(macos_version, *, arm64 = True):
     )
 
 
-def thin_macho(minos = (14, 0), *, cputype = _CPU_TYPE_ARM64, build_version = True):
+def thin_macho(
+    minos = (14, 0),
+    *,
+    cputype = _CPU_TYPE_ARM64,
+    build_version = True,
+):
     """Synthesize a minimal little-endian 64-bit Mach-O carrying a macOS
     minimum-version load command."""
     encoded = (minos[0] << 16) | (minos[1] << 8)
@@ -139,10 +142,7 @@ class TestMachoMinimumMacos:
             )
         )
         assert ILP.macho_minimum_macos(path, make_macos_host((14, 0))) == (14, 0)
-        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64 = False)) == (
-            26,
-            0,
-        )
+        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64 = False)) == (26, 0)
 
     def test_non_macho_returns_none(self, tmp_path):
         path = tmp_path / "script.sh"
@@ -185,23 +185,17 @@ class TestPreflightMacosInstalledBinaries:
     def test_rejects_too_new_dylib(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         with pytest.raises(PrebuiltFallback, match = "newer macOS"):
-            ILP.preflight_macos_installed_binaries(
-                binaries, install_dir, make_macos_host((14, 0))
-            )
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((14, 0)))
 
     def test_accepts_compatible_prebuilt(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (14, 0))
         # Must not raise on a macOS 15 host.
-        ILP.preflight_macos_installed_binaries(
-            binaries, install_dir, make_macos_host((15, 5))
-        )
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
     def test_skips_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         # Unknown host version -> defer to runtime validation, do not raise.
-        ILP.preflight_macos_installed_binaries(
-            binaries, install_dir, make_macos_host(None)
-        )
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
@@ -238,32 +232,46 @@ def _fake_macos_releases(tags):
     ]
 
 
-class TestMacosReleaseWalkback:
-    """A known-version macOS host must generate enough older-release plans to
-    walk back past a run of too-new prebuilts; unknown-version and non-macOS
-    hosts keep the conservative 2-release default."""
+class TestMacosReleasePin:
+    """A known pre-26 macOS host deterministically pins the last upstream release
+    whose prebuilt loads on it (b9415) instead of walking back release by release;
+    macOS 26+ and unknown-version hosts keep normal latest selection with the
+    conservative 2-release default."""
 
-    TAGS = [f"b{n}" for n in range(9437, 9400, -1)]  # 37 newest-first releases
+    TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 
     def _patch_releases(self, monkeypatch):
-        monkeypatch.setattr(
-            ILP,
-            "iter_release_payloads_by_time",
-            lambda repo, published_release_tag, requested_tag: _fake_macos_releases(
-                self.TAGS
-            ),
-        )
+        def fake_iter(repo, published_release_tag, requested_tag):
+            # The real iterator yields only the requested tag when one is pinned.
+            if requested_tag and requested_tag != "latest":
+                return _fake_macos_releases([requested_tag])
+            return _fake_macos_releases(self.TAGS)
 
-    def test_known_macos_host_walks_back_deeper(self, monkeypatch):
+        monkeypatch.setattr(ILP, "iter_release_payloads_by_time", fake_iter)
+
+    def test_pre26_host_pins_b9415(self, monkeypatch):
         self._patch_releases(monkeypatch)
-        _tag, plans = ILP.resolve_simple_install_release_plans(
+        tag, plans = ILP.resolve_simple_install_release_plans(
             "latest",
             make_macos_host((14, 0)),
             "ggml-org/llama.cpp",
             "",
         )
-        assert len(plans) == ILP.DEFAULT_MAX_MACOS_RELEASE_FALLBACKS
-        assert len(plans) > ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
+        assert tag == ILP._PINNED_MACOS_FALLBACK_TAG == "b9415"
+        assert len(plans) == 1
+        assert plans[0].release_tag == "b9415"
+
+    def test_tahoe_host_takes_latest(self, monkeypatch):
+        self._patch_releases(monkeypatch)
+        tag, plans = ILP.resolve_simple_install_release_plans(
+            "latest",
+            make_macos_host((26, 0)),
+            "ggml-org/llama.cpp",
+            "",
+        )
+        assert tag == "latest"
+        assert plans[0].release_tag == self.TAGS[0]  # newest release
+        assert len(plans) == ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
 
     def test_unknown_macos_host_uses_default(self, monkeypatch):
         self._patch_releases(monkeypatch)

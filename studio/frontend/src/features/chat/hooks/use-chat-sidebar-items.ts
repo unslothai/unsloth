@@ -7,6 +7,7 @@ import {
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useChatArtifactsStore } from "../artifacts/store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -26,6 +27,7 @@ export interface SidebarItem {
   id: string;
   title: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 export function groupThreads(
@@ -54,6 +56,7 @@ export function groupThreads(
         id: t.pairId,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     } else if (!t.pairId) {
       items.push({
@@ -61,6 +64,7 @@ export function groupThreads(
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     }
   }
@@ -68,23 +72,38 @@ export function groupThreads(
   return items.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so
-// each quiet window produces at most one O(N) fetch; requestSeq
-// discards stale responses.
+// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
+// window produces at most one O(N) fetch; requestSeq discards stale responses.
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
 
-export function useChatSidebarItems() {
+export function useChatSidebarItems(options?: {
+  projectId?: string | null;
+  enabled?: boolean;
+  requireMessages?: boolean;
+}) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const enabled = options?.enabled ?? true;
+  const requireMessages = options?.requireMessages ?? true;
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     let cancelled = false;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
     let requestSeq = 0;
 
     async function doLoad(seq: number) {
       try {
-        const threads = await listStoredChatThreadsWithMessages({
+        const listThreads = requireMessages
+          ? listStoredChatThreadsWithMessages
+          : listStoredChatThreads;
+        // includeArchived: archived threads are filtered out of Recents by
+        // groupThreads, but the hook still needs them for archivedItems.
+        const threads = await listThreads({
           includeArchived: true,
+          projectId: options?.projectId,
         });
         // Discard the response if a newer request was scheduled while we
         // were in flight, or if the effect was torn down.
@@ -117,7 +136,7 @@ export function useChatSidebarItems() {
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
     };
-  }, []);
+  }, [enabled, options?.projectId, requireMessages]);
 
   const items = groupThreads(allThreads ?? []);
   const archivedItems = groupThreads(allThreads ?? [], true);
@@ -218,6 +237,10 @@ export async function deleteChatItem(
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
+
+  const artifactStore = useChatArtifactsStore.getState();
+  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
+  artifactStore.clearOrphanedArtifacts();
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);

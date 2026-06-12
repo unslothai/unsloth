@@ -6,11 +6,13 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
+import { ImageIcon, PencilIcon } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
-import { Image, downloadImagePart } from "./image";
+import { downloadImagePart } from "./image";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -19,26 +21,14 @@ import {
 
 /**
  * Renders the synthetic `_toolEvent` chunks emitted by
- * `_stream_openai_responses` when OpenAI's Responses-API
- * `image_generation` tool fires. The backend stashes the base64
- * PNG/WebP/JPEG (the gpt-image backbone output) on an `image_b64`
- * field of the tool_end event so the JSON result stays small, and the
- * adapter repackages it into a structured `result` shape:
- *
- *   {
- *     image_b64: string,
- *     image_mime: string,        // e.g. "image/png"
- *     size?: string,             // "1024x1024" etc
- *     quality?: string,
- *     background?: string,
- *   }
- *
- * The corresponding `tool_start` carries the prompt as
- * `args.prompt` (after gpt-image's revision pass) plus `args.kind:
- * "image"`. Without this component the generic ToolFallback would
- * print the prompt as JSON args text with an empty Result block --
- * which is exactly the "no image" symptom users hit before this UI
- * landed.
+ * `_stream_openai_responses` when OpenAI's Responses-API `image_generation`
+ * tool fires. The backend stashes the base64 image on `image_b64` of the
+ * tool_end event (keeping the JSON small); the adapter repackages it into a
+ * structured `result` (image_b64, image_mime e.g. "image/png", size? e.g.
+ * "1024x1024", quality?, background?).
+ * The `tool_start` carries the revised prompt as `args.prompt` plus
+ * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
+ * JSON with an empty Result block (the "no image" symptom).
  */
 interface ImageGenerationArgs {
   prompt?: string;
@@ -64,6 +54,8 @@ type GeneratedImagePart = {
 };
 
 const CAPTION_COLLAPSED_LINES = 4;
+const INLINE_IMAGE_MAX_WIDTH = 520;
+const INLINE_IMAGE_MAX_HEIGHT = 620;
 
 const extensionForMime = (mime: string): string => {
   switch (mime.toLowerCase()) {
@@ -99,6 +91,31 @@ const formatGeneratedImageLabel = (prompt: string): string => {
     ? `Generated image: ${prompt.slice(0, 80)}…`
     : `Generated image: ${prompt}`;
 };
+
+const parseImageSize = (
+  size?: string,
+): { width: number; height: number } | null => {
+  const match = size?.match(/^(\d+)x(\d+)$/i);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? { width, height } : null;
+};
+
+const getInlineImageFrameWidth = ({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}): number =>
+  Math.round(
+    Math.min(
+      width,
+      INLINE_IMAGE_MAX_WIDTH,
+      (INLINE_IMAGE_MAX_HEIGHT * width) / height,
+    ),
+  );
 
 const loadingDots = Array.from({ length: 64 }, (_, index) => {
   const row = Math.floor(index / 8);
@@ -150,6 +167,16 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
+  const imageDimensions = parseImageSize(imageResult?.size);
+  const imageFrameStyle: CSSProperties = {
+    width: imageDimensions
+      ? getInlineImageFrameWidth(imageDimensions)
+      : INLINE_IMAGE_MAX_WIDTH,
+    maxWidth: "100%",
+  };
+  const imageBoxStyle: CSSProperties | undefined = imageDimensions
+    ? { aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }
+    : undefined;
   const mime = imageResult?.image_mime || "image/png";
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
@@ -202,8 +229,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     const computedStyle = window.getComputedStyle(captionElement);
     const lineHeight = Number.parseFloat(computedStyle.lineHeight);
     const collapsedHeight =
-      (Number.isFinite(lineHeight) ? lineHeight : 20) *
-      CAPTION_COLLAPSED_LINES;
+      (Number.isFinite(lineHeight) ? lineHeight : 20) * CAPTION_COLLAPSED_LINES;
     const hasOverflow = captionElement.scrollHeight > collapsedHeight + 1;
     setPromptOverflow((current) =>
       current?.prompt === captionPrompt && current.canExpand === hasOverflow
@@ -289,26 +315,34 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {imagePart ? (
-          <figure className="m-0 flex flex-col gap-2">
-            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl bg-muted/25 shadow-lg shadow-foreground/5 dark:shadow-black/25">
-              <img
-                src={imagePart.image}
-                alt=""
-                aria-hidden={true}
-                className="pointer-events-none absolute inset-0 size-full scale-110 object-cover opacity-25 blur-2xl saturate-125"
-              />
-              <div className="pointer-events-none absolute inset-0 bg-background/45" />
+          <figure
+            className="m-0 flex max-w-full flex-col items-start gap-2 align-top"
+            style={imageFrameStyle}
+          >
+            <div
+              className="group/generated-image relative w-full overflow-hidden rounded-2xl align-top"
+              style={imageBoxStyle}
+            >
               <button
                 type="button"
-                className="relative z-10 block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className={cn(
+                  "block cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  imageDimensions ? "size-full" : "max-w-full",
+                )}
                 onClick={showPreview}
                 aria-label="Open generated image preview"
               >
-                <Image.Preview
+                <img
                   src={imagePart.image}
                   alt={imageTitle}
-                  containerClassName="flex size-full min-h-0 items-center justify-center bg-transparent"
-                  className="size-full object-contain"
+                  width={imageDimensions?.width}
+                  height={imageDimensions?.height}
+                  className={cn(
+                    "block rounded-2xl object-contain",
+                    imageDimensions
+                      ? "size-full"
+                      : "h-auto max-h-[min(70vh,620px)] max-w-full",
+                  )}
                 />
               </button>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
@@ -330,12 +364,12 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   onClick={handleDownload}
                   aria-label="Download generated image"
                 >
-                  <DownloadIcon className="size-4" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-4" />
                 </Button>
               </div>
             </div>
             {captionPrompt ? (
-              <figcaption className="max-w-[480px] text-xs leading-5 text-muted-foreground">
+              <figcaption className="w-full text-xs leading-5 text-muted-foreground">
                 <div
                   ref={captionRef}
                   className={cn(

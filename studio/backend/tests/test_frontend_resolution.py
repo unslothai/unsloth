@@ -3,9 +3,8 @@
 
 """Tests for the frontend-dist resolver in studio/backend/run.py.
 
-Loads only the relevant helpers via importlib so the test does not pull in
-uvicorn / FastAPI / unsloth's full dependency tree. Pairs with the AST-style
-test_host_defaults.py.
+Loads only the relevant helpers via importlib to avoid pulling in
+uvicorn / FastAPI / unsloth's deps. Pairs with AST-style test_host_defaults.py.
 """
 
 import ast
@@ -19,8 +18,8 @@ _REPO_STUDIO_DIR = _RUN_PY.parent.parent  # studio/
 
 
 def _load_helpers_only():
-    """Import just the resolver helpers from run.py without executing the
-    server-side imports (uvicorn, structlog, etc.)."""
+    """Import just the resolver helpers from run.py, skipping server-side
+    imports (uvicorn, structlog, etc.)."""
     source = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     keep = []
@@ -91,7 +90,7 @@ def test_resolver_falls_back_to_studio_home_site_packages(tmp_path, monkeypatch)
 
 def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
     """Simulates a `--local` install: dedicated venv with an editable .pth
-    pointing at a cloned repo that owns the built dist."""
+    pointing at a cloned repo owning the built dist."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
@@ -100,7 +99,7 @@ def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
     repo_dist = repo_studio / "frontend" / "dist"
     repo_dist.mkdir(parents = True)
     (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
-    # Minimal `__editable___pkg_finder.py` carrying a MAPPING dict that
+    # Minimal `__editable___pkg_finder.py` with the MAPPING dict that
     # setuptools' editable install generator writes.
     finder = sp / "__editable___unsloth_0_0_0_finder.py"
     finder.write_text(
@@ -127,16 +126,10 @@ def test_iter_candidates_handles_missing_studio_home(tmp_path, monkeypatch):
 
 def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypatch):
     """Pins the `Lib/site-packages` (capital L) Windows venv layout
-    alongside the POSIX `lib/python*/site-packages` path."""
+    alongside the POSIX `lib/python*/site-packages`."""
     studio_home = tmp_path / "studio_home"
     sp_dist = (
-        studio_home
-        / "unsloth_studio"
-        / "Lib"
-        / "site-packages"
-        / "studio"
-        / "frontend"
-        / "dist"
+        studio_home / "unsloth_studio" / "Lib" / "site-packages" / "studio" / "frontend" / "dist"
     )
     sp_dist.mkdir(parents = True)
     (sp_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
@@ -149,20 +142,19 @@ def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypat
 
 
 def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypatch):
-    """A finder file whose MAPPING value is a set / list / non-dict literal
-    (theoretically possible if the regex matched a brace-delimited literal
-    that ast.literal_eval can parse) must not AttributeError. The resolver
-    should skip that finder and keep probing."""
+    """A finder whose MAPPING value is a set/list/non-dict literal (possible
+    if the regex matched a brace-delimited literal ast.literal_eval can parse)
+    must not AttributeError. The resolver should skip it and keep probing."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
-    # Bad finder: set literal, not a dict. ast.literal_eval parses it as set;
-    # any .get() call on it would raise AttributeError.
+    # Bad finder: set literal, not a dict. literal_eval parses it as a set,
+    # so any .get() call on it would raise AttributeError.
     (sp / "__editable___bad_0_0_0_finder.py").write_text(
         "MAPPING: dict[str, str] = {'studio', 'unsloth', 'unsloth_cli'}\n",
         encoding = "utf-8",
     )
-    # Good finder that should still be discovered after the bad one is skipped.
+    # Good finder, still discovered after the bad one is skipped.
     repo_root = tmp_path / "clone"
     repo_dist = repo_root / "studio" / "frontend" / "dist"
     repo_dist.mkdir(parents = True)
@@ -180,9 +172,8 @@ def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypat
 
 
 def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
-    """A future setuptools / black reformat that wraps the MAPPING dict
-    across multiple lines must still parse and resolve. Locks in the
-    `[^}]*` + re.DOTALL behaviour."""
+    """A future setuptools/black reformat wrapping the MAPPING dict across
+    multiple lines must still parse and resolve. Locks in `[^}]*` + re.DOTALL."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
@@ -210,8 +201,8 @@ def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
 
 def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
     """The user-facing recovery message is a contract: it must surface the
-    attempted paths and every concrete fix. Pin its structure so a future
-    refactor doesn't drop one."""
+    attempted paths and every concrete fix. Pin its structure so a refactor
+    doesn't drop one."""
     import os
     import sys
 

@@ -121,9 +121,8 @@ export function ExportPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
-  // Resolved on-disk path of the most recent successful export, surfaced
-  // on the Export Complete screen so the user can find their model
-  // without digging through the server log. Null for Hub-only pushes.
+  // On-disk path of the last successful export, shown on the Export Complete
+  // screen so the user can find their model. Null for Hub-only pushes.
   const [exportOutputPath, setExportOutputPath] = useState<string | null>(null);
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -438,11 +437,9 @@ export function ExportPage() {
         });
       }
 
-      // 2. Run export based on method. Capture the resolved output_path
-      // (when the backend wrote a local copy) so the success screen can
-      // show the user the realpath of their saved model. For multi-quant
-      // GGUF runs, the directory is the same for every quant so we just
-      // keep the last response.
+      // 2. Run export. Capture the resolved output_path (when the backend
+      // wrote a local copy) for the success screen. Multi-quant GGUF runs
+      // share one directory, so we just keep the last response.
       let lastOutputPath: string | null = null;
       if (exportMethod === "merged") {
         if (isAdapter) {
@@ -542,7 +539,7 @@ export function ExportPage() {
           description="Select source, method, and quantization"
           accent="emerald"
           featured={true}
-          className="shadow-border ring-1 ring-border"
+          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           {/* Loading / error states */}
           {loadingCheckpoints && (

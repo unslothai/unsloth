@@ -19,7 +19,11 @@ WORKFLOW_YML = REPO / ".github/workflows/studio-ui-smoke.yml"
 IME_PY = REPO / "tests/studio/playwright_chat_ime_i18n.py"
 
 
-def _block_around(src: str, anchor: str, radius: int = 600) -> str:
+def _block_around(
+    src: str,
+    anchor: str,
+    radius: int = 600,
+) -> str:
     idx = src.find(anchor)
     assert idx != -1, f"anchor {anchor!r} not found"
     return src[max(idx - radius, 0) : idx + radius]
@@ -83,9 +87,9 @@ def test_main_composer_has_stuck_compositionend_watchdog():
     composing flag once events go silent; without it Send stays disabled
     forever and CJK input is effectively dropped."""
     src = THREAD_TSX.read_text()
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "main composer is missing the stuck-compositionend watchdog " "(issue #5546)"
-    )
+    assert (
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "main composer is missing the stuck-compositionend watchdog (issue #5546)"
     assert "onCompositionUpdate" in src, (
         "main composer is missing onCompositionUpdate wiring; the "
         "watchdog only resets while the IME is actively emitting events"
@@ -94,12 +98,10 @@ def test_main_composer_has_stuck_compositionend_watchdog():
 
 def test_compare_composer_has_stuck_compositionend_watchdog():
     src = SHARED_TSX.read_text()
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "compare composer is missing the stuck-compositionend watchdog " "(issue #5546)"
-    )
     assert (
-        "onCompositionUpdate" in src
-    ), "compare composer is missing onCompositionUpdate wiring"
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
+    assert "onCompositionUpdate" in src, "compare composer is missing onCompositionUpdate wiring"
 
 
 def test_main_composer_keydown_repins_composing_during_ime():
@@ -125,11 +127,15 @@ def test_compare_composer_keydown_repins_composing_during_ime():
     )
 
 
-def _extract_block(src: str, anchor: str, opener: str = "(", closer: str = ")") -> str:
-    """Return the source between the first balanced opener/closer that
-    starts at or after `anchor`. Used to scope assertions to a specific
-    handler so a re-arm call in some other function does not satisfy
-    the gate test."""
+def _extract_block(
+    src: str,
+    anchor: str,
+    opener: str = "(",
+    closer: str = ")",
+) -> str:
+    """Return the source within the first balanced opener/closer at or
+    after `anchor`. Scopes assertions to one handler so a re-arm call
+    elsewhere does not satisfy the gate test."""
     start = src.find(anchor)
     assert start != -1, f"anchor {anchor!r} not found"
     open_idx = src.find(opener, start)
