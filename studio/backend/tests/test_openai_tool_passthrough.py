@@ -726,6 +726,14 @@ class TestPassthroughReasoningKwargs:
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
 
+    def test_reasoning_effort_none_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False, reasoning_effort = "none"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "none"}
+
     def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
             self._payload(enable_thinking = False),
