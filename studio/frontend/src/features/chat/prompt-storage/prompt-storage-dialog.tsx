@@ -11,6 +11,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
   CheckIcon,
@@ -20,7 +22,6 @@ import {
   PencilIcon,
   PlayIcon,
   PlusIcon,
-  SearchIcon,
   Trash2Icon,
   UploadIcon,
   XIcon,
@@ -1879,7 +1880,7 @@ export function PromptStorageDialog({
 
             {/* */}
             <div className="relative">
-              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60" />
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60" />
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -1898,7 +1899,7 @@ export function PromptStorageDialog({
                       onClick={() => { setSearchQuery(name); setShowSuggestions(false); }}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground transition-colors text-left"
                     >
-                      <SearchIcon className="size-3 shrink-0 text-muted-foreground/60" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-3 shrink-0 text-muted-foreground/60" />
                       <span className="truncate">{name}</span>
                     </button>
                   ))}
@@ -1939,7 +1940,7 @@ export function PromptStorageDialog({
                       {searchQuery.trim() ? (
                         <>
                           <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <SearchIcon className="size-5 text-muted-foreground/40" />
+                            <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-5 text-muted-foreground/40" />
                           </div>
                           <div className="flex flex-col gap-1">
                             <p className="text-sm font-medium text-muted-foreground">
@@ -2003,7 +2004,7 @@ export function PromptStorageDialog({
                       {searchQuery.trim() ? (
                         <>
                           <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                            <SearchIcon className="size-5 text-muted-foreground/40" />
+                            <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-5 text-muted-foreground/40" />
                           </div>
                           <div className="flex flex-col gap-1">
                             <p className="text-sm font-medium text-muted-foreground">
