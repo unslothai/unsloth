@@ -10,6 +10,7 @@ import argparse
 import errno
 import fnmatch
 import functools
+import glob
 import hashlib
 import json
 import os
@@ -262,6 +263,7 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    has_intel_gpu: bool = False
     rocm_gfx_target: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
@@ -1495,6 +1497,21 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
+        elif host.has_intel_gpu:
+            vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "windows-vulkan",
+                    )
+                )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
@@ -1555,6 +1572,21 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
+        if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
+            vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-x64.tar.gz"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "linux-vulkan",
+                    )
+                )
         if host.has_rocm:
             # Lemonade first, mirroring the Windows ROCm branch above, so a
             # ROCm host routed to ggml-org does not silently get the CPU build.
@@ -3062,6 +3094,41 @@ def detect_host() -> HostInfo:
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
 
+    # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM
+    # sysfs vendor id (0x8086); Windows queries the WMI video controller list.
+    # Only probed when there is no usable NVIDIA and no ROCm GPU, since the
+    # Vulkan selection branches are gated the same way -- this keeps the probe
+    # (notably the Windows powershell call) off the NVIDIA/AMD path.
+    has_intel_gpu = False
+    if not has_usable_nvidia and not has_rocm:
+        if is_linux:
+            for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+                try:
+                    with open(_vendor_file) as _vf:
+                        if _vf.read().strip().lower() == "0x8086":
+                            has_intel_gpu = True
+                            break
+                except OSError:
+                    continue
+        elif is_windows:
+            _ps = shutil.which("powershell") or shutil.which("pwsh")
+            if _ps:
+                try:
+                    _result = run_capture(
+                        [
+                            _ps,
+                            "-NoProfile",
+                            "-Command",
+                            "Get-CimInstance Win32_VideoController | "
+                            "Select-Object -ExpandProperty Name",
+                        ],
+                        timeout = 15,
+                    )
+                    if _result.returncode == 0 and "intel" in _result.stdout.lower():
+                        has_intel_gpu = True
+                except Exception:
+                    pass
+
     return HostInfo(
         system = system,
         machine = machine,
@@ -3077,6 +3144,7 @@ def detect_host() -> HostInfo:
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
+        has_intel_gpu = has_intel_gpu,
         rocm_gfx_target = rocm_gfx_target,
         macos_version = macos_version,
     )
@@ -4140,6 +4208,21 @@ def resolve_upstream_asset_choice(
                 "falling back to source build with HIP support"
             )
 
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
+        if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
+            vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
+            if vulkan_name in upstream_assets:
+                log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "linux-vulkan",
+                )
+            log("Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU")
+
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
@@ -4179,6 +4262,23 @@ def resolve_upstream_asset_choice(
                     install_kind = "windows-hip",
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
+
+        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan.
+        if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
+            vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
+            if vulkan_name in upstream_assets:
+                log(
+                    f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "windows-vulkan",
+                )
+            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -4692,6 +4792,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-arm64-cuda",
         "linux-rocm",
         "linux-arm64",
+        "linux-vulkan",
     }:
         return ["llama-server", "llama-quantize", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
@@ -4700,6 +4801,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-cpu",
         "windows-cuda",
         "windows-hip",
+        "windows-vulkan",
         "windows-rocm",
         "windows-arm64",
     }:
@@ -5743,8 +5845,10 @@ def validate_server(
             "linux-cuda",
             "linux-arm64-cuda",
             "linux-rocm",
+            "linux-vulkan",
             "windows-cuda",
             "windows-hip",
+            "windows-vulkan",
             "windows-rocm",
             "macos-arm64",
         }
@@ -6347,6 +6451,16 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
+    if choice.install_kind == "linux-vulkan":
+        return [
+            ["libllama-common.so*"],
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu-*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-vulkan.so*"],
+        ]
     if choice.install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
@@ -6366,6 +6480,8 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         return groups
     if choice.install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
+    if choice.install_kind == "windows-vulkan":
+        return [["llama.dll"], ["ggml-vulkan.dll"]]
     return []
 
 
@@ -6637,6 +6753,37 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
+def force_vulkan_requested() -> bool:
+    """Whether UNSLOTH_FORCE_VULKAN opts this host into the Vulkan llama.cpp
+    prebuilt instead of its detected CUDA/ROCm backend -- e.g. so an AMD user
+    can run the Vulkan build for inference. Scoped to the llama.cpp backend:
+    the torch/training stack is installed separately and still sees the real
+    GPU.
+    """
+    return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _vulkan_only_host(host: HostInfo) -> HostInfo:
+    """Rewrite ``host`` so the asset selectors take their Vulkan branch.
+
+    That branch fires on ``has_intel_gpu and not nvidia and not rocm``, so the
+    CUDA/ROCm flags are cleared and the integrated-GPU flag is raised. The
+    synthetic integrated-GPU flag never leaves install planning -- it only
+    routes the llama.cpp prebuilt choice, not the torch/training stack.
+    """
+    return dataclasses_replace(
+        host,
+        has_usable_nvidia = False,
+        has_physical_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = True,
+    )
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6654,6 +6801,22 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
+    # UNSLOTH_FORCE_VULKAN installs the upstream ggml-org Vulkan prebuilt
+    # instead of the detected CUDA/ROCm backend. The unsloth published repo
+    # ships only CUDA/ROCm assets, hence UPSTREAM_REPO.
+    if force_vulkan_requested():
+        if host.is_macos:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
+                "(Metal is used; there is no Vulkan prebuilt)"
+            )
+        else:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
+                "llama.cpp prebuilt instead of the detected GPU backend"
+            )
+            host = _vulkan_only_host(host)
+            published_repo = UPSTREAM_REPO
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6666,7 +6829,10 @@ def install_prebuilt(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
             # Single resolver: linux-x64 takes the fast filename path internally,
-            # every other fork host reads the manifest.
+            # every other fork host reads the manifest. A forced-Vulkan host has
+            # already had published_repo pointed at UPSTREAM_REPO above, so the
+            # simple planner routes through direct_upstream_release_plan and
+            # carries the Vulkan asset branch.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,
