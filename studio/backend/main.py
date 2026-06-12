@@ -193,6 +193,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 import hashlib
 import mimetypes
 import re as _re
