@@ -59,9 +59,16 @@ _job: dict = {
     "from_tag": None,
     "to_tag": None,
     "error": None,
+    "progress": None,
     "started_at": None,
     "finished_at": None,
 }
+
+# Matches the installer's download progress lines, e.g.
+# "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
+_PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
+# The download dominates the update; extract/validate fill the last slice.
+_DOWNLOAD_PROGRESS_CEILING = 0.95
 
 
 def _utcnow() -> str:
@@ -357,15 +364,46 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         ]
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
-        proc = subprocess.run(
+        # Stream the installer output so download percent lines feed
+        # job["progress"]; finer milestones via UNSLOTH_PROGRESS_PERCENT_STEP.
+        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        proc = subprocess.Popen(
             cmd,
-            capture_output = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
             text = True,
-            timeout = _INSTALL_TIMEOUT_SECONDS,
+            env = env,
         )
-        if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip()[-1500:]
-            raise RuntimeError(f"installer exited {proc.returncode}: {tail or 'no output'}")
+        timed_out = threading.Event()
+
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(_INSTALL_TIMEOUT_SECONDS, _kill_on_timeout)
+        watchdog.daemon = True
+        watchdog.start()
+        tail_lines: list[str] = []
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                tail_lines.append(line)
+                if len(tail_lines) > 80:
+                    del tail_lines[0]
+                m = _PROGRESS_LINE_RE.search(line)
+                if m is None:
+                    continue
+                fraction = min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
+                with _job_lock:
+                    _job["progress"] = max(_job.get("progress") or 0.0, fraction)
+            returncode = proc.wait()
+        finally:
+            watchdog.cancel()
+        if timed_out.is_set():
+            raise RuntimeError(f"installer timed out after {_INSTALL_TIMEOUT_SECONDS}s")
+        if returncode != 0:
+            tail = "".join(tail_lines).strip()[-1500:]
+            raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
         # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
         # status read reflects the freshly installed tag.
@@ -382,6 +420,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                 ),
                 to_tag = new_tag,
                 error = None,
+                progress = 1.0,
                 finished_at = _utcnow(),
             )
         logger.info("llama update: success", to_tag = new_tag)
@@ -467,6 +506,7 @@ def start_update() -> dict:
             from_tag = from_tag,
             to_tag = None,
             error = None,
+            progress = 0.0,
             started_at = _utcnow(),
             finished_at = None,
         )
@@ -491,6 +531,7 @@ def _reset_job_for_tests() -> None:
             from_tag = None,
             to_tag = None,
             error = None,
+            progress = None,
             started_at = None,
             finished_at = None,
         )

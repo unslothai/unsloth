@@ -727,6 +727,7 @@ class InferenceOrchestrator:
                         "is_audio": model_info.get("is_audio", False),
                         "audio_type": model_info.get("audio_type"),
                         "has_audio_input": model_info.get("has_audio_input", False),
+                        "context_length": model_info.get("context_length"),
                     }
                     # Mirror chat_template_info so routes can classify caps
                     # without re-entering the subprocess.
