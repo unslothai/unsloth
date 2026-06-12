@@ -18,6 +18,11 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { useChatSearchStore } from "./stores/chat-search-store";
+export {
+  PLUS_MENU_ORDER,
+  usePlusMenuPrefsStore,
+  type PlusMenuItemId,
+} from "./stores/plus-menu-prefs-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 export { isExternalModelId } from "./external-providers";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
@@ -31,13 +36,21 @@ export {
 } from "./artifacts/store";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
+  clearNewChatDraft,
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
+export {
   EXPORT_FORMATS_LIST,
   bulkExportConversationsByScope,
   importConversationsFromFile,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
+  archiveChatItem,
   deleteChatItem,
   renameChatItem,
+  unarchiveChatItem,
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";

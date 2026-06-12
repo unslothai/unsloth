@@ -149,6 +149,7 @@ def test_help_output():
         "--host",
         "--frontend",
         "--silent",
+        "--tensor-parallel",
     ]:
         assert flag in out, f"Missing flag {flag!r} in --help output"
     print("  PASS  --help shows all flags")

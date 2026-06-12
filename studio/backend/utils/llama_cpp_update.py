@@ -59,9 +59,16 @@ _job: dict = {
     "from_tag": None,
     "to_tag": None,
     "error": None,
+    "progress": None,
     "started_at": None,
     "finished_at": None,
 }
+
+# Matches the installer's download progress lines, e.g.
+# "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
+_PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
+# The download dominates the update; extract/validate fill the last slice.
+_DOWNLOAD_PROGRESS_CEILING = 0.95
 
 
 def _utcnow() -> str:
@@ -279,9 +286,10 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
-    update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
-    )
+    # `behind` compares the full release identity with a base-build guard, so a
+    # lagging /releases/latest or a mix-tagged latest can't show a false update
+    # (see llama_cpp_freshness.is_behind).
+    update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
     with _job_lock:
         job = dict(_job)
@@ -302,8 +310,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
 
 def _rocm_install_args(asset: Optional[str]) -> list[str]:
     """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; lemonade
-    bundles carry the family in the name (rocm-gfx110X), fork bundles only rocm/hip."""
+    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
+    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
+    bundles only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()
@@ -357,19 +366,58 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         ]
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
-        proc = subprocess.run(
+        # Stream the installer output so download percent lines feed
+        # job["progress"]; finer milestones via UNSLOTH_PROGRESS_PERCENT_STEP.
+        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        proc = subprocess.Popen(
             cmd,
-            capture_output = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
             text = True,
-            timeout = _INSTALL_TIMEOUT_SECONDS,
+            env = env,
         )
-        if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip()[-1500:]
-            raise RuntimeError(f"installer exited {proc.returncode}: {tail or 'no output'}")
+        timed_out = threading.Event()
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
-        # status read reflects the freshly installed tag.
-        reset_caches()
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(_INSTALL_TIMEOUT_SECONDS, _kill_on_timeout)
+        watchdog.daemon = True
+        watchdog.start()
+        tail_lines: list[str] = []
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                tail_lines.append(line)
+                if len(tail_lines) > 80:
+                    del tail_lines[0]
+                m = _PROGRESS_LINE_RE.search(line)
+                if m is None:
+                    continue
+                fraction = min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
+                with _job_lock:
+                    _job["progress"] = max(_job.get("progress") or 0.0, fraction)
+            returncode = proc.wait()
+        finally:
+            watchdog.cancel()
+        if timed_out.is_set():
+            raise RuntimeError(f"installer timed out after {_INSTALL_TIMEOUT_SECONDS}s")
+        if returncode != 0:
+            tail = "".join(tail_lines).strip()[-1500:]
+            raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
+
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
+        # on-disk freshness caches, then re-prime the 24h disk cache with the
+        # true newest, so the banner can't linger on a stale same-base value
+        # after the swap. drop_disk matters when the refresh below can't reach
+        # GitHub: without it, latest_published_release would replay the stale
+        # disk value; with it, latest reads as None and the banner fails open.
+        reset_caches(drop_disk = True)
+        try:
+            latest_published_release(repo, force_refresh = True)
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
 
@@ -382,6 +430,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                 ),
                 to_tag = new_tag,
                 error = None,
+                progress = 1.0,
                 finished_at = _utcnow(),
             )
         logger.info("llama update: success", to_tag = new_tag)
@@ -417,7 +466,24 @@ def start_update() -> dict:
             "job": get_update_status()["job"],
         }
 
+    # A job already in flight wins over any freshness re-check below (and skips
+    # its network call). The final lock block re-checks to close the TOCTOU.
+    with _job_lock:
+        if _job["state"] == _JOB_RUNNING:
+            return {"started": False, "reason": "already_running", "job": dict(_job)}
+
     if marker:
+        # Mirror the detection guard: a direct POST or a stale banner must not
+        # start an install when the latest is not actually newer (force a fresh
+        # check so a stale 24h cache can't wrongly block a real update either).
+        status = get_update_status(force_refresh = True)
+        if not status.get("update_available"):
+            return {
+                "started": False,
+                "reason": "up_to_date",
+                "message": "The installed llama.cpp build is already at the latest prebuilt.",
+                "job": status["job"],
+            }
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
@@ -467,6 +533,7 @@ def start_update() -> dict:
             from_tag = from_tag,
             to_tag = None,
             error = None,
+            progress = 0.0,
             started_at = _utcnow(),
             finished_at = None,
         )
@@ -491,6 +558,7 @@ def _reset_job_for_tests() -> None:
             from_tag = None,
             to_tag = None,
             error = None,
+            progress = None,
             started_at = None,
             finished_at = None,
         )

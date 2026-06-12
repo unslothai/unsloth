@@ -40,7 +40,7 @@ export function TransportToggle() {
   return (
     <fieldset
       aria-label="Download transport"
-      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-[11px] border-0 p-0.5 text-[11px]"
+      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-[11px]"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
@@ -58,7 +58,7 @@ export function TransportToggle() {
                 onClick={() => setMode(opt.value)}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex h-[22px] cursor-pointer items-center justify-center rounded-[8px] px-2 font-medium tracking-tight transition-colors",
+                  "inline-flex h-[22px] cursor-pointer items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
                   active
                     ? "hub-tab-toggle-pill text-foreground"
                     : disabled

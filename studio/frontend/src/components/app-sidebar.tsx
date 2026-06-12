@@ -45,6 +45,8 @@ import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
+  Archive01Icon,
+  ArchiveRestoreIcon,
   ChefHatIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
@@ -60,6 +62,7 @@ import {
   Logout05Icon,
   MoreVerticalIcon,
   Search01Icon,
+  PlusSignIcon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
@@ -82,13 +85,16 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, MoreHorizontalIcon, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  archiveChatItem,
   ChatSearchDialog,
+  clearNewChatDraft,
   createChatProject,
   deleteChatProject,
   deleteChatItem,
   moveChatItemToProject,
   renameChatItem,
   renameChatProject,
+  unarchiveChatItem,
   useChatRuntimeStore,
   useChatProjects,
   useChatSearchStore,
@@ -290,15 +296,16 @@ export function AppSidebar() {
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
-  const { items: allChatItems } = useChatSidebarItems({
-    enabled: !isStudioRoute,
-    requireMessages: false,
-  });
+  const { items: allChatItems, archivedItems: archivedChatItems } =
+    useChatSidebarItems({
+      enabled: !isStudioRoute,
+      requireMessages: false,
+    });
   const recentChatItems = useMemo(
     () => allChatItems.filter((item) => !item.projectId),
     [allChatItems],
   );
-  const chatItems = allChatItems;
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -348,6 +355,7 @@ export function AppSidebar() {
 
   function openNewChat(projectId = activeProjectId) {
     if (chatDisabled) return;
+    clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
@@ -371,6 +379,33 @@ export function AppSidebar() {
           : { new: view.newThreadNonce },
       });
     });
+  }
+
+  async function handleArchiveThread(item: SidebarItem) {
+    try {
+      await archiveChatItem(item, activeThreadId, (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      });
+    } catch (err) {
+      toast.error("Failed to archive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function handleUnarchiveThread(item: SidebarItem) {
+    try {
+      await unarchiveChatItem(item);
+    } catch (err) {
+      toast.error("Failed to unarchive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
   }
 
   type RenameTarget =
@@ -558,7 +593,8 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      variant === "project" ? "pl-[39px]" : "pl-3",
+      // pl-3.5 starts the title at the same x as the Recents label text.
+      variant === "project" ? "pl-[39px]" : "pl-3.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
@@ -608,7 +644,7 @@ export function AppSidebar() {
             side="bottom"
             align="start"
             sideOffset={0}
-            className="unsloth-plus-menu menu-flat-destructive w-52"
+            className="unsloth-plus-menu menu-flat-destructive w-56"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
@@ -690,6 +726,10 @@ export function AppSidebar() {
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+              <HugeiconsIcon icon={Archive01Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Archive</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
               onSelect={() => setConfirmingDelete({ kind: "chat", item })}
@@ -837,7 +877,28 @@ export function AppSidebar() {
                   navigate({ to: "/projects" });
                   closeMobileIfOpen();
                 }}
-              />
+                className="group/projects-item relative"
+              >
+                <button
+                  type="button"
+                  aria-label="New project"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProjectCreateMoveTarget(null);
+                    setProjectNameDraft("");
+                    setCreatingProject(true);
+                  }}
+                  className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                >
+                  <span className="sidebar-row-action-glyph">
+                    <HugeiconsIcon
+                      icon={PlusSignIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </span>
+                </button>
+              </NavItem>
               <NavItem
                 icon={DashboardCircleIcon}
                 label={t("shell.navigation.hub")}
@@ -926,11 +987,90 @@ export function AppSidebar() {
                 </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="px-1.5">
+                <SidebarGroupContent className="pl-1 pr-1.5">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
                     )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {/* Archived chats — hidden on Studio + when nothing is archived */}
+        {!isStudioRoute && archivedChatItems.length > 0 && (
+          <Collapsible open={archivedOpen} onOpenChange={setArchivedOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  Archived
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className="px-1.5">
+                  <SidebarMenu>
+                    {archivedChatItems.map((item) => (
+                      <SidebarMenuItem key={item.id} className="group/archived-item relative">
+                        <SidebarMenuButton
+                          data-testid="archived-thread"
+                          data-thread-type={item.type}
+                          data-thread-id={item.id}
+                          isActive={activeThreadId === item.id}
+                          className="sidebar-nav-btn h-[33px] cursor-pointer rounded-full pl-3.5 pr-4 group-hover/archived-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/archived-item:pr-8 text-[14.5px] leading-[19px] tracking-nav font-medium text-muted-foreground"
+                          onClick={() => {
+                            navigate({
+                              to: "/chat",
+                              search:
+                                item.type === "single"
+                                  ? { thread: item.id }
+                                  : { compare: item.id },
+                            });
+                            closeMobileIfOpen();
+                          }}
+                        >
+                          <span className="truncate">{item.title}</span>
+                        </SidebarMenuButton>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label="Archived chat options"
+                              className="sidebar-row-action group-hover/archived-item:opacity-100 group-hover/archived-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                            >
+                              <span className="sidebar-row-action-glyph">
+                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                              </span>
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            side="bottom"
+                            align="start"
+                            sideOffset={0}
+                            className="unsloth-plus-menu menu-flat-destructive w-52"
+                          >
+                            <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                              <span>Rename</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void handleUnarchiveThread(item)}>
+                              <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-icon" />
+                              <span>Unarchive</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+                            >
+                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                              <span>Delete</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </SidebarMenuItem>
+                    ))}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>
@@ -948,7 +1088,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-2">
+              <SidebarGroupContent className="pl-1.5 pr-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1065,7 +1205,7 @@ export function AppSidebar() {
                       className="!size-[32px]"
                     />
                   </div>
-                  <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
+                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
@@ -1076,7 +1216,7 @@ export function AppSidebar() {
                 side="top"
                 align="center"
                 sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-1.5 py-2.5 font-heading rounded-[20px] border-0"
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
@@ -1091,7 +1231,7 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                       {t("common.new")}
                     </span>
                   </DropdownMenuItem>

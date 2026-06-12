@@ -87,6 +87,15 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = (
+            "Split the model across GPUs by tensor (--split-mode tensor) "
+            "instead of by layer for GGUF models. Only affects multi-GPU "
+            "setups, where it can make generation significantly faster. "
+            "No effect on a single GPU. Ignored for non-GGUF models."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -160,6 +169,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
@@ -171,7 +183,7 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -224,6 +236,10 @@ class LoadResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -273,6 +289,9 @@ class InferenceStatusResponse(BaseModel):
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
     is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
@@ -338,6 +357,10 @@ class InferenceStatusResponse(BaseModel):
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
         ),
+    )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -544,8 +567,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -688,9 +713,23 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
@@ -912,6 +951,12 @@ class ChatCompletionRequest(BaseModel):
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
         return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
 
 
 # ── OpenAI shell-tool container management ─────────────────────
@@ -1292,6 +1337,23 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
@@ -1306,7 +1368,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):

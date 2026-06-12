@@ -6,8 +6,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -185,7 +186,7 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[22px] px-2.5 py-2 ring-0",
           contentClassName,
         )}
       >
@@ -214,7 +215,7 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-xl corner-squircle py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[12px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">

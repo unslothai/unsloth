@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
 import pytest
 
@@ -392,6 +392,19 @@ class TestRuntimePatterns:
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "lib*.dylib" in patterns
+
+    def test_diffusion_visual_server_kept(self):
+        # The DiffusionGemma visual-server ships in the prebuilt bundle and must
+        # survive the prune so Studio can serve DiffusionGemma GGUFs natively.
+        for kind, name in (
+            ("linux-cuda", "llama-diffusion-gemma-visual-server"),
+            ("macos-arm64", "llama-diffusion-gemma-visual-server"),
+            ("windows-cuda", "llama-diffusion-gemma-visual-server.exe"),
+        ):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert name in runtime_patterns_for_choice(choice)
 
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
@@ -1614,14 +1627,18 @@ class TestApplyGpuIdsRocmFallback:
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'getattr(_torch.version, "hip", None)' in func_body
 
-    def test_apply_gpu_ids_sets_hip_and_rocr_visible_devices(self):
-        """apply_gpu_ids should set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES on ROCm."""
+    def test_apply_gpu_ids_sets_hip_but_not_rocr_visible_devices(self):
+        """apply_gpu_ids should set HIP_VISIBLE_DEVICES but leave ROCR_VISIBLE_DEVICES inherited.
+
+        ROCR_VISIBLE_DEVICES uses HSA agent-level indexing, not physical GPU indices.
+        Overwriting it breaks multi-GPU ROCm systems (see issue #6118).
+        """
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'os.environ["HIP_VISIBLE_DEVICES"] = value' in func_body
-        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' in func_body
+        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' not in func_body
 
     def test_apply_gpu_ids_rocm_fallback_is_guarded_by_try_except(self):
         """torch import in apply_gpu_ids must be wrapped in try/except so a missing torch never crashes."""
@@ -3113,7 +3130,7 @@ class TestHipSdkInstalledButDeviceInaccessible:
 
 
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
-# to install_llama_prebuilt.py so the lemonade HIP prebuilt is selected even when
+# to install_llama_prebuilt.py so the per-gfx ROCm prebuilt is selected even when
 # the installer's own hipinfo/amd-smi probe cannot report it.
 
 _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
@@ -3201,6 +3218,328 @@ class TestRocmGfxForwarding:
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
+
+    def test_setup_sh_routes_inferred_gfx_to_fork(self):
+        # A forwarded/inferred gfx arch must route to the fork even without ROCm
+        # tooling on PATH, so the per-gfx prebuilt is picked over ggml-org. Pin
+        # the routing guard specifically -- a bare "${_setup_gfx:-}" check also
+        # appears in the unrelated --rocm-gfx forwarding block.
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert '[ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]' in source
+
+    def test_setup_ps1_routes_inferred_gfx_to_fork(self):
+        # Same on Windows: a resolved $script:ROCmGfxArch counts as a fork/GPU
+        # install even when $HasROCm is false (Adrenalin-only, no HIP runtime).
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
+
+    # The two assertions above pin the guard *text*. The tests below *execute*
+    # the real routing block from setup.sh / setup.ps1 and assert the resolved
+    # release repo, so a refactor that keeps the literal but breaks (or drops)
+    # the inferred-gfx -> fork decision is still caught. All inputs are faked --
+    # no GPU, no ROCm tooling on PATH, no network.
+
+    @staticmethod
+    def _resolve_setup_sh_repo(
+        host_machine,
+        nvidia_usable,
+        setup_gfx,
+        rocm_gfx_arch_env = "",
+    ):
+        """Run setup.sh's release-repo routing block under bash and return the
+        resolved _HELPER_RELEASE_REPO. PATH is emptied so the rocminfo/amd-smi/
+        hipconfig/hipinfo `command -v` probes all miss (no ROCm tooling).
+        rocm_gfx_arch_env populates UNSLOTH_ROCM_GFX_ARCH for the env-forwarded
+        path that fires when no probe set _setup_gfx."""
+        import shutil
+
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash not available")
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        start = source.index("\n_LINUX_HAS_GPU=false\n") + 1
+        end = source.index("\nunset _GPU_TOOL", start) + len("\nunset _GPU_TOOL")
+        block = source[start:end]
+        assert "_HELPER_RELEASE_REPO" in block, "setup.sh routing anchors not found"
+        env = {
+            "PATH": "",  # no rocminfo/amd-smi/hipconfig/hipinfo discoverable
+            "ROUTING_BLOCK": block,
+            "_HOST_SYSTEM": "Linux",
+            "_HOST_MACHINE": host_machine,
+            "_setup_nvidia_usable": "true" if nvidia_usable else "false",
+            "_setup_gfx": setup_gfx,
+            "UNSLOTH_ROCM_GFX_ARCH": rocm_gfx_arch_env,
+        }
+        result = subprocess.run(
+            [bash, "-c", 'eval "$ROUTING_BLOCK"; printf "%s" "$_HELPER_RELEASE_REPO"'],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+            env = env,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_setup_sh_inferred_gfx_resolves_to_fork(self):
+        # No usable NVIDIA, no ROCm tooling on PATH, only a name-inferred gfx
+        # arch -> the host must still be treated as a GPU host and routed to the
+        # fork's per-gfx prebuilt, not ggml-org / a source build. Linux x64 and
+        # arm64 both go through the same fork branch.
+        assert self._resolve_setup_sh_repo("x86_64", False, "gfx1100") == "unslothai/llama.cpp"
+        assert self._resolve_setup_sh_repo("aarch64", False, "gfx1100") == "unslothai/llama.cpp"
+
+    def test_setup_sh_env_forwarded_gfx_resolves_to_fork(self):
+        # UNSLOTH_ROCM_GFX_ARCH set on a host where no probe fired (_setup_gfx
+        # empty, no usable NVIDIA, no ROCm tooling): setup.sh adopts the env arch
+        # and routes to the fork, same as the name-inference path.
+        repo = self._resolve_setup_sh_repo("x86_64", False, "", rocm_gfx_arch_env = "gfx1100")
+        assert repo == "unslothai/llama.cpp"
+
+    def test_setup_sh_cpu_host_still_resolves_to_ggml(self):
+        # Guard against over-correcting the fix: a real CPU host (no usable GPU,
+        # no inferred gfx, no env override) must keep routing to ggml-org for the
+        # CPU prebuilt.
+        assert self._resolve_setup_sh_repo("x86_64", False, "") == "ggml-org/llama.cpp"
+
+    @staticmethod
+    def _resolve_setup_ps1_repo(has_nvidia, has_rocm, gfx_arch):
+        """Run setup.ps1's $HelperReleaseRepo selection under pwsh and return the
+        resolved repo."""
+        import shutil
+
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            pytest.skip("pwsh not available")
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        line = next(
+            (
+                ln
+                for ln in source.splitlines()
+                if ln.strip().startswith("$HelperReleaseRepo = if (")
+            ),
+            None,
+        )
+        assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
+        harness = (
+            f"$HasNvidiaSmi = ${'true' if has_nvidia else 'false'}\n"
+            f"$HasROCm = ${'true' if has_rocm else 'false'}\n"
+            f"$script:ROCmGfxArch = '{gfx_arch}'\n"
+            f"{line}\n"
+            "Write-Output $HelperReleaseRepo"
+        )
+        result = subprocess.run(
+            [pwsh, "-NoProfile", "-Command", harness],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_setup_ps1_inferred_gfx_resolves_to_fork(self):
+        # Adrenalin-only Windows host: $HasROCm is false (no HIP runtime) but a
+        # gfx arch was inferred -> route to the fork's windows-rocm bundle.
+        assert self._resolve_setup_ps1_repo(False, False, "gfx1100") == "unslothai/llama.cpp"
+
+    def test_setup_ps1_cpu_host_still_resolves_to_ggml(self):
+        # No NVIDIA, no ROCm, no inferred gfx -> CPU host stays on ggml-org.
+        assert self._resolve_setup_ps1_repo(False, False, "") == "ggml-org/llama.cpp"
+
+
+# TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
+# Honours CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES so a mixed-arch host installs
+# the prebuilt for the GPU actually selected, not GPU 0.
+
+_pick_rocm_gfx_target = prebuilt_mod._pick_rocm_gfx_target
+
+
+def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
+    """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
+    on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
+    # Two GPUs; rocminfo reports each token twice (as in the real tool output).
+    probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1100"
+
+
+def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=-1 means no GPU visible; resolver must return None."""
+    probe_out = "gfx1151\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    assert _pick_rocm_gfx_target(probe_out) is None
+
+
+def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
+    """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
+    return gfx1151, not fall back to GPU 0 due to dict.fromkeys collapsing the
+    two gfx1100 entries into one and making index 2 out of range."""
+    # Simulate rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
+    # Each GPU gets its own Agent section with a few token mentions.
+    probe_out = (
+        "***\nAgent 1\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 2\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 3\n***\n  gfx1151 some info\n  gfx1151\n"
+    )
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
+
+
+# TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
+
+
+_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
+_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+
+
+class TestWslSystemRocmLibDirs:
+    """install_llama_prebuilt._wsl_system_rocm_lib_dirs: a strict no-op off a
+    ROCDXG WSL host; returns the system ROCm lib dir there so binary_env can
+    load the WSL-capable HIP runtime before a prebuilt's bundled one."""
+
+    def test_empty_without_dev_dxg(self):
+        with patch("os.path.exists", return_value = False):
+            assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+    def test_empty_on_bare_metal_linux(self):
+        # /dev/dxg present but /proc/version is not a WSL kernel.
+        with patch("os.path.exists", lambda p: p == "/dev/dxg"):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "Linux version 6.8.0-generic"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+    def test_returns_system_lib_on_wsl_with_librocdxg(self):
+        # Normalize separators: os.path.join uses "\" on the Windows test host
+        # though the target path is Linux.
+        def _exists(p):
+            p = str(p).replace("\\", "/")
+            return p in ("/dev/dxg", "/opt/rocm/lib/librocdxg.so")
+
+        with patch("os.path.exists", _exists):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "Linux version 5.15.0-microsoft-standard-WSL2"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == ["/opt/rocm/lib"]
+
+    def test_empty_on_wsl_without_librocdxg(self):
+        # WSL kernel + /dev/dxg but no librocdxg -> not a ROCDXG ROCm install.
+        with patch("os.path.exists", lambda p: p == "/dev/dxg"):
+            with patch(
+                "builtins.open",
+                mock_open(read_data = "microsoft-standard-WSL2"),
+            ):
+                assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
+
+
+class TestBinaryEnvWslOrdering:
+    """binary_env must put the system ROCm lib dir AHEAD of the prebuilt's
+    bundle dir on a ROCDXG WSL host, and set HSA_ENABLE_DXG_DETECTION; no-op
+    on bare-metal Linux."""
+
+    @staticmethod
+    def _linux_host():
+        return HostInfo(
+            system = "Linux",
+            machine = "x86_64",
+            is_windows = False,
+            is_linux = True,
+            is_macos = False,
+            is_x86_64 = True,
+            is_arm64 = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            visible_cuda_devices = None,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+        )
+
+    def test_wsl_prepends_system_rocm_and_sets_hsa(self, tmp_path):
+        binary = tmp_path / "bundle" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        # binary_env's dedupe_existing_dirs drops non-existent dirs, so use a
+        # real dir to stand in for the system ROCm lib path.
+        sys_rocm = tmp_path / "sysrocm"
+        sys_rocm.mkdir()
+        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]):
+            with patch.dict(os.environ, {}, clear = True):
+                env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
+        ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
+        # Compare resolved paths (dedupe_existing_dirs calls Path.resolve()).
+        ld_resolved = [str(Path(p).resolve()) for p in ld]
+        assert ld_resolved[0] == str(sys_rocm.resolve())
+        assert str(binary.parent.resolve()) in ld_resolved
+        assert ld_resolved.index(str(sys_rocm.resolve())) < ld_resolved.index(
+            str(binary.parent.resolve())
+        )
+        assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
+
+    def test_bare_metal_linux_unchanged(self, tmp_path):
+        binary = tmp_path / "bundle" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = []):
+            with patch.dict(os.environ, {}, clear = True):
+                env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
+        ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
+        assert ld[0] == str(binary.parent)  # bundle dir first, as before
+        assert "HSA_ENABLE_DXG_DETECTION" not in env
+
+
+class TestInstallShDropinPersistence:
+    """install.sh must persist the ROCm-on-WSL drop-in even when rocminfo
+    already enumerates the GPU (via the transient probe env), so a reinstall
+    over an existing /opt/rocm doesn't leave login shells without the env."""
+
+    def test_has_persist_helper(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "_persist_rocm_wsl_dropin()" in source
+
+    def test_gate5_early_return_persists_dropin(self):
+        """The rocminfo-already-works early return must call the persist helper
+        BEFORE returning."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # Find the rocminfo gfx1151 gate and assert the persist call precedes
+        # its `return 0`.
+        gate = source.find("Name:[[:space:]]*gfx1151")
+        assert gate != -1
+        window = source[gate : gate + 900]
+        assert "_persist_rocm_wsl_dropin" in window
+        assert window.find("_persist_rocm_wsl_dropin") < window.find("return 0")
+
+    def test_persist_helper_gated_on_librocdxg(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        body_start = source.find("_persist_rocm_wsl_dropin()")
+        body = source[body_start : body_start + 1200]
+        assert "librocdxg.so" in body
+        assert "profile.d/unsloth-rocm-wsl.sh" in body
+
+
+class TestLlamaCppRuntimeWslOrdering:
+    """The serve-time launcher must mirror binary_env: system HIP before the
+    bundle dir on WSL, so a prebuilt that passed install validation runs."""
+
+    def test_has_wsl_helper(self):
+        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        assert "_wsl_system_rocm_lib_dirs" in source
+
+    def test_prepends_before_binary_dir(self):
+        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        # The Linux lib_dirs build must add WSL rocm dirs before binary_dir.
+        idx_helper = source.find("for _wsl_rocm in _wsl_system_rocm_lib_dirs()")
+        idx_binary = source.find("lib_dirs.append(binary_dir)")
+        assert idx_helper != -1 and idx_binary != -1
+        assert idx_helper < idx_binary
 
 
 if __name__ == "__main__":

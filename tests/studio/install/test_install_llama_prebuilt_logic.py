@@ -2761,3 +2761,109 @@ def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: 
     assert str(cu13_arch) in dirs
     assert str(library_bin) in dirs
     assert str(torch_lib) in dirs
+
+
+def _nvidia_linux_host():
+    return HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = ["10.0"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+
+def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+    """Drive validate_prebuilt_choice with every heavy install step stubbed and
+    return how many times the functional quantize/server smoke tests ran."""
+    calls = {"quantize": 0, "server": 0}
+    server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
+    quantize_path = tmp_path / "install" / "build" / "bin" / "llama-quantize"
+
+    src = INSTALL_LLAMA_PREBUILT
+    monkeypatch.setattr(
+        src, "preferred_source_archive", lambda *a, **k: ("repo", "ref", None, False)
+    )
+    monkeypatch.setattr(src, "hydrate_source_tree", lambda *a, **k: None)
+    monkeypatch.setattr(src, "install_from_archives", lambda *a, **k: (server_path, quantize_path))
+    monkeypatch.setattr(src, "preflight_linux_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
+    monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
+    monkeypatch.setattr(
+        src,
+        "validate_quantize",
+        lambda *a, **k: calls.__setitem__("quantize", calls["quantize"] + 1),
+    )
+    monkeypatch.setattr(
+        src, "validate_server", lambda *a, **k: calls.__setitem__("server", calls["server"] + 1)
+    )
+
+    bundle_name = "app-b9998-linux-x64-cuda13-newer.tar.gz"
+    source_archive = tmp_path / "source.tar.gz"
+    bundle_archive = tmp_path / "bundle.tar.gz"
+    source_archive.write_bytes(b"source")
+    bundle_archive.write_bytes(b"bundle")
+
+    choice = AssetChoice(
+        repo = "local",
+        tag = "b9998",
+        name = bundle_name,
+        url = "file://bundle",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = "linux-cuda",
+        bundle_profile = "cuda13-newer",
+        runtime_line = "cuda13",
+        expected_sha256 = expected_sha256,
+    )
+    src.validate_prebuilt_choice(
+        choice,
+        _nvidia_linux_host(),
+        tmp_path / "install",
+        tmp_path / "work",
+        tmp_path / "stories260K.gguf",
+        requested_tag = "b9998",
+        llama_tag = "b9998",
+        release_tag = "b9998",
+        approved_checksums = approved_checksums_for(
+            "b9998",
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
+        ),
+        prebuilt_fallback_used = False,
+        quantized_path = tmp_path / "stories260K-q4.gguf",
+    )
+    return calls
+
+
+def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
+    # An approved (sha256-verified) bundle skips the staged smoke test while the
+    # flag is off: the manifest hash is its integrity gate.
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 0, "server": 0}
+
+
+def test_validate_prebuilt_choice_hashless_build_always_validated(tmp_path, monkeypatch):
+    # A hashless external build has no approved sha256, so the
+    # functional smoke test is its only integrity gate and must run even while the
+    # flag is off -- otherwise a corrupted/replaced archive could be activated.
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
+    assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp_path, monkeypatch):
+    # Flipping _RUN_STAGED_PREBUILT_VALIDATION back on restores the full smoke test
+    # for approved bundles too, proving the check is kept intact, only gated off.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 1, "server": 1}

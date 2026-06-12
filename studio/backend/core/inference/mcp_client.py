@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -15,6 +16,14 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+
+# A failed probe isn't cached (a recovered server must come back), but it's
+# recorded so a down server isn't re-probed -- and the chat send re-hung for
+# the full timeout -- on every message. Cool off for this long after a failure;
+# much longer for OAuth, whose probe can hang up to _OAUTH_PROBE_TIMEOUT,
+# so that hang doesn't recur every minute.
+FAILED_PROBE_COOLOFF_SECONDS = 60.0
+OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 
@@ -25,16 +34,85 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
+def _split_windows_command_line(address: str) -> list[str]:
+    """Parse a Windows command line using the same backslash/quote rules that
+    subprocess.list2cmdline() writes. This keeps trailing backslashes before a
+    closing quote from being doubled in the resulting argv."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    backslashes = 0
+    arg_started = False
+    i = 0
+
+    while i < len(address):
+        ch = address[i]
+        if ch == "\\":
+            backslashes += 1
+            i += 1
+            continue
+        if ch == '"':
+            current.extend("\\" * (backslashes // 2))
+            if backslashes % 2:
+                current.append('"')
+            else:
+                in_quotes = not in_quotes
+            arg_started = True
+            backslashes = 0
+            i += 1
+            continue
+        if ch.isspace() and not in_quotes:
+            if backslashes:
+                current.extend("\\" * backslashes)
+                arg_started = True
+                backslashes = 0
+            if arg_started or current:
+                parts.append("".join(current))
+                current = []
+                arg_started = False
+            i += 1
+            while i < len(address) and address[i].isspace():
+                i += 1
+            continue
+        if backslashes:
+            current.extend("\\" * backslashes)
+            arg_started = True
+            backslashes = 0
+        current.append(ch)
+        arg_started = True
+        i += 1
+
+    if backslashes:
+        current.extend("\\" * backslashes)
+        arg_started = True
+    if in_quotes:
+        raise ValueError("No closing quotation")
+    if arg_started or current:
+        parts.append("".join(current))
+    return parts
+
+
 def parse_stdio_command(address: str) -> list[str]:
     """Split a stdio command line into argv. Shared by route validation and the
     transport so both agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
-    parts = shlex.split(address, posix = posix)
-    if not posix:
-        # posix=False keeps backslash paths but also keeps surrounding quotes;
-        # strip a matched pair so argv reaches the subprocess clean.
-        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
-    return parts
+    if posix:
+        return shlex.split(address, posix = posix)
+    if address.lstrip().startswith("'"):
+        raise ValueError("Single-quoted executables are not supported on Windows")
+    return _split_windows_command_line(address)
+
+
+def join_stdio_command(parts: list[str]) -> str:
+    """Inverse of parse_stdio_command: join argv into a single command string
+    that parse_stdio_command() splits back into ``parts`` on this platform.
+    Config files (issue #5936) carry structured command + args; storage holds
+    one string in the url field. Windows uses list2cmdline so spaced/backslash
+    paths round-trip through the posix=False quote-strip; posix uses shlex."""
+    if sys.platform == "win32":
+        import subprocess
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
 
 
 def stdio_mcp_enabled() -> bool:
@@ -156,6 +234,53 @@ async def list_tools_async(
         return [t.model_dump(exclude_none = True) for t in tools]
 
     return await asyncio.wait_for(_fetch(), timeout = timeout)
+
+
+# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools()
+# probes a server only on a cache miss, keeping MCP discovery off the chat
+# send's critical path -- tool schemas are stable within a session. The
+# /refresh route warms it; a URL/header/OAuth change or a delete evicts it.
+# Successful probes are cached indefinitely.
+_tool_cache: dict[str, list[dict]] = {}
+
+# server_id -> monotonic time before which a failed server must not be
+# re-probed (see record_probe_failure). Cleared on a successful probe or
+# eviction.
+_probe_cooloff_until: dict[str, float] = {}
+
+# MCP server fields whose change invalidates a server's discovered tools: the
+# endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
+# all (is_enabled). A rename does not. The update route's eviction and
+# get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+
+
+def get_cached_tools(server_id: str) -> Optional[list[dict]]:
+    return _tool_cache.get(server_id)
+
+
+def cache_tools(server_id: str, tools: list[dict]) -> None:
+    _tool_cache[server_id] = tools
+    _probe_cooloff_until.pop(server_id, None)
+
+
+def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
+    cooloff = OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+    _probe_cooloff_until[server_id] = time.monotonic() + cooloff
+
+
+def in_failure_cooloff(server_id: str) -> bool:
+    return _probe_cooloff_until.get(server_id, 0.0) > time.monotonic()
+
+
+def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
+    """Evict one server's cached tools, or every entry when server_id is None."""
+    if server_id is None:
+        _tool_cache.clear()
+        _probe_cooloff_until.clear()
+    else:
+        _tool_cache.pop(server_id, None)
+        _probe_cooloff_until.pop(server_id, None)
 
 
 def _flatten_result(result: Any) -> str:
