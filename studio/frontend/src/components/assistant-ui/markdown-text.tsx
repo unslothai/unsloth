@@ -3,12 +3,13 @@
 
 "use client";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";

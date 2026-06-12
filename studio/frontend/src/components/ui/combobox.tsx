@@ -5,6 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
 import { createContext, useContext, useState } from "react";
@@ -21,7 +22,6 @@ import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 

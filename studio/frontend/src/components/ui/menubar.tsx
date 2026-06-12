@@ -3,11 +3,12 @@
 
 "use client";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { Menubar as MenubarPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Menubar({
@@ -242,7 +243,7 @@ function MenubarSubTrigger({
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
-        className="ml-auto size-4"
+        className="ml-auto size-3.5"
       />
     </MenubarPrimitive.SubTrigger>
   );

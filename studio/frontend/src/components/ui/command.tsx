@@ -3,6 +3,7 @@
 
 "use client";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { Command as CommandPrimitive } from "cmdk";
 import type * as React from "react";
 
@@ -15,7 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
-import { Search01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Command({

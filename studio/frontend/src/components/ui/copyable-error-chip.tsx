@@ -3,6 +3,7 @@
 
 "use client";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import {
   Popover,
   PopoverContent,
@@ -10,7 +11,7 @@ import {
 } from "@/components/ui/popover";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 

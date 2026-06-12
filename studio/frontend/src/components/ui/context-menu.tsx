@@ -3,11 +3,12 @@
 
 "use client";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function ContextMenu({
@@ -127,7 +128,7 @@ function ContextMenuSubTrigger({
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
-        className="ml-auto"
+        className="ml-auto size-3.5"
       />
     </ContextMenuPrimitive.SubTrigger>
   );
