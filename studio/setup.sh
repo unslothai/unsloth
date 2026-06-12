@@ -1430,41 +1430,6 @@ else
                     GPU_BACKEND=""
                     _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
-<<<<<<< ours
-                    CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                    # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails every .cu
-                    # ("exception specification is incompatible") -> CPU fallback; only fix is
-                    # CUDA >= 13.3. Diagnostic only -- never changes flags or aborts.
-                    _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
-                    if [ -n "$_GLIBC_VER" ]; then
-                        _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
-                        _CU_MAJ="${_NVCC_VER%%.*}";     _CU_MIN="${_NVCC_VER#*.}";     _CU_MIN="${_CU_MIN%%.*}"
-                        if { [ "${_GLIBC_MAJ:-0}" -gt 2 ] 2>/dev/null \
-                             || { [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null; }; } \
-                           && { [ "${_CU_MAJ:-0}" -lt 13 ] 2>/dev/null \
-                                || { [ "${_CU_MAJ:-0}" -eq 13 ] 2>/dev/null && [ "${_CU_MIN:-0}" -lt 3 ] 2>/dev/null; }; }; then
-                            substep "CUDA toolkit ${_NVCC_VER} is incompatible with glibc ${_GLIBC_VER} (rsqrt/rsqrtf header clash)." "$C_ERR"
-                            substep "the GPU build will fail to compile and fall back to CPU -- install CUDA Toolkit >= 13.3:" "$C_WARN"
-                            substep "https://developer.nvidia.com/cuda-downloads  (setup.sh auto-selects the newest /usr/local/cuda-*)" "$C_WARN"
-                        fi
-                    fi
-
-                    CUDA_ARCHS=""
-                    if command -v nvidia-smi &>/dev/null; then
-                        _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                        while IFS= read -r _cap; do
-                            _cap=$(echo "$_cap" | tr -d '[:space:]')
-                            if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                # Append if not already present
-                                case ";$CUDA_ARCHS;" in
-                                    *";$_arch;"*) ;;
-                                    *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                esac
-                            fi
-                        done <<< "$_raw_caps"
-=======
                     _DRIVER_MAX_CUDA="$(_cuda_driver_max_version)"
                     _CUDA_TOOLKIT_ALLOWED=true
                     if [ -n "$_NVCC_VER" ] && [ -n "$_DRIVER_MAX_CUDA" ] && \
@@ -1484,11 +1449,28 @@ else
                             _BUILD_DESC="building (CPU, CUDA toolkit major > driver)"
                             _CUDA_TOOLKIT_ALLOWED=false
                         fi
->>>>>>> theirs
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
                         CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+
+                        # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails every .cu
+                        # ("exception specification is incompatible") -> CPU fallback; only fix is
+                        # CUDA >= 13.3. Diagnostic only -- never changes flags or aborts. Checked
+                        # against the final _NVCC_VER (after the driver-compat swap above).
+                        _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
+                        if [ -n "$_GLIBC_VER" ]; then
+                            _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
+                            _CU_MAJ="${_NVCC_VER%%.*}";     _CU_MIN="${_NVCC_VER#*.}";     _CU_MIN="${_CU_MIN%%.*}"
+                            if { [ "${_GLIBC_MAJ:-0}" -gt 2 ] 2>/dev/null \
+                                 || { [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null; }; } \
+                               && { [ "${_CU_MAJ:-0}" -lt 13 ] 2>/dev/null \
+                                    || { [ "${_CU_MAJ:-0}" -eq 13 ] 2>/dev/null && [ "${_CU_MIN:-0}" -lt 3 ] 2>/dev/null; }; }; then
+                                substep "CUDA toolkit ${_NVCC_VER} is incompatible with glibc ${_GLIBC_VER} (rsqrt/rsqrtf header clash)." "$C_ERR"
+                                substep "the GPU build will fail to compile and fall back to CPU -- install CUDA Toolkit >= 13.3:" "$C_WARN"
+                                substep "https://developer.nvidia.com/cuda-downloads  (setup.sh auto-selects the newest /usr/local/cuda-*)" "$C_WARN"
+                            fi
+                        fi
 
                         CUDA_ARCHS=""
                         if command -v nvidia-smi &>/dev/null; then
