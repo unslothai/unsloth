@@ -29,6 +29,16 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int > 0 else None
+
+
 def _install_httpcore_asyncgen_silencer() -> None:
     """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
 
@@ -1391,6 +1401,7 @@ async def load_model(
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
+                    context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,
                 )
 
@@ -1733,6 +1744,7 @@ async def load_model(
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
+            context_length = _positive_int_or_none(_model_info.get("context_length")),
             chat_template = _chat_template,
         )
 
@@ -2122,6 +2134,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
+            context_length = _positive_int_or_none(model_info.get("context_length")),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
@@ -4628,28 +4641,38 @@ def _openai_model_objects() -> list[dict]:
             "created": _created,
             "owned_by": "local",
         }
-        # Extension fields: the real per-request window (post /props readback)
-        # so clients can budget/compact against the enforced limit.
-        if llama_backend.context_length:
-            entry["context_length"] = llama_backend.context_length
-        if llama_backend.max_context_length:
-            entry["max_context_length"] = llama_backend.max_context_length
+        _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        if _ctx is not None:
+            entry["context_length"] = _ctx
+        _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
+        if _max_ctx is not None:
+            entry["max_context_length"] = _max_ctx
+        _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
+        if _native_ctx is not None:
+            entry["native_context_length"] = _native_ctx
         models.append(entry)
 
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
+        model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             "id": backend.active_model_name,
             "object": "model",
             "created": _created,
             "owned_by": "local",
         }
-        _sf_ctx = getattr(backend, "context_length", None) or getattr(
-            backend, "max_seq_length", None
-        )
-        if _sf_ctx:
-            entry["context_length"] = _sf_ctx
+        _ctx = _positive_int_or_none(model_info.get("context_length"))
+        if _ctx is None:
+            for _candidate in (
+                getattr(backend, "context_length", None),
+                getattr(backend, "max_seq_length", None),
+            ):
+                _ctx = _positive_int_or_none(_candidate)
+                if _ctx is not None:
+                    break
+        if _ctx is not None:
+            entry["context_length"] = _ctx
         models.append(entry)
 
     return models
