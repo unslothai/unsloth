@@ -393,6 +393,19 @@ class TestRuntimePatterns:
         patterns = runtime_patterns_for_choice(choice)
         assert "lib*.dylib" in patterns
 
+    def test_diffusion_visual_server_kept(self):
+        # The DiffusionGemma visual-server ships in the prebuilt bundle and must
+        # survive the prune so Studio can serve DiffusionGemma GGUFs natively.
+        for kind, name in (
+            ("linux-cuda", "llama-diffusion-gemma-visual-server"),
+            ("macos-arm64", "llama-diffusion-gemma-visual-server"),
+            ("windows-cuda", "llama-diffusion-gemma-visual-server.exe"),
+        ):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert name in runtime_patterns_for_choice(choice)
+
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
 
