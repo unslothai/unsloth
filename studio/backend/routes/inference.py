@@ -788,7 +788,11 @@ async def _aiter_llama_stream_items(
                     raise
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-        if last_item_at is None and response is not None and post_first_item_read_timeout_s is not None:
+        if (
+            last_item_at is None
+            and response is not None
+            and post_first_item_read_timeout_s is not None
+        ):
             _set_stream_response_read_timeout(response, post_first_item_read_timeout_s)
         last_item_at = time.monotonic()
         yield item
