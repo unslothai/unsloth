@@ -1187,13 +1187,20 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
         llama_backend.cache_type_kv
     ):
         return False
-    # Reconcile a user --split-mode in extras into the effective tensor state,
-    # so an extras-driven tensor load isn't seen as a settings mismatch (which
-    # would force a needless unload/reload of the same server).
-    if (
-        resolve_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
-        != llama_backend.tensor_parallel
-    ):
+    # Reconcile a user --split-mode in extras into the effective tensor state.
+    # When the request omits llama_extra_args ("inherit"), compare using the
+    # stored extras stripped the way the reload strips them, so an extras-driven
+    # tensor load isn't seen as a mismatch that needlessly reloads the server.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    effective_extra = (
+        request.llama_extra_args
+        if request.llama_extra_args is not None
+        else strip_shadowing_flags(
+            backend_extra,
+            strip_split_mode = _should_strip_split_mode(request, backend_extra),
+        )
+    )
+    if resolve_tensor_parallel(effective_extra, request.tensor_parallel) != llama_backend.tensor_parallel:
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
@@ -1213,8 +1220,7 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
     # contain any shadow flag, so the reload path strips them rather than
-    # leaving a stale override in effect.
-    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
         # Mirror the reload's conditional split-mode strip, so a preserved
         # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
