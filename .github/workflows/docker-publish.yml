@@ -90,8 +90,19 @@ jobs:
       # arm64 image lacks /usr/share/dotnet, hence `|| true`.
       - name: Reclaim disk
         run: |
+          # The hosted runners keep ~14-20 GB free, which is not enough for
+          # the image plus buildkit state (empirically confirmed: the Studio
+          # layer install died with ENOSPC on a staging run before this list
+          # was extended). None of these preinstalled toolchains are used
+          # here; some paths differ between the amd64 and arm64 runner
+          # images, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /usr/local/julia* /opt/microsoft /usr/share/miniconda \
+                      /opt/az /usr/local/share/boost /usr/local/share/chromium || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
 
       - uses: docker/setup-buildx-action@v3
@@ -277,8 +288,19 @@ jobs:
 
       - name: Reclaim disk
         run: |
+          # The hosted runners keep ~14-20 GB free, which is not enough for
+          # the image plus buildkit state (empirically confirmed: the Studio
+          # layer install died with ENOSPC on a staging run before this list
+          # was extended). None of these preinstalled toolchains are used
+          # here; some paths differ between the amd64 and arm64 runner
+          # images, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /usr/local/julia* /opt/microsoft /usr/share/miniconda \
+                      /opt/az /usr/local/share/boost /usr/local/share/chromium || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
 
       - uses: docker/setup-buildx-action@v3
