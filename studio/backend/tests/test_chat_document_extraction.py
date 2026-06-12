@@ -462,7 +462,12 @@ async def test_extract_document_clamps_visual_payloads_to_cap(
 
     captured: dict[str, object] = {}
 
-    def fake_extract(_fb, _fn, opts, _ct = ""):
+    def fake_extract(
+        _fb,
+        _fn,
+        opts,
+        _ct = "",
+    ):
         captured.update(opts)
         return "# Doc\n", [], 1, 0, 0
 

@@ -2123,10 +2123,7 @@ async def post_check_embedding_model(
     )
 
 
-async def _check_embedding_model_response(
-    model_name: str,
-    hf_token: Optional[str] = None,
-):
+async def _check_embedding_model_response(model_name: str, hf_token: Optional[str] = None):
     """
     Check if a model is an embedding model.
 
