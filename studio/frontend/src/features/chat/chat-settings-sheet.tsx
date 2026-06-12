@@ -1522,6 +1522,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <ConfirmToolCallsToggle />
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
@@ -1703,6 +1704,30 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function ConfirmToolCallsToggle() {
+  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
+  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Confirm tool calls
+        </span>
+        <InfoHint>
+          When on, local Studio tool calls pause for your approval before they
+          run. Provider-hosted tools are not gated here.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={confirmToolCalls}
+        onCheckedChange={setConfirmToolCalls}
       />
     </div>
   );

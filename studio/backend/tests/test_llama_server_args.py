@@ -30,6 +30,7 @@ resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
+extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
 
@@ -616,6 +617,22 @@ def test_strip_shadowing_flags_drops_split_mode_when_requested():
         strip_split_mode = True,
     )
     assert out == ["--top-k", "20"]
+
+
+def test_extra_args_disable_mmproj_detects_flag():
+    assert extra_args_disable_mmproj(["--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--threads", "12", "--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--no-mmproj-auto"]) is True
+
+
+def test_extra_args_disable_mmproj_false_when_absent():
+    assert extra_args_disable_mmproj(None) is False
+    assert extra_args_disable_mmproj(["--threads", "12"]) is False
+
+
+def test_extra_args_disable_mmproj_last_wins():
+    assert extra_args_disable_mmproj(["--no-mmproj", "--mmproj-auto"]) is False
+    assert extra_args_disable_mmproj(["--mmproj-auto", "--no-mmproj-auto"]) is True
 
 
 def test_strip_shadowing_flags_drops_model_draft_with_spec():

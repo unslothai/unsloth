@@ -34,6 +34,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -403,6 +404,29 @@ type ChatRuntimeStore = {
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
+   */
+  confirmToolCalls: boolean;
+  /**
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
+   */
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
+  /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
@@ -487,6 +511,15 @@ type ChatRuntimeStore = {
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
+  setConfirmToolCalls: (enabled: boolean) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+    autoAllowKey: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
@@ -754,6 +787,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     false,
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
@@ -1082,6 +1118,40 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       return { mcpEnabledForChat };
+    }),
+  setConfirmToolCalls: (confirmToolCalls) =>
+    set(() => {
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { confirmToolCalls };
+    }),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+      },
+    })),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
