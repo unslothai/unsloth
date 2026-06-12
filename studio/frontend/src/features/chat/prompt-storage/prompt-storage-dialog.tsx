@@ -53,6 +53,7 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
+import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 
 function newId(): string {
@@ -1235,6 +1236,9 @@ function PromptCard({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(entry.name);
   const [text, setText] = useState(entry.text);
+  const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
+  const isPinned = pinnedPromptIds.includes(entry.id);
 
   const handleSave = useCallback(async () => {
     const trimName = name.trim();
@@ -1281,6 +1285,9 @@ function PromptCard({
   return (
     <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2 hover:border-border hover:shadow-sm transition-all">
       <div className="flex items-center gap-2">
+        {isPinned ? (
+          <BookmarkIcon className="size-3.5 shrink-0 fill-primary text-primary" />
+        ) : null}
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
@@ -1292,6 +1299,21 @@ function PromptCard({
             <PlayIcon className="size-3" />Use
           </button>
           <div className="mx-1 h-4 w-px bg-border/60" />
+          <button
+            type="button"
+            onClick={() => togglePinnedPrompt(entry.id)}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
+              isPinned
+                ? "text-primary hover:bg-primary/10"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+            title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+          >
+            <BookmarkIcon
+              className={cn("size-3.5", isPinned && "fill-primary")}
+            />
+          </button>
           <button
             type="button"
             onClick={() => onExport(entry)}
