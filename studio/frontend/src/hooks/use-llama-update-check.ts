@@ -5,11 +5,14 @@ import { authFetch, getAuthToken } from "@/features/auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // First check shortly after load, then re-surface as an hourly reminder. The
-// banner stays up until the user dismisses it (click outside / X) or updates.
+// banner stays up until the user explicitly acts on it (X, Update, or
+// Remind me later).
 const FIRST_CHECK_DELAY_MS = 1000;
 const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
+// "Remind me later" re-surfaces sooner than the hourly reminder.
+const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
 // While an update is applying, poll the job state at this cadence.
-const JOB_POLL_INTERVAL_MS = 3000;
+const JOB_POLL_INTERVAL_MS = 1500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
@@ -17,6 +20,8 @@ export interface LlamaUpdateJob {
   from_tag: string | null;
   to_tag: string | null;
   error: string | null;
+  // Download fraction (0..1) while running, 1 on success, null when unknown.
+  progress: number | null;
 }
 
 export interface LlamaUpdateStatus {
@@ -42,6 +47,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
       to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
       error: typeof job.error === "string" ? job.error : null,
+      progress: typeof job.progress === "number" ? job.progress : null,
     },
   };
 }
@@ -73,9 +79,10 @@ export interface LlamaApplyResult {
 
 /**
  * Polls the backend for a newer llama.cpp prebuilt. When one exists, `visible`
- * becomes true ~1s after load and stays up until the user dismisses it (click
- * outside / X) or updates; it re-surfaces every ~hour as a reminder. `apply()`
- * triggers the in-place swap and tracks the job.
+ * becomes true ~1s after load and stays up until the user dismisses it (X),
+ * snoozes it ("Remind me later", ~15 min), or updates; it re-surfaces every
+ * ~hour as a reminder. `apply()` triggers the in-place swap and tracks the
+ * job.
  */
 export function useLlamaUpdateCheck({
   enabled = true,
@@ -84,6 +91,7 @@ export function useLlamaUpdateCheck({
   const [visible, setVisible] = useState(false);
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current) {
@@ -161,12 +169,26 @@ export function useLlamaUpdateCheck({
       clearTimeout(firstTimer);
       clearInterval(reminder);
       clearPollTimer();
+      if (snoozeTimer.current) {
+        clearTimeout(snoozeTimer.current);
+        snoozeTimer.current = null;
+      }
     };
   }, [enabled, surfaceIfAvailable, clearPollTimer]);
 
   const dismiss = useCallback(() => {
     setVisible(false);
   }, []);
+
+  // Hide now, re-check and re-surface after SNOOZE_DELAY_MS.
+  const snooze = useCallback(() => {
+    setVisible(false);
+    if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
+    snoozeTimer.current = setTimeout(() => {
+      snoozeTimer.current = null;
+      fetchStatus().then(surfaceIfAvailable);
+    }, SNOOZE_DELAY_MS);
+  }, [surfaceIfAvailable]);
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
@@ -219,5 +241,6 @@ export function useLlamaUpdateCheck({
     applying,
     apply,
     dismiss,
+    snooze,
   };
 }

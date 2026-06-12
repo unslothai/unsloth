@@ -184,6 +184,47 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
+_RUN_MODULE = None
+
+
+def _load_run_module():
+    """Import studio.backend.run without relying on package resolution.
+
+    `studio update` can leave a partial ``site-packages/studio/backend/``
+    tree (plugin build artefacts only). That shadowed tree wins over an
+    editable install and breaks ``from studio.backend.run import ...``.
+    Loading by file path sidesteps the conflict.
+    """
+    global _RUN_MODULE
+    if _RUN_MODULE is not None:
+        return _RUN_MODULE
+
+    run_py = _find_run_py()
+    if run_py is None:
+        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
+
+    loaded = sys.modules.get("studio.backend.run")
+    if loaded is not None:
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
+        if loaded_path == run_py.resolve():
+            _RUN_MODULE = loaded
+            return _RUN_MODULE
+
+    spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load studio backend from {run_py}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["studio.backend.run"] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("studio.backend.run", None)
+        raise
+    _RUN_MODULE = module
+    return _RUN_MODULE
+
+
 def _find_setup_script() -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
@@ -329,9 +370,11 @@ def _load_backend_auth_storage():
     auth_dir = backend_dir / "auth"
     storage_py = auth_dir / "storage.py"
     loaded = sys.modules.get("auth.storage")
-    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
-    if loaded is not None and loaded_path == storage_py:
-        return loaded
+    if loaded is not None:
+        # __file__ can be None for namespace packages from partial trees.
+        loaded_path = Path(getattr(loaded, "__file__", None) or "").resolve()
+        if loaded_path == storage_py.resolve():
+            return loaded
 
     package = sys.modules.get("auth")
     package_paths = [Path(path).resolve() for path in getattr(package, "__path__", [])]
@@ -570,6 +613,19 @@ def _load_model_via_http(
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
 
 
+def _format_context_length_line(load_result: dict) -> Optional[str]:
+    value = load_result.get("context_length")
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    if value_int <= 0:
+        return None
+    return f"  Context length: {value_int} tokens"
+
+
 # ── unsloth studio (server) ──────────────────────────────────────────
 
 
@@ -693,11 +749,11 @@ def studio_default(
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    from studio.backend.run import run_server
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     if not silent:
-        from studio.backend.run import _resolve_external_ip
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_kwargs = dict(
@@ -712,20 +768,17 @@ def studio_default(
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
 
-    from studio.backend.run import _shutdown_event
-
     try:
-        if _shutdown_event is not None:
+        if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C-level on Linux
             # and swallows SIGINT; loop with a 1s timeout instead.
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        from studio.backend.run import _graceful_shutdown, _server
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
@@ -841,7 +894,10 @@ def run(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
     max_seq_length: int = typer.Option(
-        0, "--max-seq-length", help = "Max sequence length (0 = model default)"
+        0,
+        "--max-seq-length",
+        "--context-length",
+        help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     api_key_name: str = typer.Option(
@@ -1020,7 +1076,8 @@ def run(
             os.execvp(str(studio_bin), args)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
-    from studio.backend.run import run_server, _resolve_external_ip
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     run_kwargs = dict(
         host = host,
@@ -1080,9 +1137,10 @@ def run(
 
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
+    context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (0.0.0.0 only).
@@ -1119,6 +1177,8 @@ def run(
         if _cf_url:
             typer.echo(f"  Secure link access via Cloudflare: {_cf_url}")
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
+        if context_length_line:
+            typer.echo(context_length_line)
         typer.echo(f"  API Key:      {api_key}")
         typer.echo("")
         typer.echo("  OpenAI / Anthropic SDK base URL:")
@@ -1153,21 +1213,21 @@ def run(
         typer.echo(f"URL:     {base_url}")
         if _cf_url:
             typer.echo(f"Secure link access via Cloudflare: {_cf_url}")
+        if context_length_line:
+            typer.echo(context_length_line.strip())
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # 7. Wait for Ctrl+C.
-    from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
-
     try:
-        if _shutdown_event is not None:
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+        if run_mod._shutdown_event is not None:
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
