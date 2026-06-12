@@ -49,9 +49,7 @@ def run_benchmark_forward(
     kernel_config_fwd: KernelConfigForward = None,
     bs: int = 1,
 ):
-    torch.manual_seed(
-        SEED
-    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(SEED)  # Redundant under pytest (autouse fixture in conftest.py)
     device = "cuda"
     hidden_size = config.hidden_size
 
@@ -89,9 +87,7 @@ def run_benchmark_backward(
     dtype: torch.dtype,
     bs = 1,
 ):
-    torch.manual_seed(
-        SEED
-    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(SEED)  # Redundant under pytest (autouse fixture in conftest.py)
     device = "cuda"
     hidden_size = config.hidden_size
 
@@ -279,13 +275,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--use_tma_load_w", action = "store_true"
-    )  # No need to specify, will automatically parametrize these for each kernel config
+    )  # Auto-parametrized per kernel config; no need to specify
     parser.add_argument(
         "--use_tma_load_x", action = "store_true"
-    )  # No need to specify, will automatically parametrize these for each kernel config
+    )  # Auto-parametrized per kernel config; no need to specify
     parser.add_argument(
         "--use_tma_load_dy", action = "store_true"
-    )  # No need to specify, will automatically parametrize these for each kernel config
+    )  # Auto-parametrized per kernel config; no need to specify
     parser.add_argument(
         "--mode",
         type = str,
@@ -321,9 +317,9 @@ if __name__ == "__main__":
         end_time = time.time()
         print(f"Total time: {end_time - start_time:.4f} seconds")
 
-    # NOTE: better to use autotuner for now, since the MoE block needs 2 different kernel configs for forward (2 grouped gemms, gate_up_proj and down_proj)
-    # and the backward pass needs 4 different kernel configs (2 grouped gemms each for dW and dX)
-    # The benchmark only supports 1 kernel config at a time so the same config will be used for both grouped gemms, which is suboptimal.
+    # NOTE: prefer the autotuner for now. The MoE block needs 2 forward
+    # configs (gate_up_proj, down_proj) and 4 backward (dW + dX each); this
+    # benchmark only supports 1 config at a time, so it's suboptimal here.
     else:
         assert False, "Use autotune for now"
         kernel_configs = create_kernel_configs(args, args.permute_x, args.permute_y)

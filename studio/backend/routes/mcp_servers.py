@@ -18,8 +18,11 @@ from core.inference.mcp_client import (
     probe_timeout,
     stdio_mcp_enabled,
 )
+from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
     McpServerCreate,
+    McpServerImportRequest,
+    McpServerImportResult,
     McpServerProbeResult,
     McpServerResponse,
     McpServerTestRequest,
@@ -34,9 +37,9 @@ router = APIRouter()
 
 
 def _looks_like_command(value: str) -> bool:
-    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a
-    value with whitespace is definitely a command. No whitespace proves nothing
-    (a lone token may be a single-arg command or a scheme-less URL)."""
+    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so
+    a value with whitespace is definitely a command. No whitespace proves
+    nothing (a lone token may be a single-arg command or a scheme-less URL)."""
     return any(ch.isspace() for ch in value)
 
 
@@ -44,10 +47,8 @@ def _validate_url(url: str) -> str:
     trimmed = (url or "").strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # When stdio is enabled on this host, a non-HTTP value is a local command.
-    # Reuse this field so stdio servers ride the existing CRUD/storage with no
-    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so we
-    # keep the existing behaviour and treat any non-HTTP value as a command here.
+    # When stdio is enabled, a non-HTTP value is a local command (reuses this
+    # field so stdio servers ride existing CRUD/storage).
     if stdio_mcp_enabled() and is_stdio(trimmed):
         try:
             parts = parse_stdio_command(trimmed)
@@ -63,7 +64,7 @@ def _validate_url(url: str) -> str:
             raise HTTPException(status_code = 400, detail = "command must not be empty")
         if "://" in parts[0]:
             # A URL-scheme first token is a mistyped URL, not a command. Reject
-            # it cleanly instead of exec-ing it (mirrors the frontend check).
+            # cleanly instead of exec-ing it (mirrors the frontend check).
             raise HTTPException(
                 status_code = 400,
                 detail = "Enter an http(s):// URL, or a local command whose "
@@ -76,8 +77,7 @@ def _validate_url(url: str) -> str:
             "MCP server address must start with http:// or https:// "
             "(for example https://example.com/mcp)."
         )
-        # Host-scoped wording ("this server"), not "desktop only": self-hosted
-        # hosts can opt in via the env var.
+        # Host-scoped wording: self-hosted hosts can opt in via the env var.
         if _looks_like_command(trimmed):
             detail += " Running a local command is not enabled on this server."
         raise HTTPException(status_code = 400, detail = detail)
@@ -87,7 +87,7 @@ def _validate_url(url: str) -> str:
 
 
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
-    """Trim header names, drop empties, coerce values to str. None if nothing left."""
+    """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
         return None
     out: dict[str, str] = {}
@@ -126,7 +126,7 @@ async def create_mcp_server(
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
-    # push the probe onto the 305s OAuth timeout. Backend is the enforcer.
+    # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
 
     server_id = uuid.uuid4().hex[:16]
@@ -182,7 +182,7 @@ async def update_mcp_server(
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
-    # switch with no new headers, drop the old ones so env secrets are not
+    # switch with no new headers, drop the old ones so env secrets aren't
     # re-sent as HTTP headers (or vice versa).
     if (
         "url" in changes
@@ -190,9 +190,9 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is
-    # disabled; fastmcp keys tokens by URL and would otherwise let a
-    # re-pointed server silently inherit the old account's credentials.
+    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
+    # fastmcp keys tokens by URL and would otherwise let a re-pointed server
+    # silently inherit the old account's credentials.
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
@@ -243,13 +243,53 @@ async def refresh_mcp_server_tools(
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
+@router.post("/import", response_model = McpServerImportResult)
+async def import_mcp_servers(
+    payload: McpServerImportRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Bulk-register servers from a standard mcpServers JSON config (issue
+    #5936). Each entry rides the existing create path: _validate_url applies
+    the same stdio gate (a stdio entry becomes a per-entry error when stdio is
+    off; http still imports), and entries whose url already exists are skipped
+    so re-importing the same file is idempotent. One bad entry never 400s the
+    whole batch -- failures are reported per entry."""
+    entries, errors = parse_mcp_config(payload.config)
+    created: list[McpServerResponse] = []
+    skipped: list[str] = []
+    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+
+    for entry in entries:
+        try:
+            url = _validate_url(entry.url)
+        except HTTPException as exc:
+            errors.append(f"{entry.display_name}: {exc.detail}")
+            continue
+        if url in seen_urls:
+            skipped.append(entry.display_name)
+            continue
+        headers = _normalize_headers(entry.headers)
+        server_id = uuid.uuid4().hex[:16]
+        mcp_servers_db.create_server(
+            id = server_id,
+            display_name = entry.display_name,
+            url = url,
+            headers_json = json.dumps(headers) if headers else None,
+            is_enabled = entry.is_enabled,
+            use_oauth = entry.use_oauth and not is_stdio(url),
+        )
+        seen_urls.add(url)
+        created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
+
+    return McpServerImportResult(created = created, skipped = skipped, errors = errors)
+
+
 @router.post("/test", response_model = McpServerProbeResult)
 async def test_mcp_server(
     payload: McpServerTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     # URL/header validation must surface as 400 like create/update so the
-    # frontend's create-form pre-flight gets the same error semantics as
-    # the actual save call. Only catch transport/timeout errors below.
+    # frontend's create-form pre-flight gets the same error semantics as the
+    # save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
     try:
