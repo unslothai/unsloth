@@ -708,6 +708,7 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import safe_error_detail, log_and_http_error
 
@@ -1159,9 +1160,19 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
+def _request_matches_loaded_settings(
+    request: LoadRequest,
+    llama_backend: LlamaCppBackend,
+    effective_chat_template_override: Optional[str] = None,
+) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
-    Caller has already checked model+variant+is_loaded. See #5401."""
+    Caller has already checked model+variant+is_loaded. See #5401.
+
+    ``effective_chat_template_override`` is the resolved template that will be
+    launched (user override, else a bundled family template such as the
+    gemma-4 override), so the dedup compares against what the backend actually
+    holds rather than the raw request field. Defaults to the request field for
+    callers that do not resolve a bundled override."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
@@ -1183,7 +1194,12 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
             return False
-    if (request.chat_template_override or None) != (llama_backend.chat_template_override or None):
+    _effective_cto = (
+        effective_chat_template_override
+        if effective_chat_template_override is not None
+        else request.chat_template_override
+    )
+    if (_effective_cto or None) != (llama_backend.chat_template_override or None):
         return False
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
@@ -1300,6 +1316,17 @@ async def load_model(
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
+        # Resolve the effective chat-template override once, up front: an
+        # explicit user override, else a bundled family template (e.g. the
+        # gemma-4 override that ships preserve_thinking without re-downloading
+        # quants), else None. Used for both the reload-dedup check below and the
+        # load_model calls, so the live backend state and the incoming request
+        # compare against the same template text.
+        effective_chat_template_override = resolve_effective_chat_template_override(
+            model_identifier = model_identifier,
+            user_override = request.chat_template_override,
+        )
+
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
@@ -1317,7 +1344,9 @@ async def load_model(
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
-                and _request_matches_loaded_settings(request, llama_backend)
+                and _request_matches_loaded_settings(
+                    request, llama_backend, effective_chat_template_override
+                )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
@@ -1524,7 +1553,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
+                    chat_template_override = effective_chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     spec_draft_n_max = request.spec_draft_n_max,
@@ -1560,7 +1589,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
+                    chat_template_override = effective_chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     spec_draft_n_max = request.spec_draft_n_max,

@@ -3455,6 +3455,13 @@ class LlamaCppBackend:
                             thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # preserve_thinking is an independent kwarg. Default it OFF
+                    # at launch so direct OpenAI-compatible callers that omit the
+                    # field match the UI's default-off behavior (the bundled
+                    # gemma-4 template also defaults it false; the frontend sends
+                    # preserve_thinking per request once toggled on).
+                    if self._supports_preserve_thinking:
+                        reasoning_kw["preserve_thinking"] = False
                     cmd.extend(
                         [
                             "--chat-template-kwargs",
