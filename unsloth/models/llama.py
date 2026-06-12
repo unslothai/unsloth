@@ -1679,9 +1679,7 @@ def _vanilla_inv_freq_from_config(config, device = "cpu"):
     dim = getattr(config, "head_dim", None)
     if dim is None:
         dim = int(config.hidden_size // config.num_attention_heads)
-    return 1.0 / (
-        base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim)
-    )
+    return 1.0 / (base ** (torch.arange(0, dim, 2, dtype = torch.int64, device = device).float() / dim))
 
 
 def _compute_config_rope_inv_freq(config, rope_scaling):
