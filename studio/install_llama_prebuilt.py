@@ -430,8 +430,14 @@ def is_busy_lock_error(exc: BaseException) -> bool:
     return False
 
 
+# Status logs default to stderr so resolver modes keep stdout machine-readable
+# (setup.sh json.load()s the whole stdout). main() flips this for the install
+# path, where PowerShell otherwise renders stderr as NativeCommandError noise.
+_LOG_TO_STDOUT = False
+
+
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stderr)
+    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -6698,6 +6704,9 @@ def main() -> int:
         raise SystemExit(
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag, --resolve-install-tag, or --resolve-source-build is used"
         )
+    # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
+    global _LOG_TO_STDOUT
+    _LOG_TO_STDOUT = True
     install_prebuilt(
         install_dir = Path(args.install_dir).expanduser().resolve(),
         llama_tag = args.llama_tag,
