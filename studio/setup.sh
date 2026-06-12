@@ -340,9 +340,9 @@ binary_tag = str(payload.get("binary_release_tag") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
-# For non-upstream sources (e.g. lemonade) the published_repo/release_tag
-# refer to the unsloth source tree while the actual binaries came from a
-# different repo. Show both so the log is unambiguous.
+# For non-fork sources (e.g. ggml-org upstream prebuilts) the published_repo/
+# release_tag refer to the unsloth source tree while the actual binaries came
+# from a different repo. Show both so the log is unambiguous.
 if source and source != "upstream" and binary_repo and binary_tag and binary_repo != repo:
     message = f"installed release: {repo}@{release_tag} + {source}@{binary_tag}"
 else:
@@ -1086,7 +1086,7 @@ else
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
-    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # Forward the gfx arch resolved above so the per-gfx ROCm prebuilt is picked
     # even when the installer's own probe cannot report it (amd-smi-only hosts,
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then

@@ -3117,7 +3117,7 @@ class TestHipSdkInstalledButDeviceInaccessible:
 
 
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
-# to install_llama_prebuilt.py so the lemonade HIP prebuilt is selected even when
+# to install_llama_prebuilt.py so the per-gfx ROCm prebuilt is selected even when
 # the installer's own hipinfo/amd-smi probe cannot report it.
 
 _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
@@ -3205,6 +3205,50 @@ class TestRocmGfxForwarding:
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
+
+
+# TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
+# Honours CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES so a mixed-arch host installs
+# the prebuilt for the GPU actually selected, not GPU 0.
+
+_pick_rocm_gfx_target = prebuilt_mod._pick_rocm_gfx_target
+
+
+def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
+    """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
+    on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
+    # Two GPUs; rocminfo reports each token twice (as in the real tool output).
+    probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1100"
+
+
+def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=-1 means no GPU visible; resolver must return None."""
+    probe_out = "gfx1151\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    assert _pick_rocm_gfx_target(probe_out) is None
+
+
+def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
+    """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
+    return gfx1151, not fall back to GPU 0 due to dict.fromkeys collapsing the
+    two gfx1100 entries into one and making index 2 out of range."""
+    # Simulate rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
+    # Each GPU gets its own Agent section with a few token mentions.
+    probe_out = (
+        "***\nAgent 1\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 2\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 3\n***\n  gfx1151 some info\n  gfx1151\n"
+    )
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
 
 
 if __name__ == "__main__":

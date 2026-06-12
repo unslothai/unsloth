@@ -1529,7 +1529,7 @@ shell.Run cmd, 0, False
         # popping a UAC/DiskPart prompt RunAsInvoker can't suppress (manifest is
         # asInvoker). So only probe when a HIP SDK is present (hipinfo found ->
         # un-elevated) or the user opts in; else fall through to WMI name inference
-        # (enough to pick ROCm wheels + lemonade llama.cpp).
+        # (enough to pick ROCm wheels + the ROCm llama.cpp prebuilt).
         # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the
         # HIP-SDK heuristic: a HIP SDK binary with a broken runtime can still pop the
         # prompt, so $HipSdkInstalled must NOT silently re-enable it.
@@ -1580,7 +1580,7 @@ shell.Run cmd, 0, False
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
         # ($HasROCm false): the gfx arch inferred from the WMI GPU name lets the
-        # studio setup forward --rocm-gfx and pull a GPU-accelerated (lemonade)
+        # studio setup forward --rocm-gfx and pull a GPU-accelerated ROCm
         # llama.cpp, which bundles its own ROCm runtime. PyTorch's ROCm wheels
         # still require a confirmed HIP SDK -- they stay gated on $HasROCm below.
         if (-not $ROCmGfxArch) {
@@ -1591,7 +1591,7 @@ shell.Run cmd, 0, False
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
             # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
-            #    Targets only arches the lemonade-sdk ROCm prebuilts cover
+            #    Targets only arches the ROCm prebuilts cover
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
@@ -1602,9 +1602,9 @@ shell.Run cmd, 0, False
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                     @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
-                    @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- lemonade gfx103X
-                    @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- lemonade gfx103X
-                    @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- lemonade gfx103X
+                    @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
+                    @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
+                    @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
                 )
                 foreach ($row in $nameArchTable) {
                     if ($ROCmGpuLabel -match $row.P) {
