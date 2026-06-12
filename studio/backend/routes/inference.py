@@ -736,8 +736,7 @@ def _llama_streaming_generation_timeout() -> httpx.Timeout:
 
 
 def _set_stream_response_read_timeout(
-    response: httpx.Response,
-    read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+    response: httpx.Response, read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S
 ) -> None:
     try:
         timeout_ext = response.request.extensions.get("timeout")
@@ -753,9 +752,7 @@ async def _wait_cancel_event(cancel_event) -> None:
 
 
 async def _send_stream_with_preheader_cancel(
-    client: httpx.AsyncClient,
-    req: httpx.Request,
-    cancel_event,
+    client: httpx.AsyncClient, req: httpx.Request, cancel_event
 ) -> Optional[httpx.Response]:
     if cancel_event is None:
         return await client.send(req, stream = True)
