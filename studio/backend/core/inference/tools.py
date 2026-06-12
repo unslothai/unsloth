@@ -643,9 +643,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
     # server gets re-probed -- and blocks the send for the full timeout -- on
     # every message.
     uncached = [
-        s
-        for s in servers
-        if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
     if uncached:
         results = await asyncio.gather(

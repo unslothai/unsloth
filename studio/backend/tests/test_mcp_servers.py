@@ -616,13 +616,16 @@ def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     calls: list[str] = []
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         calls.append(url)
         return _one_tool()
 
@@ -646,13 +649,16 @@ def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     attempts = {"n": 0}
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         attempts["n"] += 1
         if attempts["n"] == 1:
             raise RuntimeError("server down")
@@ -678,11 +684,14 @@ def test_refresh_warms_tool_cache(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
-    async def fake_refresh(url, headers = None, timeout = None, use_oauth = False):
+    async def fake_refresh(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         return _one_tool()
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", fake_refresh)
@@ -707,9 +716,7 @@ def test_update_url_evicts_tool_cache(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("stale")})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True)
 
     asyncio.run(
         routes_mcp.update_mcp_server(
@@ -730,14 +737,10 @@ def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
 
     cached = _one_tool()
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": cached})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     asyncio.run(
-        routes_mcp.update_mcp_server(
-            "s1", McpServerUpdate(display_name = "B"), current_subject = "u"
-        )
+        routes_mcp.update_mcp_server("s1", McpServerUpdate(display_name = "B"), current_subject = "u")
     )
     assert mcp_client.get_cached_tools("s1") == cached
 
@@ -752,14 +755,10 @@ def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     asyncio.run(
-        routes_mcp.update_mcp_server(
-            "s1", McpServerUpdate(is_enabled = False), current_subject = "u"
-        )
+        routes_mcp.update_mcp_server("s1", McpServerUpdate(is_enabled = False), current_subject = "u")
     )
     assert mcp_client.get_cached_tools("s1") is None
 
@@ -773,9 +772,7 @@ def test_delete_evicts_tool_cache(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
     asyncio.run(routes_mcp.delete_mcp_server("s1", current_subject = "u"))
     assert mcp_client.get_cached_tools("s1") is None
 
@@ -798,16 +795,17 @@ def test_get_enabled_mcp_tools_probes_only_uncached(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("cached")})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://a/mcp", is_enabled = True
-    )
-    mcp_servers_db.create_server(
-        id = "s2", display_name = "B", url = "https://b/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp", is_enabled = True)
+    mcp_servers_db.create_server(id = "s2", display_name = "B", url = "https://b/mcp", is_enabled = True)
 
     probed: list[str] = []
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         probed.append(url)
         return _one_tool("fresh")
 
@@ -815,10 +813,7 @@ def test_get_enabled_mcp_tools_probes_only_uncached(tmp_path, monkeypatch):
 
     specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
     assert probed == ["https://b/mcp"]  # only the uncached server is probed
-    assert sorted(t["function"]["name"] for t in specs) == [
-        "mcp__s1__cached",
-        "mcp__s2__fresh",
-    ]
+    assert sorted(t["function"]["name"] for t in specs) == ["mcp__s1__cached", "mcp__s2__fresh"]
 
 
 def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypatch):
@@ -831,14 +826,15 @@ def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypa
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://bad/mcp", is_enabled = True
-    )
-    mcp_servers_db.create_server(
-        id = "s2", display_name = "B", url = "https://good/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://bad/mcp", is_enabled = True)
+    mcp_servers_db.create_server(id = "s2", display_name = "B", url = "https://good/mcp", is_enabled = True)
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         if "bad" in url:
             raise RuntimeError("down")
         return _one_tool("ok")
@@ -860,13 +856,16 @@ def test_get_enabled_mcp_tools_caches_empty_tool_list(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     calls: list[str] = []
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         calls.append(url)
         return []
 
@@ -888,9 +887,7 @@ def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     asyncio.run(
         routes_mcp.update_mcp_server(
@@ -902,9 +899,7 @@ def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
     assert mcp_client.get_cached_tools("s1") is None
 
 
-def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
-    tmp_path, monkeypatch
-):
+def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(tmp_path, monkeypatch):
     """A config edit landing during an in-flight probe must not be clobbered
     by the now-stale probe result (TOCTOU on the cache write)."""
     import asyncio
@@ -914,11 +909,14 @@ def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True)
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         # Simulate a PUT landing while we are awaiting the probe.
         mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
         return _one_tool()
@@ -944,11 +942,14 @@ def test_get_enabled_mcp_tools_no_cooloff_when_config_changes_mid_failed_probe(
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True)
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         # The user re-points the server while the old endpoint's probe fails.
         mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
         raise RuntimeError("old endpoint down")
@@ -973,11 +974,14 @@ def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         mcp_servers_db.delete_server("s1")
         raise RuntimeError("down")
 
@@ -987,9 +991,7 @@ def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
     assert "s1" not in mcp_client._probe_cooloff_until  # no orphan cool-off
 
 
-def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(
-    tmp_path, monkeypatch
-):
+def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monkeypatch):
     """A down server is probed once, then skipped during the cool-off instead
     of being re-probed (and re-hung) on every send."""
     import asyncio
@@ -1000,13 +1002,16 @@ def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
     attempts = {"n": 0}
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         attempts["n"] += 1
         raise RuntimeError("down")
 
@@ -1038,10 +1043,7 @@ def test_oauth_failure_cools_off_longer_than_plain(monkeypatch):
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_client.record_probe_failure("plain", use_oauth = False)
     mcp_client.record_probe_failure("oauth", use_oauth = True)
-    assert (
-        mcp_client._probe_cooloff_until["oauth"]
-        > mcp_client._probe_cooloff_until["plain"]
-    )
+    assert mcp_client._probe_cooloff_until["oauth"] > mcp_client._probe_cooloff_until["plain"]
 
 
 def test_invalidate_clears_failure_cooloff(monkeypatch):
@@ -1068,11 +1070,14 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
-    async def boom(url, headers = None, timeout = None, use_oauth = False):
+    async def boom(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         raise RuntimeError("down")
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", boom)
@@ -1081,9 +1086,7 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
     assert mcp_client.in_failure_cooloff("s1")
 
 
-def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(
-    tmp_path, monkeypatch
-):
+def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(tmp_path, monkeypatch):
     """A delete landing while a probe is in flight must drop the now-orphan
     result -- the `fresh is None` arm of the mid-probe TOCTOU guard. The
     result is neither served nor cached under the since-removed id."""
@@ -1095,11 +1098,14 @@ def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True)
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         # Simulate a DELETE landing while we await the probe.
         mcp_servers_db.delete_server("s1")
         return _one_tool()
@@ -1132,7 +1138,12 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
         use_oauth = True,
     )
 
-    async def boom(url, headers = None, timeout = None, use_oauth = False):
+    async def boom(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         raise RuntimeError("oauth down")
 
     monkeypatch.setattr(tools_mod, "list_tools_async", boom)
