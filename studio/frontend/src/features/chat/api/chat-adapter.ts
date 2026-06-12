@@ -19,6 +19,7 @@ import {
   toExternalBackendProviderType,
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
+import { tryAdoptServerActiveModel } from "../lib/apply-inference-status-to-store";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -35,7 +36,10 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -113,6 +117,21 @@ interface ServerTimings {
   predicted_ms: number;
   predicted_per_token_ms: number;
   predicted_per_second: number;
+  // DiffusionGemma-only extras (present when serving a diffusion model; ignored otherwise).
+  diffusion?: boolean;
+  diffusion_blocks?: number;
+  diffusion_steps?: number;
+  diffusion_canvas?: number;
+  diffusion_prompt_n?: number;
+  diffusion_prompt_prepare_ms?: number;
+  diffusion_decode_ms?: number;
+  diffusion_wall_ms?: number;
+  // Honest throughput, matching the standalone diffusion CLI:
+  //   effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
+  diffusion_effective_tok_s?: number;
+  diffusion_parallel_tok_s?: number;
+  diffusion_output_tok_s?: number;
+  diffusion_steps_per_second?: number;
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
@@ -1129,9 +1148,14 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (await tryAdoptServerActiveModel()) {
+    return { loaded: true, blockedByTrustRemoteCode: false };
+  }
+
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -1196,7 +1220,10 @@ async function autoLoadSmallestModel(): Promise<{
               is_lora: false,
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
+              speculative_type: specSettings.speculativeType,
+              spec_draft_n_max: specSettings.specDraftNMax,
             });
+            saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -1239,10 +1266,13 @@ async function autoLoadSmallestModel(): Promise<{
               ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+              tensorParallel: loadResp.tensor_parallel ?? false,
+              loadedTensorParallel: loadResp.tensor_parallel ?? false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
               loadedIsMultimodal: isMultimodalResponse(loadResp),
+              ...resolveLoadedSpeculativeSettings(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
               id: toastId,
@@ -1283,7 +1313,10 @@ async function autoLoadSmallestModel(): Promise<{
             is_lora: false,
             gguf_variant: null,
             trust_remote_code: trustRemoteCode,
+            speculative_type: specSettings.speculativeType,
+            spec_draft_n_max: specSettings.specDraftNMax,
           });
+          saveSpeculativeType(specSettings.speculativeType);
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
           store.setModelRequiresTrustRemoteCode(
@@ -1303,6 +1336,7 @@ async function autoLoadSmallestModel(): Promise<{
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
+            ...resolveLoadedSpeculativeSettings(sfLoadResp),
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -1365,7 +1399,10 @@ async function autoLoadSmallestModel(): Promise<{
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
       });
+      saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1400,9 +1437,12 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        ...resolveLoadedSpeculativeSettings(loadResp),
       });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1435,6 +1475,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
+      const toolConfirmationIdsByBackendId = new Map<string, string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1472,6 +1516,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
         try {
@@ -1507,6 +1552,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         imageToolsEnabled,
         artifactsEnabled,
         mcpEnabledForChat,
+        confirmToolCalls,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2429,6 +2475,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  confirm_tool_calls: confirmToolCalls,
                   // Scope: thread_id = this thread's docs, kb_id = a KB.
                   ...(ragEnabled
                     ? {
@@ -2484,6 +2531,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               )._toolStatus;
               if (toolStatusText !== undefined) {
                 runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+
+              // Diffusion frame: a transient canvas snapshot. Route it to the transient
+              // store (the in-bubble renderer reads it) and skip it; it has no assistant
+              // text, so it never enters the transcript or the counters below.
+              const diffusionFrame = (
+                chunk as unknown as {
+                  _diffusionFrame?: {
+                    block?: number;
+                    step?: number;
+                    total?: number;
+                    text?: string;
+                  };
+                }
+              )._diffusionFrame;
+              if (diffusionFrame !== undefined) {
+                runtime.setActiveDiffusionCanvas({
+                  block: diffusionFrame.block ?? 0,
+                  step: diffusionFrame.step ?? 0,
+                  total: diffusionFrame.total ?? 0,
+                  text: diffusionFrame.text ?? "",
+                });
                 continue;
               }
 
@@ -2554,9 +2624,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   toolEvent.provenance,
                 );
                 if (toolEvent.type === "tool_start") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvalId = (toolEvent.approval_id as string) || "";
+                  const awaitingConfirmation =
+                    toolEvent.awaiting_confirmation === true;
                   const id =
-                    (toolEvent.tool_call_id as string) ||
-                    `${toolEvent.tool_name}_${Date.now()}`;
+                    awaitingConfirmation && approvalId
+                      ? `${toolConfirmationScopeId}:${approvalId}`
+                      : backendToolCallId ||
+                        approvalId ||
+                        `${toolEvent.tool_name}_${Date.now()}`;
+                  if (awaitingConfirmation && backendToolCallId) {
+                    toolConfirmationIdsByBackendId.set(backendToolCallId, id);
+                  }
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -2587,11 +2668,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
                     } as PositionedToolCallPart);
                   }
+                  if (awaitingConfirmation) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolConfirmation(
+                        id,
+                        approvalId,
+                        sandboxSessionId ?? "",
+                        toolConfirmationScopeId,
+                      );
+                  }
                 } else if (toolEvent.type === "tool_end") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
                   const id =
-                    (toolEvent.tool_call_id as string) ||
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  if (backendToolCallId) {
+                    toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                  }
+                  useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3143,8 +3243,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw err;
       } finally {
         abortSignal.removeEventListener("abort", onAbortCancel);
+        const confirmStore = useChatRuntimeStore.getState();
+        for (const part of toolCallParts) {
+          confirmStore.clearToolConfirmation(part.toolCallId);
+        }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Drop the transient denoising canvas so the finished bubble shows only
+        // the committed markdown answer (cancellation/error included).
+        runtime.setActiveDiffusionCanvas(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {

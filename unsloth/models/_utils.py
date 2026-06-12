@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.3"
+__version__ = "2026.6.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -69,6 +69,7 @@ __all__ = [
     "resolve_attention_implementation",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
+    "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -304,6 +305,28 @@ def _config_set(config, field_name, value):
         config[field_name] = value
     elif config is not None:
         setattr(config, field_name, value)
+
+
+def set_task_config_attr(config, field_name, value):
+    _config_set(config, field_name, value)
+    text_config = None
+    if isinstance(config, dict):
+        text_config = config.get("text_config", None)
+    elif config is not None:
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = None
+        if text_config is None:
+            text_config = getattr(config, "text_config", None)
+    if (
+        text_config is not None
+        and text_config is not config
+        and (isinstance(text_config, dict) or hasattr(text_config, "__dict__"))
+    ):
+        _config_set(text_config, field_name, value)
 
 
 def _iter_attention_configs(config, seen = None):
@@ -2680,6 +2703,16 @@ class EmptyLogits:
     def __str__(self):
         return LOGITS_ERROR_STRING
 
+    def __reduce__(self):
+        # Stateless pickling so gather_object works on the sentinel
+        return (type(self), ())
+
+    def __eq__(self, other):
+        # Gathered copies must compare equal in accelerate debug mode
+        return type(other).__name__ == "EmptyLogits"
+
+    __hash__ = object.__hash__
+
 
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
@@ -2690,6 +2723,13 @@ for j, function in enumerate(functions):
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
             continue
+# The loop above stomps pickle hooks with stubs returning None, which breaks
+# gather_object on EMPTY_LOGITS in distributed runs. Restore default pickling.
+for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
+    try:
+        delattr(EMPTY_LOGITS, function)
+    except Exception:
+        pass
 
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):

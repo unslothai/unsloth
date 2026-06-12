@@ -197,6 +197,7 @@ export async function testProviderConnection(payload: {
   providerType: string;
   apiKey: string;
   baseUrl?: string | null;
+  modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/test", {
@@ -206,6 +207,7 @@ export async function testProviderConnection(payload: {
         provider_type: payload.providerType,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        model_id: payload.modelId ?? null,
       }),
     });
     return parseJsonOrThrow<ProviderTestResult>(response);

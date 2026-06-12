@@ -552,6 +552,7 @@
 	.sidebar-nav-btn[data-state="open"],
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
@@ -562,6 +563,7 @@
 	.dark .sidebar-nav-btn[data-state="open"],
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
@@ -596,7 +598,7 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[20px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -777,7 +779,7 @@
 		height: 36px;
 		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
-		border-radius: 9999px;
+		border-radius: 12px;
 		font-weight: 500;
 		font-size: 15px;
 		line-height: 20px;
@@ -957,6 +959,11 @@
 		border-radius: 14px !important;
 	}
 
+	/* Account menu: a touch rounder than standard list menus. */
+	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
+		border-radius: 18px !important;
+	}
+
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
 	   none in dark. !important so it also overrides the bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
@@ -1078,13 +1085,16 @@
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
 		content: attr(data-pill-label);
-		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-[9px] bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		/* Always one nowrap line, so always a full pill. */
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
 	}
 
 	/* Compact caret pills (RAG, MCP) open their menu on click instead of
-	   toggling off, so keep the icon and skip the X swap. */
+	   toggling off, so keep the icon and skip the X swap. No data-active
+	   requirement: the off-switch glyph rules below hide the icon on hover
+	   even for inactive pills, which left a blank slot in compact mode. */
 	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)[data-active="true"]:hover
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret):hover
 		.composer-pill-glyph
 		> :not(.composer-pill-x) {
 		opacity: 1;
@@ -1284,19 +1294,27 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark).
+		/* Concentric with the item hover boxes, like Gemini: container radius =
+		   item radius (12px) + side gutter (10px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 18px !important;
+		border-radius: 22px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
+		/* Side gutter so item hover boxes sit inset from the menu edge, like
+		   Gemini's menus (more breathing room than a hairline gutter). */
+		padding-left: 10px;
+		padding-right: 10px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
-	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
-	   the narrower + menu (18 * 232/212 ~= 20px). */
+	/* Width does not change the concentric radius; the MCP menu uses the same
+	   item radius + gutter, so it keeps the same container radius. */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 20px !important;
+		border-radius: 22px !important;
 	}
+
+	/* One-line menus keep the standard menu shape (same radius as multi-line),
+	   so a lone row doesn't balloon into a fully rounded pill. */
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
@@ -1309,14 +1327,15 @@
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		) {
-		@apply gap-3 pl-4 pr-3 py-2 text-[14px];
+		@apply gap-3 pl-3 pr-3 py-2 text-[14px];
 		cursor: pointer;
-		/* Pin hover-box radius so dark matches light (same as the container). */
-		border-radius: 1.1rem;
+		/* Pin hover-box radius so dark matches light (container radius minus the
+		   side gutter keeps the curves concentric). */
+		border-radius: 12px;
 	}
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
-		@apply pl-4 pr-3 py-1.5 text-[12px];
+		@apply pl-3 pr-3 py-1.5 text-[12px];
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
@@ -1360,8 +1379,8 @@
 			[data-slot="dropdown-menu-sub-trigger"]
 		)
 		svg {
-		width: 1.05rem;
-		height: 1.05rem;
+		width: 1.15rem;
+		height: 1.15rem;
 	}
 
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
@@ -1512,6 +1531,20 @@
 		}
 	}
 
+	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
+	.loading-bar-slide {
+		animation: loading-bar-slide 1.3s ease-in-out infinite;
+	}
+
+	@keyframes loading-bar-slide {
+		from {
+			transform: translateX(-110%);
+		}
+		to {
+			transform: translateX(420%);
+		}
+	}
+
 	@keyframes artifact-loading-line {
 		0% {
 			transform: translate3d(-125%, 0, 0) scaleX(0.78);
@@ -1535,11 +1568,11 @@
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
-		@apply md:min-h-[470px];
+		@apply md:min-h-[520px];
 	}
 
 	.h-studio-config-column {
-		@apply md:h-[470px];
+		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
@@ -1750,10 +1783,10 @@
 	margin: 0 !important;
 }
 
-/* Composer shadow on the dark background color so toasts
-   do not merge into card-colored surfaces behind them. */
+/* Dark toasts share the chatbox surface color (.chat-composer-surface
+   uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
-	background-color: var(--background) !important;
+	background-color: var(--card) !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
@@ -2096,6 +2129,11 @@
 
 	.generated-image-loading-dot {
 		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.loading-bar-slide {
+		animation-duration: 1.3s !important;
 		animation-iteration-count: infinite !important;
 	}
 

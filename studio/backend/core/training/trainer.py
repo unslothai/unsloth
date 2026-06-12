@@ -2227,6 +2227,7 @@ class UnslothTrainer:
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
         is_cpt: bool = False,
+        s3_config: dict = None,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2237,6 +2238,9 @@ class UnslothTrainer:
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
         """
+        from core.training.s3_dataset import S3DownloadCancelled
+
+        s3_download = None
         try:
             dataset = None
             eval_dataset = None
@@ -2271,6 +2275,22 @@ class UnslothTrainer:
                         logger.info(f"{notice.message}\n")
 
                 return result.dataset
+
+            # S3 datasets are downloaded to a local temp dir and then consumed
+            # through the same local-file path below.
+            if s3_config and not local_datasets:
+                from core.training.s3_dataset import prepare_s3_dataset_download
+
+                self._update_progress(status_message = "Downloading dataset from S3...")
+                s3_download = prepare_s3_dataset_download(
+                    s3_config,
+                    cancel_callback = lambda: self.should_stop,
+                )
+                local_datasets = s3_download.files
+                if self.should_stop:
+                    logger.info("Stopped during S3 download\n")
+                    return None
+                logger.info(f"Downloaded {len(local_datasets)} file(s) from S3\n")
 
             if local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory
@@ -2539,10 +2559,16 @@ class UnslothTrainer:
 
             return (dataset_info, eval_dataset)
 
+        except S3DownloadCancelled:
+            logger.info("Stopped during S3 download\n")
+            return None
         except Exception as e:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error = str(e))
             return None
+        finally:
+            if s3_download is not None:
+                s3_download.cleanup()
 
     def _auto_detect_eval_split_from_hf(
         self, dataset_source: str, subset: str
@@ -3367,7 +3393,19 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+            num_samples = None
+            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
+                try:
+                    num_samples = len(self.trainer.train_dataset)
+                except TypeError:
+                    logger.debug(
+                        "train_dataset does not support len(); falling back to "
+                        "raw dataset size for step estimation."
+                    )
+
+            if num_samples is None:
+                num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+
             batch_size = training_args.get("batch_size", 2)
             total_steps = self._calculate_total_steps(
                 num_samples,
@@ -3376,10 +3414,8 @@ class UnslothTrainer:
                 training_args.get("num_epochs", 3),
                 training_args.get("max_steps", 0),
             )
-            self._update_progress(total_steps = total_steps)
-
             # ========== START TRAINING ==========
-            self._update_progress(status_message = "Starting training...")
+            self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
 
