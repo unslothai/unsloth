@@ -31,6 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import { streamExportLogs, type ExportLogEntry } from "../api/export-api";
 import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
+import { getExportLogLineClass } from "../lib/log-style";
 
 // Max log lines kept in local state. Matches the backend ring buffer's maxlen
 // so the UI shows the full server-side scrollback.
@@ -631,13 +632,7 @@ export function ExportDialog({
                           {logLines.map((entry, idx) => (
                             <div
                               key={idx}
-                              className={
-                                entry.stream === "stderr"
-                                  ? "text-rose-300/90"
-                                  : entry.stream === "status"
-                                    ? "text-sky-300/90"
-                                    : ""
-                              }
+                              className={getExportLogLineClass(entry)}
                             >
                               {formatLogLine(entry)}
                             </div>
