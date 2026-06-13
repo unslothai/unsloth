@@ -210,6 +210,9 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    # run() loads the backend via _load_run_module() (by file path); inject the
+    # mock as the cached run module so the stubbed run_server is used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
 
@@ -270,6 +273,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     backend._server = object()
     backend._shutdown_event = None
     backend._graceful_shutdown = lambda server: shutdown_calls.append(server)
+    # run() loads the backend via _load_run_module() (by file path); inject the
+    # mock as the cached run module so the stubbed symbols are used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
 
     # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))

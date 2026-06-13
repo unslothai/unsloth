@@ -34,6 +34,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -42,6 +43,12 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+
+// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
+// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
+// choice would silently no-op on models without an MTP head. Unknown -> auto.
+const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource =
   | { type: "thread" }
@@ -158,6 +165,14 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+/** One live DiffusionGemma denoising snapshot: the current canvas text at a
+ *  given step of a given block (block/step are 0-based; total = steps in block). */
+export type DiffusionCanvasFrame = {
+  block: number;
+  step: number;
+  total: number;
+  text: string;
+};
 export type PendingImageEditReference = {
   threadId: string | null;
   openaiImageGenerationCallId: string;
@@ -318,6 +333,71 @@ function saveString(key: string, value: string): void {
   }
 }
 
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
+export function normalizeSpeculativeType(
+  v: string | null | undefined,
+): string | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
+    return "ngram";
+  }
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older backend echoes).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some(
+    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
+  );
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
+}
+
+export function resolveLoadedSpeculativeSettings(response: {
+  speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
+}): {
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+} {
+  const loadedSpeculativeType = normalizeSpeculativeType(
+    response.speculative_type,
+  );
+  const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  return {
+    speculativeType: loadedSpeculativeType,
+    loadedSpeculativeType,
+    specDraftNMax: loadedSpecDraftNMax,
+    loadedSpecDraftNMax,
+  };
+}
+
+// The user's standing preference, sanitized to the universal set.
+export function readPersistedSpeculativeType(): string {
+  const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
+  return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
+}
+
+// MTP / null / unknown values are left unwritten so they stay session-only.
+// Called from the load path so only an applied preference is persisted, not an
+// unapplied dropdown edit the user might Reset or abandon before Apply.
+export function saveSpeculativeType(value: string | null): void {
+  if (value && PERSISTED_SPEC_MODES.has(value)) {
+    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
+  }
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
@@ -403,6 +483,29 @@ type ChatRuntimeStore = {
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
+   */
+  confirmToolCalls: boolean;
+  /**
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
+   */
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
+  /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
@@ -424,7 +527,17 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
+  tensorParallel: boolean;
+  /** Backend-reported tensor-parallel state; null until first hydrated. */
+  loadedTensorParallel: boolean | null;
   loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
+  /** Live denoising frame for the in-progress diffusion message. Transient: set
+   *  per step, cleared when the run ends, never persisted into the transcript. */
+  activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -483,6 +596,15 @@ type ChatRuntimeStore = {
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
+  setConfirmToolCalls: (enabled: boolean) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+    autoAllowKey: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
@@ -492,12 +614,14 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  setTensorParallel: (value: boolean) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -749,6 +873,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     false,
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
@@ -763,17 +890,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   toolStatus: null,
   generatingStatus: null,
+  activeDiffusionCanvas: null,
   autoHealToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "auto",
+  speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  tensorParallel: false,
+  loadedTensorParallel: null,
   loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -979,14 +1110,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "auto",
+      speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      tensorParallel: false,
+      loadedTensorParallel: null,
       loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -1074,6 +1209,40 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       return { mcpEnabledForChat };
     }),
+  setConfirmToolCalls: (confirmToolCalls) =>
+    set(() => {
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { confirmToolCalls };
+    }),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+      },
+    })),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
@@ -1109,6 +1278,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragAutoInjectMinScore };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
+    set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {
@@ -1140,6 +1311,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
@@ -1153,3 +1325,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+export function resolveSpeculativeSettingsForLoad({
+  usePersistedPreference = false,
+}: {
+  usePersistedPreference?: boolean;
+} = {}): {
+  speculativeType: string | null;
+  specDraftNMax: number | null;
+} {
+  const state = useChatRuntimeStore.getState();
+  const speculativeType = usePersistedPreference
+    ? readPersistedSpeculativeType()
+    : state.speculativeType ?? readPersistedSpeculativeType();
+  return {
+    speculativeType,
+    specDraftNMax:
+      !usePersistedPreference &&
+      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+        ? state.specDraftNMax
+        : null,
+  };
+}

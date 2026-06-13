@@ -139,7 +139,7 @@ export function SettingsDialog() {
           {t("settings.dialog.description")}
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-border">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
             <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
               {t("settings.dialog.title")}
             </h2>
@@ -188,7 +188,7 @@ export function SettingsDialog() {
                       {t(tab.labelKey)}
                     </span>
                     {tab.badgeKey ? (
-                      <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      <span className="relative z-10 ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                         {t(tab.badgeKey)}
                       </span>
                     ) : null}

@@ -443,7 +443,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         <Button
           type="submit"
-          className="w-full"
+          className="mx-auto flex w-fit px-6"
           disabled={
             loading ||
             statusLoading ||
