@@ -1252,11 +1252,9 @@ _PID_FILE = STUDIO_HOME / "studio.pid"
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True if a process with ``pid`` exists.
-
-    ``os.kill(pid, 0)`` raises OSError (WinError 87) for every pid on Windows,
-    so use ``tasklist`` there and the signal-0 probe elsewhere.
-    """
+    """True if a process with ``pid`` exists. ``os.kill(pid, 0)`` raises
+    OSError (WinError 87) for every pid on Windows, so use ``tasklist``
+    there and the signal-0 probe elsewhere."""
     if sys.platform == "win32":
         try:
             out = subprocess.run(

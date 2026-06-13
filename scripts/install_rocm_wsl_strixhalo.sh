@@ -5,30 +5,25 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Enable ROCm-on-WSL for AMD Strix Halo (Radeon 8060S / gfx1151)
 # ──────────────────────────────────────────────────────────────────────────────
-# install.sh already routes gfx1151 to the right ROCm wheels once a ROCm runtime
-# is present; what it does NOT do is install AMD's ROCm userspace + the WSL DXG
-# bridge. This helper automates that Linux-side prerequisite on Ubuntu 24.04
-# WSL2 and is invoked by install.sh when it sees a Strix Halo APU in WSL (via
-# /dev/dxg) but no ROCm runtime yet. Fully idempotent (re-run just re-verifies).
+# Installs AMD's ROCm userspace + the WSL DXG bridge (the one part install.sh
+# doesn't do) on Ubuntu 24.04 WSL2. Invoked by install.sh when it sees a Strix
+# Halo APU in WSL (/dev/dxg) but no ROCm runtime. Idempotent.
 #
-# Manual, admin-gated Windows prerequisite: an AMD Adrenalin driver with
-# production ROCDXG/WSL support (26.2.2+). install.ps1 offers to update it. Once
-# installed + rebooted, /dev/dxg is exposed to WSL and this script builds the rest.
+# Windows prerequisite (manual, admin): Adrenalin with production ROCDXG/WSL
+# support (26.2.2+) -- install.ps1 offers it; after reboot /dev/dxg appears.
 #
-# HOW ROCDXG WORKS (and why older /usr/lib/wsl/lib notes are wrong): librocdxg.so
-# is AMD's user-mode bridge between the Linux HSA runtime and the Windows driver
-# over /dev/dxg. The STANDARD hsa-rocr runtime (NOT the gone "roc4wsl" package)
-# loads it when HSA_ENABLE_DXG_DETECTION=1. No hsa/rocm libs need injecting into
-# /usr/lib/wsl/lib (it holds only d3d12/dxcore), yet rocminfo enumerates gfx1151
-# fine -- so we gate on /dev/dxg, not on WSL lib injection.
+# How ROCDXG works (older /usr/lib/wsl/lib notes are wrong): librocdxg.so
+# bridges the Linux HSA runtime to the Windows driver over /dev/dxg; the
+# STANDARD hsa-rocr loads it when HSA_ENABLE_DXG_DETECTION=1. Nothing needs
+# injecting into /usr/lib/wsl/lib (only d3d12/dxcore live there), so we gate
+# on /dev/dxg, not on WSL lib injection.
 #
-# KNOWN CAVEAT (ROCm/ROCm#6022): librocdxg can cap usable ROCm VRAM at the WSL
-# VM's RAM (.wslconfig [wsl2] memory=) on some BIOS UMA layouts, and amd-smi
-# doesn't work in WSL. On OOM below capacity, raise memory= (then wsl --shutdown)
-# and watch GPU use from Windows. Large-UMA BIOS exposes the full pool regardless.
+# Caveat (ROCm/ROCm#6022): librocdxg can cap usable VRAM at the WSL VM's RAM
+# (.wslconfig [wsl2] memory=) on some BIOS UMA layouts; amd-smi doesn't work
+# in WSL. On OOM below capacity, raise memory= then `wsl --shutdown`.
 #
-# Verified on Ryzen AI Max+ PRO 395 / Radeon 8060S (gfx1151) with ROCm 7.2.1 +
-# Ubuntu 24.04 + WSL2 + Adrenalin. These pins MOVE; bump + re-verify on newer ROCm.
+# Verified: Ryzen AI Max+ PRO 395 / Radeon 8060S, ROCm 7.2.1, Ubuntu 24.04,
+# WSL2. Pins MOVE; bump + re-verify on newer ROCm.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -38,11 +33,9 @@ GFX="gfx1151"
 LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-develop}"    # ROCm/librocdxg git ref to build
 # AMD's gfx1151 wheel index (same one install.sh uses); only for the smoke test.
 TORCH_INDEX="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}/${GFX}/"
-# Optional torch smoke test (throwaway venv). OFF by default: install.sh installs
-# torch itself into the real venv right after, so a duplicate download is wasteful.
+# Optional torch smoke test (throwaway venv); OFF by default since install.sh installs torch itself.
 SMOKE_TEST="${UNSLOTH_WSL_SMOKE_TEST:-0}"
-# REQUIRED constraint -- without it pip prefers PyPI's newer CUDA torch over the
-# gfx1151 ROCm wheel. 2.11 carries AMD's real gfx1151 fix (matches install.sh).
+# REQUIRED: without it pip prefers PyPI's newer CUDA torch. 2.11 carries the gfx1151 fix.
 TORCH_CONSTRAINT="${UNSLOTH_WSL_TORCH_CONSTRAINT:-torch>=2.11.0,<2.12.0}"
 ROCM_DIR=""                                          # resolved after install
 
@@ -58,8 +51,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ── Windows 11 SDK (headers for the librocdxg build) ─────────────────────────
-# librocdxg's cmake build needs the Windows SDK 'shared' headers, which live on
-# the Windows HOST under C:\Program Files (x86)\Windows Kits\10\Include\<ver>\.
+# The cmake build needs the SDK 'shared' headers from the Windows host.
 _WIN_SDK_INC_BASE="/mnt/c/Program Files (x86)/Windows Kits/10/Include"
 
 # Print the newest installed SDK include dir with 'shared' headers, or nothing.
@@ -73,15 +65,13 @@ _find_win_sdk() {
     return 0
 }
 
-# Best-effort: install the Windows 11 SDK on the Windows HOST via winget so the
-# build has its headers with no manual step. Elevates -> ONE UAC prompt; headers
-# appear under /mnt/c immediately (no reboot). Never fatal -- failure falls
-# through to a manual-install message. Opt out: UNSLOTH_SKIP_WIN_SDK_INSTALL=1.
+# Best-effort winget install of the Win11 SDK on the Windows host (ONE UAC
+# prompt; headers appear under /mnt/c immediately, no reboot). Never fatal.
+# Opt out: UNSLOTH_SKIP_WIN_SDK_INSTALL=1.
 _install_windows_sdk_via_winget() {
     [ "${UNSLOTH_SKIP_WIN_SDK_INSTALL:-0}" = "1" ] && { note "Skipping Windows SDK auto-install (UNSLOTH_SKIP_WIN_SDK_INSTALL=1)."; return 0; }
     command -v powershell.exe >/dev/null 2>&1 || return 0
-    # `command -v` succeeds even with WSL interop OFF (.exe on PATH but fails
-    # with "Exec format error"); verify it actually executes.
+    # command -v passes even with interop OFF ("Exec format error"); verify it runs.
     powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1 || return 0
     if ! powershell.exe -NoProfile -Command "if (Get-Command winget -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >/dev/null 2>&1; then
         note "winget not available on the Windows host -- cannot auto-install the Windows SDK."
@@ -90,13 +80,11 @@ _install_windows_sdk_via_winget() {
     say "Installing the Windows 11 SDK on the Windows host via winget"
     note "librocdxg needs its headers. Approve the UAC prompt on the Windows desktop."
     note "One-time (~1-3 GB download); opt out with UNSLOTH_SKIP_WIN_SDK_INSTALL=1."
-    # Newest SDK first, then a fallback. Header presence is the source of truth
-    # (re-check each attempt), not winget's exit code. </dev/null so winget never
-    # consumes a piped `curl | sh` stdin.
+    # Newest SDK first. Header presence (not winget exit code) is the truth;
+    # </dev/null keeps winget from eating a piped `curl | sh` stdin.
     for _sdk_id in Microsoft.WindowsSDK.10.0.26100 Microsoft.WindowsSDK.10.0.22621; do
         note "winget install ${_sdk_id} ..."
-        # --source winget: pin the community source so a broken default msstore
-        # source (the cert failure this PR fixes) can't abort SDK resolution.
+        # --source winget: a broken msstore source (cert failure) can't abort resolution.
         powershell.exe -NoProfile -Command "winget install --id ${_sdk_id} -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity" </dev/null || true
         if [ -n "$(_find_win_sdk)" ]; then
             note "Windows SDK headers present after install."
@@ -120,22 +108,19 @@ if [ ! -e /dev/dxg ]; then
     die "/dev/dxg missing -- WSL GPU paravirtualization not present. Ensure this is WSL2 (not WSL1) on a recent Windows build, and that an AMD GPU + ROCDXG-capable Adrenalin driver is installed on the Windows host (then reboot)."
 fi
 note "Ubuntu 24.04 + /dev/dxg present."
-# Don't block on hsa/rocm libs in /usr/lib/wsl/lib: a working ROCDXG setup
-# doesn't need them (only d3d12/dxcore). Real readiness is checked via rocminfo.
+# /usr/lib/wsl/lib needs no hsa/rocm libs (only d3d12/dxcore); readiness is checked via rocminfo.
 
 # ── Step 1: build/runtime prerequisites ──────────────────────────────────────
 say "Installing build prerequisites"
 export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -y
-# `make` is explicit: cmake shells out to it but Ubuntu only *recommends* it, so
-# minimal images lack it and the librocdxg `make -j` build would fail.
+# `make` is explicit: Ubuntu only recommends it, so minimal images lack it.
 $SUDO apt-get install -y cmake make gcc g++ git wget gpg ca-certificates python3-venv python3-pip
 
 # ── Step 2: ROCm ${ROCM_VER} userspace (no DKMS -- WSL uses the Windows driver) ─
 say "Installing ROCm ${ROCM_VER} userspace"
 if ! command -v rocminfo >/dev/null 2>&1 && [ ! -x /opt/rocm/bin/rocminfo ]; then
-    # Direct apt-repo install (leaner than amdgpu-install; repo is indexed by
-    # ROCm version, e.g. .../apt/7.2.1).
+    # Direct apt-repo install (leaner than amdgpu-install); repo indexed by ROCm version.
     $SUDO mkdir -p /etc/apt/keyrings
     wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key \
         | gpg --dearmor | $SUDO tee /etc/apt/keyrings/rocm.gpg >/dev/null
@@ -144,23 +129,20 @@ if ! command -v rocminfo >/dev/null 2>&1 && [ ! -x /opt/rocm/bin/rocminfo ]; the
     printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' \
         | $SUDO tee /etc/apt/preferences.d/rocm-pin-600 >/dev/null
     $SUDO apt-get update -y
-    # rocm-libs pulls everything torch links at runtime (rocblas, hipblas,
-    # miopen-hip, rccl, ...); hsa-rocr + rocminfo come as deps. Large (~5 GB
-    # download / ~23 GB installed).
+    # rocm-libs pulls everything torch links at runtime; hsa-rocr + rocminfo
+    # come as deps. Large (~5 GB download / ~23 GB installed).
     $SUDO apt-get install -y rocm-libs rocminfo hip-runtime-amd
 else
     note "ROCm already present -- skipping apt install."
 fi
 
-# Resolve the real ROCm dir and ensure the canonical /opt/rocm symlink. apt lays
-# ROCm under /opt/rocm-<ver> and rocm-core symlinks /opt/rocm -> that; repair if
-# an earlier partial run left /opt/rocm as a real dir blocking the symlink.
+# Resolve the real ROCm dir and ensure the /opt/rocm symlink (apt installs to
+# /opt/rocm-<ver>); repair a partial run that left /opt/rocm as a real dir.
 _real="$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1 || true)"
 if [ -n "$_real" ] && [ ! -L /opt/rocm ] && [ -d /opt/rocm ]; then
-    # /opt/rocm is a real dir blocking the symlink. Only treat it as a removable
-    # stray stub if it's NOT a real ROCm install (a real one has bin/rocminfo /
-    # bin/hipcc / .info/version) -- this protects a user's pre-existing ROCm. Even
-    # then we MOVE IT ASIDE, never rm -rf, so a wrong guess can't lose data.
+    # Treat /opt/rocm as a stray stub only if it lacks ROCm markers (bin/rocminfo,
+    # bin/hipcc, .info/version) -- protects a pre-existing install. Even then,
+    # MOVE it aside, never rm -rf, so a wrong guess can't lose data.
     if [ -e /opt/rocm/bin/rocminfo ] || [ -e /opt/rocm/bin/hipcc ] || [ -e /opt/rocm/.info/version ]; then
         note "/opt/rocm is a real ROCm install -- leaving it untouched (will install librocdxg into it)."
     else
@@ -181,9 +163,8 @@ say "Building librocdxg (${LIBROCDXG_REF})"
 if [ -e "${ROCM_DIR}/lib/librocdxg.so" ]; then
     note "librocdxg already installed -- skipping build."
 else
-    # Discover the newest installed Win11 SDK (version differs per machine). If
-    # absent, auto-install via winget (one UAC prompt) and re-discover; only if
-    # that ALSO fails do we stop with manual instructions.
+    # Find the newest installed Win11 SDK; if absent, winget-install and retry,
+    # stopping with manual instructions only if that also fails.
     _win_sdk="$(_find_win_sdk)"
     if [ -z "$_win_sdk" ]; then
         note "Windows 11 SDK headers not found -- attempting automatic install..."
@@ -238,17 +219,15 @@ export LD_LIBRARY_PATH="${ROCM_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # ── Step 5: verify the runtime enumerates the GPU ────────────────────────────
 say "Verifying rocminfo sees ${GFX}"
-# Capture rocminfo into a var BEFORE grepping: piping into `grep -q` SIGPIPEs
-# rocminfo on first match, which under `set -o pipefail` turns a successful match
-# into a pipeline failure. Match the gfx1151 ISA "Name:" agent exactly (not a
-# broad gfx1[0-9]) so a generic fallback ISA or unrelated RDNA GPU can't pass.
+# Capture rocminfo BEFORE grepping: piping into `grep -q` SIGPIPEs it, which
+# pipefail turns into failure on a successful match. Match the gfx1151 "Name:"
+# agent exactly so a generic fallback ISA or unrelated RDNA GPU can't pass.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
 if ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}([^0-9]|$)"; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
     die "rocminfo did not enumerate a ${GFX} GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
 fi
-# Display-only summary: best-effort (|| true) so head's early pipe-close under
-# `set -o pipefail` can't fail the bootstrap after verification already passed.
+# Display-only; || true so head's pipe-close under pipefail can't fail the bootstrap.
 printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3 || true
 note "ROCm-on-WSL runtime is live for ${GFX}."
 
@@ -258,8 +237,7 @@ if [ "$SMOKE_TEST" = "1" ]; then
     _venv="${HOME}/.unsloth/rocm-smoketest"
     rm -rf "$_venv"; python3 -m venv "$_venv"
     "$_venv/bin/pip" install --quiet --upgrade pip
-    # gfx1151 index is primary (torch + triton); PyPI only an extra for pure-py
-    # deps. The constraint keeps pip on the ROCm wheel, not a newer PyPI CUDA torch.
+    # gfx1151 index primary, PyPI only extra; the constraint keeps pip on the ROCm wheel.
     "$_venv/bin/pip" install --index-url "$TORCH_INDEX" \
         --extra-index-url https://pypi.org/simple "$TORCH_CONSTRAINT" || \
         die "torch install from ${TORCH_INDEX} failed."

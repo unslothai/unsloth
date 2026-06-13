@@ -212,17 +212,14 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
-# Default-mode shared llama.cpp build + cache are siblings of studio (not removed
-# by deleting it). No-op in env/custom mode (they nest under the custom root) and
-# when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
+# Default-mode shared llama.cpp + cache are siblings of studio. No-op in
+# env/custom mode; a user-set UNSLOTH_LLAMA_CPP_PATH is kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
-# llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
-# Normally pruned after activate, but an interrupted build can leave it behind;
-# removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
+# install_llama_prebuilt.py's .staging root: an interrupted build can leave it
+# behind, blocking the rmdir below.
 _remove_path "$HOME/.unsloth/.staging"
-# ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
-# where they don't exist; removing them lets the rmdir below succeed.
+# ROCm-on-WSL helper artifacts (librocdxg clone + smoke-test venv).
 _remove_path "$HOME/.unsloth/librocdxg"
 _remove_path "$HOME/.unsloth/rocm-smoketest"
 # Drop ~/.unsloth only if now empty (rmdir refuses non-empty, so user content is kept).
@@ -259,21 +256,17 @@ case "$_os" in
     Linux)
         if [ "$_is_wsl" = "1" ]; then
             echo "Removing WSL Windows-side shortcuts..."
-            # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk'
-            # on the Windows Desktop + Start Menu via powershell.exe. Scope removal
-            # to THIS distro (passed as $args[0]) so a multi-distro install keeps the
-            # other distros' launchers; the TARGET=wsl.exe check still spares a
-            # native install's "Unsloth Studio.lnk". Prefer powershell.exe; test it
-            # can EXECUTE (`command -v` succeeds even with interop OFF -- .exe then
-            # fails "Exec format error", common on systemd-enabled distros).
+            # Remove only THIS distro's 'Unsloth Studio (WSL - <distro>).lnk' so a
+            # multi-distro install keeps other launchers; the wsl.exe target check
+            # spares a native install's lnk. Verify powershell.exe actually EXECUTES
+            # (`command -v` passes even with interop off -- "Exec format error").
             _wsl_distro="${WSL_DISTRO_NAME:-}"
             _ps_ran=0
             if command -v powershell.exe >/dev/null 2>&1 && \
                powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
                 _ps_ran=1
-                # Inject the distro into the command: a -Command string does not
-                # receive trailing tokens as $args. WSL distro names are safe to
-                # embed (no quotes/$/backtick).
+                # Inject the distro: -Command strings get no $args. Distro names
+                # are safe to embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
                 powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
@@ -300,9 +293,8 @@ case "$_os" in
                         }
                     }' >/dev/null 2>&1 || true
             fi
-            # Fallback when powershell.exe can't run (interop disabled): remove the
-            # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
-            # WSL-specific, so a native install's "Unsloth Studio.lnk" never matches.
+            # Interop disabled: remove the .lnk files via drvfs. The "(WSL..." name
+            # is WSL-specific, so a native "Unsloth Studio.lnk" never matches.
             if [ "$_ps_ran" = "0" ]; then
                 for _drive in /mnt/c /mnt/d /mnt/e; do
                     [ -d "$_drive/Users" ] || continue
@@ -329,9 +321,8 @@ case "$_os" in
                 done
             fi
             # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
-            # Remove Unsloth's own ROCDXG config (the env it persisted). The system
-            # ROCm userspace is a shared prereq (like CUDA) and is LEFT IN PLACE by
-            # default; set UNSLOTH_UNINSTALL_ROCM=1 to remove it too.
+            # Remove only Unsloth's persisted env; system ROCm is a shared prereq,
+            # left in place unless UNSLOTH_UNINSTALL_ROCM=1.
             echo "Removing ROCm-on-WSL config..."
             _sudo=""
             if [ "$_uid" != "0" ] && command -v sudo >/dev/null 2>&1; then _sudo="sudo"; fi

@@ -5178,14 +5178,11 @@ class LlamaCppBackend:
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
-        """Whether a llama-server startup crash may be retried with --fit off.
-
-        Only when Studio's own VRAM math placed the model (use_fit=False)
-        and nothing on the command line set the fit mode explicitly
-        (-fit / --fit, space- or equals-form). --fit-ctx / --fit-target /
-        -fitc / -fitt tune the fit step but do not select the mode, so
-        they do not block the retry.
-        """
+        """Whether a startup crash may be retried with --fit off: only when
+        Studio placed the model (use_fit=False) and no explicit fit-mode flag
+        (-fit/--fit, space- or equals-form) is on the command line. --fit-ctx,
+        --fit-target, -fitc, -fitt tune the step, not the mode, so they don't
+        block the retry."""
         if use_fit:
             return False
         for a in cmd:
@@ -5209,9 +5206,8 @@ class LlamaCppBackend:
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
-                # Keep the TAIL: crash details (abort reason, ROCm/CUDA error
-                # text) print last, after the long startup banner. Head
-                # truncation has cut off exactly the diagnostic line before.
+                # Keep the TAIL: crash details print last, after the startup
+                # banner; head truncation has cut off the diagnostic line before.
                 _log_hint = (
                     f" Full log: {self._llama_log_path}"
                     if getattr(self, "_llama_log_path", None)

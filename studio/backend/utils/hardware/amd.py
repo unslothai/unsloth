@@ -47,13 +47,9 @@ def _hip_sdk_present() -> bool:
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here.
-
-    On Windows without a working HIP runtime, amd-smi elevates a child at
-    runtime -- popping a UAC/DiskPart prompt that RunAsInvoker can't suppress
-    (its manifest is asInvoker). So only call it on Windows with a HIP SDK
-    present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates.
-    """
+    """Safe to spawn amd-smi? On Windows without a working HIP runtime it
+    elevates a child (UAC/DiskPart prompt RunAsInvoker can't suppress), so
+    require a HIP SDK or UNSLOTH_ENABLE_AMD_SMI=1 there. Linux never elevates."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
@@ -70,10 +66,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows w/o a HIP SDK: every call would
-        # pop a UAC/DiskPart prompt (see _amd_smi_allowed). VRAM polling is then
-        # unavailable, but that beats the prompt. Opt back in with
-        # UNSLOTH_ENABLE_AMD_SMI=1.
+        # Permanently skip: every call would pop the UAC/DiskPart prompt (see
+        # _amd_smi_allowed). Opt back in with UNSLOTH_ENABLE_AMD_SMI=1.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
@@ -83,11 +77,9 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             _amd_smi_disabled = True
         return None
     if shutil.which("amd-smi") is None:
-        # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
-        # ship a CLI) and can be absent on minimal Linux installs. Disable the
-        # poller in one step instead of burning the 3-strike circuit breaker
-        # on guaranteed FileNotFoundError spawns. Studio's VRAM display falls
-        # back to torch mem_get_info.
+        # amd-smi doesn't exist on Windows (no AMD product ships the CLI) and
+        # can be absent on minimal Linux: disable in one step instead of burning
+        # the 3-strike breaker; VRAM display falls back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi not found on PATH; GPU utilization polling via "
@@ -97,8 +89,7 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         return None
     _amd_env = child_env_without_native_path_secret()
     if platform.system() == "Windows":
-        # RunAsInvoker belt-and-suspenders for any manifest-elevating helper;
-        # the real guard is _amd_smi_allowed() above. Mirrors install scripts.
+        # RunAsInvoker is belt-and-suspenders; the real guard is _amd_smi_allowed().
         _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(
@@ -111,8 +102,7 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
-            # Raced a PATH change after the which() check above; absence is
-            # expected on Windows (no AMD product ships an amd-smi CLI there).
+            # Raced a PATH change after the which() check; expected absent on Windows.
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)

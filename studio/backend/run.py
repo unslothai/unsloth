@@ -726,10 +726,9 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
 class _TeeStream:
     """Mirror writes to the original stream and a session log file.
 
-    Console behavior is unchanged (writes/returns delegate to the original
-    stream; Tauri's structured-stdout protocol and isatty probes see exactly
-    what they saw before). The file copy is best-effort: a full disk or a
-    closed handle must never break the console."""
+    Console behavior is unchanged (Tauri's structured-stdout protocol and
+    isatty probes are unaffected); the file copy is best-effort and must
+    never break the console."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
@@ -757,15 +756,11 @@ class _TeeStream:
 
 
 def _setup_server_disk_logging():
-    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim
-    faulthandler at the same file so hard crashes (access violations /
-    SIGSEGV in the GPU runtime) leave a stack trace on disk.
-
-    Also exports PYTHONFAULTHANDLER=1 so child Python processes (training
-    workers) dump native-crash stacks to their captured stderr. Keeps the
-    newest 20 session logs. Opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1.
-    Returns the log path, or None when disabled/unavailable.
-    """
+    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and point
+    faulthandler there so native crashes leave a stack trace on disk.
+    Exports PYTHONFAULTHANDLER=1 for child workers. Keeps the newest 20
+    logs; opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1. Returns the log path
+    or None."""
     if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
         return None
     try:
@@ -782,8 +777,7 @@ def _setup_server_disk_logging():
         log_dir.mkdir(parents = True, exist_ok = True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
-        # Line-buffered so the tail survives a hard kill; errors="replace"
-        # so a console encoding quirk can never take the server down.
+        # Line-buffered so the tail survives a hard kill; errors="replace" guards encoding quirks.
         log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
     except Exception:
         return None
@@ -794,8 +788,7 @@ def _setup_server_disk_logging():
         faulthandler.enable(file = log_fh, all_threads = True)
     except Exception:
         pass
-    # Children (training workers) inherit: their native-crash stacks land on
-    # the stderr the server already captures.
+    # Children inherit: their native-crash stacks land on captured stderr.
     os.environ.setdefault("PYTHONFAULTHANDLER", "1")
 
     sys.stdout = _TeeStream(sys.stdout, log_fh)
@@ -844,12 +837,9 @@ def run_server(
         except Exception:
             pass
 
-    # Persist a session log + native-crash stacks BEFORE importing main, so
-    # even import-time failures leave evidence on disk. Field report: Studio
-    # "terminates without a warning" -- a native crash in the GPU runtime
-    # kills the process with no Python traceback, and a desktop-shortcut
-    # console closes before anything can be read. Console-only logging made
-    # that undiagnosable.
+    # Arm disk logging BEFORE importing main so import-time failures leave
+    # evidence. Field report: native GPU-runtime crashes kill the process with
+    # no traceback, and the shortcut console closes before it can be read.
     _session_log = _setup_server_disk_logging()
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")

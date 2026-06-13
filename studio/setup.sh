@@ -854,10 +854,9 @@ fi
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
-# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
-# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
-# off PATH outside login shells (the profile.d drop-in). Seed both before the
-# probes or a ROCDXG WSL host is misdetected as CPU-only.
+# WSL2 ROCDXG: rocminfo only sees the GPU with HSA_ENABLE_DXG_DETECTION=1
+# (no-op on bare metal), and /opt/rocm/bin may be off PATH in non-login shells.
+# Seed both or a ROCDXG WSL host is misdetected as CPU-only.
 export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
 if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
     PATH="$PATH:/opt/rocm/bin"
@@ -918,9 +917,8 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
-        # Kept in sync with the table in install.sh (and the PS nameArchTable).
-        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
-        # gfx1102 (bash case has no negative lookahead like the PS tables).
+        # In sync with install.sh's table (and the PS nameArchTable). gfx1102 comes
+        # BEFORE gfx1100 so "RX 7700S" matches it (bash case has no negative lookahead).
         case "$_setup_mkt" in
             *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4

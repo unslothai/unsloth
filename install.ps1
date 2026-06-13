@@ -144,9 +144,8 @@ function Install-UnslothStudio {
 
     # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
     $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
-    # python.org fallback patch, used only when winget is unavailable/broken AND
-    # the live python.org listing can't be fetched. The installer URL scheme is
-    # stable so an older patch still installs. Bump alongside $PythonVersion.
+    # python.org fallback patch for when winget fails AND the live listing is
+    # unreachable; the URL scheme is stable. Bump with $PythonVersion.
     $PythonFallbackFullVersion = "3.13.13"
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
@@ -881,13 +880,10 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Force Explorer to re-read each new shortcut's icon so it renders
-                    # immediately instead of a stale/generic entry (a same-name .lnk
-                    # recreated across reinstalls keeps Explorer's cached per-item icon).
-                    # The reliable, non-disruptive fix (no explorer restart) is a per-item
-                    # SHChangeNotify SHCNE_UPDATEITEM + SHCNF_PATHW per .lnk; the global
-                    # SHCNE_ASSOCCHANGED broadcast alone does NOT recover a stale item.
-                    # Also clear the on-disk icon cache (covers heavier staleness).
+                    # A same-name .lnk recreated across reinstalls keeps Explorer's stale
+                    # per-item icon; per-item SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW)
+                    # fixes it (global SHCNE_ASSOCCHANGED alone does not). Also clear the
+                    # on-disk icon cache.
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                     try {
@@ -896,15 +892,12 @@ shell.Run cmd, 0, False
                         foreach ($scPath in $createdShortcutPaths) {
                             try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, $scPath, [System.IntPtr]::Zero) } catch {}
                         }
-                        # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
+                        # SHCNE_ASSOCCHANGED (0x08000000) global refresh as backup
                         [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
-                    # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
-                    # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
-                    # invalidate, so a rewritten same-name shortcut shows the old tile
-                    # until the host restarts. Drop only the render caches (NEVER
-                    # start2.bin -- the pinned layout) and let the host rebuild.
-                    # Best-effort; Win10 has no such host (Test-Path skips it).
+                    # Win11 StartMenuExperienceHost keeps its own tile-icon cache that
+                    # ie4uinit cannot invalidate: drop the render caches (NEVER start2.bin,
+                    # the pinned layout) and restart the host. Win10: Test-Path skips it.
                     try {
                         $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
                         if (Test-Path -LiteralPath $smehTemp) {
@@ -1030,13 +1023,10 @@ shell.Run cmd, 0, False
     }
 
     # ── Fallback: install CPython directly from python.org ──
-    # Used when winget is unavailable or fails (notably msstore cert-pinning error
-    # 0x8a15005e, which aborts `winget install` unless --source winget is given).
-    # Downloads the official installer and runs it silently as a per-user install
-    # (no UAC), putting python.exe + the py launcher on PATH. Mirrors the uv ->
-    # astral.sh fallback below. Returns @{ Version; Path } or $null.
+    # For when winget is missing or fails (e.g. msstore cert-pinning error
+    # 0x8a15005e). Silent per-user install, no UAC; puts python.exe + py
+    # launcher on PATH. Returns @{ Version; Path } or $null.
     function Install-PythonFromPythonOrg {
-        # python.org ships one installer per architecture.
         $archSuffix = switch (Get-TauriDiagArch) {
             "x86_64" { "-amd64" }
             "arm64"  { "-arm64" }
@@ -1048,10 +1038,8 @@ shell.Run cmd, 0, False
             return $null
         }
 
-        # Resolve the latest $PythonVersion.x patch from the python.org listing,
-        # falling back to a same-minor version if the listing cannot be fetched.
-        # Use the pinned full version only when it matches the requested minor so a
-        # non-default UNSLOTH_PYTHON (e.g. 3.12) doesn't silently install 3.13.
+        # Latest $PythonVersion.x patch from the live listing; pinned fallback only
+        # if it matches the requested minor (UNSLOTH_PYTHON=3.12 must not get 3.13).
         $full = if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $PythonFallbackFullVersion } else { "$PythonVersion.0" }
         try {
             $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
@@ -1071,16 +1059,14 @@ shell.Run cmd, 0, False
             return $null
         }
 
-        # Per-user install => no UAC. PrependPath puts python + py on PATH;
-        # Include_launcher installs py.exe (preferred by Find-CompatiblePython).
+        # Per-user => no UAC; PrependPath + Include_launcher put python and py.exe on PATH.
         substep "installing Python $full (silent, per-user)..."
         $installArgs = @(
             "/quiet",
             "InstallAllUsers=0",
             "PrependPath=1",
             "Include_launcher=1",
-            # Launcher per-user too: Include_launcher defaults InstallLauncherAllUsers=1,
-            # which needs admin and would break this non-admin per-user fallback.
+            # Default InstallLauncherAllUsers=1 needs admin -- force per-user.
             "InstallLauncherAllUsers=0",
             "Include_pip=1",
             "AssociateFiles=0",
@@ -1116,13 +1102,9 @@ shell.Run cmd, 0, False
         $wingetExit = $null
 
         if ($script:WingetAvailable) {
-            # --source winget avoids the msstore source, which can fail with
-            # cert-pinning error 0x8a15005e and abort the whole `winget install`
-            # (winget then demands --source). Python and uv both live in the
-            # winget source, so pinning it is correct and faster.
-            #
-            # Lower ErrorActionPreference so winget stderr (progress/warnings) is
-            # not a terminating error on PS 5.1 (native stderr is ErrorRecord).
+            # --source winget skips msstore, whose cert-pinning error 0x8a15005e
+            # aborts the whole `winget install`; Python and uv both live in winget.
+            # Lower EAP so winget stderr is not a terminating error on PS 5.1.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
@@ -1136,10 +1118,8 @@ shell.Run cmd, 0, False
             $DetectedPython = Find-CompatiblePython
 
             if (-not $DetectedPython) {
-                # Python still not functional after winget -- force reinstall.
-                # This handles both real failures AND "already installed" codes where
-                # winget thinks Python is present but it's not actually on PATH
-                # (e.g. user partially uninstalled, or installed via a different method).
+                # Force reinstall: winget can report success/"already installed"
+                # while Python still is not on PATH (partial uninstall, other installer).
                 substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
                 $ErrorActionPreference = "Continue"
                 try {
@@ -1152,9 +1132,7 @@ shell.Run cmd, 0, False
             }
         }
 
-        # Fall back to python.org if winget is unavailable OR couldn't install a
-        # working Python (missing/broken winget, msstore cert errors --source
-        # winget can't fix). Keeps the install automatic instead of failing out.
+        # python.org fallback when winget is missing or could not deliver a working Python.
         if (-not $DetectedPython) {
             if ($script:WingetAvailable) {
                 substep "winget could not install Python -- falling back to python.org..." "Yellow"
@@ -1408,25 +1386,21 @@ shell.Run cmd, 0, False
     }
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
-    # amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
-    # DiskPart UAC prompt mid-install (Studio backend amd.py hits the same).
-    # __COMPAT_LAYER=RunAsInvoker forces it (and helpers it spawns) to run
-    # un-elevated; on failure the WMI name -> gfx fallback still resolves the arch.
+    # amd-smi auto-elevates on Windows (confusing DiskPart UAC prompt mid-install);
+    # __COMPAT_LAYER=RunAsInvoker runs it un-elevated (backend amd.py does the same).
     function Invoke-AmdSmiNoElevate {
         param(
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
             [Parameter(Position = 1)][string[]]$SmiArgs = @(),
             [int]$TimeoutSec = 30
         )
-        # RunAsInvoker blocks the auto-elevation/UAC prompt; the timeout bounds a
-        # flaky amd-smi that can otherwise spin for minutes (30s mirrors amd.py).
+        # Timeout bounds a flaky amd-smi that can spin for minutes (30s mirrors amd.py).
         $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
         $env:__COMPAT_LAYER = 'RunAsInvoker'
         try {
-            # [Process]::Start, NOT Start-Process -PassThru: the latter leaves
-            # .ExitCode $null after WaitForExit on PS 5.1, so $LASTEXITCODE (checked
-            # by callers) reads non-zero and kills detection. Async reads drain the
-            # pipes (no deadlock); amd-smi args have no spaces so a plain join is safe.
+            # NOT Start-Process -PassThru: on PS 5.1 it leaves .ExitCode $null, breaking
+            # callers' $LASTEXITCODE checks. Async reads avoid pipe deadlock; amd-smi
+            # args have no spaces so a plain join is safe.
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
             $psi.Arguments = ($SmiArgs -join ' ')
@@ -1642,11 +1616,11 @@ shell.Run cmd, 0, False
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
-                    @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
-                    @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-                    @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-                    @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
+                    @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                    @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4
+                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo)
+                    @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
+                    @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                     @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
                     @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
@@ -1707,11 +1681,9 @@ shell.Run cmd, 0, False
     }
 
     # ── Optional WSL-ROCm driver hint ────────────────────────────────────────
-    # An AMD GPU can also be used inside WSL2, but only with Adrenalin >= 26.2.2
-    # (first production ROCDXG/WSL release); native Windows GPU works with any
-    # recent driver. We can't auto-install it (AMD referrer-gates downloads, no
-    # winget package), so just point at AMD's page. Shown only when the installed
-    # driver predates 26.2.2 (Feb 2026); suppress with UNSLOTH_SKIP_AMD_DRIVER_HINT=1.
+    # WSL2 ROCm needs Adrenalin >= 26.2.2; we can't auto-install it (referrer-
+    # gated download, no winget package), so hint when the driver is older.
+    # Suppress with UNSLOTH_SKIP_AMD_DRIVER_HINT=1.
     function Show-AmdWslDriverHint {
         if ($env:UNSLOTH_SKIP_AMD_DRIVER_HINT) { return }
         try {
@@ -1728,15 +1700,13 @@ shell.Run cmd, 0, False
                     $drvDate = [Management.ManagementDateTimeConverter]::ToDateTime([string]$amd.DriverDate)
                 }
             } catch {}
-            # Older than 26.2.2 (Feb 2026) => can't expose the GPU to WSL ROCm.
-            # Unreadable date => still show the hint (informational, suppressible).
+            # Pre-26.2.2 (Feb 2026) driver, or unreadable date => show the hint.
             if ($drvDate -and $drvDate -ge (Get-Date '2026-02-01')) { return }
             substep "Tip: to use this GPU inside WSL too, install AMD Adrenalin 26.2.2+ (for WSL2)." "Cyan"
             substep "  Your current driver predates it; native Windows GPU is unaffected. Get it from AMD:" "Cyan"
             substep "    https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html" "Cyan"
             substep "  Then reboot and run this installer inside an Ubuntu-24.04 WSL distro." "Cyan"
-            # If WSL isn't installed yet, point at the command that provisions it
-            # (best-effort; wsl.exe absent => no WSL).
+            # No wsl.exe => suggest installing WSL.
             $hasWsl = $false
             try { $hasWsl = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue) } catch {}
             if (-not $hasWsl) {
@@ -1763,8 +1733,8 @@ shell.Run cmd, 0, False
         substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
         substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } elseif ($ROCmGfxArch) {
-        # Known arch: Studio setup installs AMD's bundled-runtime ROCm PyTorch wheels
-        # (repo.amd.com), which ship their own runtime -- HIP SDK optional.
+        # Known arch: Studio setup installs AMD's bundled-runtime ROCm wheels
+        # (repo.amd.com) -- HIP SDK optional.
         step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
@@ -1778,7 +1748,6 @@ shell.Run cmd, 0, False
         step "gpu" "none (chat-only / GGUF)" "Yellow"
         substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
-    # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -1866,8 +1835,7 @@ shell.Run cmd, 0, False
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # Known AMD arch: install.ps1 lays down CPU PyTorch as a base, then
-            # setup.ps1 swaps in AMD's bundled-runtime GPU ROCm wheels (no HIP SDK).
+            # CPU PyTorch is only a base; setup.ps1 swaps in GPU ROCm wheels next.
             substep "Installing CPU PyTorch as a base -- Studio setup installs GPU ROCm" "Cyan"
             substep "wheels for $ROCmGfxArch next (bundled runtime; HIP SDK not required)." "Cyan"
         } else {

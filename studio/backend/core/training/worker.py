@@ -27,12 +27,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
-# Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge
-# (librocdxg.so over /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_
-# DETECTION=1 is set before torch touches the GPU. A worker spawned outside a
-# login shell misses the installer's persisted env and falls back to CPU.
-# Gated to no-op unless BOTH /dev/dxg and librocdxg.so exist, so native Linux
-# ROCm, NVIDIA, macOS and Windows are unaffected.
+# Mirrors main.py: HSA loads librocdxg only with HSA_ENABLE_DXG_DETECTION=1 set
+# before torch touches the GPU; a worker spawned outside a login shell misses
+# the persisted env and falls back to CPU. No-op unless /dev/dxg + librocdxg exist.
 if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(
@@ -711,13 +708,10 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
             gcn_arch = _v
             break
 
-    # Driver's own answer first: hipDeviceProp_t.integrated (exposed as
-    # props.is_integrated; same gate PR #5988's UMA safetensors fast-load
-    # uses). Strictly additive -- only a truthy value upgrades to unified;
-    # 0/absent falls through to the arch/name logic below, so a wheel that
-    # omits or zeroes the field can never downgrade the known APU set. This
-    # covers unified APUs outside the hardcoded arches (gfx1103 Phoenix
-    # iGPUs, future parts) with one universal signal.
+    # Driver's own answer first: hipDeviceProp_t.integrated (same gate as
+    # PR #5988's UMA fast-load). Strictly additive -- only truthy upgrades to
+    # unified; 0/absent falls through, so a wheel omitting the field can't
+    # downgrade the known APU set. Covers APUs beyond the hardcoded arches.
     if getattr(props, "is_integrated", 0):
         return gcn_arch, True
 
@@ -2163,13 +2157,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # bitsandbytes' import-time get_rocm_gpu_arch() probe runs
-            # `hipinfo.exe` from PATH; the AMD torch wheel ships it in the venv
-            # Scripts dir, which is on PATH only for activated venvs. Prepend
-            # it so the probe succeeds instead of logging a scary (harmless)
-            # "Could not detect ROCm GPU architecture" ERROR on every import.
-            # Normally inherited from main.py's env, but workers can also be
-            # spawned standalone (tests, CLI) -- keep the guard here too.
+            # bitsandbytes' get_rocm_gpu_arch() runs hipinfo.exe via PATH; the
+            # AMD wheel ships it in the venv Scripts dir (on PATH only when
+            # activated). Prepend it to silence a scary-but-harmless ERROR.
+            # Mirrors main.py for standalone-spawned workers (tests, CLI).
             _scripts_dir = os.path.dirname(sys.executable)
             if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
                 import shutil as _shutil
@@ -2386,18 +2377,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         "unified memory from device name %r; applying unified cap",
                         _dev_name,
                     )
-                # Unified hosts on native Windows: mem_get_info's total is the
-                # WDDM budget the driver grants HIP (BIOS carve + ~half of the
-                # remaining RAM) -- the OS share is already outside it, so the
-                # Linux 0.80 starve-protection double-taxes (48.49 GiB budget →
-                # 38.79 allowed) and blocks loads that fit in free memory.
-                # 1.0 removes the double-tax. Current AMD Windows wheels only
-                # enforce sub-1.0 fractions (measured on gfx1151: 0.5 caps,
-                # 1.0 still allocates past the budget via WDDM overcommit), so
-                # 1.0 behaves like torch's uncapped default, with WDDM
-                # arbitrating residency; on wheels that do enforce it, it caps
-                # at exactly the driver-granted budget. On Linux the total
-                # spans nearly all RAM, so keep the 0.80 OS headroom there.
+                # Native Windows unified: mem_get_info's total is the WDDM
+                # budget (OS share already outside it), so the Linux 0.80 cap
+                # double-taxes and blocks loads that fit. 1.0 removes that;
+                # current AMD Windows wheels enforce only sub-1.0 fractions
+                # (measured on gfx1151), so it acts like torch's uncapped
+                # default with WDDM arbitrating residency. Linux totals span
+                # nearly all RAM, so keep the 0.80 OS headroom there.
                 if _is_unified:
                     _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
                 else:
@@ -2411,10 +2397,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _dev_name,
                     _gcn_arch or "unknown arch",
                 )
-                # Unified Windows APUs: the WDDM budget is user-raisable, but
-                # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Studio bug. Say where the limit
-                # comes from and how to raise it.
+                # The WDDM budget is user-raisable but nothing on the box says
+                # so; tell users where the limit comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:
                         import psutil as _psutil

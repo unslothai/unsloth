@@ -745,25 +745,21 @@ if (-not $HasNvidiaSmi) {
     }
 }
 # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
-# amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
-# DiskPart UAC prompt mid-install (Studio backend amd.py hits the same). RunAsInvoker
-# forces it (and helpers it spawns) to run un-elevated; on failure the WMI name ->
-# gfx fallback still resolves the arch.
+# amd-smi auto-elevates on Windows (confusing DiskPart UAC prompt mid-install);
+# __COMPAT_LAYER=RunAsInvoker runs it un-elevated (backend amd.py does the same).
 function Invoke-AmdSmiNoElevate {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
         [int]$TimeoutSec = 30
     )
-    # RunAsInvoker blocks the auto-elevation/UAC prompt; the timeout bounds a flaky
-    # amd-smi that can otherwise spin for minutes (30s mirrors the backend amd.py).
+    # Timeout bounds a flaky amd-smi that can spin for minutes (30s mirrors amd.py).
     $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
     $env:__COMPAT_LAYER = 'RunAsInvoker'
     try {
-        # [Process]::Start, NOT Start-Process -PassThru: the latter leaves .ExitCode
-        # $null after WaitForExit on PS 5.1, so $LASTEXITCODE (checked by callers)
-        # reads non-zero and kills detection. Async reads drain the pipes (no
-        # deadlock); amd-smi args have no spaces so a plain join is safe.
+        # NOT Start-Process -PassThru: on PS 5.1 it leaves .ExitCode $null, breaking
+        # callers' $LASTEXITCODE checks. Async reads avoid pipe deadlock; amd-smi
+        # args have no spaces so a plain join is safe.
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $Exe
         $psi.Arguments = ($SmiArgs -join ' ')
@@ -940,11 +936,11 @@ if (-not $HasNvidiaSmi) {
         #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
-                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
-                @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (Radeon RX 9070 / 9060)
-                @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-                @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-                @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
+                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4
+                @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo)
+                @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
+                @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 (Navi 31)
                 @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                 @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
                 @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
@@ -1021,8 +1017,8 @@ if ($HasNvidiaSmi) {
     substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
     substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
 } elseif ($script:ROCmGfxArch) {
-    # Known arch: PyTorch comes from AMD's bundled-runtime ROCm wheels (repo.amd.com),
-    # which ship their own runtime -- HIP SDK optional (only adds the system toolchain).
+    # Known arch: PyTorch comes from AMD's bundled-runtime ROCm wheels
+    # (repo.amd.com) -- HIP SDK optional.
     Write-Host ""
     step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
     substep "Detected: $ROCmGpuLabel" "Cyan"
@@ -1474,8 +1470,7 @@ if ($HasROCm) {
     $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
     step "rocm" $rocmVerLabel
 } elseif ($script:ROCmGfxArch) {
-    # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
-    # the HIP SDK is optional (only the system ROCm toolchain).
+    # GPU works via AMD's bundled-runtime ROCm wheels; HIP SDK optional.
     step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
 } elseif ($ROCmGpuLabel) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
@@ -2204,10 +2199,9 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
-        # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
-        # (host predates ROCm-wheel support, or GPU added later): the fast "up to
-        # date" path would leave the user on CPU torch with Train/Export disabled.
-        # Force the dependency pass so the ROCm wheels get installed.
+        # ...unless an AMD GPU is present but installed torch is CPU-only (host
+        # predates ROCm-wheel support): force the dependency pass so the ROCm
+        # wheels install instead of leaving Train/Export disabled.
         if ($script:ROCmGfxArch) {
             $_torchIsCpu = $true
             try {
@@ -2282,12 +2276,10 @@ if ($HasNvidiaSmi) {
 # Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
 $ROCmGfxArch = $script:ROCmGfxArch
 $ROCmIndexUrl = $null
-# Install AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is known
-# (name-inferred on Adrenalin-only hosts). The per-arch wheels bundle the runtime
-# (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available() is True without a HIP
-# SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
-# Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
-# ROCm install still falls back to CPU below, so this is safe.
+# Install ROCm PyTorch when ROCm is confirmed OR a gfx arch is known (name-
+# inferred, Adrenalin-only hosts): the wheels bundle the runtime, so GPU torch
+# works without a HIP SDK and Studio leaves chat-only mode. Gating on $HasROCm
+# alone left Strix Halo on CPU torch; a failed install still falls back to CPU.
 if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     $archFamilyMap = @{

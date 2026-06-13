@@ -1207,8 +1207,7 @@ STUB_EOF
         # Escape single quotes for PowerShell single-quoted string embedding
         _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
 
-        # DISTINCT shortcut name so the WSL launcher never clobbers a native
-        # install's "Unsloth Studio.lnk" in the same folder. Per-distro suffix.
+        # Per-distro name so the WSL launcher never clobbers a native install's "Unsloth Studio.lnk".
         if [ -n "$_css_distro" ]; then
             _css_lnk_name="Unsloth Studio (WSL - ${_css_distro}).lnk"
         else
@@ -1283,8 +1282,7 @@ WSLPS1_EOF
             fi
             rm -f "$_css_ps1_tmp"
         fi
-        # If WSL interop is disabled (powershell.exe "Exec format error"), the
-        # shortcut wasn't created; tell the user how to launch / re-enable it.
+        # WSL interop disabled (powershell.exe "Exec format error") => no shortcut; tell the user.
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
             substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
@@ -1708,10 +1706,9 @@ _find_no_torch_runtime() {
 }
 
 # ── AMD ROCm GPU detection helper ──
-# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
-# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
-# off PATH outside login shells (the profile.d drop-in). Seed both before any
-# rocminfo probe or a ROCDXG WSL host is misdetected as CPU-only.
+# WSL2 ROCDXG: rocminfo only sees the GPU with HSA_ENABLE_DXG_DETECTION=1
+# (no-op on bare metal), and /opt/rocm/bin may be off PATH in non-login shells.
+# Seed both or a ROCDXG WSL host is misdetected as CPU-only.
 _ensure_rocm_probe_env() {
     export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
     if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
@@ -2084,10 +2081,9 @@ _maybe_bootstrap_rocm_wsl() {
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
-    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
-    # would skip this bootstrap while the real GPU is still unusable. awk consumes
-    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    # Usable = rocminfo enumerates gfx1151. Not _has_amd_rocm_gpu: its broad
+    # match accepts "gfx11-generic" and would skip the bootstrap. awk consumes
+    # all input, avoiding the pipefail SIGPIPE a `grep -q` would cause.
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
@@ -2098,15 +2094,13 @@ _maybe_bootstrap_rocm_wsl() {
         _persist_rocm_wsl_dropin
         return 0
     fi
-    # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
+    # /dev/dxg exists on any WSL2 GPU host.
     [ -e /dev/dxg ] || return 0
-    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
-    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
+    # Strix Halo only: rocminfo can't report the arch yet, so match the CPU model string.
     grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
     command -v bash >/dev/null 2>&1 || return 0
 
-    # Fast path: already configured (librocdxg present) but launched from a
-    # non-login shell so the persisted env wasn't loaded -- just load it.
+    # Fast path: librocdxg present but env not loaded (non-login shell) -- load it.
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
         if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
             # shellcheck disable=SC1091

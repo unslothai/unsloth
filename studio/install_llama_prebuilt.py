@@ -46,23 +46,17 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
-# elevation (its manifest is asInvoker), so this is just harmless belt-and-
-# suspenders for manifest-elevating tools. The real guard is _amd_smi_allowed():
-# we don't spawn amd-smi on Windows w/o a HIP SDK (or opt-in).
+# RunAsInvoker can't stop amd-smi's runtime elevation -- harmless belt-and-
+# suspenders; the real guard is _amd_smi_allowed() (no spawn w/o HIP SDK/opt-in).
 if platform.system() == "Windows":
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here.
-
-    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
-    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows
-    when a HIP SDK is detectable (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1;
-    Linux/macOS always allowed. When skipped, the gfx arch still arrives via the
-    forwarded --rocm-gfx, so prebuilt selection is unaffected.
-    """
+    """Safe to spawn amd-smi? On Windows without a HIP runtime it elevates a
+    child (UAC/DiskPart prompt), so require a detectable HIP SDK or
+    UNSLOTH_ENABLE_AMD_SMI=1 there; Linux/macOS always allowed. When skipped,
+    --rocm-gfx still supplies the arch."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
@@ -2721,9 +2715,8 @@ def run_capture(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    # amd-smi on Windows auto-elevates and pops a UAC/DiskPart prompt mid-install;
-    # RunAsInvoker forces it un-elevated. Callers already fall back to WMI/name
-    # detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate; Windows-only.
+    # amd-smi auto-elevates on Windows (UAC/DiskPart prompt mid-install);
+    # RunAsInvoker forces it un-elevated (mirrors install.ps1). Windows-only.
     if (
         command
         and platform.system() == "Windows"
@@ -2992,9 +2985,8 @@ def detect_host() -> HostInfo:
                     _candidate = os.path.join(_root, "bin", f"{name}.exe")
                     if os.path.isfile(_candidate):
                         return _candidate
-            # AMD torch wheels ship hipInfo.exe into the venv Scripts dir
-            # (next to python.exe) -- resolvable on driver-only hosts where no
-            # SDK dir exists, so a standalone rerun can still detect the GPU.
+            # AMD torch wheels ship hipInfo.exe in the venv Scripts dir --
+            # resolvable on driver-only hosts with no SDK dir.
             _venv_candidate = os.path.join(os.path.dirname(sys.executable), f"{name}.exe")
             if os.path.isfile(_venv_candidate):
                 return _venv_candidate
