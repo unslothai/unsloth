@@ -873,6 +873,9 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
+        # Live tunnel URL (set at launch) for the API screen; None if no tunnel.
+        # Authed-only: it fingerprints how the host is publicly exposed.
+        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
     }
 
 

@@ -395,7 +395,21 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
-def _emit_startup_output(host: str, port: int, display_host: str) -> None:
+def _emit_secure_startup_output(port: int) -> None:
+    """Secure mode: advertise only the Cloudflare link (loopback bind has no public
+    raw URL). _cloudflare_url is set here; run_server fails closed first otherwise."""
+    print("")
+    print("🦥 Unsloth Studio is running (secure)")
+    print("─" * 52)
+    _print_cloudflare_line()
+    print(f"  On this machine only: http://127.0.0.1:{port}/")
+    print("─" * 52)
+    print_studio_stop_hint()
+
+
+def _emit_startup_output(
+    host: str, port: int, display_host: str, secure: bool = False
+) -> None:
     """Print the access banner plus any post-startup warnings.
 
     Extracted from ``_run`` so the banner/warning wiring is testable. The
@@ -404,6 +418,9 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
     non-127.0.0.1 bind, and wildcard binds are never 127.0.0.1), so the
     trailing stop hint is emitted exactly once.
     """
+    if secure:
+        _emit_secure_startup_output(port)
+        return
     wildcard_bind = host in ("0.0.0.0", "::")
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
     # For wildcard binds, run the reachability check between the URL
@@ -811,6 +828,22 @@ def _setup_server_disk_logging():
     return log_path
 
 
+def _cloudflare_tunnel_should_start(
+    *,
+    cloudflare: bool,
+    host: str,
+    secure: bool,
+    api_only: bool,
+    is_colab: bool,
+) -> bool:
+    """Whether to start the Cloudflare quick-tunnel. --secure tunnels a loopback bind
+    too (cloudflared targets localhost); non-secure keeps the 0.0.0.0-only rule.
+    Colab has its own proxy; api-only has no UI to share."""
+    return (
+        cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+    )
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -819,6 +852,7 @@ def run_server(
     api_only: bool = False,
     llama_parallel_slots: int = 1,
     cloudflare: bool = True,
+    secure: bool = False,
 ):
     """
     Start the FastAPI server.
@@ -836,6 +870,11 @@ def run_server(
         their own interrupt semantics; standalone callers register them after.
     """
     global _server, _shutdown_event
+
+    # --secure exposes only the Cloudflare link: force a loopback bind (cloudflared
+    # reaches localhost) so the raw port is never public, even with -H 0.0.0.0.
+    if secure:
+        host = "127.0.0.1"
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -1029,7 +1068,14 @@ def run_server(
     global _cloudflare_url
     _cloudflare_url = None
     app.state.cloudflare_url = None
-    _cloudflare_enabled = cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
+    # --secure also tunnels a loopback bind; non-secure stays 0.0.0.0-only.
+    _cloudflare_enabled = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1042,8 +1088,19 @@ def run_server(
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 
+    # --secure fails closed: no tunnel means no public link, and the loopback bind
+    # exposed nothing, so exit rather than silently fall back to a raw port.
+    if secure and not _cloudflare_url:
+        print(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            file = sys.stderr,
+            flush = True,
+        )
+        _graceful_shutdown(_server)
+        sys.exit(1)
+
     if not silent:
-        _emit_startup_output(host, port, display_host)
+        _emit_startup_output(host, port, display_host, secure = secure)
 
     return app
 
@@ -1087,6 +1144,13 @@ if __name__ == "__main__":
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
         "(default on; --no-cloudflare to disable)",
     )
+    parser.add_argument(
+        "--secure",
+        action = argparse.BooleanOptionalAction,
+        default = False,
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start (--not-secure keeps the raw 0.0.0.0 link)",
+    )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
@@ -1114,6 +1178,7 @@ if __name__ == "__main__":
         api_only = args.api_only,
         llama_parallel_slots = args.parallel,
         cloudflare = args.cloudflare,
+        secure = args.secure,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

@@ -18,6 +18,8 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
+  // Live tunnel URL from /api/health (authed); null if none. Ephemeral -- read live.
+  cloudflareUrl: string | null;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
@@ -37,6 +39,7 @@ const localDeviceType = detectLocalPlatform();
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   chatOnly: localDeviceType === "mac",
+  cloudflareUrl: null,
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
@@ -57,7 +60,11 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
+      const data = (await res.json()) as {
+        device_type?: string;
+        chat_only?: boolean;
+        cloudflare_url?: string | null;
+      };
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
       // Cache only a server-reported platform. Unauthenticated responses fall
@@ -66,6 +73,7 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       usePlatformStore.setState({
         deviceType,
         chatOnly,
+        cloudflareUrl: data.cloudflare_url ?? null,
         fetched: data.device_type !== undefined,
       });
       return deviceType;
