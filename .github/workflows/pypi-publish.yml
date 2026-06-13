@@ -4,12 +4,12 @@
 # Publishes the unsloth wheel + sdist to PyPI when a release lands on main.
 #
 # A release is marked by the installer-pin bump (e.g. "Bump install.sh /
-# install.ps1 pin to unsloth>=2026.6.6"), where the `unsloth>=` floor in
-# install.sh reaches __version__. We gate on that content rather than the
-# commit title, which has been worded several different ways over time. The
-# `decide` job publishes only when the install.sh pin equals __version__ and
-# that version is not already on PyPI, so it fires exactly once per release and
-# ignores unrelated install.sh edits and re-runs.
+# install.ps1 pin to unsloth>=2026.6.6"), where the `unsloth>=` floor reaches
+# __version__. We gate on that content rather than the commit title, which has
+# been worded several different ways over time. The `decide` job publishes only
+# when both installer pins (install.sh + install.ps1) equal __version__ and that
+# version is not already complete on PyPI, so it fires exactly once per release
+# and ignores unrelated install.sh edits and re-runs.
 #
 # We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta).
 # They are unrelated to the PyPI package version (taken from __version__), but
@@ -64,21 +64,39 @@ jobs:
         run: |
           # `|| true`: steps run under `set -eo pipefail`, so a no-match grep
           # would abort the step. We want a missing/odd pin to skip, not fail.
-          pin=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.sh | sort -u || true)
+          # Require BOTH installers to be on the new floor, so we never publish
+          # while install.ps1 (Windows) still pins the previous version.
+          pin_sh=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.sh  | sort -u || true)
+          pin_ps=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.ps1 | sort -u || true)
           ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
-          echo "install.sh pin: ${pin:-<none>} / __version__: $ver"
-          publish=false
-          if [ "$(printf '%s\n' "$pin" | grep -c .)" = "1" ] && [ "$pin" = "$ver" ]; then
-            code=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/unsloth/$ver/json" || true)
-            case "${code:-000}" in
-              404) publish=true; echo "unsloth $ver not on PyPI -> publish" ;;
-              200) echo "unsloth $ver already on PyPI -> skip" ;;
-              *)   echo "::error::unexpected PyPI status ${code:-000} for unsloth $ver"; exit 1 ;;
-            esac
-          else
-            echo "pin does not match __version__ (or is ambiguous) -> skip"
+          echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: $ver"
+          one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
+          if ! { one "$pin_sh" && one "$pin_ps" && [ "$pin_sh" = "$ver" ] && [ "$pin_ps" = "$ver" ]; }; then
+            echo "install.sh / install.ps1 pins do not both match __version__ (or are ambiguous) -> skip"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          # Pins agree on $ver. Publish if the version is absent OR incomplete
+          # (missing wheel or sdist), so a rerun can finish a partial upload;
+          # the publish step uses skip-existing to not re-upload what's there.
+          decision=$(python3 - "$ver" <<'PY'
+          import json, sys, urllib.error, urllib.request
+          ver = sys.argv[1]
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/unsloth/{ver}/json", timeout=30) as r:
+                  kinds = {f.get("packagetype") for f in (json.load(r).get("urls") or [])}
+          except urllib.error.HTTPError as e:
+              print("publish" if e.code == 404 else f"error:HTTP {e.code}"); sys.exit(0)
+          except Exception as e:
+              print(f"error:{e}"); sys.exit(0)
+          print("skip" if {"bdist_wheel", "sdist"} <= kinds else "publish")
+          PY
+          )
+          case "$decision" in
+            publish) echo "unsloth $ver absent/incomplete on PyPI -> publish"; echo "publish=true"  >> "$GITHUB_OUTPUT" ;;
+            skip)    echo "unsloth $ver already complete on PyPI -> skip";      echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            *)       echo "::error::PyPI check failed for $ver: ${decision#error:}"; exit 1 ;;
+          esac
 
   build:
     name: Build wheel + sdist
@@ -207,3 +225,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          # Complete a partial upload on rerun (e.g. wheel landed, sdist didn't)
+          # instead of failing on the already-present file.
+          skip-existing: true
