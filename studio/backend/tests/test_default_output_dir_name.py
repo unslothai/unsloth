@@ -46,6 +46,12 @@ def test_empty_falls_back_to_model():
     assert sr.default_run_dir_name("   ") == "model"
 
 
+def test_very_long_name_is_capped():
+    sr = _load_storage_roots()
+    name = sr.default_run_dir_name("a" * 500)
+    assert 0 < len(name) <= 200
+
+
 def test_derived_name_resolves_under_outputs_root(tmp_path, monkeypatch):
     sr = _load_storage_roots()
     outputs = tmp_path / "outputs"

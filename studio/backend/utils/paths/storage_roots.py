@@ -387,9 +387,9 @@ def resolve_under_root(
 
 def default_run_dir_name(model_name: str) -> str:
     # Folder-safe run name for an auto-created output dir. Repo ids keep their
-    # namespace (org/model -> org_model); a local path (any separator, incl.
-    # G:\dir\model) collapses to its final component so an absolute source path
-    # can't push the output dir outside outputs_root.
+    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
+    # collapse to their final component so an absolute source can't escape
+    # outputs_root. Length-capped to stay under the filesystem name limit.
     raw = str(model_name or "").strip()
     is_path = (
         "\\" in raw
@@ -398,7 +398,8 @@ def default_run_dir_name(model_name: str) -> str:
         or (len(raw) >= 2 and raw[1] == ":")
     )
     base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-") or "model"
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-")
+    return base or "model"
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
