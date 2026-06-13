@@ -3183,7 +3183,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = str(resolve_output_dir(f"{default_run_dir_name(model_name)}_{int(time.time())}"))
+        output_dir = str(
+            resolve_output_dir(f"{default_run_dir_name(model_name)}_{int(time.time())}")
+        )
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)
