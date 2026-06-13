@@ -986,7 +986,7 @@ def get_hardware_info(current_subject: str = Depends(get_current_subject)):
     devices = get_backend_visible_gpu_info().get("devices", [])
     gpus = [
         {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
-        for d in sorted(devices, key=lambda d: d.get("visible_ordinal", 0))
+        for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
     ]
     return {
         "gpu": get_gpu_summary(),
