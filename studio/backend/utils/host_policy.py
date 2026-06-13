@@ -68,6 +68,12 @@ def apply_stdio_mcp_loopback_default(host: str) -> None:
         _auto_enabled = True
 
 
+def loopback_default_active() -> bool:
+    """True when stdio MCP is on only because a loopback bind auto-enabled it,
+    rather than an explicit operator opt-in. Lets the gate tell the two apart."""
+    return _auto_enabled
+
+
 def _reset_loopback_default_state() -> None:
     """Test hook: forget any auto-enable applied earlier in this process."""
     global _auto_enabled

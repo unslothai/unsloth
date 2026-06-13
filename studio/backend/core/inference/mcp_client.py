@@ -123,13 +123,19 @@ def stdio_mcp_enabled() -> bool:
     Tauri app does the same. Off for Colab and any network (0.0.0.0) bind unless
     an operator sets the var out-of-band; set it to 0 to force-disable.
 
-    `unsloth studio run --disable-tools` also wins: it turns off server-side code
-    execution for the whole process, and a local stdio command is exactly that."""
-    from state.tool_policy import get_tool_policy
-
-    if get_tool_policy() is False:
+    When stdio is on only because of that loopback auto-default, an explicit
+    `unsloth studio run --disable-tools` turns it back off (a local stdio command
+    is server-side code execution). An explicit operator opt-in via the env var
+    still wins -- including the documented `=1` network opt-in, where the process
+    tool policy is False merely by the external-host default, not by choice."""
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
-    return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active
+
+    if loopback_default_active() and get_tool_policy() is False:
+        return False
+    return True
 
 
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for

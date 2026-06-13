@@ -254,9 +254,9 @@ def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is False
 
 
-def test_disable_tools_overrides_loopback(monkeypatch):
-    # `unsloth studio run --disable-tools` turns off server-side code execution;
-    # a local stdio command is exactly that, so the gate must stay off.
+def test_disable_tools_overrides_loopback_default(monkeypatch):
+    # When stdio is on only via the loopback auto-default, --disable-tools (the
+    # only way tool policy is False on a loopback bind) turns it back off.
     from state import tool_policy
 
     _disable(monkeypatch)
@@ -266,14 +266,27 @@ def test_disable_tools_overrides_loopback(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is False
 
 
-def test_disable_tools_overrides_explicit_enable(monkeypatch):
-    # --disable-tools must beat even a deliberate operator opt-in, not just the
-    # loopback auto-default.
+def test_explicit_env_opt_in_survives_external_default_policy(monkeypatch):
+    # `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 unsloth studio run -H 0.0.0.0` with no
+    # --enable-tools: tool policy is False by the external-host default, not by
+    # --disable-tools, so the explicit env opt-in must still win.
     from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")  # no-op: value is explicit
     tool_policy.set_tool_policy(False)
-    assert mcp_client.stdio_mcp_enabled() is False
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
+def test_explicit_env_opt_in_beats_disable_tools_on_loopback(monkeypatch):
+    # An operator who hand-sets =1 before launch outranks --disable-tools even on
+    # loopback: apply_ leaves the auto-default inactive, so the veto doesn't apply.
+    from state import tool_policy
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")  # no-op: value is explicit
+    tool_policy.set_tool_policy(False)
+    assert mcp_client.stdio_mcp_enabled() is True
 
 
 @pytest.mark.parametrize("policy", [None, True])

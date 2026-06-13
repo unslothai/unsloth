@@ -11,8 +11,6 @@ from __future__ import annotations
 import os
 import sys
 
-from utils.host_policy import is_external_host
-
 
 def stdout_supports_color() -> bool:
     """True if we should emit ANSI colors."""
@@ -96,7 +94,10 @@ def print_studio_access_banner(
         external_url = f"http://{display_host}:{port}"
 
     listen_all = bind_host in ("0.0.0.0", "::")
-    loopback_bind = not is_external_host(bind_host)
+    # Only the exact aliases the canned loopback_url below is valid for; a bind to
+    # another loopback address (e.g. 127.0.0.2) must show its real address, not
+    # http://127.0.0.1. This is narrower than the stdio-MCP host policy on purpose.
+    loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
     # Use the loopback URL only when reachable on loopback; otherwise show
     # the actual bound address.
