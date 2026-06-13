@@ -151,9 +151,11 @@ function ModelSelectorTrigger({
           "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
-          size === "sm" && "h-8 px-2.5 text-xs",
-          size === "default" && "h-9 px-3 text-sm",
-          size === "lg" && "h-10 px-3.5 text-sm",
+          // Less right padding than left: the trailing chevron already adds
+          // visual space, so symmetric padding looks heavy on the right.
+          size === "sm" && "h-8 pl-2.5 pr-1.5 text-xs",
+          size === "default" && "h-9 pl-3 pr-2 text-sm",
+          size === "lg" && "h-10 pl-3.5 pr-2.5 text-sm",
           className,
         )}
       >
