@@ -1251,21 +1251,22 @@ export function AppSidebar() {
                         : t("shell.navigation.darkMode")}
                     </span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    disabled={!getTourId(pathname)}
-                    onSelect={() => {
-                      const tourId = getTourId(pathname);
-                      if (!tourId) return;
-                      window.dispatchEvent(
-                        new CustomEvent(TOUR_OPEN_EVENT, {
-                          detail: { id: tourId },
-                        }),
-                      );
-                    }}
-                  >
-                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.guidedTour")}</span>
-                  </DropdownMenuItem>
+                  {getTourId(pathname) && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        const tourId = getTourId(pathname);
+                        if (!tourId) return;
+                        window.dispatchEvent(
+                          new CustomEvent(TOUR_OPEN_EVENT, {
+                            detail: { id: tourId },
+                          }),
+                        );
+                      }}
+                    >
+                      <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>{t("shell.navigation.guidedTour")}</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem

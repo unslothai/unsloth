@@ -52,6 +52,7 @@ import {
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
+  detectResultFormat,
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
@@ -388,7 +389,7 @@ export function ModelsPage() {
       discoverRows.filter((row) => {
         if (isDatasetMode) return true;
         return (
-          matchesFormat(row.result.isGguf, deferredFormatFilter) &&
+          matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
           matchesCapability(row.capabilities, deferredCapabilityFilter)
         );
       }),
@@ -721,7 +722,7 @@ export function ModelsPage() {
 
   return (
     <div className="hub-page flex h-full min-h-0 flex-col">
-      <div className="mx-auto flex w-full max-w-[1180px] flex-1 min-h-0 flex-col gap-6 px-5 pt-8 pb-16 sm:px-9 sm:pt-10 sm:pb-24">
+      <div className="mx-auto flex w-full max-w-[1180px] flex-1 min-h-0 flex-col gap-6 px-5 pt-8 pb-6 sm:px-9 sm:pt-10 sm:pb-8">
         <ModelsHeader
           cachedCount={effectiveCachedRows.length}
           localCount={effectiveLocalRows.length}
@@ -759,7 +760,7 @@ export function ModelsPage() {
           <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[400px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
             <div
               className={cn(
-                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col border-b border-border lg:flex-initial lg:border-b-0 lg:border-r",
+                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col border-b border-sidebar-border lg:flex-initial lg:border-b-0 lg:border-r lg:border-sidebar-border",
                 mobileInspectorOpen && "hidden lg:flex",
               )}
             >

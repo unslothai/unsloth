@@ -8,11 +8,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  ArrowDown01Icon,
-  Folder01Icon,
-} from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { ProjectRecord } from "../types";
@@ -60,7 +58,7 @@ export function ProjectSwitcher({
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
             <HugeiconsIcon
-              icon={ArrowDown01Icon}
+              icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
               className="size-3.5 text-muted-foreground"
               aria-hidden={true}

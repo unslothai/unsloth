@@ -26,9 +26,9 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
-  ArrowDown01Icon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
@@ -110,11 +110,11 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
-  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
-  "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
+  "bg-muted text-foreground/85 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
-  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
 
 function QuantBadge({
   quant,
@@ -713,7 +713,7 @@ export function GgufDownloadCard({
                     </span>
                   )}
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.25}
                   className="ml-0.5 size-3.5 shrink-0"
                 />

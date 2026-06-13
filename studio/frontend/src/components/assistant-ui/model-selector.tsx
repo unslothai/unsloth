@@ -13,13 +13,13 @@ import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   CloudIcon,
   DashboardSquare01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useMemo, useState } from "react";
 import { Input } from "../ui/input";
@@ -187,7 +187,7 @@ function ModelSelectorTrigger({
         </span>
         <span className="flex size-4 shrink-0 items-center justify-center">
           <HugeiconsIcon
-            icon={ArrowDown01Icon}
+            icon={ChevronDownStandardIcon}
             strokeWidth={1.75}
             className="size-3.5 text-muted-foreground"
           />

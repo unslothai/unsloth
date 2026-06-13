@@ -1789,6 +1789,12 @@
 	padding-bottom: 14px !important;
 }
 
+/* Downloading state shows a progress bar as the last row; give it a little
+   extra breathing room below the bar. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
+	padding-bottom: 18px !important;
+}
+
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
 	top: calc(50% - 0.25px) !important;
 	transform: translateY(-50%) !important;

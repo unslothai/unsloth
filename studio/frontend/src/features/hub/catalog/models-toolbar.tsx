@@ -102,6 +102,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             {option.value === "checkpoint" && (
               <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-checkpoint" />
             )}
+            {option.value === "mlx" && (
+              <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-mlx" />
+            )}
             {option.label}
           </>
         ),
@@ -154,10 +157,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
   );
   return (
-    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
       <div
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[240px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[220px]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -290,7 +293,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_1_auto] lg:justify-end">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-none lg:flex-nowrap lg:justify-end">
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -322,7 +325,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={formatOptions}
             onValueChange={onFormatFilterChange}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "min-w-[120px]")}
+            className={cn(triggerBase, "w-[128px]")}
           />
         )}
 
@@ -332,7 +335,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "min-w-[120px]")}
+            className={cn(triggerBase, "w-[128px]")}
           />
         )}
 
@@ -342,7 +345,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "min-w-[120px]")}
+            className={cn(triggerBase, "w-[128px]")}
           />
         )}
 
