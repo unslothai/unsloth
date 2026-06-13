@@ -25,9 +25,7 @@ logger = structlog.get_logger(__name__)
 
 
 async def run_lifespan_shutdown(
-    terminate_downloads: Callable[[], None],
-    clear_compiled_cache: Callable[[], None],
-    hw_module,
+    terminate_downloads: Callable[[], None], clear_compiled_cache: Callable[[], None], hw_module
 ) -> None:
     """Run shutdown cleanup defensively; never raise.
 

@@ -35,14 +35,14 @@ def _counter():
 def test_run_lifespan_shutdown_survives_dead_default_executor():
     term_box, terminate = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE="cuda:0")
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
 
     async def _drive():
         loop = asyncio.get_running_loop()
         # Instantiate then kill the default executor to mimic the teardown race
         # that made asyncio.to_thread() raise in the field report.
         await asyncio.to_thread(lambda: None)
-        loop._default_executor.shutdown(wait=True)
+        loop._default_executor.shutdown(wait = True)
         # Must NOT raise even though the executor backing to_thread is gone.
         await run_lifespan_shutdown(terminate, clear, hw)
 
@@ -58,7 +58,7 @@ def test_run_lifespan_shutdown_normal_path():
     """With a healthy executor the cleanup runs exactly once via the thread."""
     term_box, terminate = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE="cuda:0")
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
 
     asyncio.run(run_lifespan_shutdown(terminate, clear, hw))
 
@@ -70,7 +70,7 @@ def test_run_lifespan_shutdown_normal_path():
 def test_run_lifespan_shutdown_swallows_terminate_errors():
     """A failure terminating downloads must not prevent later cleanup (no raise)."""
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE="cuda:0")
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
 
     def _boom():
         raise ValueError("boom")
@@ -84,7 +84,7 @@ def test_run_lifespan_shutdown_swallows_terminate_errors():
 def test_run_lifespan_shutdown_swallows_clear_errors():
     """A failure in the final cleanup step must not raise out of shutdown."""
     term_box, terminate = _counter()
-    hw = types.SimpleNamespace(DEVICE="cuda:0")
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
 
     def _boom():
         raise ValueError("boom")
