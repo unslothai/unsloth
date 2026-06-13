@@ -861,6 +861,7 @@ def run_server(
     # Allow local stdio MCP servers on a loopback bind (see host_policy for the
     # why); set before importing main so the gate sees it.
     from utils.host_policy import apply_stdio_mcp_loopback_default
+
     apply_stdio_mcp_loopback_default(host)
 
     import nest_asyncio
