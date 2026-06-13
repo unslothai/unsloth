@@ -882,13 +882,11 @@ def test_llama_cpp_search_roots_handles_studio_root_oserror():
         nxt = llama_cpp.find(f"\n{indent}def ", start + 1)
         return llama_cpp[start : nxt if nxt != -1 else len(llama_cpp)]
 
-    assert (
-        "except (ImportError, OSError, ValueError):"
-        in _method_body("_find_llama_server_binary")
+    assert "except (ImportError, OSError, ValueError):" in _method_body(
+        "_find_llama_server_binary"
     ), "_find_llama_server_binary must catch (ImportError, OSError, ValueError) from studio_root()"
-    assert (
-        "except (ImportError, OSError, ValueError):"
-        in _method_body("_kill_orphaned_servers")
+    assert "except (ImportError, OSError, ValueError):" in _method_body(
+        "_kill_orphaned_servers"
     ), "sibling _kill_orphaned_servers must keep its (ImportError, OSError, ValueError) handler"
 
 

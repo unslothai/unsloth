@@ -6448,9 +6448,7 @@ def validate_prebuilt_attempts(
             )
             # Skip a matching candidate unless it still needs the DiffusionGemma
             # backfill re-extract (gated per-attempt, not per-plan).
-            and not diffusion_visual_server_backfill_needed(
-                existing_install_dir, host, attempt
-            )
+            and not diffusion_visual_server_backfill_needed(existing_install_dir, host, attempt)
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
