@@ -26,6 +26,8 @@ export interface ChannelPreset {
   idSuffix?: string;
   format: ModelFormatFilter;
   sort: HfSortKey;
+  // Keep only formats Unsloth can fine-tune (drops fp8, nvfp4, w4a16, etc.).
+  finetunableOnly?: boolean;
 }
 
 export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
@@ -33,7 +35,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     id: "unsloth-trending",
     label: "Unsloth Trending",
     icon: SparklesIcon,
-    hint: "Most trending models published by Unsloth.",
+    hint: "Trending Unsloth models.",
     owner: "unsloth",
     format: "gguf",
     sort: "trendingScore",
@@ -42,7 +44,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     id: "unsloth-latest",
     label: "Latest Unsloth",
     icon: NewReleasesIcon,
-    hint: "Freshly released models from the Unsloth channel.",
+    hint: "Newest Unsloth releases.",
     owner: "unsloth",
     format: "all",
     sort: "lastModified",
@@ -51,12 +53,11 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     id: "unsloth-safetensors",
     label: "Fine-tune ready",
     icon: SlidersHorizontalIcon,
-    hint: "Latest Unsloth bnb-4bit checkpoints ready to fine-tune.",
+    hint: "Checkpoints ready to fine-tune.",
     owner: "unsloth",
-    query: "bnb-4bit",
-    idSuffix: "-bnb-4bit",
     format: "checkpoint",
     sort: "lastModified",
+    finetunableOnly: true,
   },
 ];
 
