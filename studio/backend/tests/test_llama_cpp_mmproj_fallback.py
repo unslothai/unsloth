@@ -40,6 +40,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
+_signal_crash = LlamaCppBackend._is_signal_crash
 
 # Real abort captured loading gemma-4 on a 3-day-old prebuilt (build b9496).
 _GEMMA4_OLD_LLAMACPP_OUT = (
@@ -101,6 +102,19 @@ class TestProjectorIncompatibilityDetector:
     )
     def test_unrelated_failures_do_not_retry(self, out):
         assert _detect(out) is False
+
+
+class TestSignalCrashDetector:
+    """_is_signal_crash flags a hard fault (SIGSEGV/SIGABRT or a Windows
+    0xC0000000+ fault); a clean exit or a hung (None) process must not."""
+
+    @pytest.mark.parametrize("rc", [-11, -6, -9, 0xC0000005, 0xC000001D])
+    def test_signals_and_faults_are_hard_crashes(self, rc):
+        assert _signal_crash(rc) is True
+
+    @pytest.mark.parametrize("rc", [0, 1, 2, 137, None])
+    def test_clean_exit_or_hung_is_not(self, rc):
+        assert _signal_crash(rc) is False
 
 
 # A realistic vision launch argv (mirrors the live "Starting llama-server"
@@ -185,3 +199,18 @@ class TestRetryContract:
         # An OOM with --mmproj present must NOT be treated as a projector
         # problem: load_model errors out instead of dropping vision.
         assert _detect(_OOM_OUT) is False
+
+    def test_bare_segfault_with_mmproj_yields_text_only_retry(self):
+        # Field report: a -11 SIGSEGV on --mmproj prints no projector line, so
+        # the decision must fall back via _is_signal_crash, not the message match.
+        out = ""  # a SIGSEGV produced no projector-format line
+        assert _detect(out) is False
+        should_retry = _detect(out) or _signal_crash(-11)
+        assert should_retry is True
+        retry_cmd = _strip(_VISION_CMD)
+        assert "--mmproj" not in retry_cmd and "-m" in retry_cmd
+
+    def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
+        # A clean non-zero exit (bad path, port bind) is not a hard crash: keep
+        # the message-based decision so a non-projector failure still raises.
+        assert (_detect(_MISSING_OUT) or _signal_crash(1)) is False

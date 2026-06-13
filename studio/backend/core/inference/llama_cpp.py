@@ -697,9 +697,9 @@ class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
     Lifecycle:
-        1. load_model() — start llama-server with the GGUF file
-        2. generate_chat_completion() — proxy to /v1/chat/completions, stream back
-        3. unload_model() — terminate the subprocess
+        1. load_model(): start llama-server with the GGUF file
+        2. generate_chat_completion(): proxy to /v1/chat/completions, stream back
+        3. unload_model(): terminate the subprocess
     """
 
     def __init__(self):
@@ -3275,6 +3275,14 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _is_signal_crash(returncode: Optional[int]) -> bool:
+        """True if llama-server died on a signal / hard fault, not a clean exit:
+        POSIX negative rc (-11 SIGSEGV, -6 SIGABRT) or a Windows 0xC0000000+ fault.
+        False for a clean non-zero exit or a still-running process (rc None).
+        """
+        return returncode is not None and (returncode < 0 or returncode >= 0xC0000000)
+
+    @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
         Every other flag is preserved; a no-op when --mmproj is absent.
@@ -4409,14 +4417,23 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
 
-                # A vision GGUF launched with --mmproj can abort when the
-                # installed llama.cpp is too old for the model's projector
-                # ("Unknown projector type"); in that one case retry once
-                # text-only rather than failing the whole load.
+                # A too-old llama.cpp can reject a model's --mmproj projector,
+                # either with a projector-format message or a bare SIGSEGV.
+                # Retry once text-only instead of failing the whole load.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
+                    # Read the crash code before _kill_process() clears _process.
+                    _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
-                    if launched_with_mmproj and self._is_projector_incompatibility(out):
+                    # Skip if a cancel/unload is pending (mirrors the MTP guard).
+                    if (
+                        launched_with_mmproj
+                        and not self._cancel_event.is_set()
+                        and (
+                            self._is_projector_incompatibility(out)
+                            or self._is_signal_crash(_crash_rc)
+                        )
+                    ):
                         logger.warning(
                             "llama-server could not load this model's vision "
                             "projector (--mmproj). The installed llama.cpp build is "
@@ -6771,7 +6788,7 @@ class LlamaCppBackend:
                 try:
                     # llama-server's /apply-template renders tool declarations
                     # into the prompt when ``tools`` is supplied, so pass them
-                    # through — otherwise tool-schema tokens go uncounted.
+                    # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
