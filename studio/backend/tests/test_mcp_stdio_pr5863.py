@@ -205,25 +205,26 @@ def test_stdio_enabled_only_for_exact_one(monkeypatch):
 # ── 3b. loopback bind defaults the gate on ──────────────────────────
 
 
-# 127.0.0.2 covers the rest of the 127.0.0.0/8 loopback range, not just .1.
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "LOCALHOST", "::1"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
 def test_is_external_host_false_for_loopback(host):
     assert host_policy.is_external_host(host) is False
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "example.com"])
+# 127.0.0.2 is loopback in principle, but the rest of the stack hard-codes
+# 127.0.0.1, so only the exact aliases count as local here.
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"])
 def test_is_external_host_true_for_network(host):
     assert host_policy.is_external_host(host) is True
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "LOCALHOST", "::1"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
 def test_loopback_bind_enables_stdio(monkeypatch, host):
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default(host)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "example.com"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"])
 def test_network_bind_leaves_stdio_off(monkeypatch, host):
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default(host)
@@ -252,6 +253,27 @@ def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is True
     host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
     assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_force_disable_after_auto_default_in_same_process(monkeypatch):
+    # Reuse: a loopback launch auto-enables, then the operator sets =0 before a
+    # later loopback launch. The force-disable must win, not be rewritten to 1.
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_cleared_env_after_auto_default_falls_back_to_host_default(monkeypatch):
+    # Unsetting the var (unlike =0) is "no preference", so a loopback re-apply
+    # re-enables -- the asymmetry the staleness guard documents.
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
 
 
 def test_disable_tools_overrides_loopback_default(monkeypatch):

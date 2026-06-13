@@ -94,9 +94,8 @@ def print_studio_access_banner(
         external_url = f"http://{display_host}:{port}"
 
     listen_all = bind_host in ("0.0.0.0", "::")
-    # Only the exact aliases the canned loopback_url below is valid for; a bind to
-    # another loopback address (e.g. 127.0.0.2) must show its real address, not
-    # http://127.0.0.1. This is narrower than the stdio-MCP host policy on purpose.
+    # The exact aliases the canned loopback_url below is valid for; any other bind
+    # (e.g. a specific LAN IP) must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
     # Use the loopback URL only when reachable on loopback; otherwise show

@@ -14,10 +14,12 @@ have `unsloth_cli` on sys.path. Keep the two in sync.
 
 from __future__ import annotations
 
-import ipaddress
 import os
 
-# Hostname aliases for loopback; IP literals are classified by ipaddress below.
+# Loopback aliases; any other bind address is treated as network-reachable. Only
+# the exact aliases the rest of the stack assumes for loopback (health checks,
+# banner URLs, run.py all hard-code 127.0.0.1), so other 127.0.0.0/8 addresses
+# are deliberately left out -- they are not supported launch hosts.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Whether a loopback launch in THIS process auto-enabled the gate. run_server
@@ -28,19 +30,8 @@ _auto_enabled = False
 
 
 def is_external_host(host: str) -> bool:
-    """True when `host` is reachable from beyond loopback.
-
-    Covers the whole 127.0.0.0/8 range and ::1 via ipaddress, plus the
-    `localhost` hostname which is not an IP literal.
-    """
-    host = host.lower()
-    if host in _LOOPBACK_HOSTS:
-        return False
-    try:
-        return not ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        # Not an IP literal (an unresolved hostname); treat as network-reachable.
-        return True
+    """True when `host` is reachable from beyond loopback."""
+    return host.lower() not in _LOOPBACK_HOSTS
 
 
 def apply_stdio_mcp_loopback_default(host: str) -> None:
@@ -56,6 +47,12 @@ def apply_stdio_mcp_loopback_default(host: str) -> None:
     """
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
+    # If our prior auto-default was changed out from under us (in-process reuse),
+    # relinquish ownership: an explicit =0 is then honored below as a sticky
+    # force-disable, while a cleared var falls back to the host default like a
+    # fresh process.
+    if _auto_enabled and current != "1":
+        _auto_enabled = False
     # An explicit operator value is one we did not set; never touch it.
     if current is not None and not _auto_enabled:
         return

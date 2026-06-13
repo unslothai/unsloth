@@ -6,7 +6,6 @@ Kept as a standalone module so the truth table can be unit-tested
 without spinning up Typer or the studio venv.
 """
 
-import ipaddress
 from typing import Callable, Optional
 
 import typer
@@ -14,26 +13,15 @@ import typer
 # Orange so the security warning stands out in a crowded terminal.
 _PROMPT_FG = (217, 119, 87)
 
-# Hostname aliases for loopback; IP literals are classified by ipaddress below.
+# Loopback aliases; any other bind address is treated as network-reachable.
 # Mirrored in studio/backend/utils/host_policy.py (kept separate because the
 # backend is self-contained); keep the two in sync.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def is_external_host(host: str) -> bool:
-    """True when `host` is reachable from beyond loopback.
-
-    Covers the whole 127.0.0.0/8 range and ::1 via ipaddress, plus the
-    `localhost` hostname which is not an IP literal.
-    """
-    host = host.lower()
-    if host in _LOOPBACK_HOSTS:
-        return False
-    try:
-        return not ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        # Not an IP literal (an unresolved hostname); treat as network-reachable.
-        return True
+    """True when `host` is reachable from beyond loopback."""
+    return host.lower() not in _LOOPBACK_HOSTS
 
 
 def _build_prompt_text(host: str) -> str:

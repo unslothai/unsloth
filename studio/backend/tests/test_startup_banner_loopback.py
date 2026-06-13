@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression for PR #6295: widening the stdio-MCP host policy to all of
-127.0.0.0/8 must not bleed into the banner. The banner has a canned
-http://127.0.0.1 URL only for the exact loopback aliases; any other bind must
-show its real address."""
+"""Regression for PR #6295: the banner's canned http://127.0.0.1 URL is valid
+only for the exact loopback aliases, so any other bind (e.g. a specific LAN IP)
+must show its real address."""
 
 import pytest
 
