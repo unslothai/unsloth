@@ -259,12 +259,18 @@ export function ProfilePersonalizationPanel() {
           {SLOTH_AVATARS.map((path) => {
             const url = publicAssetUrl(path);
             const selected = avatarDataUrl === url;
+            // Readable accessible name from the filename, e.g. "sloth yay".
+            const label =
+              path.split("/").pop()?.replace(/\.png$/i, "").replace(/^large\s+/i, "").trim() ??
+              "sloth";
             return (
               <button
                 key={path}
                 type="button"
                 onClick={() => pickSloth(path)}
                 aria-pressed={selected}
+                aria-label={label}
+                title={label}
                 className={cn(
                   "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border transition hover:ring-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   selected && "ring-2 ring-primary",

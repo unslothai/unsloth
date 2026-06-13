@@ -532,7 +532,10 @@ export function AppSidebar() {
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
-      void commitRename();
+      // Commit when changed; otherwise just close, so a no-op Enter does not
+      // leave the row stuck as an input with its blur suppressed.
+      if (renameDirty) void commitRename();
+      else setRenamingTarget(null);
     } else if (event.key === "Escape") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
