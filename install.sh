@@ -163,6 +163,35 @@ run_install_cmd() {
     return $_rc
 }
 
+# Network-resilient wrapper around run_install_cmd: retries transient failures
+# (e.g. uv "connection reset" mid-download) with backoff. uv's cache makes
+# retries cheap (already-downloaded wheels are reused). First-attempt success
+# is byte-identical to run_install_cmd; permanent failure returns the last exit
+# code so the existing set -e + rollback trap still fires.
+: "${UNSLOTH_INSTALL_RETRIES:=3}"
+: "${UNSLOTH_INSTALL_RETRY_DELAY:=3}"
+run_install_cmd_retry() {
+    _ricr_label="$1"
+    # Sanitize overrides; degrade to safe defaults (never 0/non-numeric).
+    case "$UNSLOTH_INSTALL_RETRIES" in ''|*[!0-9]*|0) _ricr_max=1 ;; *) _ricr_max=$UNSLOTH_INSTALL_RETRIES ;; esac
+    case "$UNSLOTH_INSTALL_RETRY_DELAY" in ''|*[!0-9]*) _ricr_delay=3 ;; *) _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY ;; esac
+    _ricr_attempt=1
+    while :; do
+        # why: "&& return 0" (not "if ...; then"): $? after a non-taken if is 0
+        # in sh/dash/bash, which would corrupt the final-failure exit code and
+        # break the rollback path. The AND-OR form preserves the real code.
+        run_install_cmd "$@" && return 0
+        _ricr_rc=$?
+        if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
+            return "$_ricr_rc"
+        fi
+        substep "retrying \"$_ricr_label\" after transient failure (attempt $((_ricr_attempt + 1))/$_ricr_max, waiting ${_ricr_delay}s)..." "$C_WARN"
+        sleep "$_ricr_delay" || true
+        _ricr_attempt=$((_ricr_attempt + 1))
+        _ricr_delay=$((_ricr_delay * 2))
+    done
+}
+
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
 # wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
 # NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
@@ -1456,11 +1485,19 @@ fi
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.7.22"
+UV_MIN_VERSION="0.8.16"
 
 # When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
 : "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
 export UV_COMPILE_BYTECODE_TIMEOUT
+
+# Large wheel downloads (torch, unsloth) are sensitive to transient network
+# resets. uv >= 0.8.16 retries HTTP/2 streaming body errors; raise the retry
+# count and read timeout too. ":=" preserves any user-provided override.
+: "${UV_HTTP_RETRIES:=5}"
+export UV_HTTP_RETRIES
+: "${UV_HTTP_TIMEOUT:=180}"
+export UV_HTTP_TIMEOUT
 
 version_ge() {
     # returns 0 if $1 >= $2
@@ -2420,20 +2457,20 @@ if [ "$_MIGRATED" = true ]; then
         # PyPI metadata still declares torch as a hard dep), then install
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps
         # to prevent transitive torch resolution.
-        run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.6.6" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
-        run_install_cmd "install pydantic (with deps for compatible core)" \
+        run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
-        run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.6.6" unsloth-zoo
     fi
@@ -2441,7 +2478,7 @@ if [ "$_MIGRATED" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     fi
@@ -2456,7 +2493,7 @@ if [ "$_MIGRATED" = true ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
@@ -2582,7 +2619,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                    run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL"
                 else
@@ -2594,30 +2631,30 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     # filelock / sympy / networkx which are not in the
                     # Radeon listing.
                     if [ -n "$_tri_whl" ]; then
-                        run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
+                        run_install_cmd_retry "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
                             --find-links "$_RADEON_BASE_URL" \
                             "$_tri_whl" "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     else
-                        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                             --find-links "$_RADEON_BASE_URL" \
                             "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     fi
                 fi
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" torchvision torchaudio \
                     --index-url "$TORCH_INDEX_URL"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
-            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
                 --index-url "$TORCH_INDEX_URL"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
@@ -2637,35 +2674,35 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-        run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "unsloth>=2026.6.6" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
-        run_install_cmd "install pydantic (with deps for compatible core)" \
+        run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
             substep "overlaying unsloth-zoo from git main..."
-            run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
                 --no-deps --reinstall-package unsloth-zoo \
                 "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "unsloth>=2026.6.6" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
-        run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
@@ -2676,7 +2713,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
@@ -2689,15 +2726,15 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.6" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.6" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
 fi
 
