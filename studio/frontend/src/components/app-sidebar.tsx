@@ -1338,7 +1338,7 @@ export function AppSidebar() {
                     <span>{t("shell.navigation.guidedTour")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-0! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                 >
