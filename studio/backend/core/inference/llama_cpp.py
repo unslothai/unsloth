@@ -3276,11 +3276,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
-        """True if llama-server died on a signal / hard fault, not a clean exit:
-        POSIX negative rc (-11 SIGSEGV, -6 SIGABRT) or a Windows 0xC0000000+ fault.
-        False for a clean non-zero exit or a still-running process (rc None).
+        """True only on a hard program fault (clip.cpp-style crash): a POSIX
+        fault signal (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS) or a Windows
+        0xC0000000+ status. NOT SIGKILL/SIGTERM/SIGINT (OOM killer, unload,
+        supervisor) so a resource/lifecycle kill is not read as a bad mmproj.
+        Clean exit and a still-running process (rc None) are False.
         """
-        return returncode is not None and (returncode < 0 or returncode >= 0xC0000000)
+        if returncode is None:
+            return False
+        if returncode >= 0xC0000000:  # Windows access violation / illegal instruction
+            return True
+        return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -4253,6 +4259,10 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
+                # Argv actually launched (post --fit off / MTP spec slice); a
+                # text-only retry strips --mmproj from this, not the original cmd.
+                _last_spawn_cmd = list(cmd)
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -4260,6 +4270,7 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
+                    nonlocal _last_spawn_cmd
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -4294,6 +4305,7 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        _last_spawn_cmd = list(run_cmd)
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -4440,7 +4452,7 @@ class LlamaCppBackend:
                             "likely too old for it. Loading text-only for this "
                             "session; run 'unsloth studio update' to enable vision."
                         )
-                        cmd = self._strip_mmproj_args(cmd)
+                        cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         self._is_vision = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)

@@ -105,15 +105,17 @@ class TestProjectorIncompatibilityDetector:
 
 
 class TestSignalCrashDetector:
-    """_is_signal_crash flags a hard fault (SIGSEGV/SIGABRT or a Windows
-    0xC0000000+ fault); a clean exit or a hung (None) process must not."""
+    """_is_signal_crash flags a hard program fault (SIGSEGV/SIGABRT/SIGILL/
+    SIGFPE/SIGBUS or a Windows 0xC0000000+ fault). A clean exit, a hung (None)
+    process, or an external kill (SIGKILL/SIGTERM/SIGINT) must NOT count, so an
+    OOM-killer / unload / supervisor kill is never read as a bad projector."""
 
-    @pytest.mark.parametrize("rc", [-11, -6, -9, 0xC0000005, 0xC000001D])
-    def test_signals_and_faults_are_hard_crashes(self, rc):
+    @pytest.mark.parametrize("rc", [-11, -6, -4, -7, -8, 0xC0000005, 0xC000001D])
+    def test_program_faults_are_hard_crashes(self, rc):
         assert _signal_crash(rc) is True
 
-    @pytest.mark.parametrize("rc", [0, 1, 2, 137, None])
-    def test_clean_exit_or_hung_is_not(self, rc):
+    @pytest.mark.parametrize("rc", [0, 1, 2, 137, None, -9, -15, -2])
+    def test_clean_hung_or_external_kill_is_not(self, rc):
         assert _signal_crash(rc) is False
 
 
