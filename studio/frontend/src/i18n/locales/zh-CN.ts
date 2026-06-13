@@ -139,6 +139,12 @@ export const zhCN = {
       description: "更新你在 Unsloth 中显示的个人资料。",
       changePicture: "更换头像",
       displayName: "显示名称",
+      nickname: "Unsloth 应该怎么称呼你？",
+      nicknamePlaceholder: "昵称",
+      nicknameSaved: "称呼名称已保存",
+      avatarShape: "头像形状",
+      avatarShapeCircle: "圆形",
+      avatarShapeRounded: "圆角矩形",
       nameSaved: "个人资料名称已保存",
       namePersistErrorTitle: "无法持久保存个人资料名称",
       namePersistErrorDescription:

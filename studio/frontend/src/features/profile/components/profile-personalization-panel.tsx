@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getAuthToken } from "@/features/auth";
+import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera01Icon } from "@hugeicons/core-free-icons";
@@ -17,7 +18,11 @@ import { UserAvatar } from "./user-avatar";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 
-function readPersistedProfile(): { displayName: string; avatarDataUrl: string | null } | null {
+function readPersistedProfile(): {
+  displayName: string;
+  nickname: string;
+  avatarDataUrl: string | null;
+} | null {
   try {
     const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
     if (!raw) return null;
@@ -27,10 +32,15 @@ function readPersistedProfile(): { displayName: string; avatarDataUrl: string | 
     // Zustand persist shape: { state: {...}, version }
     const maybeState = "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
     if (!maybeState || typeof maybeState !== "object") return null;
-    const state = maybeState as { displayName?: unknown; avatarDataUrl?: unknown };
+    const state = maybeState as {
+      displayName?: unknown;
+      nickname?: unknown;
+      avatarDataUrl?: unknown;
+    };
 
     return {
       displayName: typeof state.displayName === "string" ? state.displayName : "",
+      nickname: typeof state.nickname === "string" ? state.nickname : "",
       avatarDataUrl: typeof state.avatarDataUrl === "string" ? state.avatarDataUrl : null,
     };
   } catch {
@@ -41,12 +51,17 @@ function readPersistedProfile(): { displayName: string; avatarDataUrl: string | 
 export function ProfilePersonalizationPanel() {
   const t = useT();
   const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const setDisplayName = useUserProfileStore((s) => s.setDisplayName);
+  const setNickname = useUserProfileStore((s) => s.setNickname);
   const setAvatarDataUrl = useUserProfileStore((s) => s.setAvatarDataUrl);
+  const avatarShape = useUserProfileStore((s) => s.avatarShape);
+  const setAvatarShape = useUserProfileStore((s) => s.setAvatarShape);
 
   const [imageError, setImageError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState(displayName);
+  const [draftNickname, setDraftNickname] = useState(nickname);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
@@ -54,6 +69,10 @@ export function ProfilePersonalizationPanel() {
   const hasNameChanges = useMemo(
     () => draftName.trim() !== displayName.trim(),
     [draftName, displayName],
+  );
+  const hasNicknameChanges = useMemo(
+    () => draftNickname.trim() !== nickname.trim(),
+    [draftNickname, nickname],
   );
 
   const saveName = () => {
@@ -64,6 +83,23 @@ export function ProfilePersonalizationPanel() {
       const persisted = readPersistedProfile();
       if (persisted && persisted.displayName === trimmed) {
         toastSuccess(t("settings.profile.nameSaved"));
+      } else {
+        toastError(
+          t("settings.profile.namePersistErrorTitle"),
+          t("settings.profile.namePersistErrorDescription"),
+        );
+      }
+    }
+  };
+
+  const saveNickname = () => {
+    const trimmed = draftNickname.trim();
+    if (trimmed !== draftNickname) setDraftNickname(trimmed);
+    if (trimmed !== nickname) {
+      setNickname(trimmed);
+      const persisted = readPersistedProfile();
+      if (persisted && persisted.nickname === trimmed) {
+        toastSuccess(t("settings.profile.nicknameSaved"));
       } else {
         toastError(
           t("settings.profile.namePersistErrorTitle"),
@@ -148,6 +184,58 @@ export function ProfilePersonalizationPanel() {
           <Button type="button" size="sm" className="h-10 px-5" onClick={saveName} disabled={!hasNameChanges}>
             {t("common.save")}
           </Button>
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label htmlFor="profile-nickname" className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.nickname")}
+        </Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="profile-nickname"
+            type="text"
+            value={draftNickname}
+            onChange={(e) => setDraftNickname(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                saveNickname();
+              }
+            }}
+            autoComplete="off"
+            placeholder={t("settings.profile.nicknamePlaceholder")}
+            className="h-10 min-w-0 flex-1 rounded-full text-sm"
+          />
+          <Button type="button" size="sm" className="h-10 px-5" onClick={saveNickname} disabled={!hasNicknameChanges}>
+            {t("common.save")}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.avatarShape")}
+        </Label>
+        <div className="inline-flex w-fit items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
+          {(["circle", "rounded"] as const).map((shape) => (
+            <button
+              key={shape}
+              type="button"
+              onClick={() => setAvatarShape(shape)}
+              aria-pressed={avatarShape === shape}
+              className={cn(
+                "rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                avatarShape === shape
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {shape === "circle"
+                ? t("settings.profile.avatarShapeCircle")
+                : t("settings.profile.avatarShapeRounded")}
+            </button>
+          ))}
         </div>
       </div>
 
