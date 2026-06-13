@@ -203,11 +203,11 @@ export function LlamaUpdateBanner({
                 />
               </div>
             ) : (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
+              <div className="mt-4 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="-ml-2 h-auto rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground"
+                  className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
                   onClick={snooze}
                   data-testid="llama-update-snooze-button"
                 >
@@ -215,8 +215,8 @@ export function LlamaUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  // ml offsets the pill's filled edge so visual gaps stay equal
-                  className="ml-2.5 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  // -mr optically aligns the filled pill's edge with the card padding
+                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
                   onClick={handleUpdate}
                   data-testid="llama-update-button"
                 >
