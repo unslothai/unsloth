@@ -453,6 +453,17 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
   const skipRenameBlurRef = useRef(false);
+  // Optimistic title shown while the debounced sidebar refresh catches up after
+  // a rename, so the old name does not flash back in.
+  const [pendingRename, setPendingRename] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingRename) return;
+    const match = allChatItems.find((i) => i.id === pendingRename.id);
+    if (match && match.title === pendingRename.title) setPendingRename(null);
+  }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
@@ -483,9 +494,11 @@ export function AppSidebar() {
     if (!target || !renameDirty) return;
     setRenamingTarget(null);
     if (target.kind === "chat") {
+      setPendingRename({ id: target.item.id, title: renameTrimmed });
       try {
         await renameChatItem(target.item, renameTrimmed);
       } catch (err) {
+        setPendingRename(null);
         toast.error(translate("shell.toast.failedToRenameChat"), {
           description: err instanceof Error ? err.message : undefined,
         });
@@ -649,8 +662,9 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      // pl-3.5 starts the title at the same x as the Recents label text.
-      variant === "project" ? "pl-[39px]" : "pl-3.5",
+      // pl-3 (12px) plus the content's pl-1 (4px) lines the title up with the
+      // Recents label text at 16px.
+      variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : isPinned
@@ -676,8 +690,9 @@ export function AppSidebar() {
             maxLength={120}
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
-              "border-primary ring-primary/15 bg-background text-foreground h-[33px] w-full rounded-full border pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none ring-[3px]",
-              variant === "project" ? "pl-[39px]" : "pl-3.5",
+              // No pill or box; edit in place as plain highlighted text.
+              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none",
+              variant === "project" ? "pl-[39px]" : "pl-3",
             )}
           />
         </SidebarMenuItem>
@@ -709,7 +724,9 @@ export function AppSidebar() {
             closeMobileIfOpen();
           }}
         >
-          <span className="truncate">{item.title}</span>
+          <span className="truncate">
+            {pendingRename?.id === item.id ? pendingRename.title : item.title}
+          </span>
         </SidebarMenuButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
