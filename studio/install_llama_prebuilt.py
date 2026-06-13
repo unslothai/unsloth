@@ -6436,13 +6436,19 @@ def validate_prebuilt_attempts(
                 f"runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
             )
 
-        if existing_install_dir is not None and existing_install_matches_choice(
-            existing_install_dir,
-            host,
-            llama_tag = llama_tag,
-            release_tag = release_tag,
-            choice = attempt,
-            approved_checksums = approved_checksums,
+        if (
+            existing_install_dir is not None
+            and existing_install_matches_choice(
+                existing_install_dir,
+                host,
+                llama_tag = llama_tag,
+                release_tag = release_tag,
+                choice = attempt,
+                approved_checksums = approved_checksums,
+            )
+            # Skip a matching candidate unless it still needs the DiffusionGemma
+            # backfill re-extract (gated per-attempt, not per-plan).
+            and not diffusion_visual_server_backfill_needed(existing_install_dir, host, attempt)
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -6490,6 +6496,31 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
+def diffusion_visual_server_backfill_needed(
+    install_dir: Path, host: HostInfo, choice: AssetChoice
+) -> bool:
+    """True when an existing install matches the tag but lacks the DiffusionGemma
+    visual-server the chosen bundle ships. An install made before the visual-server
+    entered the copy allowlist matches on tag yet is missing the binary, so the
+    tag-match skip never backfills it (DiffusionGemma then fails with "runner not
+    found"). Gated to the fork ("published") bundles that actually carry it, so
+    upstream installs -- which never ship it -- can't thrash on repeated updates.
+    Once a re-extract lands the binary this returns False, so it self-limits."""
+    if choice.source_label != "published":
+        return False
+    name = "llama-diffusion-gemma-visual-server" + (".exe" if host.is_windows else "")
+    if name not in runtime_patterns_for_choice(choice):
+        return False
+    for cand in (
+        install_dir / name,
+        install_dir / "build" / "bin" / name,
+        install_dir / "build" / "bin" / "Release" / name,
+    ):
+        if cand.is_file():
+            return False
+    return True
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6528,11 +6559,17 @@ def install_prebuilt(
             )
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
-                log(
-                    "existing llama.cpp install already matches selected release "
-                    f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
-                )
-                return
+                if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
+                    log(
+                        f"existing install matches {current.release_tag} but is missing the "
+                        "DiffusionGemma visual-server; re-extracting the bundle to backfill it"
+                    )
+                else:
+                    log(
+                        "existing llama.cpp install already matches selected release "
+                        f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
+                    )
+                    return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
@@ -6540,12 +6577,19 @@ def install_prebuilt(
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
+                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
                     if existing_install_matches_plan(install_dir, host, plan):
-                        log(
-                            "existing llama.cpp install already matches fallback release "
-                            f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
-                        )
-                        return
+                        if backfill:
+                            log(
+                                f"existing install matches fallback {plan.release_tag} but is missing "
+                                "the DiffusionGemma visual-server; re-extracting to backfill it"
+                            )
+                        else:
+                            log(
+                                "existing llama.cpp install already matches fallback release "
+                                f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
+                            )
+                            return
                     log(
                         "selected "
                         f"{choice.name} ({choice.source_label}) from published release "
@@ -6563,6 +6607,7 @@ def install_prebuilt(
                             release_tag = plan.release_tag,
                             approved_checksums = plan.approved_checksums,
                             initial_fallback_used = release_index > 0,
+                            # Skip is gated per-attempt inside, so pass the dir always.
                             existing_install_dir = install_dir,
                         )
                     except ExistingInstallSatisfied:
