@@ -11,8 +11,17 @@
 # that version is not already on PyPI, so it fires exactly once per release and
 # ignores unrelated install.sh edits and re-runs.
 #
-# We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta),
-# unrelated to the PyPI package version.
+# We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta).
+# They are unrelated to the PyPI package version (taken from __version__), but
+# the published wheel must still carry the current Studio version in its stamp
+# (release-desktop.yml verifies the downloaded wheel's STUDIO_RELEASE_VERSION),
+# so the build job resolves it via `git describe` and stamps it.
+#
+# Build and publish are separate jobs: the frontend/package build (npm + many
+# third-party deps) runs unprivileged and hands dist/ to the publish job as an
+# artifact. Only the publish job holds the OIDC `id-token: write` permission, so
+# a compromised build dependency cannot mint a PyPI trusted-publishing token --
+# this is the separation PyPA recommends.
 #
 # Uses PyPI Trusted Publishing (OIDC) -- no API token is stored in the repo;
 # the publisher must be registered on PyPI for unslothai/unsloth +
@@ -65,19 +74,19 @@ jobs:
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Build + publish to PyPI
+  build:
+    name: Build wheel + sdist
     needs: decide
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: pypi
     permissions:
-      id-token: write  # required for PyPI Trusted Publishing (OIDC)
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+          fetch-depth: 0  # need tags for `git describe` (Studio release version)
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -87,10 +96,48 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Resolve Studio release version
+        id: studio
+        run: |
+          studio=$(git describe --tags --abbrev=0 --match 'v[0-9]*' || true)
+          [ -n "$studio" ] || { echo "::error::no v* Studio tag found to stamp"; exit 1; }
+          echo "Studio release version: $studio"
+          echo "studio=$studio" >> "$GITHUB_OUTPUT"
+
       - name: Build frontend + wheel + sdist
+        # build.sh stamps STUDIO_RELEASE_VERSION from this env var (read first by
+        # stamp_studio_release.py), matching the maintainer's `build.sh publish`.
+        env:
+          UNSLOTH_STUDIO_RELEASE_VERSION: ${{ steps.studio.outputs.studio }}
         run: |
           python -m pip install --upgrade pip build
-          ./build.sh
+          bash build.sh
+
+      - name: Verify the Studio stamp landed in dist/
+        env:
+          STUDIO: ${{ steps.studio.outputs.studio }}
+        run: python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO"
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI Trusted Publishing (OIDC); no checkout or build here
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: pypi-dist
+          path: dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
