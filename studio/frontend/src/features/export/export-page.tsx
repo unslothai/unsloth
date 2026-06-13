@@ -583,7 +583,7 @@ export function ExportPage() {
   // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">

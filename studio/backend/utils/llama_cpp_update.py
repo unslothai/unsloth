@@ -37,6 +37,7 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    parse_base_build,
     read_install_marker,
     reset_caches,
 )
@@ -220,23 +221,42 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    # llama_tag is the upstream build (bNNNN, what --version reports); release_tag
-    # can be a fork wrapper tag, so compare/display against llama_tag.
-    latest = res.get("llama_tag") or res.get("release_tag")
-    if not latest:
+    # llama_tag is the upstream base (bNNNN, what --version reports); release_tag
+    # is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper
+    # (e.g. v1.0). Compare the numeric base against llama_tag.
+    base_tag = res.get("llama_tag") or res.get("release_tag")
+    release_tag = res.get("release_tag")
+    if not base_tag:
         return None
     # No resolvable install root (e.g. a pinned LLAMA_SERVER_PATH we cannot
     # manage) means an apply would not take effect, so do not offer.
     if _llama_install_root(binary) is None:
         return None
     installed_build = _installed_build_number(binary)
-    m = re.search(r"(\d+)", latest)
-    latest_build = int(m.group(1)) if m else None
-    # Suppress only when the source build is reliably newer/equal; unknown
-    # version (the involuntary source-build case) is treated as behind.
-    update_available = (
-        installed_build is None or latest_build is None or installed_build < latest_build
+    latest_build = parse_base_build(base_tag)
+    # A same-base mix adds patches the bare base lacks, so it is newer even at an
+    # unchanged build number (the marker path's is_behind already does this). The
+    # bNNNN anchor keeps a fork wrapper tag from being read as a mix.
+    latest_is_mix = (
+        isinstance(release_tag, str)
+        and latest_build is not None
+        and parse_base_build(release_tag) == latest_build
+        and release_tag.strip() != f"b{latest_build}"
     )
+    if installed_build is None or latest_build is None:
+        # Unknown installed/latest version (the involuntary source-build case):
+        # treat as behind so we still offer the prebuilt.
+        update_available = True
+    elif installed_build < latest_build:
+        update_available = True
+    elif installed_build == latest_build:
+        # Same upstream base: offer the extra-patch mix, never a bare rebuild.
+        update_available = latest_is_mix
+    else:
+        # Source build newer than the latest prebuilt: downgrade guard.
+        update_available = False
+    # Display the mix tag when that's what makes it newer; otherwise the base.
+    latest = release_tag if latest_is_mix else base_tag
     with _job_lock:
         job = dict(_job)
     return {
@@ -310,8 +330,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
 
 def _rocm_install_args(asset: Optional[str]) -> list[str]:
     """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; lemonade
-    bundles carry the family in the name (rocm-gfx110X), fork bundles only rocm/hip."""
+    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
+    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
+    bundles only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()

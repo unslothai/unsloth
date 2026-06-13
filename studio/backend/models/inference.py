@@ -454,7 +454,7 @@ class ImageUrl(BaseModel):
     """Image URL object — supports data URIs and remote URLs."""
 
     url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ImageContentPart(BaseModel):
@@ -1163,7 +1163,7 @@ class ResponsesInputImagePart(BaseModel):
 
     type: Literal["input_image"]
     image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ResponsesOutputTextPart(BaseModel):
