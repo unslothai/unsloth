@@ -467,7 +467,7 @@ class TestSourcePatternsPs1:
         # (GPU -> fork, CPU -> ggml-org), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
         assert (
-            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) "
+            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) "
             '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
         )
 
