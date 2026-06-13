@@ -37,11 +37,17 @@ def _disable(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _isolate_stdio_env():
-    # apply_stdio_mcp_loopback_default() mutates os.environ via a raw setdefault
-    # that monkeypatch can't roll back, so snapshot/restore the flag here to keep
-    # it from leaking into later tests or other test files.
+    # apply_stdio_mcp_loopback_default() mutates os.environ and a module flag that
+    # monkeypatch can't roll back, and stdio_mcp_enabled() reads the process tool
+    # policy; snapshot/restore all three so nothing leaks between tests or files.
+    from state import tool_policy
+
     saved = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
+    saved_policy = tool_policy.get_tool_policy()
+    host_policy._reset_loopback_default_state()
     yield
+    host_policy._reset_loopback_default_state()
+    tool_policy.set_tool_policy(saved_policy)
     if saved is None:
         os.environ.pop("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", None)
     else:
@@ -199,7 +205,8 @@ def test_stdio_enabled_only_for_exact_one(monkeypatch):
 # ── 3b. loopback bind defaults the gate on ──────────────────────────
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
+# 127.0.0.2 covers the rest of the 127.0.0.0/8 loopback range, not just .1.
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "LOCALHOST", "::1"])
 def test_is_external_host_false_for_loopback(host):
     assert host_policy.is_external_host(host) is False
 
@@ -209,7 +216,7 @@ def test_is_external_host_true_for_network(host):
     assert host_policy.is_external_host(host) is True
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "LOCALHOST", "::1"])
 def test_loopback_bind_enables_stdio(monkeypatch, host):
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default(host)
@@ -231,9 +238,54 @@ def test_explicit_disable_survives_loopback(monkeypatch):
 
 
 def test_explicit_enable_survives_network_bind(monkeypatch):
-    # setdefault must not clobber a deliberate network opt-in (-H 0.0.0.0 + var).
+    # A deliberate network opt-in (-H 0.0.0.0 + var=1) must not be clobbered.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
+def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
+    # Reusing run_server in one process: a loopback launch auto-enables, a later
+    # 0.0.0.0 launch must take it back down (not inherit it as an opt-in).
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
+    host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_disable_tools_overrides_loopback(monkeypatch):
+    # `unsloth studio run --disable-tools` turns off server-side code execution;
+    # a local stdio command is exactly that, so the gate must stay off.
+    from state import tool_policy
+
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
+    tool_policy.set_tool_policy(False)
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_disable_tools_overrides_explicit_enable(monkeypatch):
+    # --disable-tools must beat even a deliberate operator opt-in, not just the
+    # loopback auto-default.
+    from state import tool_policy
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    tool_policy.set_tool_policy(False)
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+@pytest.mark.parametrize("policy", [None, True])
+def test_non_false_tool_policy_defers_to_env(monkeypatch, policy):
+    # Only an explicit --disable-tools (False) gates stdio; None/True fall through
+    # to the env var so the gate keeps its normal meaning.
+    from state import tool_policy
+
+    tool_policy.set_tool_policy(policy)
+    _disable(monkeypatch)
+    assert mcp_client.stdio_mcp_enabled() is False
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     assert mcp_client.stdio_mcp_enabled() is True
 
 
