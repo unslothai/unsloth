@@ -873,15 +873,22 @@ def test_llama_cpp_search_roots_handles_studio_root_oserror():
     llama_cpp = (
         REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     ).read_text()
-    find_block_start = llama_cpp.index("_find_llama_server_binary")
-    find_block = llama_cpp[find_block_start : find_block_start + 4000]
+
+    def _method_body(name: str) -> str:
+        # Whole method body (def to next sibling def), so the check survives the
+        # function growing past any fixed-size window.
+        start = llama_cpp.index(f"def {name}")
+        indent = " " * (start - llama_cpp.rfind("\n", 0, start) - 1)
+        nxt = llama_cpp.find(f"\n{indent}def ", start + 1)
+        return llama_cpp[start : nxt if nxt != -1 else len(llama_cpp)]
+
     assert (
-        "except (ImportError, OSError, ValueError):" in find_block
+        "except (ImportError, OSError, ValueError):"
+        in _method_body("_find_llama_server_binary")
     ), "_find_llama_server_binary must catch (ImportError, OSError, ValueError) from studio_root()"
-    kill_def_idx = llama_cpp.index("def _kill_orphaned_servers")
-    kill_block = llama_cpp[kill_def_idx : kill_def_idx + 4000]
     assert (
-        "except (ImportError, OSError, ValueError):" in kill_block
+        "except (ImportError, OSError, ValueError):"
+        in _method_body("_kill_orphaned_servers")
     ), "sibling _kill_orphaned_servers must keep its (ImportError, OSError, ValueError) handler"
 
 

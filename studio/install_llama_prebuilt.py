@@ -6436,13 +6436,21 @@ def validate_prebuilt_attempts(
                 f"runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
             )
 
-        if existing_install_dir is not None and existing_install_matches_choice(
-            existing_install_dir,
-            host,
-            llama_tag = llama_tag,
-            release_tag = release_tag,
-            choice = attempt,
-            approved_checksums = approved_checksums,
+        if (
+            existing_install_dir is not None
+            and existing_install_matches_choice(
+                existing_install_dir,
+                host,
+                llama_tag = llama_tag,
+                release_tag = release_tag,
+                choice = attempt,
+                approved_checksums = approved_checksums,
+            )
+            # Skip a matching candidate unless it still needs the DiffusionGemma
+            # backfill re-extract (gated per-attempt, not per-plan).
+            and not diffusion_visual_server_backfill_needed(
+                existing_install_dir, host, attempt
+            )
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -6601,9 +6609,8 @@ def install_prebuilt(
                             release_tag = plan.release_tag,
                             approved_checksums = plan.approved_checksums,
                             initial_fallback_used = release_index > 0,
-                            # a backfill must reinstall, so do not let the inner
-                            # existing-install match short-circuit the re-extract
-                            existing_install_dir = None if backfill else install_dir,
+                            # Skip is gated per-attempt inside, so pass the dir always.
+                            existing_install_dir = install_dir,
                         )
                     except ExistingInstallSatisfied:
                         return
