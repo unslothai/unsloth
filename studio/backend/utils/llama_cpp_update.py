@@ -201,6 +201,14 @@ def get_installed_llama_version() -> Optional[str]:
         tag = marker.get("release_tag") or marker.get("tag")
         if tag:
             return tag
+    # Markerless/source build: the fallback execs ``llama-server --version``.
+    # Skip it while an update is swapping the tree -- on Windows that exec can
+    # make the installer's os.replace fail (the same race get_update_status's
+    # source-build probe guards against). The panel just omits the row.
+    with _job_lock:
+        job_running = _job["state"] == _JOB_RUNNING
+    if job_running:
+        return None
     n = _installed_build_number(binary)
     return f"b{n}" if n is not None else None
 

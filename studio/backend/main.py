@@ -980,9 +980,13 @@ def get_hardware_info(current_subject: str = Depends(get_current_subject)):
 
     # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
     # hosts list every device -- get_gpu_summary alone reports only the primary.
+    # Sort by visible_ordinal: the nvidia-smi path returns rows in physical order,
+    # so under a reordering CUDA_VISIBLE_DEVICES (e.g. "5,3") labeling by array
+    # index would otherwise disagree with the GPU 0/1 the backend actually sees.
+    devices = get_backend_visible_gpu_info().get("devices", [])
     gpus = [
         {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
-        for d in get_backend_visible_gpu_info().get("devices", [])
+        for d in sorted(devices, key=lambda d: d.get("visible_ordinal", 0))
     ]
     return {
         "gpu": get_gpu_summary(),
