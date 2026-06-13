@@ -172,8 +172,9 @@ run_install_cmd() {
 : "${UNSLOTH_INSTALL_RETRY_DELAY:=3}"
 run_install_cmd_retry() {
     _ricr_label="$1"
-    # Sanitize overrides; degrade to safe defaults (never 0/non-numeric).
-    case "$UNSLOTH_INSTALL_RETRIES" in ''|*[!0-9]*|0) _ricr_max=1 ;; *) _ricr_max=$UNSLOTH_INSTALL_RETRIES ;; esac
+    # Sanitize overrides; a non-positive-integer value falls back to the default
+    # of 3 (a typo must not silently disable retries). Set =1 to disable retry.
+    case "$UNSLOTH_INSTALL_RETRIES" in ''|*[!0-9]*|0) _ricr_max=3 ;; *) _ricr_max=$UNSLOTH_INSTALL_RETRIES ;; esac
     case "$UNSLOTH_INSTALL_RETRY_DELAY" in ''|*[!0-9]*) _ricr_delay=3 ;; *) _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY ;; esac
     _ricr_attempt=1
     while :; do

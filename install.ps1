@@ -482,6 +482,38 @@ function Install-UnslothStudio {
         }
     }
 
+    # Network-resilient wrapper around Invoke-InstallCommand: retries transient
+    # failures (e.g. uv "connection reset" mid-download) with backoff. uv's cache
+    # makes retries cheap (already-downloaded wheels are reused). First-attempt
+    # success is identical to Invoke-InstallCommand; a permanent failure returns
+    # the last exit code so the existing Exit-InstallFailure rollback still fires.
+    function Invoke-InstallCommandRetry {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
+            [string]$Label = "install step"
+        )
+        # Sanitize overrides; a non-positive-integer value falls back to the
+        # default of 3 (a typo must not silently disable retries). Set =1 to disable.
+        $maxAttempts = 3
+        if ($env:UNSLOTH_INSTALL_RETRIES -match '^[0-9]+$' -and [int]$env:UNSLOTH_INSTALL_RETRIES -ge 1) {
+            $maxAttempts = [int]$env:UNSLOTH_INSTALL_RETRIES
+        }
+        $delay = 3
+        if ($env:UNSLOTH_INSTALL_RETRY_DELAY -match '^[0-9]+$') {
+            $delay = [int]$env:UNSLOTH_INSTALL_RETRY_DELAY
+        }
+        $attempt = 1
+        while ($true) {
+            $code = Invoke-InstallCommand $Command
+            if ($code -eq 0) { return 0 }
+            if ($attempt -ge $maxAttempts) { return $code }
+            substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
+            Start-Sleep -Seconds $delay
+            $attempt++
+            $delay = $delay * 2
+        }
+    }
+
     function New-StudioShortcuts {
         param(
             [Parameter(Mandatory = $true)][string]$UnslothExePath
@@ -1179,7 +1211,7 @@ shell.Run cmd, 0, False
 
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    $UvMinVersion = "0.7.22"
+    $UvMinVersion = "0.8.16"
     function Test-UvVersionOk {
         $cmd = Get-Command uv -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -1248,6 +1280,16 @@ shell.Run cmd, 0, False
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
+    }
+
+    # Large wheel downloads (torch, unsloth) are sensitive to transient network
+    # resets. uv >= 0.8.16 retries HTTP/2 streaming body errors; raise the retry
+    # count and read timeout too. Existing user-provided values are preserved.
+    if (-not $env:UV_HTTP_RETRIES) {
+        $env:UV_HTTP_RETRIES = "5"
+    }
+    if (-not $env:UV_HTTP_TIMEOUT) {
+        $env:UV_HTTP_TIMEOUT = "180"
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -1921,21 +1963,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1949,7 +1991,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -1962,7 +2004,7 @@ shell.Run cmd, 0, False
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $ROCmIndexUrl..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -1970,7 +2012,7 @@ shell.Run cmd, 0, False
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -1982,21 +2024,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.6" unsloth-zoo }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2011,7 +2053,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -2022,7 +2064,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.6" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.6" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2034,13 +2076,13 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
