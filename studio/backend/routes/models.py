@@ -2554,9 +2554,7 @@ def _repo_has_gguf_files(repo_info) -> bool:
 def _repo_has_mmproj(repo_info) -> bool:
     """True when any revision ships an mmproj vision-adapter GGUF."""
     return any(
-        _is_mmproj_filename(f.file_name)
-        for revision in repo_info.revisions
-        for f in revision.files
+        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
     )
 
 
