@@ -26,7 +26,9 @@ class LoadRequest(BaseModel):
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
     max_seq_length: int = Field(
         0,
         ge = 0,
@@ -49,7 +51,9 @@ class LoadRequest(BaseModel):
 
     @field_validator("chat_template_override")
     @classmethod
-    def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_blank_chat_template_override(
+        cls, value: Optional[str]
+    ) -> Optional[str]:
         if value is not None and value.strip() == "":
             return None
         return value
@@ -121,7 +125,9 @@ class ValidateModelRequest(BaseModel):
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -136,7 +142,9 @@ class ValidateModelResponse(BaseModel):
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
-    display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
+    display_name: Optional[str] = Field(
+        None, description = "Display name derived from identifier"
+    )
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
@@ -154,10 +162,16 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
-    max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
-    repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
+    max_new_tokens: int = Field(
+        2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
+    )
+    repetition_penalty: float = Field(
+        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
+    )
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
-    image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
+    image_base64: Optional[str] = Field(
+        None, description = "Base64 encoded image for vision models"
+    )
 
 
 class LoadResponse(BaseModel):
@@ -168,13 +182,19 @@ class LoadResponse(BaseModel):
     display_name: str = Field(..., description = "Display name of the model")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_gguf: bool = Field(
+        False, description = "Whether model is a GGUF model (llama.cpp)"
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
-    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    audio_type: Optional[str] = Field(
+        None, description = "Audio codec type: snac, csm, bicodec, dac"
+    )
+    has_audio_input: bool = Field(
+        False, description = "Whether model accepts audio input (ASR)"
+    )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
@@ -274,7 +294,9 @@ class LoadProgressResponse(BaseModel):
         0,
         description = "Total bytes across all GGUF shards for the active model.",
     )
-    fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
+    fraction: float = Field(
+        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
+    )
 
 
 class InferenceStatusResponse(BaseModel):
@@ -287,17 +309,34 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Loadable identifier for the active model.",
     )
-    is_vision: bool = Field(False, description = "Whether the active model is a vision model")
-    is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
-    is_diffusion: bool = Field(
-        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    is_vision: bool = Field(
+        False, description = "Whether the active model is a vision model"
     )
-    gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
-    is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
-    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
-    loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
-    loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    is_gguf: bool = Field(
+        False, description = "Whether the active model is a GGUF model (llama.cpp)"
+    )
+    is_diffusion: bool = Field(
+        False,
+        description = "Whether the active model is a block-diffusion model (DiffusionGemma)",
+    )
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. Q4_K_M)"
+    )
+    is_audio: bool = Field(
+        False, description = "Whether the active model is a TTS audio model"
+    )
+    audio_type: Optional[str] = Field(
+        None, description = "Audio codec type: snac, csm, bicodec, dac"
+    )
+    has_audio_input: bool = Field(
+        False, description = "Whether model accepts audio input (ASR)"
+    )
+    loading: List[str] = Field(
+        default_factory = list, description = "Models currently being loaded"
+    )
+    loaded: List[str] = Field(
+        default_factory = list, description = "Models currently loaded"
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
@@ -322,7 +361,9 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
-    context_length: Optional[int] = Field(None, description = "Context length of the active model")
+    context_length: Optional[int] = Field(
+        None, description = "Context length of the active model"
+    )
     max_context_length: Optional[int] = Field(
         None,
         description = "Maximum context length currently available for the active model",
@@ -651,7 +692,9 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = Field(
         None, description = "Whether to enable parallel function calling during tool use."
     )
-    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    seed: Optional[int] = Field(
+        None, description = "Best-effort deterministic sampling seed."
+    )
     stream_options: Optional[dict] = Field(
         None,
         description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
@@ -659,7 +702,9 @@ class ChatCompletionRequest(BaseModel):
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
-    min_p: float = Field(0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold")
+    min_p: float = Field(
+        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+    )
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
@@ -935,7 +980,9 @@ class ChatCompletionRequest(BaseModel):
                     if not tc_id:
                         continue
                     function = tc.get("function")
-                    function_name = function.get("name") if isinstance(function, dict) else None
+                    function_name = (
+                        function.get("name") if isinstance(function, dict) else None
+                    )
                     if msg.name and function_name == msg.name:
                         name_match = (tc_id, asst_idx, tc_idx)
                         break
@@ -1030,7 +1077,9 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
-OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
+OpenAIFinishReason = Literal[
+    "stop", "length", "tool_calls", "content_filter", "function_call"
+]
 
 
 class ChunkChoice(BaseModel):
@@ -1183,13 +1232,17 @@ class ResponsesFunctionCallInputItem(BaseModel):
     """
 
     type: Literal["function_call"]
-    id: Optional[str] = Field(None, description = "Item id assigned by the server (e.g. fc_...)")
+    id: Optional[str] = Field(
+        None, description = "Item id assigned by the server (e.g. fc_...)"
+    )
     call_id: str = Field(
         ...,
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
-    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
@@ -1276,7 +1329,9 @@ class ResponsesRequest(BaseModel):
         default = [],
         description = "Input text or list of messages / function_call / function_call_output items",
     )
-    instructions: Optional[str] = Field(None, description = "System / developer instructions")
+    instructions: Optional[str] = Field(
+        None, description = "System / developer instructions"
+    )
     temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
     top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     max_output_tokens: Optional[int] = Field(None, ge = 1)
@@ -1364,7 +1419,9 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
-    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
@@ -1477,12 +1534,16 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     if not additions:
         return system
 
-    addition_blocks = [{"type": "text", "text": text} for text in additions if text.strip()]
+    addition_blocks = [
+        {"type": "text", "text": text} for text in additions if text.strip()
+    ]
     if not addition_blocks:
         return system
 
     if system is None:
-        return addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
+        return (
+            addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
+        )
     if isinstance(system, str):
         return "\n\n".join([system, *[block["text"] for block in addition_blocks]])
     if isinstance(system, list):
@@ -1561,7 +1622,9 @@ class AnthropicMessagesRequest(BaseModel):
 
         normalized = dict(data)
         normalized["messages"] = normalized_messages
-        normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
+        normalized["system"] = _merge_anthropic_system(
+            normalized.get("system"), system_additions
+        )
         return normalized
 
 
@@ -1587,7 +1650,9 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
+]
 
 
 class AnthropicMessagesResponse(BaseModel):

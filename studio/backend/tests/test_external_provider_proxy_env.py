@@ -32,7 +32,9 @@ def test_shared_http_client_ignores_unsupported_proxy_scheme(monkeypatch):
         def __init__(self, **kwargs):
             calls.append(kwargs)
             if kwargs.get("trust_env") is not False:
-                raise ValueError("Unknown scheme for proxy URL URL('socks4://127.0.0.1:12345')")
+                raise ValueError(
+                    "Unknown scheme for proxy URL URL('socks4://127.0.0.1:12345')"
+                )
 
     monkeypatch.setattr(ep_mod.httpx, "AsyncClient", FakeAsyncClient)
 

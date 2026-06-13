@@ -80,7 +80,9 @@ async def load_checkpoint(
                         break
                     await asyncio.sleep(0.5)
                 else:
-                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
+                    logger.warning(
+                        "Training subprocess did not exit within 30s, proceeding anyway"
+                    )
         except Exception as e:
             logger.warning("Could not stop training: %s", e)
 
@@ -193,7 +195,8 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
-    request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportMergedModelRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
@@ -306,7 +309,8 @@ async def export_gguf(
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
-    request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportLoRAAdapterRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Export only the LoRA adapter (if the loaded model is PEFT).
 

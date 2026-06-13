@@ -72,7 +72,11 @@ DEFAULT_VARIANT = "UD-Q4_K_XL"
 PORT = 18222  # high port unlikely to collide
 HOST = "127.0.0.1"
 STARTUP_TIMEOUT = 120  # seconds
-LOG_FILE = Path(__file__).resolve().parent.parent.parent.parent / "temp" / "test_studio_api.log"
+LOG_FILE = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "temp"
+    / "test_studio_api.log"
+)
 
 
 # Helpers
@@ -216,7 +220,9 @@ def test_openai_sdk(base_url: str, api_key: str):
     client = OpenAI(base_url = f"{base_url}/v1", api_key = api_key)
     response = client.chat.completions.create(
         model = "current",
-        messages = [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
+        messages = [
+            {"role": "user", "content": "What is 2+2? Answer with just the number."}
+        ],
         stream = True,
     )
     content_parts = []
@@ -379,7 +385,9 @@ def test_openai_tools_nonstream(base_url: str, api_key: str):
     assert "city" in parsed, f"Tool call missing required 'city' arg: {parsed}"
     # Usage must be non-zero (was 0 before the fix)
     usage = data.get("usage") or {}
-    assert usage.get("prompt_tokens", 0) > 0, f"Expected non-zero prompt_tokens; got {usage}"
+    assert (
+        usage.get("prompt_tokens", 0) > 0
+    ), f"Expected non-zero prompt_tokens; got {usage}"
     assert data.get("id"), "Missing response id"
     print(
         f"  PASS  openai tools non-stream: "
@@ -404,7 +412,8 @@ def test_openai_tools_stream(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received"
     assert _final_finish_reason(chunks) == "tool_calls", (
-        f"Expected final finish_reason='tool_calls', got " f"{_final_finish_reason(chunks)!r}"
+        f"Expected final finish_reason='tool_calls', got "
+        f"{_final_finish_reason(chunks)!r}"
     )
     assembled = _collect_streamed_tool_calls(chunks)
     assert len(assembled) >= 1, "No tool_calls reassembled from stream"
@@ -487,7 +496,8 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
         stream = False,
     )
     assert resp.choices[0].finish_reason == "tool_calls", (
-        f"Expected finish_reason='tool_calls', got " f"{resp.choices[0].finish_reason!r}"
+        f"Expected finish_reason='tool_calls', got "
+        f"{resp.choices[0].finish_reason!r}"
     )
     tool_calls = resp.choices[0].message.tool_calls
     assert tool_calls and len(tool_calls) >= 1, "No tool_calls from SDK"
@@ -495,7 +505,9 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
     assert tc.function.name == "get_weather"
     parsed = json.loads(tc.function.arguments)
     assert "city" in parsed
-    print(f"  PASS  openai SDK tool calling: " f"tool={tc.function.name}, args={parsed}")
+    print(
+        f"  PASS  openai SDK tool calling: " f"tool={tc.function.name}, args={parsed}"
+    )
 
 
 def test_invalid_key_rejected(base_url: str):
@@ -638,7 +650,9 @@ def test_anthropic_sdk(base_url: str, api_key: str):
     message = client.messages.create(
         model = "default",
         max_tokens = 100,
-        messages = [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
+        messages = [
+            {"role": "user", "content": "What is 2+2? Answer with just the number."}
+        ],
     )
     assert message.role == "assistant"
     assert len(message.content) > 0, "Empty content"
@@ -689,7 +703,9 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
     assert "message_stop" in event_types, "Missing message_stop"
 
     full = _collect_anthropic_text(events)
-    print(f"  PASS  anthropic with tools: {len(events)} events, {len(full)} chars content")
+    print(
+        f"  PASS  anthropic with tools: {len(events)} events, {len(full)} chars content"
+    )
 
 
 def test_anthropic_tool_choice_any(base_url: str, api_key: str):
@@ -749,7 +765,8 @@ def test_anthropic_tool_choice_any(base_url: str, api_key: str):
     tool_use_starts = [
         e
         for e in events
-        if e[0] == "content_block_start" and e[1].get("content_block", {}).get("type") == "tool_use"
+        if e[0] == "content_block_start"
+        and e[1].get("content_block", {}).get("type") == "tool_use"
     ]
     assert len(tool_use_starts) >= 1, "No tool_use content block emitted"
     print(
@@ -799,7 +816,9 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         if proc.poll() is not None:
             log_fh.flush()
             log_text = LOG_FILE.read_text()
-            raise RuntimeError(f"Server exited early (code {proc.returncode}):\n{log_text[-2000:]}")
+            raise RuntimeError(
+                f"Server exited early (code {proc.returncode}):\n{log_text[-2000:]}"
+            )
         log_text = LOG_FILE.read_text()
         m = re.search(r"API Key:\s+(sk-unsloth-[a-f0-9]+)", log_text)
         if m:
@@ -809,7 +828,9 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
     if not api_key:
         log_text = LOG_FILE.read_text()
         _kill_server(proc)
-        raise RuntimeError(f"Timed out waiting for API key in server output:\n{log_text[-2000:]}")
+        raise RuntimeError(
+            f"Timed out waiting for API key in server output:\n{log_text[-2000:]}"
+        )
 
     # Wait a moment for the model to be fully loaded
     time.sleep(2)
@@ -836,7 +857,9 @@ def _kill_server(proc: subprocess.Popen):
 
 
 def main():
-    parser = argparse.ArgumentParser(description = "End-to-end tests for unsloth studio run")
+    parser = argparse.ArgumentParser(
+        description = "End-to-end tests for unsloth studio run"
+    )
     parser.add_argument(
         "--model",
         default = DEFAULT_MODEL,
@@ -870,7 +893,9 @@ def main():
     run_test(test_help_output)
 
     # 2-16. Start server and run API tests
-    print(f"\nStarting server: {args.model} (variant={args.gguf_variant}) on port {PORT}...")
+    print(
+        f"\nStarting server: {args.model} (variant={args.gguf_variant}) on port {PORT}..."
+    )
     proc = None
     try:
         proc, api_key = _start_server(args.model, args.gguf_variant)

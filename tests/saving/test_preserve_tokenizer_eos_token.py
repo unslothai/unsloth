@@ -16,7 +16,8 @@ def _load_preserve_helper():
     helper = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_preserve_tokenizer_eos_token"
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_preserve_tokenizer_eos_token"
     )
     module = ast.Module(body = [helper], type_ignores = [])
     ast.fix_missing_locations(module)
@@ -45,7 +46,9 @@ def test_preserve_tokenizer_eos_token_supports_processor_tokenizer(tmp_path):
     preserve = _load_preserve_helper()
     tokenizer_config = tmp_path / "tokenizer_config.json"
     tokenizer_config.write_text(json.dumps({"eos_token": "<eos>"}), encoding = "utf-8")
-    processor = types.SimpleNamespace(tokenizer = types.SimpleNamespace(eos_token = "<turn|>"))
+    processor = types.SimpleNamespace(
+        tokenizer = types.SimpleNamespace(eos_token = "<turn|>")
+    )
 
     preserve(processor, tmp_path)
 

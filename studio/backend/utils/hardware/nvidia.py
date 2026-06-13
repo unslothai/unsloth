@@ -29,8 +29,12 @@ def _build_gpu_metrics(
 ) -> dict[str, Any]:
     return {
         **extra,
-        "vram_used_gb": round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None,
-        "vram_total_gb": round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None,
+        "vram_used_gb": round(vram_used_mb / 1024, 2)
+        if vram_used_mb is not None
+        else None,
+        "vram_total_gb": round(vram_total_mb / 1024, 2)
+        if vram_total_mb is not None
+        else None,
         "vram_utilization_pct": round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
         else None,
@@ -42,7 +46,9 @@ def _build_gpu_metrics(
     }
 
 
-def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[dict[int, int]]:
+def _visible_ordinal_map(
+    parent_visible_ids: Optional[list[int]],
+) -> Optional[dict[int, int]]:
     if parent_visible_ids is None:
         return None
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
@@ -108,7 +114,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
 
 def get_visible_gpu_utilization(
-    parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
+    parent_visible_ids: Optional[list[int]],
+    parent_cuda_visible_devices: Optional[str] = None,
 ) -> dict[str, Any]:
     # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
     # visible devices, so return empty rather than exposing all physical GPUs.
@@ -176,7 +183,9 @@ def get_visible_gpu_utilization(
                 index = idx,
                 index_kind = "physical",
                 visible_ordinal = (
-                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
+                    visible_ordinals[idx]
+                    if visible_ordinals is not None
+                    else len(devices)
                 ),
                 gpu_utilization_pct = _parse_smi_value(parts[1]),
                 temperature_c = _parse_smi_value(parts[2]),
@@ -259,7 +268,9 @@ def get_backend_visible_gpu_info(
                 "index": idx,
                 "index_kind": "physical",
                 "visible_ordinal": (
-                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
+                    visible_ordinals[idx]
+                    if visible_ordinals is not None
+                    else len(devices)
                 ),
                 "name": name,
                 "memory_total_gb": round(mem_total_mb / 1024, 2),

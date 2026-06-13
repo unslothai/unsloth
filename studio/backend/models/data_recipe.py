@@ -101,7 +101,9 @@ class SeedInspectUploadRequest(BaseModel):
             if not self.block_id:
                 raise ValueError("block_id is required when using file_ids")
             if self.file_names is None or len(self.file_ids) != len(self.file_names):
-                raise ValueError("file_names must be provided and same length as file_ids")
+                raise ValueError(
+                    "file_names must be provided and same length as file_ids"
+                )
         if has_legacy:
             if not self.filename:
                 raise ValueError("filename is required when using content_base64")

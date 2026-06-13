@@ -198,7 +198,9 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
 
 def test_check_format_rejects_invalid_path_as_400():
     with pytest.raises(HTTPException) as exc_info:
-        formatting.check_format_response(CheckFormatRequest(dataset_name = "../../etc/passwd"))
+        formatting.check_format_response(
+            CheckFormatRequest(dataset_name = "../../etc/passwd")
+        )
 
     assert exc_info.value.status_code == 400
 
@@ -286,7 +288,9 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     )
 
     result = asyncio.run(
-        downloads.download_dataset_response(SimpleNamespace(repo_id = "Org/Data", use_xet = False))
+        downloads.download_dataset_response(
+            SimpleNamespace(repo_id = "Org/Data", use_xet = False)
+        )
     )
 
     assert result["state"] == "cancelled"
@@ -328,7 +332,9 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     payload = b'{"text":"hello"}\n'
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
 
-    response = asyncio.run(local.upload_dataset_response(_Upload("../train.jsonl", payload)))
+    response = asyncio.run(
+        local.upload_dataset_response(_Upload("../train.jsonl", payload))
+    )
 
     stored_path = Path(response.stored_path)
     assert response.filename == "train.jsonl"

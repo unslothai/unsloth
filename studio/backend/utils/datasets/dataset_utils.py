@@ -341,7 +341,9 @@ def _apply_template_mapping(
             user_parts = []
             for col in role_groups["user"]:
                 if col in examples:
-                    user_parts.append(_extract_column_value(examples[col][i], col, label_mapping))
+                    user_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
             if user_parts:
                 convo.append({"role": "user", "content": "\n".join(user_parts)})
 
@@ -349,7 +351,9 @@ def _apply_template_mapping(
             asst_parts = []
             for col in role_groups["assistant"]:
                 if col in examples:
-                    asst_parts.append(_extract_column_value(examples[col][i], col, label_mapping))
+                    asst_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
             if asst_parts:
                 convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
 
@@ -399,7 +403,11 @@ def _apply_user_mapping_alpaca(
                 ("output", outputs),
             ):
                 col = col_for[field]
-                val = str(examples[col][i]) if col and col in examples and examples[col][i] else ""
+                val = (
+                    str(examples[col][i])
+                    if col and col in examples and examples[col][i]
+                    else ""
+                )
                 dest.append(val)
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
@@ -477,7 +485,9 @@ def format_dataset(
             else:
                 # auto / chatml / sharegpt / conversational all produce chatml
                 # conversations (sharegpt standardized to role/content internally)
-                mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+                mapped_dataset = _apply_user_mapping(
+                    dataset, custom_format_mapping, batch_size
+                )
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
 
@@ -574,7 +584,9 @@ def format_dataset(
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": _chatml_detected_format_label(detected["chat_column"]),
+                "detected_format": _chatml_detected_format_label(
+                    detected["chat_column"]
+                ),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
@@ -586,7 +598,9 @@ def format_dataset(
 
         # Unknown - try standardization, pass as-is on failure
         else:
-            warnings.append(f"Unknown format detected. Keys found: {detected['sample_keys']}")
+            warnings.append(
+                f"Unknown format detected. Keys found: {detected['sample_keys']}"
+            )
 
             # Try heuristic detection
             if auto_detect_custom:
@@ -612,7 +626,9 @@ def format_dataset(
                                     if role == target_role and col_name in examples:
                                         content = examples[col_name][i]
                                         if content and str(content).strip():
-                                            convo.append({"role": role, "content": str(content)})
+                                            convo.append(
+                                                {"role": role, "content": str(content)}
+                                            )
                             conversations.append(convo)
 
                         return {"conversations": conversations, **preserved_columns}
@@ -661,7 +677,9 @@ def format_dataset(
                         "warnings": warnings,
                     }
                 except Exception as e:
-                    warnings.append(f"Could not standardize: {e}. Passing dataset as-is.")
+                    warnings.append(
+                        f"Could not standardize: {e}. Passing dataset as-is."
+                    )
 
             # Return as-is with warnings
             return {
@@ -691,7 +709,9 @@ def format_dataset(
                 "warnings": [],
             }
 
-        elif detected["format"] in ["sharegpt", "chatml"] and detected.get("chat_column"):
+        elif detected["format"] in ["sharegpt", "chatml"] and detected.get(
+            "chat_column"
+        ):
             try:
                 # First standardize if ShareGPT
                 if detected["format"] == "sharegpt":
@@ -808,7 +828,9 @@ def format_dataset(
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": _chatml_detected_format_label(detected["chat_column"]),
+                "detected_format": _chatml_detected_format_label(
+                    detected["chat_column"]
+                ),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
@@ -966,7 +988,9 @@ def format_and_template_dataset(
                         f"text='{user_vlm_text_column}') failed: {e} — "
                         f"falling back to auto-detection"
                     )
-                    logger.info(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
+                    logger.info(
+                        f"⚠️ User VLM mapping failed, falling back to auto-detection..."
+                    )
                     custom_format_mapping = None  # so auto-detection runs below
             else:
                 errors.append(
@@ -1020,7 +1044,9 @@ def format_and_template_dataset(
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
                 )
-                warnings.append("Converted from ShareGPT+image format to standard VLM format")
+                warnings.append(
+                    "Converted from ShareGPT+image format to standard VLM format"
+                )
             except Exception as e:
                 errors.append(f"Failed to convert ShareGPT+image format: {e}")
                 import traceback
@@ -1088,9 +1114,13 @@ def format_and_template_dataset(
                 )
 
                 if vlm_instruction:
-                    warnings.append(f"Using user-provided instruction: '{vlm_instruction}'")
+                    warnings.append(
+                        f"Using user-provided instruction: '{vlm_instruction}'"
+                    )
                 else:
-                    warnings.append("Auto-generated instruction based on dataset analysis")
+                    warnings.append(
+                        "Auto-generated instruction based on dataset analysis"
+                    )
 
             except Exception as e:
                 errors.append(f"Failed to convert to VLM format: {e}")
@@ -1195,7 +1225,9 @@ def format_and_template_dataset(
         summary = get_dataset_info_summary(dataset_info)
 
         # Combine results
-        all_warnings = dataset_info.get("warnings", []) + template_result.get("warnings", [])
+        all_warnings = dataset_info.get("warnings", []) + template_result.get(
+            "warnings", []
+        )
         all_errors = template_result.get("errors", [])
 
         # If apply_chat_template rescued an "unknown" format, update final_format.

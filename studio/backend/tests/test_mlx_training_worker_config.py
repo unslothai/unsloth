@@ -45,8 +45,12 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
-        spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
+        worker_path = (
+            Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "mlx_training_worker_under_test", worker_path
+        )
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
@@ -138,7 +142,9 @@ def test_mlx_vlm_resized_image_layout_probes_processor_contract():
         == "chw"
     )
     assert (
-        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = HwcImageProcessor()))
+        _mlx_vlm_resized_image_layout(
+            types.SimpleNamespace(image_processor = HwcImageProcessor())
+        )
         is None
     )
 
@@ -157,7 +163,9 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
 
     image_processor = StatefulImageProcessor()
 
-    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = image_processor))
+    layout = _mlx_vlm_resized_image_layout(
+        types.SimpleNamespace(image_processor = image_processor)
+    )
 
     assert layout == "chw"
     assert image_processor.calls == 0

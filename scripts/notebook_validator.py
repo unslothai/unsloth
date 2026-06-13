@@ -87,7 +87,9 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
+COLAB_ORACLE_BASE_URL = (
+    "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
+)
 
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
@@ -187,7 +189,9 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        if re.search(r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE):
+        if re.search(
+            r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE
+        ):
             out.append((i, src))
     return out
 
@@ -318,7 +322,9 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
         if t in ("install", "uninstall"):
             continue
         packages.append(t)
-    return PipInvocation(tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no)
+    return PipInvocation(
+        tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no
+    )
 
 
 def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
@@ -403,7 +409,9 @@ def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     return data
 
 
-def transitive_constraint(name: str, version: str, target: str) -> tuple[str | None, list[str]]:
+def transitive_constraint(
+    name: str, version: str, target: str
+) -> tuple[str | None, list[str]]:
     """Return (raw_specifier_string_or_None, list_of_(op,version) tuples)
     for the constraint that `name==version` places on `target`.
     """
@@ -477,7 +485,10 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
                     out[sp.name] = ver
                     pinned.add(sp.name)
                 elif op == "<=" and sp.name not in pinned:
-                    if sp.name not in upper_bounds or cmp_versions(ver, upper_bounds[sp.name]) < 0:
+                    if (
+                        sp.name not in upper_bounds
+                        or cmp_versions(ver, upper_bounds[sp.name]) < 0
+                    ):
                         upper_bounds[sp.name] = ver
     # Apply upper bounds where Colab's preinstall violates them.
     for name, ub in upper_bounds.items():
@@ -492,7 +503,9 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 # ----- Rules ----- #
 
 
-def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
+def rule_inst_001_git_plus(
+    install_cell: str, file: str, cell_idx: int
+) -> list[Finding]:
     findings: list[Finding] = []
     for inv in iter_pip_invocations(install_cell):
         if any("git+" in p for p in inv.packages) or "git+" in inv.raw:
@@ -680,7 +693,9 @@ def rule_inst_005_transformers_tokenizers(
 _RE_DOUBLE_BANG = re.compile(r"^[ \t]*!{2,}\s*pip\b", re.MULTILINE)
 
 
-def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
+def rule_inst_006_double_bang(
+    install_cell: str, file: str, cell_idx: int
+) -> list[Finding]:
     findings: list[Finding] = []
     for m in _RE_DOUBLE_BANG.finditer(install_cell):
         line_no = install_cell.count("\n", 0, m.start()) + 1
@@ -771,7 +786,9 @@ POLICY_CLAUSES_DEFAULT = [
 ]
 
 
-def extract_policy_clauses(update_script: pathlib.Path) -> list[tuple[str, re.Pattern[str], Any]]:
+def extract_policy_clauses(
+    update_script: pathlib.Path,
+) -> list[tuple[str, re.Pattern[str], Any]]:
     """Best-effort scan of update_all_notebooks.py for canonical phrases;
     falls back to POLICY_CLAUSES_DEFAULT (which we use directly today). The
     permissive regexes avoid false positives on template rewords."""
@@ -831,7 +848,11 @@ def cmd_drift(args: argparse.Namespace) -> int:
         print(f"FAIL: {update_script} not found", file = sys.stderr)
         return 2
     # Stash any pre-existing dirty state, run the updater, diff, restore.
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = nbdir).decode().strip()
+    head = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = nbdir)
+        .decode()
+        .strip()
+    )
     subprocess.run(
         ["git", "-C", str(nbdir), "stash", "--include-untracked"],
         check = False,
@@ -932,7 +953,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
                         hint = proc.stderr[-200:].strip(),
                     )
                 )
-    print(f"converted {len(notebooks) - len(failed)}/{len(notebooks)} notebooks to {out}")
+    print(
+        f"converted {len(notebooks) - len(failed)}/{len(notebooks)} notebooks to {out}"
+    )
     _emit(failed)
     return 0 if not failed else 1
 
@@ -942,7 +965,11 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
-    colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
+    colab_path = (
+        pathlib.Path(args.colab_pin).resolve()
+        if args.colab_pin
+        else COLAB_FALLBACK_FILE
+    )
     colab = parse_pip_freeze(colab_path)
     if not colab:
         print(
@@ -982,9 +1009,13 @@ def cmd_lint(args: argparse.Namespace) -> int:
             first_cell = cells[0][0] if cells else None
             findings += rule_inst_003_peft_torchao(merged, oracle, rel, first_cell)
             findings += rule_inst_004_torchcodec_torch(merged, oracle, rel, first_cell)
-            findings += rule_inst_005_transformers_tokenizers(merged, oracle, rel, first_cell)
+            findings += rule_inst_005_transformers_tokenizers(
+                merged, oracle, rel, first_cell
+            )
             if not args.no_pypi:
-                findings += rule_inst_002_no_deps_transitive(merged, oracle, rel, first_cell)
+                findings += rule_inst_002_no_deps_transitive(
+                    merged, oracle, rel, first_cell
+                )
         findings += scan_user_cells(nb, rel)
     _emit(findings)
     return 0 if not any(f.severity == "error" for f in findings) else 1
@@ -1159,7 +1190,9 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print(f"::warning::colab-diff: could not fetch {url}: {e}")
             continue
         if not snap_path.exists():
-            print(f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping")
+            print(
+                f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping"
+            )
             continue
         snapshot_text = snap_path.read_text(encoding = "utf-8", errors = "replace")
         parser = _COLAB_ORACLE_PARSERS[upstream_name]

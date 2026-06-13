@@ -166,7 +166,9 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
+                batch["packed_seq_lengths"] = torch.tensor(
+                    seq_lengths, dtype = torch.int32
+                )
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
@@ -255,7 +257,11 @@ def build_xformers_block_causal_mask(
         device = seq_lengths.device
         params = (sliding_window,)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
-        if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+        if (
+            entry is not None
+            and entry["seq_lengths"] is seq_lengths
+            and entry["params"] == params
+        ):
             return entry["mask"]
 
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
@@ -293,7 +299,11 @@ def build_sdpa_packed_attention_mask(
 
     params = (dtype, sliding_window)
     entry = _SDPA_MASK_CACHE.get(device)
-    if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+    if (
+        entry is not None
+        and entry["seq_lengths"] is seq_lengths
+        and entry["params"] == params
+    ):
         return entry["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
@@ -309,9 +319,15 @@ def build_sdpa_packed_attention_mask(
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
-        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
+        upper = torch.triu(
+            torch.ones((length, length), device = device), diagonal = 1
+        ).bool()
         block = block.masked_fill(upper, float("-inf"))
-        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
+        if (
+            sliding_window is not None
+            and sliding_window > 0
+            and length > sliding_window
+        ):
             idx = torch.arange(length, device = device)
             dist = idx.unsqueeze(1) - idx.unsqueeze(0)
             window_mask = dist >= sliding_window
@@ -328,7 +344,9 @@ def build_sdpa_packed_attention_mask(
     return result
 
 
-def _normalize_packed_lengths(seq_lengths: Any, *, device: torch.device) -> Optional[torch.Tensor]:
+def _normalize_packed_lengths(
+    seq_lengths: Any, *, device: torch.device
+) -> Optional[torch.Tensor]:
     if seq_lengths is None:
         return None
     if isinstance(seq_lengths, torch.Tensor):

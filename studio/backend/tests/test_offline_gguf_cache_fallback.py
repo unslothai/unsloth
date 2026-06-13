@@ -134,7 +134,8 @@ def _siblings(items: dict[str, int]):
     """Mock ``hf_model_info(...).siblings`` payload."""
     return _types.SimpleNamespace(
         siblings = [
-            _types.SimpleNamespace(rfilename = name, size = size) for name, size in items.items()
+            _types.SimpleNamespace(rfilename = name, size = size)
+            for name, size in items.items()
         ],
     )
 
@@ -158,8 +159,12 @@ class TestIterHfCacheSnapshots:
         assert list(_iter_hf_cache_snapshots("unsloth/bare")) == []
 
     def test_yields_newest_first(self, hf_cache):
-        old = _build_cache(hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40)
-        new = _build_cache(hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40)
+        old = _build_cache(
+            hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40
+        )
+        new = _build_cache(
+            hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40
+        )
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
         out = list(_iter_hf_cache_snapshots("unsloth/multi"))
@@ -198,7 +203,9 @@ class TestListGgufVariantsFromCache:
 
 
 class TestListGgufVariantsOffline:
-    def test_offline_env_short_circuits_api(self, hf_cache, clean_offline_env, monkeypatch):
+    def test_offline_env_short_circuits_api(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
         _build_cache(hf_cache, "unsloth/a", {"a-UD-Q4_K_XL.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -274,7 +281,9 @@ class TestDetectGgufFromCache:
 
 
 class TestDetectGgufModelRemoteOffline:
-    def test_offline_env_short_circuits_retries(self, hf_cache, clean_offline_env, monkeypatch):
+    def test_offline_env_short_circuits_retries(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -298,7 +307,9 @@ class TestDetectGgufModelRemoteOffline:
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
 
-    def test_repository_not_found_does_not_consult_cache(self, hf_cache, clean_offline_env):
+    def test_repository_not_found_does_not_consult_cache(
+        self, hf_cache, clean_offline_env
+    ):
         # Cache has a file but the API says the repo is gone.
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
@@ -393,7 +404,9 @@ class TestHfOfflineIfDnsDead:
             assert did_set is False
             assert "HF_HUB_OFFLINE" not in os.environ
 
-    def test_user_set_hf_hub_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
+    def test_user_set_hf_hub_offline_is_preserved(
+        self, dns, clean_offline_env, monkeypatch
+    ):
         # User explicitly set offline before launching Studio.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
@@ -403,7 +416,9 @@ class TestHfOfflineIfDnsDead:
         # Helper must not pop a variable it did not set.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
-    def test_user_set_transformers_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
+    def test_user_set_transformers_offline_is_preserved(
+        self, dns, clean_offline_env, monkeypatch
+    ):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_dns_dead():
@@ -447,7 +462,9 @@ class TestDownloadMmprojOfflineCacheFallback:
     """``_download_mmproj`` must resolve cached mmproj GGUFs offline, like
     ``_download_gguf``; else the offline vision load returns None despite a cache hit."""
 
-    def test_cache_lookup_returns_cached_mmproj_when_list_repo_files_fails(self, hf_cache):
+    def test_cache_lookup_returns_cached_mmproj_when_list_repo_files_fails(
+        self, hf_cache
+    ):
         _build_cache(
             hf_cache,
             "unsloth/vision-GGUF",
@@ -606,7 +623,9 @@ class TestListGgufVariantsPermanentErrors:
                 list_gguf_variants("u/gated-gguf")
         assert type(exc_info.value).__name__ == "GatedRepoError"
 
-    def test_transient_error_still_falls_back_to_cache(self, hf_cache, clean_offline_env):
+    def test_transient_error_still_falls_back_to_cache(
+        self, hf_cache, clean_offline_env
+    ):
         from utils.models.model_config import list_gguf_variants
 
         _build_cache(hf_cache, "u/transient-gguf", {"foo-Q4_K_M.gguf": 1})

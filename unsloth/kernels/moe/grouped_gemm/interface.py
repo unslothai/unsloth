@@ -26,7 +26,9 @@ from .kernels.tuning import (
 )
 
 logger = logging.getLogger(__name__)
-formatter = logging.Formatter("%(asctime)s::%(levelname)s,%(pathname)s:%(lineno)d:: %(message)s")
+formatter = logging.Formatter(
+    "%(asctime)s::%(levelname)s,%(pathname)s:%(lineno)d:: %(message)s"
+)
 
 ch = logging.StreamHandler()
 ch.setFormatter(formatter)
@@ -89,8 +91,13 @@ def get_per_device_per_stream_alloc_fn(device):
 
         def alloc_fn(size: int, alignment: int, stream):
             assert alignment == 128
-            if stream not in _per_stream_tensors or _per_stream_tensors[stream].numel() < size:
-                _per_stream_tensors[stream] = torch.empty(size, device = device, dtype = torch.int8)
+            if (
+                stream not in _per_stream_tensors
+                or _per_stream_tensors[stream].numel() < size
+            ):
+                _per_stream_tensors[stream] = torch.empty(
+                    size, device = device, dtype = torch.int8
+                )
                 _per_stream_tensors[stream].__hibernate__ = {"type": "ignore"}
             return _per_stream_tensors[stream]
 
@@ -105,7 +112,9 @@ def log_kernel_info(
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
     metadata = compiled_kernel.metadata
-    logger.debug(f"{kernel_name}: n_regs={nregs} n_spills={nspills} metadata={metadata}")
+    logger.debug(
+        f"{kernel_name}: n_regs={nregs} n_spills={nspills} metadata={metadata}"
+    )
     if best_config is not None:
         logger.debug(f"{kernel_name} autotuned best_config: {best_config}")
 
@@ -232,7 +241,9 @@ def grouped_gemm_forward(
     if fuse_mul_post:
         global _FUSED_MUL_WARN
         if not _FUSED_MUL_WARN:
-            warnings.warn("fused_mul should only be used for inference, not for training")
+            warnings.warn(
+                "fused_mul should only be used for inference, not for training"
+            )
             _FUSED_MUL_WARN = True
         assert permute_y, "FUSE_MUL requires PERMUTE_Y"
         assert topk_weights is not None
@@ -241,7 +252,9 @@ def grouped_gemm_forward(
         assert topk_weights.is_contiguous()
         topk_weights = topk_weights.view(-1)
         if debug:
-            print(f"DEBUG::GROUPED_GEMM {topk_weights.tolist()} {gather_indices.tolist()}")
+            print(
+                f"DEBUG::GROUPED_GEMM {topk_weights.tolist()} {gather_indices.tolist()}"
+            )
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
     # if total_tokens == 0 or N == 0:
@@ -261,7 +274,9 @@ def grouped_gemm_forward(
         print(
             f"DEBUG::GROUPED_GEMM {num_tokens = } {topk = } {num_experts = } {N = } {K = } {BLOCK_SIZE_M = } {BLOCK_SIZE_N = } {BLOCK_SIZE_K = } {permute_x = }"
         )
-        print(f"DEBUG::GROUPED_GEMM {m_sizes.tolist()} {(gather_indices // topk).tolist()}")
+        print(
+            f"DEBUG::GROUPED_GEMM {m_sizes.tolist()} {(gather_indices // topk).tolist()}"
+        )
 
     kernel_args = {
         # Inputs
@@ -301,7 +316,11 @@ def grouped_gemm_forward(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_forward_kernel if autotune else _grouped_gemm_forward_kernel
+    kernel = (
+        _autotuned_grouped_gemm_forward_kernel
+        if autotune
+        else _grouped_gemm_forward_kernel
+    )
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
@@ -357,8 +376,12 @@ def grouped_gemm_dX(
     use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
     use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
     """
-    assert not fuse_mul_pre, "fuse_mul_pre should only be used for inference, not for training"
-    assert not fuse_mul_post, "fuse_mul_post should only be used for inference, not for training"
+    assert (
+        not fuse_mul_pre
+    ), "fuse_mul_pre should only be used for inference, not for training"
+    assert (
+        not fuse_mul_post
+    ), "fuse_mul_post should only be used for inference, not for training"
     assert dY.is_contiguous()
     assert W.is_contiguous()
     assert m_sizes.is_contiguous()
@@ -403,18 +426,24 @@ def grouped_gemm_dX(
     # N = N_total // num_experts
     assert N_grad == N, f"Grad_output N ({N_grad}) must match weight N ({N})"
 
-    assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
+    assert (
+        M_total % topk == 0
+    ), f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
     total_tokens = gather_indices.shape[0]
-    assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
+    assert (
+        total_tokens == M_total
+    ), f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
     # Note that the output shape is [NUM_TOKENS * TOPK, K] even when `permute_x` is True since we need to accumulate gradients across all experts chosen by the token.
     # This will be done in a post-processing step reduction step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count  # if not debug else 1
+    NUM_SMS = torch.cuda.get_device_properties(
+        "cuda"
+    ).multi_processor_count  # if not debug else 1
 
     def grid(META):
         return (NUM_SMS,)
@@ -519,7 +548,11 @@ def grouped_gemm_dW(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count if not debug else 1
+    NUM_SMS = (
+        torch.cuda.get_device_properties("cuda").multi_processor_count
+        if not debug
+        else 1
+    )
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -592,7 +625,9 @@ def grouped_gemm_dW(
                 token_idx = expert_token_idx[t_start : t_start + BLOCK_SIZE_M]
                 if permute_x:
                     token_idx = token_idx // topk
-                print(f"DEBUG::GROUPED_GEMM_DW_TMA Token expert {i} indices: {token_idx.tolist()}")
+                print(
+                    f"DEBUG::GROUPED_GEMM_DW_TMA Token expert {i} indices: {token_idx.tolist()}"
+                )
                 t_start += BLOCK_SIZE_M
 
             m_start += m_sizes[i]
@@ -732,7 +767,9 @@ class GroupedGemm(torch.autograd.Function):
                     kernel_config_bwd_dW is not None
                 ), "kernel_config_bwd_dW must be provided if autotune is False"
 
-        assert not fuse_mul_post, "fused_mul should only be used for inference, not for training"
+        assert (
+            not fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
 
         if not dX_only:
             bwd_dW_config = {}
@@ -826,9 +863,15 @@ def check_valid_config_fwd(
     is_second_gemm = not is_first_gemm
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    assert not (is_second_gemm and permute_x), "Cannot permute X for the second grouped GEMM"
-    assert not (is_first_gemm and permute_y), "Cannot permute Y for the first grouped GEMM"
-    assert not (fuse_mul_post and is_first_gemm), "Cannot fuse mul for the first grouped GEMM"
+    assert not (
+        is_second_gemm and permute_x
+    ), "Cannot permute X for the second grouped GEMM"
+    assert not (
+        is_first_gemm and permute_y
+    ), "Cannot permute Y for the first grouped GEMM"
+    assert not (
+        fuse_mul_post and is_first_gemm
+    ), "Cannot fuse mul for the first grouped GEMM"
     assert not (
         use_tma_load_x and permute_x
     ), "Cannot use TMA load and permute X unless on sm100+ (Blackwell+)"
@@ -958,7 +1001,9 @@ def grouped_gemm(
         ), "gather_indices is required when either permute_x or permute_y is True"
 
     if fuse_mul_post:
-        assert topk_weights is not None, "topk_weights is required when fuse_mul_post is True"
+        assert (
+            topk_weights is not None
+        ), "topk_weights is required when fuse_mul_post is True"
 
     X = X.view(-1, X.shape[-1])
     m_sizes = m_sizes.view(-1)

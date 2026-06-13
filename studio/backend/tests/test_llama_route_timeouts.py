@@ -66,7 +66,9 @@ def test_preheader_send_cleanup_on_disconnect_and_cancel():
                 return state.disconnected
 
         task = asyncio.create_task(
-            inf_mod._send_stream_with_preheader_cancel(_Client(), object(), request = _Request())
+            inf_mod._send_stream_with_preheader_cancel(
+                _Client(), object(), request = _Request()
+            )
         )
         await started.wait()
         if cancel_parent:

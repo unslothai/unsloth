@@ -272,7 +272,9 @@ def test_trl_version_parseable(tag: str):
     #   4. `__version__ = f.read().strip()` (TRL 0.22.x reads from a
     #      sibling VERSION file)
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
+    has_subimport = bool(
+        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
+    )
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",
@@ -322,7 +324,9 @@ def test_trl_sft_trainer_module_internals(tag: str):
         f"{tag}: trl/trainer/sft_trainer.py missing; "
         f"unsloth/tokenizer_utils.py:1538 wildcard import fails"
     )
-    assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing in sft_trainer.py"
+    assert has_def(
+        src, "SFTTrainer", "class"
+    ), f"{tag}: class SFTTrainer missing in sft_trainer.py"
     # neftune_post_forward_hook: optional (TRL removed it in some
     # versions); soft-imported in tokenizer_utils.py:1542. Don't fail.
     if "neftune_post_forward_hook" not in src:
@@ -340,7 +344,9 @@ def test_trl_dpo_trainer_module_exists(tag: str):
         f"{tag}: trl/trainer/dpo_trainer.py missing; "
         f"unsloth-zoo/temporary_patches/misc.py:1376 import fails"
     )
-    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(
+        src, "DPOTrainer", "class"
+    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
 
 
 # 7. trl.trainer.utils.ConstantLengthDataset — soft import in
@@ -360,7 +366,8 @@ def test_trl_constant_length_dataset_optional(tag: str):
     _, src = hit
     if "ConstantLengthDataset" not in src:
         pytest.skip(
-            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft " f"import handles this"
+            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft "
+            f"import handles this"
         )
 
 
@@ -537,7 +544,9 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         'raise ValueError("Logits (batch and sequence length dim) and labels '
         'must have the same shape.")'
     )
-    if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
+    if checked_sources and not any(
+        old_shape_check in src for _, src in checked_sources
+    ):
         # TRL main inlined KTO log-prob computation and removed the old
         # helper/shape-check rewrite target. There is no skipped rewrite to
         # guard until a new concrete KTO shape mismatch target appears.
@@ -586,7 +595,9 @@ def test_trl_dpo_trainer_methods(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     assert src is not None
     # The DPO class itself must always exist.
-    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(
+        src, "DPOTrainer", "class"
+    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
     # Informational only -- pass either way:
     for method in (
         "concatenated_inputs",

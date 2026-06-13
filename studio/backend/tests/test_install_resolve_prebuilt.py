@@ -60,24 +60,38 @@ def test_published_repo_for_host():
     # CPU-only Linux (x64 and arm64) -> ggml-org upstream.
     assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True)) == UPSTREAM
     assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64"))
+        ilp.published_repo_for_host(
+            _host(is_linux = True, is_arm64 = True, machine = "aarch64")
+        )
         == UPSTREAM
     )
     # GPU Linux -> fork.
     assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True))
+        ilp.published_repo_for_host(
+            _host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True)
+        )
         == FORK
     )
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
+    assert (
+        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True))
+        == FORK
+    )
     # CPU-only Windows -> ggml-org (setup.ps1: the fork ships no win-cpu bundle).
     assert (
-        ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
+        ilp.published_repo_for_host(
+            _host(system = "Windows", is_windows = True, is_x86_64 = True)
+        )
         == UPSTREAM
     )
     # GPU Windows -> fork.
     assert (
         ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True, has_usable_nvidia = True)
+            _host(
+                system = "Windows",
+                is_windows = True,
+                is_x86_64 = True,
+                has_usable_nvidia = True,
+            )
         )
         == FORK
     )
@@ -121,7 +135,13 @@ def _run_resolve(monkeypatch, capsys, plans_or_exc):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+        ],
     )
     rc = ilp.main()
     assert rc == ilp.EXIT_SUCCESS
@@ -133,7 +153,9 @@ def test_resolve_prebuilt_available(monkeypatch, capsys):
         release_tag = "b9585",
         llama_tag = "b9585",
         attempts = [
-            SimpleNamespace(name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+            SimpleNamespace(
+                name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64"
+            )
         ],
     )
     out = _run_resolve(monkeypatch, capsys, [plan])
@@ -153,7 +175,9 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
 def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
     # fork so a HIP source build is not offered an upstream CPU prebuilt.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(
+        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True)
+    )
     monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
     seen = {}
 
@@ -165,7 +189,13 @@ def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+        ],
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])

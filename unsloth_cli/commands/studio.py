@@ -52,7 +52,9 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
                 return inferred, True
     except (OSError, ValueError):
         pass
@@ -201,7 +203,9 @@ def _load_run_module():
 
     run_py = _find_run_py()
     if run_py is None:
-        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
+        raise ImportError(
+            "Could not find studio/backend/run.py. Re-run: unsloth studio setup"
+        )
 
     loaded = sys.modules.get("studio.backend.run")
     if loaded is not None:
@@ -273,7 +277,9 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
                 # emits for editable installs.
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:
@@ -363,7 +369,9 @@ def _create_api_key_inprocess(name: str) -> str:
 
 def _load_backend_auth_storage():
     run_py = _find_run_py()
-    backend_dir = run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    backend_dir = (
+        run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    )
     if backend_dir.is_dir() and str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
 
@@ -474,9 +482,13 @@ def _connect_auth_db() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
-    refresh_columns = {row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
+    refresh_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
     if "is_desktop" not in refresh_columns:
-        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 
@@ -853,7 +865,9 @@ def _consume_legacy_short_aliases(
             i += 1
             continue
         if value is not None:
-            raise typer.BadParameter(f"{name} conflicts with {canonical} already provided")
+            raise typer.BadParameter(
+                f"{name} conflicts with {canonical} already provided"
+            )
         if sep:
             if inline == "":  # `-m=` would become --model '' (Path('')='.').
                 raise typer.BadParameter(f"{name} requires a non-empty value")
@@ -863,7 +877,9 @@ def _consume_legacy_short_aliases(
             nxt = args[i + 1]
             # `--long` is unambiguously a flag; single-dash `-x` may be a path.
             if nxt.startswith("--") and nxt != "--":
-                raise typer.BadParameter(f"{name} expects a value but got the flag {nxt}")
+                raise typer.BadParameter(
+                    f"{name} expects a value but got the flag {nxt}"
+                )
             value = nxt
             i += 2
         else:
@@ -1034,7 +1050,9 @@ def run(
         # Re-exec via the studio venv's `unsloth` console-script.
         studio_bin = studio_python.parent / "unsloth"
         if not studio_bin.is_file():
-            typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
+            typer.echo(
+                "Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup"
+            )
             raise typer.Exit(1)
         args = [
             str(studio_bin),
@@ -1123,7 +1141,9 @@ def run(
         if not silent:
             typer.echo("Starting Unsloth Studio...")
         if not _wait_for_server(actual_port):
-            typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
+            typer.echo(
+                "Error: server did not become healthy within 30 seconds.", err = True
+            )
             raise typer.Exit(1)
 
         # 4. Create API key in-process.
@@ -1301,7 +1321,9 @@ def stop():
 
     # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
     if not _pid_alive(pid):
-        typer.echo(f"Studio server (PID {pid}) is not running. Cleaning up stale PID file.")
+        typer.echo(
+            f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
+        )
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
 
@@ -1412,7 +1434,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            ps_argv.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
 
         for script in candidates:
             try:
@@ -1434,7 +1458,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         **_windows_hidden_subprocess_kwargs(),
                     )
                     if result.returncode != 0:
-                        typer.echo(f"  refresh-launcher  install.ps1 exited {result.returncode}")
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
                     return
             except OSError:
                 continue
@@ -1447,7 +1473,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             with urllib.request.urlopen(request, timeout = 30) as response:
                 installer = response.read().decode("utf-8", errors = "replace")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+            typer.echo(
+                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+            )
             return
 
         # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
@@ -1488,7 +1516,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
                     )
             except OSError as exc:
-                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
         finally:
             try:
                 os.unlink(ps1_path)
@@ -1505,7 +1535,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                     check = False,
                 )
                 if result.returncode != 0:
-                    typer.echo(f"  refresh-launcher  install.sh exited {result.returncode}")
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
                 return
         except OSError:
             continue
@@ -1518,7 +1550,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         with urllib.request.urlopen(request, timeout = 30) as response:
             installer = response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+        )
         return
 
     try:
@@ -1529,7 +1563,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             check = False,
         )
         if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
@@ -1549,7 +1585,9 @@ def setup(
 
 @studio_app.command()
 def update(
-    local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
+    local: bool = typer.Option(
+        False, "--local", help = "Install from local repo instead of PyPI"
+    ),
     package: str = typer.Option(
         "unsloth", "--package", help = "Package name to install/update (for testing)"
     ),

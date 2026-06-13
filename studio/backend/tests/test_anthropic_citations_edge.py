@@ -79,7 +79,8 @@ def _capture(
         client = _make_client()
         try:
             async for line in client.stream_chat_completion(
-                messages = messages or [{"role": "user", "content": "what color is grass?"}],
+                messages = messages
+                or [{"role": "user", "content": "what color is grass?"}],
                 model = "claude-opus-4-7",
                 max_tokens = 64,
             ):
@@ -157,7 +158,10 @@ def _citation_payload(body: str) -> dict:
         except json.JSONDecodeError:
             continue
         tool_event = payload.get("_toolEvent") if isinstance(payload, dict) else None
-        if isinstance(tool_event, dict) and tool_event.get("type") == "document_citations":
+        if (
+            isinstance(tool_event, dict)
+            and tool_event.get("type") == "document_citations"
+        ):
             return tool_event
     raise AssertionError("document_citations event not parsed out of SSE body")
 

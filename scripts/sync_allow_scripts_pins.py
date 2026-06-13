@@ -74,7 +74,9 @@ def desired_key(name: str, versions: list[str]) -> str:
     return f"{name}@{' || '.join(versions)}"
 
 
-def compute_renames(policy: dict, lock_versions: dict[str, list[str]]) -> dict[str, str]:
+def compute_renames(
+    policy: dict, lock_versions: dict[str, list[str]]
+) -> dict[str, str]:
     renames: dict[str, str] = {}
     for key in policy:
         name, rng = split_spec(key)
@@ -93,7 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description = __doc__)
     mode = ap.add_mutually_exclusive_group(required = True)
     mode.add_argument("--check", action = "store_true", help = "exit 1 if pins are stale")
-    mode.add_argument("--fix", action = "store_true", help = "rewrite package.json in place")
+    mode.add_argument(
+        "--fix", action = "store_true", help = "rewrite package.json in place"
+    )
     ap.add_argument(
         "--dir",
         type = Path,
@@ -105,20 +109,26 @@ def main(argv: list[str] | None = None) -> int:
     pkg_path = args.dir / "package.json"
     lock_path = args.dir / "package-lock.json"
     if not pkg_path.exists() or not lock_path.exists():
-        print(f"sync-allow-scripts: nothing to do ({args.dir} has no package.json + lockfile)")
+        print(
+            f"sync-allow-scripts: nothing to do ({args.dir} has no package.json + lockfile)"
+        )
         return 0
 
     pkg = json.loads(pkg_path.read_text(encoding = "utf-8"))
     policy = pkg.get("allowScripts")
     if not isinstance(policy, dict) or not policy:
-        print("sync-allow-scripts: no allowScripts policy in package.json, nothing to do")
+        print(
+            "sync-allow-scripts: no allowScripts policy in package.json, nothing to do"
+        )
         return 0
 
     lock = json.loads(lock_path.read_text(encoding = "utf-8"))
     renames = compute_renames(policy, script_versions_from_lock(lock))
 
     if not renames:
-        print(f"sync-allow-scripts: {len(policy)} allowScripts entries in sync with the lockfile")
+        print(
+            f"sync-allow-scripts: {len(policy)} allowScripts entries in sync with the lockfile"
+        )
         return 0
 
     for old, new in renames.items():
@@ -132,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     pkg["allowScripts"] = {renames.get(k, k): v for k, v in policy.items()}
-    pkg_path.write_text(json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8")
+    pkg_path.write_text(
+        json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8"
+    )
     print(
         f"sync-allow-scripts: re-pinned {len(renames)} entr{'y' if len(renames) == 1 else 'ies'} in {pkg_path}"
     )

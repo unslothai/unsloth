@@ -53,7 +53,10 @@ def _tool_turn(i: int, result_chars: int = 400) -> list[dict]:
                 {
                     "id": f"call_{i}",
                     "type": "function",
-                    "function": {"name": "read", "arguments": f'{{"filePath":"/f{i}"}}'},
+                    "function": {
+                        "name": "read",
+                        "arguments": f'{{"filePath":"/f{i}"}}',
+                    },
                 }
             ],
         },
@@ -109,7 +112,10 @@ def test_truncation_never_orphans_tool_results():
     new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.4)
     assert dropped > 0
     surviving_call_ids = {
-        tc["id"] for m in new if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])
+        tc["id"]
+        for m in new
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
     }
     for m in new:
         if m.get("role") == "tool":
@@ -266,8 +272,12 @@ class _FakeEmptyBackend:
 
 
 def test_v1_models_exposes_real_context_window(monkeypatch):
-    monkeypatch.setattr(routes_mod, "get_llama_cpp_backend", lambda: _FakeLlamaBackend())
-    monkeypatch.setattr(routes_mod, "get_inference_backend", lambda: _FakeEmptyBackend())
+    monkeypatch.setattr(
+        routes_mod, "get_llama_cpp_backend", lambda: _FakeLlamaBackend()
+    )
+    monkeypatch.setattr(
+        routes_mod, "get_inference_backend", lambda: _FakeEmptyBackend()
+    )
     models = _openai_model_objects()
     assert len(models) == 1
     entry = models[0]

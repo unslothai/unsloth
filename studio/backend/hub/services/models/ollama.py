@@ -124,7 +124,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     return None
 
 
-def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
+def _make_ollama_blob_link(
+    link_dir: Path, link_name: str, target: Path
+) -> Optional[str]:
     """Create a .gguf-named link to an Ollama blob: tries symlink then hardlink, skips the model if neither works (a full multi-GB copy would block the API). Idempotent."""
     try:
         link_dir.mkdir(parents = True, exist_ok = True)
@@ -137,7 +139,9 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         return None
     link_path = _contained_link_path(link_dir, link_name)
     if link_path is None:
-        logger.warning("Refusing unsafe Ollama link name %r under %s", link_name, link_dir)
+        logger.warning(
+            "Refusing unsafe Ollama link name %r under %s", link_name, link_dir
+        )
         return None
     try:
         resolved = target.resolve()
@@ -232,7 +236,9 @@ def _ollama_model_info_from_manifest(
                 model_type = cfg.get("model_type", "")
                 file_type = cfg.get("file_type", "")
             except (json.JSONDecodeError, OSError) as e:
-                logger.debug("Could not parse Ollama config blob %s: %s", config_blob, e)
+                logger.debug(
+                    "Could not parse Ollama config blob %s: %s", config_blob, e
+                )
 
     layers = manifest.get("layers") or []
     if not isinstance(layers, list):
@@ -260,11 +266,17 @@ def _ollama_model_info_from_manifest(
             model_blob = candidate
             if materialize_links and model_link_dir is not None:
                 link_name = f"{safe_name}-{tag}{quant}.gguf"
-                gguf_link_path = _make_ollama_blob_link(model_link_dir, link_name, candidate)
+                gguf_link_path = _make_ollama_blob_link(
+                    model_link_dir, link_name, candidate
+                )
 
         elif materialize_links and media == "application/vnd.ollama.image.projector":
             candidate = _ollama_blob_path(blobs_dir, digest)
-            if candidate is not None and _safe_is_file(candidate) and model_link_dir is not None:
+            if (
+                candidate is not None
+                and _safe_is_file(candidate)
+                and model_link_dir is not None
+            ):
                 mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
                 _make_ollama_blob_link(model_link_dir, mmproj_name, candidate)
 

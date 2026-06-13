@@ -115,7 +115,9 @@ class TestTransformersVersionOfflineShortCircuits:
         with patch("urllib.request.urlopen", boom):
             assert _check_tokenizer_config_needs_v5(unique) is False
 
-    def test_config_550_skips_urllib_when_offline(self, monkeypatch, clean_offline_env, tmp_path):
+    def test_config_550_skips_urllib_when_offline(
+        self, monkeypatch, clean_offline_env, tmp_path
+    ):
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         unique = f"unsloth/never-cached-{tmp_path.name}-cfg"
 

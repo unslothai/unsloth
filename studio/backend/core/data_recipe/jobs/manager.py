@@ -108,7 +108,9 @@ class Subscription:
             event_id = self._next_id
         body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
         event_type = event.get("type") or "message"
-        return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
+        return (
+            f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n"
+        ).encode("utf-8")
 
 
 class JobManager:
@@ -155,7 +157,9 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
-            self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
+            self._job.source_progress_estimated_total = _github_source_estimated_total(
+                recipe
+            )
             self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
             self._seq = 0
@@ -182,7 +186,9 @@ class JobManager:
             self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
             self._pump_thread.start()
 
-            self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
+            self._emit(
+                {"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id}
+            )
             return job_id
 
     def cancel(self, job_id: str) -> bool:
@@ -193,7 +199,9 @@ class JobManager:
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
-            self._emit({"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id})
+            self._emit(
+                {"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id}
+            )
             try:
                 self._proc.terminate()
             except (AttributeError, OSError):
@@ -310,12 +318,16 @@ class JobManager:
             if not parquet_dir.exists():
                 return {"error": f"dataset path missing: {parquet_dir}"}
 
-            return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
+            return self._load_dataset_page(
+                parquet_dir = parquet_dir, limit = limit, offset = offset
+            )
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
 
     @staticmethod
-    def _load_dataset_page(*, parquet_dir: Path, limit: int, offset: int) -> dict[str, Any]:
+    def _load_dataset_page(
+        *, parquet_dir: Path, limit: int, offset: int
+    ) -> dict[str, Any]:
         dataset_page = JobManager._load_dataset_page_with_duckdb(
             parquet_dir = parquet_dir,
             limit = limit,
@@ -478,7 +490,9 @@ class JobManager:
                         self._job.error = self._job.error or "process exited"
                     self._job.finished_at = time.time()
                     event_type = (
-                        EVENT_JOB_CANCELLED if self._job.status == "cancelled" else EVENT_JOB_ERROR
+                        EVENT_JOB_CANCELLED
+                        if self._job.status == "cancelled"
+                        else EVENT_JOB_ERROR
                     )
                     self._emit(
                         {

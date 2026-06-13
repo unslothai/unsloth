@@ -38,7 +38,11 @@ def create_merged_results(
 
 
 def post_process_results(
-    results: list[KernelResult], mode: str, seqlen: int, dtype: torch.dtype, autotune: bool
+    results: list[KernelResult],
+    mode: str,
+    seqlen: int,
+    dtype: torch.dtype,
+    autotune: bool,
 ):
     df = KernelResult.to_dataframe(results, sort_by = "speedup")
     df = create_merged_results(df, mode, seqlen, dtype, autotune)
@@ -46,7 +50,12 @@ def post_process_results(
 
 
 def save_results(
-    df: pd.DataFrame, results_dir: str, mode: str, seqlen: int, dtype: torch.dtype, autotune: bool
+    df: pd.DataFrame,
+    results_dir: str,
+    mode: str,
+    seqlen: int,
+    dtype: torch.dtype,
+    autotune: bool,
 ):
     dt = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     save_dir = f"{results_dir}/{mode}"
@@ -62,7 +71,9 @@ def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: 
     block_n_range = power_of_two_range(args.BLOCK_SIZE_N[0], args.BLOCK_SIZE_N[1])
     block_k_range = power_of_two_range(args.BLOCK_SIZE_K[0], args.BLOCK_SIZE_K[1])
     num_warps_range = multiples_of_range(args.num_warps[0], args.num_warps[1], step = 2)
-    num_stages_range = multiples_of_range(args.num_stages[0], args.num_stages[1], step = 1)
+    num_stages_range = multiples_of_range(
+        args.num_stages[0], args.num_stages[1], step = 1
+    )
 
     mode = args.mode
     kernel_configs = []
@@ -170,7 +181,9 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
         os.makedirs(save_dir)
 
     for key, config in autotune_cache.items():
-        key = [str(k) if not "torch" in str(k) else str(k.split("torch.")[-1]) for k in key]
+        key = [
+            str(k) if not "torch" in str(k) else str(k.split("torch.")[-1]) for k in key
+        ]
         filename = "_".join(key)
         save_path = f"{save_dir}/{filename}.json"
         print(f"Saving autotune results to {save_path}")

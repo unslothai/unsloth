@@ -319,7 +319,9 @@ def test_split_helper_buffers_only_after_last_open_byte():
     assert head == f"pre {complete} mid "
     assert tail == partial
     # Head, once rewritten, drops every private-use byte.
-    rewritten = _replace_openai_citation_markers(head, [{"source_id": "done", "url": "https://d"}])
+    rewritten = _replace_openai_citation_markers(
+        head, [{"source_id": "done", "url": "https://d"}]
+    )
     assert rewritten == "pre [[1]](https://d) mid "
 
 

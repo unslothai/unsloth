@@ -31,7 +31,9 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
+    "structlog"
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -54,7 +56,9 @@ _OOM_OUT = (
     "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 12000.00 MiB on "
     "device 0: cudaMalloc failed: out of memory"
 )
-_BAD_ARCH_OUT = "llama_model_load: error loading model: unknown model architecture: 'qwen_image'"
+_BAD_ARCH_OUT = (
+    "llama_model_load: error loading model: unknown model architecture: 'qwen_image'"
+)
 _PORT_OUT = "srv start: failed to bind: address already in use"
 _MISSING_OUT = "error: failed to open GGUF file: no such file or directory"
 # A healthy startup log that merely mentions the projector must not match.

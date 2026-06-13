@@ -56,7 +56,9 @@ def export(
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
     ),
-    private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
+    private: bool = typer.Option(
+        False, "--private", help = "Make the HuggingFace repo private."
+    ),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):

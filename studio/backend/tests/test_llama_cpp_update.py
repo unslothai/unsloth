@@ -120,7 +120,9 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     # Never hit the network in these tests.
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None
+    )
     yield
     freshness.reset_caches()
     upd._reset_job_for_tests()
@@ -129,7 +131,9 @@ def _clean_state(monkeypatch, tmp_path):
 
 def _no_prebuilt(monkeypatch):
     """Stub the host prebuilt probe to 'none available' (no source-build offer)."""
-    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None)
+    monkeypatch.setattr(
+        upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None
+    )
 
 
 def _prebuilt(
@@ -149,7 +153,9 @@ def _prebuilt(
         "asset": asset or f"llama-{release_tag}-bin-macos-arm64.tar.gz",
         "install_kind": "macos-arm64",
     }
-    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: payload)
+    monkeypatch.setattr(
+        upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: payload
+    )
 
 
 def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
@@ -263,7 +269,9 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
 def test_status_update_available(monkeypatch, tmp_path):
     binary = _write_install(tmp_path, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
     st = upd.get_update_status(force_refresh = True)
     assert st["supported"] is True
     assert st["installed_tag"] == "b9493"
@@ -274,7 +282,9 @@ def test_status_update_available(monkeypatch, tmp_path):
 def test_status_up_to_date(monkeypatch, tmp_path):
     binary = _write_install(tmp_path, "b9518")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
     st = upd.get_update_status(force_refresh = True)
     assert st["installed_tag"] == "b9518"
     assert st["latest_tag"] == "b9518"
@@ -285,7 +295,9 @@ def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     binary = tmp_path / "llama-server"
     binary.write_text("stub")  # no marker
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
     _no_prebuilt(monkeypatch)
     res = upd.start_update()
     assert res["started"] is False
@@ -301,9 +313,13 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     binary.write_text("stub")  # no marker
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
     _prebuilt(
-        monkeypatch, repo = "unslothai/llama.cpp", asset = "app-b9585-linux-x64-rocm-gfx110X.tar.gz"
+        monkeypatch,
+        repo = "unslothai/llama.cpp",
+        asset = "app-b9585-linux-x64-rocm-gfx110X.tar.gz",
     )
 
     captured = {}
@@ -344,8 +360,12 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
 
     captured = {}
 
@@ -400,8 +420,12 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
 
     _patch_installer_popen(monkeypatch, returncode = 2, lines = ["boom: network error\n"])
 
@@ -434,11 +458,15 @@ def test_rocm_install_args_gfx_family():
 
 def test_rocm_install_args_fork_version_bundle():
     # Fork ROCm bundles encode a ROCm version, not a gfx -> forward --has-rocm.
-    assert upd._rocm_install_args("llama-b9334-bin-ubuntu-rocm-6.4-x64.tar.gz") == ["--has-rocm"]
+    assert upd._rocm_install_args("llama-b9334-bin-ubuntu-rocm-6.4-x64.tar.gz") == [
+        "--has-rocm"
+    ]
 
 
 def test_rocm_install_args_windows_hip():
-    assert upd._rocm_install_args("llama-b9334-bin-win-hip-radeon-x64.zip") == ["--has-rocm"]
+    assert upd._rocm_install_args("llama-b9334-bin-win-hip-radeon-x64.zip") == [
+        "--has-rocm"
+    ]
 
 
 def test_rocm_install_args_non_rocm_and_missing():
@@ -460,8 +488,12 @@ def _capture_install_cmd(
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, tag, repo = repo, asset = asset)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: latest)
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: latest
+    )
 
     captured = {}
 
@@ -545,7 +577,9 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
 def test_start_update_already_running_refuses(monkeypatch, tmp_path):
     binary = _write_install(tmp_path / "llama.cpp", "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
     with upd._job_lock:
         upd._job.update(state = upd._JOB_RUNNING)
     res = upd.start_update()
@@ -590,8 +624,12 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
 
     backend = _FakeBackend()
     _inject_backend(monkeypatch, backend)
@@ -623,8 +661,12 @@ def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_pa
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
 
     backend = _FakeBackend()
     _inject_backend(monkeypatch, backend)
@@ -646,8 +688,12 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
 
     def _raise():
         raise RuntimeError("no backend")
@@ -659,7 +705,9 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "routes", routes_pkg)
     monkeypatch.setitem(sys.modules, "routes.inference", inference_mod)
 
-    _patch_installer_popen(monkeypatch, on_start = lambda cmd: _write_install(install_dir, "b9518"))
+    _patch_installer_popen(
+        monkeypatch, on_start = lambda cmd: _write_install(install_dir, "b9518")
+    )
 
     res = upd.start_update()
     assert res["started"] is True
@@ -676,15 +724,15 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
 
 
 def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
     calls = {"n": 0}
 
     class _Proc:
         returncode = 0
         # stderr noise plus the JSON line on stdout (installer logs to stderr).
-        stdout = (
-            '{"prebuilt_available": true, "repo": "unslothai/llama.cpp", "release_tag": "b9585"}'
-        )
+        stdout = '{"prebuilt_available": true, "repo": "unslothai/llama.cpp", "release_tag": "b9585"}'
         stderr = "[llama-prebuilt] some log\n"
 
     def _fake_run(cmd, **kwargs):
@@ -701,7 +749,9 @@ def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
 
 
 def test_resolve_prebuilt_fails_open(monkeypatch, tmp_path):
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
 
     def _boom(cmd, **kwargs):
         raise OSError("subprocess failed")
@@ -777,7 +827,9 @@ def test_llama_install_root_ignores_inactive_env_root(monkeypatch, tmp_path):
     assert upd._llama_install_root(str(binary)) == active
 
 
-def test_llama_install_root_refuses_pinned_checkout_under_llama_cpp(monkeypatch, tmp_path):
+def test_llama_install_root_refuses_pinned_checkout_under_llama_cpp(
+    monkeypatch, tmp_path
+):
     # The LLAMA_SERVER_PATH pin guard must run before the ancestor scan, or a
     # user's own llama.cpp checkout could be handed to the installer.
     root = tmp_path / "my-project" / "llama.cpp"
@@ -797,7 +849,9 @@ def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")  # no marker
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
     _prebuilt(monkeypatch, release_tag = "b9518")
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9600)
     res = upd.start_update()
@@ -810,10 +864,14 @@ def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
 
 def test_status_not_offered_on_mix_latest(monkeypatch, tmp_path):
     # Installed the mix latest; GitHub latest is that same full tag -> no banner.
-    binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
+    binary = _write_install(
+        tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453"
+    )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(
-        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
     st = upd.get_update_status()
     assert st["update_available"] is False
@@ -825,18 +883,26 @@ def test_status_not_offered_when_latest_lags(monkeypatch, tmp_path):
     # A lagging latest (older build than installed) must never be offered.
     binary = _write_install(tmp_path / "llama.cpp", "b9585")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
+    )
     st = upd.get_update_status()
     assert st["update_available"] is False
 
 
 def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
     # A direct POST / stale banner must not reinstall when already on the latest.
-    binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
+    binary = _write_install(
+        tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453"
+    )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     monkeypatch.setattr(
-        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+        upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py"
+    )
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
     res = upd.start_update()
     assert res["started"] is False

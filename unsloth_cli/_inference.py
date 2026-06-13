@@ -75,7 +75,9 @@ def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    with Live(
+        console = console, refresh_per_second = 12, vertical_overflow = "visible"
+    ) as live:
         for chunk in stream:
             if not isinstance(chunk, str):
                 continue
@@ -233,7 +235,9 @@ def load_chat_backend(
     typer.echo(f"Loading {model}", err = True)
 
     if model_config.is_gguf:
-        return _load_gguf_backend(model_config, hf_token = hf_token, max_seq_length = max_seq_length)
+        return _load_gguf_backend(
+            model_config, hf_token = hf_token, max_seq_length = max_seq_length
+        )
 
     if fresh_backend:
         ensure_studio_backend_path()
@@ -273,7 +277,11 @@ def _studio_token() -> Optional[str]:
         from studio.backend.auth import storage
         from studio.backend.auth.authentication import create_access_token
 
-        row = storage.get_connection().execute("SELECT username FROM auth_user LIMIT 1").fetchone()
+        row = (
+            storage.get_connection()
+            .execute("SELECT username FROM auth_user LIMIT 1")
+            .fetchone()
+        )
         return create_access_token(row[0], desktop = True) if row else None
     except Exception:
         return None
@@ -311,7 +319,9 @@ class HttpChatBackend:
         )
         return urllib.request.urlopen(request, timeout = timeout)
 
-    def ensure_loaded(self, model: str, *, hf_token, max_seq_length, load_in_4bit) -> None:
+    def ensure_loaded(
+        self, model: str, *, hf_token, max_seq_length, load_in_4bit
+    ) -> None:
         typer.echo(f"Loading {model} on the Studio server", err = True)
         try:
             self._request(
@@ -394,7 +404,9 @@ class HttpChatBackend:
                     visible = text
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
-                    yield visible.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+                    yield visible.encode("utf-16", "surrogatepass").decode(
+                        "utf-16", "replace"
+                    )
 
         return cumulative()
 
@@ -412,6 +424,9 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
         return None
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
-        model, hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit
+        model,
+        hf_token = hf_token,
+        max_seq_length = max_seq_length,
+        load_in_4bit = load_in_4bit,
     )
     return backend

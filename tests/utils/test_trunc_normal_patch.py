@@ -29,7 +29,9 @@ _MISSING = object()
 def _load_import_fixes_module():
     repo_root = Path(__file__).resolve().parents[2]
     import_fixes_path = repo_root / "unsloth" / "import_fixes.py"
-    spec = importlib.util.spec_from_file_location("unsloth_import_fixes_local", import_fixes_path)
+    spec = importlib.util.spec_from_file_location(
+        "unsloth_import_fixes_local", import_fixes_path
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

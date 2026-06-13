@@ -69,7 +69,9 @@ def _build_app() -> FastAPI:
             "approval_id": approval_id,
             "awaiting_confirmation": True,
         }
-        denied = wait_tool_decision(slot, approval_id, cancel_event = cancel_event) == "deny"
+        denied = (
+            wait_tool_decision(slot, approval_id, cancel_event = cancel_event) == "deny"
+        )
         result = TOOL_REJECTED_MESSAGE if denied else _EXECUTED_RESULT
         yield {"type": "tool_end", "tool_name": "python", "result": result}
 
@@ -116,7 +118,9 @@ class _Server:
 
     def __init__(self, app):
         self.port = _free_port()
-        config = uvicorn.Config(app, host = "127.0.0.1", port = self.port, log_level = "warning")
+        config = uvicorn.Config(
+            app, host = "127.0.0.1", port = self.port, log_level = "warning"
+        )
         self.server = uvicorn.Server(config)
         self._thread = threading.Thread(target = self.server.run, daemon = True)
 
@@ -159,7 +163,9 @@ async def _drive(base_url, session_id, decision):
     resolved = None
     timeout = httpx.Timeout(10.0)
     async with httpx.AsyncClient(base_url = base_url, timeout = timeout) as client:
-        async with client.stream("POST", "/stream", json = {"session_id": session_id}) as resp:
+        async with client.stream(
+            "POST", "/stream", json = {"session_id": session_id}
+        ) as resp:
             assert resp.status_code == 200
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):

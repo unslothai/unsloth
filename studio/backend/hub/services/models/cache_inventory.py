@@ -39,7 +39,9 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-_repo_size_cache: "OrderedDict[tuple[str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
+_repo_size_cache: "OrderedDict[tuple[str, str], tuple[int, frozenset[str], float]]" = (
+    OrderedDict()
+)
 _repo_size_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_POS_TTL = 60.0
@@ -168,7 +170,9 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id
+                )
                 if total_size == 0 and not has_variant_state:
                     continue
                 partial = hf_cache_scan.is_gguf_repo_partial(
@@ -239,7 +243,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_transformers_safetensors = False
     has_checkpoint = False
 
-    def _record_blob(target: dict[str, int], file_obj, rev_id: str, file_name: str) -> None:
+    def _record_blob(
+        target: dict[str, int], file_obj, rev_id: str, file_name: str
+    ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
         key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
@@ -367,7 +373,9 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
         result["library_name"] = library_name.strip()
     tags = card.get("tags")
     if isinstance(tags, list):
-        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        clean_tags = [
+            tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()
+        ]
         if clean_tags:
             result["tags"] = clean_tags
     return result

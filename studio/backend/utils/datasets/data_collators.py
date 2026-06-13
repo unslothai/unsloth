@@ -23,13 +23,19 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
 
     def __call__(self, features: List[dict]) -> dict:
-        input_features = [{"input_features": feature["input_features"]} for feature in features]
-        batch = self.processor.feature_extractor.pad(input_features, return_tensors = "pt")
+        input_features = [
+            {"input_features": feature["input_features"]} for feature in features
+        ]
+        batch = self.processor.feature_extractor.pad(
+            input_features, return_tensors = "pt"
+        )
 
         label_features = [{"input_ids": feature["labels"]} for feature in features]
         labels_batch = self.processor.tokenizer.pad(label_features, return_tensors = "pt")
 
-        labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
+        labels = labels_batch["input_ids"].masked_fill(
+            labels_batch.attention_mask.ne(1), -100
+        )
 
         if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all().cpu().item():
             labels = labels[:, 1:]
@@ -136,7 +142,9 @@ class VLMDataCollator:
                                 all_images.append(img)
 
         texts = [
-            self.processor.apply_chat_template(msgs, tokenize = False, add_generation_prompt = False)
+            self.processor.apply_chat_template(
+                msgs, tokenize = False, add_generation_prompt = False
+            )
             for msgs in all_messages
         ]
 

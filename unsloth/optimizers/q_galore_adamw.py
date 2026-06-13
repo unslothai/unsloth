@@ -171,7 +171,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                     # Zero p.data so the 8-bit update writes the pure delta.
                     p._saved_data = p.data.clone()
-                    p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
+                    p.data = torch.zeros_like(
+                        grad, dtype = p.data.dtype, device = p.data.device
+                    )
                     p.grad = grad
 
                 # --- 8-bit Adam update ---
@@ -281,7 +283,9 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     """
     handles = []
     for module in model.modules():
-        has_quant_param = any(hasattr(p, "_q_scales") for p in module.parameters(recurse = False))
+        has_quant_param = any(
+            hasattr(p, "_q_scales") for p in module.parameters(recurse = False)
+        )
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)
             handles.append(h)
@@ -346,7 +350,9 @@ def make_q_galore_param_groups(
     Returns:
         List of two param group dicts: ``[galore_group, non_galore_group]``.
     """
-    targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
+    targets = (
+        set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
+    )
 
     galore_params = []
     non_galore_params = []

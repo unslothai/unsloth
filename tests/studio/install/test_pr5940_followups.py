@@ -67,8 +67,12 @@ def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
     model.write_bytes(b"GGUF-via-hf")
     fake_hf = MagicMock(return_value = str(model))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
+        patch.object(
+            prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b
+        ),
+        patch.dict(
+            sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}
+        ),
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-hf"
     assert fake_hf.called  # hf path was taken, urllib not needed
@@ -77,8 +81,12 @@ def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
 def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
     fake_hf = MagicMock(side_effect = RuntimeError("hf unreachable"))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
+        patch.object(
+            prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b
+        ),
+        patch.dict(
+            sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}
+        ),
         patch.object(prebuilt, "download_bytes", return_value = b"GGUF-via-urllib") as dl,
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-urllib"
@@ -192,7 +200,9 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
         assert sh == expect, f"install.sh: {name!r} -> {sh!r}, expected {expect!r}"
         if expect is not None:  # cross-check bash agrees with the PowerShell table
             ps = next((a for p, a in ps_rows if re.search(p, name)), None)
-            assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
+            assert (
+                sh == ps
+            ), f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
 
 
 def test_setup_sh_name_arch_table_in_sync_with_install_sh():
@@ -268,7 +278,9 @@ def test_amd_smi_opt_in_forces_on_windows_no_sdk():
 
 def test_amd_smi_opt_out_overrides_hip_sdk():
     assert (
-        _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"})
+        _amd_smi_allowed_under(
+            "Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"}
+        )
         is False
     )
 
@@ -278,7 +290,9 @@ def test_ps_installers_gate_amd_smi_on_windows():
     # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
-        assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
+        assert (
+            "UNSLOTH_ENABLE_AMD_SMI" in text
+        ), f"{ps.name} missing amd-smi opt-in gate"
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
 
 
@@ -289,7 +303,9 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
     # list` ungated on Adrenalin-only hosts; not-spawning is the only fix.
     import ast
 
-    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(src)
 
     def _names_amd_smi_command(node):
@@ -313,7 +329,10 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
         return False
 
     def _references_gate(node):
-        return any(isinstance(n, ast.Name) and n.id == "_amd_smi_allowed" for n in ast.walk(node))
+        return any(
+            isinstance(n, ast.Name) and n.id == "_amd_smi_allowed"
+            for n in ast.walk(node)
+        )
 
     offenders = [
         node.name

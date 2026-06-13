@@ -189,12 +189,17 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
             },
         )
     ]
-    assert any(e.get("type") == "tool_end" and e.get("tool_name") == "render_html" for e in events)
+    assert any(
+        e.get("type") == "tool_end" and e.get("tool_name") == "render_html"
+        for e in events
+    )
 
     # The second llama-server request should include the assistant preface
     # plus the structured tool call, preserving OpenAI-compatible ordering.
     assert len(payloads) == 2
-    assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
+    assistant_messages = [
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant"
+    ]
     assert assistant_messages[-1]["content"] == "Here is the artifact.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
@@ -251,7 +256,9 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, repeat_stream, final_stream], payloads)
+    backend = _make_backend(
+        monkeypatch, [first_stream, repeat_stream, final_stream], payloads
+    )
 
     calls: list[tuple[str, dict]] = []
 
@@ -360,11 +367,16 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    assert any(
+        event.get("type") == "content" and event.get("text") == "Done."
+        for event in events
+    )
     final_user_messages = [
         m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
     ]
-    assert not any("used all available tool calls" in message for message in final_user_messages)
+    assert not any(
+        "used all available tool calls" in message for message in final_user_messages
+    )
 
 
 def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
@@ -445,7 +457,9 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            messages = [
+                {"role": "user", "content": "search gpus in 2026 prices and use python"}
+            ],
             tools = tools,
             max_tool_iterations = 3,
         )
@@ -560,7 +574,9 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            messages = [
+                {"role": "user", "content": "search gpus in 2026 prices and use python"}
+            ],
             tools = tools,
             max_tool_iterations = 4,
         )
@@ -676,13 +692,14 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
-    assert [event.get("tool_call_id") for event in events if event.get("type") == "tool_end"] == [
-        "call_search_1"
-    ]
+    assert [
+        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+    ] == ["call_search_1"]
     assert len(payloads) == 4
     assert "tools" not in payloads[-1]
     assert any(
-        event.get("type") == "content" and event.get("text") == "Final answer from first search."
+        event.get("type") == "content"
+        and event.get("text") == "Final answer from first search."
         for event in events
     )
 
@@ -736,9 +753,9 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
-    assert [event.get("tool_call_id") for event in events if event.get("type") == "tool_end"] == [
-        "call_search_1"
-    ]
+    assert [
+        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+    ] == ["call_search_1"]
     assert not [
         event
         for event in events
@@ -747,7 +764,9 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     ]
 
 
-def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
+def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(
+    monkeypatch,
+):
     same_turn_render_calls = [
         _sse(
             {
@@ -777,7 +796,9 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [same_turn_render_calls, final_stream], payloads)
+    backend = _make_backend(
+        monkeypatch, [same_turn_render_calls, final_stream], payloads
+    )
 
     calls: list[tuple[str, dict]] = []
 
@@ -854,7 +875,9 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         )
     )
 
-    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert not [
+        event for event in events if event.get("type") in {"tool_start", "tool_end"}
+    ]
     assert len(payloads) == 2
     disabled_nudges = [
         message
@@ -937,7 +960,8 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     assert len(payloads) == 2
     assert len(calls) == 1
     assert any(
-        event.get("type") == "content" and event.get("text") == "I will now use render_html again."
+        event.get("type") == "content"
+        and event.get("text") == "I will now use render_html again."
         for event in events
     )
 
@@ -980,7 +1004,9 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
         )
     )
 
-    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == 2
 
@@ -1024,7 +1050,9 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
         )
     )
 
-    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
     assert content_texts == [
         "I will use render_html now.",
         "No tool is needed. Final answer: use a red square.",
@@ -1066,7 +1094,9 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
         )
     )
 
-    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == 1
 
@@ -1174,7 +1204,9 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     )
 
     assert len(calls) == 1
-    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
     assert len(payloads) == 3
 
@@ -1194,12 +1226,16 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
         return "OK"
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.new_approval_id", lambda: "approval-1"
+    )
     monkeypatch.setattr(
         "core.inference.llama_cpp.begin_tool_decision",
         lambda *_a, **_k: object(),
     )
-    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow"
+    )
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -1216,7 +1252,10 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
     assert starts[0]["approval_id"]
     assert starts[0]["awaiting_confirmation"] is True
     assert calls == [("python", {"code": "print(1)"})]
-    assert any(event.get("type") == "tool_end" and event.get("result") == "OK" for event in events)
+    assert any(
+        event.get("type") == "tool_end" and event.get("result") == "OK"
+        for event in events
+    )
 
 
 def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
@@ -1277,7 +1316,10 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
         )
     )
 
-    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    assert any(
+        event.get("type") == "content" and event.get("text") == "Done."
+        for event in events
+    )
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
@@ -1300,7 +1342,9 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     approvals = iter(["approval-1", "approval-2"])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: next(approvals))
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.new_approval_id", lambda: next(approvals)
+    )
     monkeypatch.setattr(
         "core.inference.llama_cpp.begin_tool_decision",
         lambda *_a, **_k: object(),

@@ -131,7 +131,9 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_qwen36_gguf_with_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
+    def test_qwen36_gguf_with_mmproj_skips_transformers(
+        self, mock_subprocess, tmp_path
+    ):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
         model.write_bytes(b"")
         (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
@@ -143,7 +145,9 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(self, mock_subprocess, tmp_path):
+    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(
+        self, mock_subprocess, tmp_path
+    ):
         variant_dir = tmp_path / "BF16"
         variant_dir.mkdir()
         model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
@@ -157,7 +161,9 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_qwen36_gguf_without_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
+    def test_qwen36_gguf_without_mmproj_skips_transformers(
+        self, mock_subprocess, tmp_path
+    ):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
         model.write_bytes(b"")
 
@@ -289,7 +295,9 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_vision_config_attr_detected_and_cached(self, mock_load_config, mock_needs_t5):
+    def test_vision_config_attr_detected_and_cached(
+        self, mock_load_config, mock_needs_t5
+    ):
         """Models with vision_config (LLaVA, Qwen2-VL, etc.) should be cached as True."""
         cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "qwen2_vl"
@@ -303,7 +311,9 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_model_type_detected_and_cached(self, mock_load_config, mock_needs_t5):
+    def test_gemma4_model_type_detected_and_cached(
+        self, mock_load_config, mock_needs_t5
+    ):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4"
         cfg.architectures = ["Gemma4ForConditionalGeneration"]
@@ -315,7 +325,9 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_audio_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
+    def test_gemma4_audio_subconfig_not_detected_as_vision(
+        self, mock_load_config, mock_needs_t5
+    ):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4_audio"
         cfg.architectures = ["Gemma4AudioModel"]
@@ -327,7 +339,9 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_text_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
+    def test_gemma4_text_subconfig_not_detected_as_vision(
+        self, mock_load_config, mock_needs_t5
+    ):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4_text"
         cfg.architectures = ["Gemma4ForCausalLM"]
@@ -472,10 +486,15 @@ class TestSubprocessScript:
             is True
         )
         assert (
-            inline_is_vlm(_C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"]))
+            inline_is_vlm(
+                _C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"])
+            )
             is False
         )
-        assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
+        assert (
+            inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"]))
+            is False
+        )
 
 
 # ---------------------------------------------------------------------------

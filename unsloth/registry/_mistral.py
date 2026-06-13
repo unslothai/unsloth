@@ -53,10 +53,18 @@ def register_mistral_small_models(include_original_model: bool = False):
     global _IS_MISTRAL_SMALL_REGISTERED
     if _IS_MISTRAL_SMALL_REGISTERED:
         return
-    _register_models(MistralSmall_2503_Base_Meta, include_original_model = include_original_model)
-    _register_models(MistralSmall_2503_Instruct_Meta, include_original_model = include_original_model)
-    _register_models(MistralSmall_2501_Base_Meta, include_original_model = include_original_model)
-    _register_models(MistralSmall_2501_Instruct_Meta, include_original_model = include_original_model)
+    _register_models(
+        MistralSmall_2503_Base_Meta, include_original_model = include_original_model
+    )
+    _register_models(
+        MistralSmall_2503_Instruct_Meta, include_original_model = include_original_model
+    )
+    _register_models(
+        MistralSmall_2501_Base_Meta, include_original_model = include_original_model
+    )
+    _register_models(
+        MistralSmall_2501_Instruct_Meta, include_original_model = include_original_model
+    )
 
     _IS_MISTRAL_SMALL_REGISTERED = True
 

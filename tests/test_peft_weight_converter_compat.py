@@ -13,7 +13,9 @@ IMPORT_FIXES = REPO_ROOT / "unsloth" / "import_fixes.py"
 
 
 def _load_patch_function():
-    spec = importlib.util.spec_from_file_location("_unsloth_import_fixes_under_test", IMPORT_FIXES)
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_import_fixes_under_test", IMPORT_FIXES
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.patch_peft_weight_converter_compatibility
@@ -236,7 +238,9 @@ def test_concurrent_legacy_calls_no_typeerror():
     def _worker():
         start.wait(timeout = 10)
         try:
-            out = twc.build_peft_weight_mapping([_make_legacy_converter()], "default", None)
+            out = twc.build_peft_weight_mapping(
+                [_make_legacy_converter()], "default", None
+            )
             results.append(out)
         except Exception as e:
             errors.append(e)

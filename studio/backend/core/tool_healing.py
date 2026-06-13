@@ -83,7 +83,9 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                     },
                 }
                 if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
+                    tc["function"]["arguments"] = json.dumps(
+                        tc["function"]["arguments"]
+                    )
                 tool_calls.append(tc)
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -99,7 +101,11 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
             func_name = fm.group(1)
             body_start = fm.end()
             # Boundaries: next <function= tag or </tool_call>
-            next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+            next_func = (
+                func_starts[idx + 1].start()
+                if idx + 1 < len(func_starts)
+                else len(content)
+            )
             end_tag = _TC_END_TAG_RE.search(content[body_start:])
             if end_tag:
                 body_end = body_start + end_tag.start()

@@ -63,7 +63,9 @@ _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 def _validate_safe_id(value: str, label: str) -> str:
     if not value or not _SAFE_ID_RE.match(value):
-        raise HTTPException(400, f"Invalid {label}: must be alphanumeric/dash/underscore only")
+        raise HTTPException(
+            400, f"Invalid {label}: must be alphanumeric/dash/underscore only"
+        )
     return value
 
 
@@ -73,7 +75,8 @@ def _serialize_preview_value(value: Any) -> Any:
 
 def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {str(key): _serialize_preview_value(value) for key, value in row.items()} for row in rows
+        {str(key): _serialize_preview_value(value) for key, value in row.items()}
+        for row in rows
     ]
 
 
@@ -194,7 +197,9 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
 
 
-def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
+def _read_preview_rows_from_local_file(
+    path: Path, preview_size: int
+) -> list[dict[str, Any]]:
     try:
         import pandas as pd
     except ImportError as exc:
@@ -292,7 +297,9 @@ def _read_preview_rows_from_multi_files(
     for fid, fname in zip(file_ids, file_names):
         extracted = block_dir / f"{fid}.extracted.txt"
         if not extracted.exists():
-            raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
+            raise HTTPException(
+                404, f"Extracted text not found for file: {fname} (id: {fid})"
+            )
         file_entries.append((extracted, fname))
 
     return build_multi_file_preview_rows(
@@ -372,7 +379,9 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
             ) from exc
 
     if not preview_rows:
-        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
+        raise HTTPException(
+            status_code = 422, detail = "dataset appears empty or unreadable"
+        )
     preview_rows = _serialize_preview_rows(preview_rows)
     columns = _extract_columns(preview_rows)
 
@@ -381,7 +390,9 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     else:
         resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
         if not resolved_path:
-            raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
+            raise HTTPException(
+                status_code = 422, detail = "unable to resolve seed dataset path"
+            )
 
     return SeedInspectResponse(
         dataset_name = dataset_name,
@@ -500,7 +511,9 @@ async def upload_unstructured_file(
     try:
         meta_path = block_dir / f"{file_id}.meta.json"
         meta_path.write_text(
-            json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
+            json.dumps(
+                {"original_filename": original_filename, "size_bytes": size_bytes}
+            ),
             encoding = "utf-8",
         )
     except OSError:
@@ -625,7 +638,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             int(payload.preview_size),
         )
     if not preview_rows:
-        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
+        raise HTTPException(
+            status_code = 422, detail = "dataset appears empty or unreadable"
+        )
     columns = _extract_columns(preview_rows)
 
     return SeedInspectResponse(

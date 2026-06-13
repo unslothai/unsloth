@@ -59,7 +59,9 @@ _LEGACY_MARKER_VERSION = 1
 
 # Verbatim phrase the worker emits on a degraded completion and the download
 # lifecycle escalates to a warning log. Shared so the emit and match stay coupled.
-MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
+MANIFEST_DEGRADED_MARKER = (
+    "completed without a manifest so partial detection is degraded"
+)
 
 
 @dataclass(frozen = True)
@@ -473,14 +475,18 @@ def _iter_variant_state_files(
             yield _variant_from_state_file(entry, variant), entry
 
 
-def iter_variant_manifests(repo_type: RepoType, repo_id: str) -> Iterator[tuple[str, Path]]:
+def iter_variant_manifests(
+    repo_type: RepoType, repo_id: str
+) -> Iterator[tuple[str, Path]]:
     """Yield (variant, manifest_path) for every variant-keyed manifest
     written for this repo. Used by is_gguf_repo_partial to enumerate all
     variants present on disk so the all-variants-broken gate can run."""
     yield from _iter_variant_state_files(manifests_dir(), repo_type, repo_id)
 
 
-def iter_variant_markers(repo_type: RepoType, repo_id: str) -> Iterator[tuple[str, Path]]:
+def iter_variant_markers(
+    repo_type: RepoType, repo_id: str
+) -> Iterator[tuple[str, Path]]:
     """Yield (variant, marker_path) for every variant-keyed cancel marker.
     Companion to iter_variant_manifests: catches variants cancelled
     before download-start ever wrote a manifest (very early failures)."""

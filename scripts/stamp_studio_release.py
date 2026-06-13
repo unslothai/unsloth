@@ -42,7 +42,9 @@ def _atomic_write_text(
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILD_INFO_PATH = REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
+BUILD_INFO_PATH = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
+)
 BUILD_INFO_SUFFIX = "studio/backend/utils/_studio_release_build.py"
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$")
 GIT_DESCRIBE_SUFFIX_RE = re.compile(r"-\d+-g[0-9A-Fa-f]+(?:-dirty)?$")

@@ -84,7 +84,9 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
     try:
-        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
+        has_config = (d / "config.json").exists() or (
+            d / "adapter_config.json"
+        ).exists()
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
@@ -193,7 +195,9 @@ def _apply_format_aware_partial(
             continue
         # GGUF row-level transport is ambiguous (variants may differ); per-variant
         # detail lives on GgufVariantDetail.partial_transport via the variants endpoint.
-        partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
+        partial_transport = (
+            None if row.model_format == "gguf" else snapshot_partial_transport
+        )
         rewritten.append(
             row.model_copy(
                 update = {
@@ -217,7 +221,9 @@ def _weight_basename(name: str) -> str:
 
 def _is_adapter_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
-    return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
+    return lower.startswith("adapter_model") and lower.endswith(
+        (".safetensors", ".bin")
+    )
 
 
 def _is_transformers_safetensors_weight_name(name: str) -> bool:
@@ -267,7 +273,9 @@ def _classify_non_gguf_model_format(
     has_checkpoint_weights: bool,
     trusted_hf_cache_repo: bool = False,
 ) -> Optional[ModelFormat]:
-    if has_safetensors and (has_config or (trusted_hf_cache_repo and has_transformers_safetensors)):
+    if has_safetensors and (
+        has_config or (trusted_hf_cache_repo and has_transformers_safetensors)
+    ):
         return "safetensors"
     if has_adapter_config and has_adapter_weights:
         return "adapter"
@@ -278,7 +286,9 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter_path(name)
     )
 
 
@@ -445,7 +455,8 @@ def _local_model_info(
         ),
         load_id = load_id,
         model_id = model_id,
-        display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
+        display_name = display_name
+        or (scan_path.stem if scan_path.is_file() else scan_path.name),
         path = str(load_path),
         size_bytes = max(0, int(size_bytes or 0)),
         source = source,
@@ -520,12 +531,17 @@ def _classify_local_path(
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False
     )
     adapter_config = _read_adapter_config(scan_path) if has_adapter_config else {}
-    adapter_base_model = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
+    adapter_base_model = _clean_optional_string(
+        adapter_config.get("base_model_name_or_path")
+    )
     adapter_type = _clean_optional_string(adapter_config.get("peft_type"))
-    training_method = _clean_optional_string(adapter_config.get("unsloth_training_method"))
+    training_method = _clean_optional_string(
+        adapter_config.get("unsloth_training_method")
+    )
     has_adapter_weights = any(_is_adapter_weight_file(f) for f in files)
     has_safetensors = any(
-        f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f) for f in files
+        f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
+        for f in files
     )
     has_transformers_safetensors = any(
         _is_transformers_safetensors_weight_file(f) and not _is_adapter_weight_file(f)
@@ -554,7 +570,9 @@ def _classify_local_path(
                 if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
             )
         else:
-            size_bytes = _sum_file_sizes(f for f in files if _is_checkpoint_weight_file(f))
+            size_bytes = _sum_file_sizes(
+                f for f in files if _is_checkpoint_weight_file(f)
+            )
         rows.append(
             _local_model_info(
                 scan_path = scan_path,

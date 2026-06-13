@@ -77,7 +77,9 @@ def _asset_name() -> Optional[Tuple[str, bool]]:
 def _cache_path() -> Optional[Path]:
     """studio_bin_root()/cloudflared(.exe), or None if the studio home is unresolvable."""
     try:
-        from utils.paths.storage_roots import studio_bin_root  # lazy: backend-only import
+        from utils.paths.storage_roots import (
+            studio_bin_root,
+        )  # lazy: backend-only import
     except Exception:
         return None
     name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
@@ -262,7 +264,9 @@ class CloudflareTunnel:
             if self.url is None:
                 self.error = "cloudflared exited before emitting a tunnel URL"
             elif not self.ready:
-                self.error = "cloudflared exited before the tunnel connection registered"
+                self.error = (
+                    "cloudflared exited before the tunnel connection registered"
+                )
             self._url_event.set()
             self._ready_event.set()
 

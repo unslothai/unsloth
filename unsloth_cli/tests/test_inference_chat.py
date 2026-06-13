@@ -123,8 +123,16 @@ def test_chatbackend_routes_compare_to_adapter_control():
     fake = _FakeBackend()
     backend = ChatBackend("unsloth", fake)
 
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = False, **_STREAM_KWARGS))
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = True, **_STREAM_KWARGS))
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}], use_adapter = False, **_STREAM_KWARGS
+        )
+    )
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}], use_adapter = True, **_STREAM_KWARGS
+        )
+    )
 
     assert [(path, flag) for path, flag, _ in fake.calls] == [
         ("adapter", False),
@@ -156,13 +164,17 @@ def test_render_columns_emits_both_answers_with_separator(capsys):
 
 def test_you_prompt_matches_readline_backend(monkeypatch):
     gnu = types.ModuleType("readline")
-    gnu.__doc__ = "Importing this module enables command line editing using GNU readline."
+    gnu.__doc__ = (
+        "Importing this module enables command line editing using GNU readline."
+    )
     monkeypatch.setitem(sys.modules, "readline", gnu)
     prompt = chatmod._you_prompt(colors = True)
     assert "You: " in prompt and "\001" in prompt
 
     libedit = types.ModuleType("readline")
-    libedit.__doc__ = "Importing this module enables command line editing using libedit readline."
+    libedit.__doc__ = (
+        "Importing this module enables command line editing using libedit readline."
+    )
     monkeypatch.setitem(sys.modules, "readline", libedit)
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
@@ -193,7 +205,9 @@ def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
             closed.append(True)
 
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(
+        chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend()
+    )
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
@@ -233,13 +247,17 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
             pass
 
     resolved = []
-    monkeypatch.setattr(chatmod, "_pick_trained_model", lambda console: "outputs/run-42")
+    monkeypatch.setattr(
+        chatmod, "_pick_trained_model", lambda console: "outputs/run-42"
+    )
     monkeypatch.setattr(
         chatmod,
         "resolve_model_config",
         lambda model, **k: (resolved.append(model), _FakeConfig())[1],
     )
-    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(
+        chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend()
+    )
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
@@ -319,8 +337,12 @@ def test_chat_prefers_running_studio_server(monkeypatch):
 
     local_loads = []
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
-    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: local_loads.append(1))
+    monkeypatch.setattr(
+        chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend()
+    )
+    monkeypatch.setattr(
+        chatmod, "load_chat_backend", lambda *a, **k: local_loads.append(1)
+    )
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
     result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
@@ -355,10 +377,14 @@ def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
         return _FakeBaseBackend()
 
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
+    monkeypatch.setattr(
+        chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend()
+    )
     monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
+    result = CliRunner().invoke(
+        _chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n"
+    )
 
     assert result.exit_code == 0, result.output
     assert "(compare on)" in result.output
@@ -392,7 +418,9 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input = "hi\n/exit\n")
+    result = CliRunner().invoke(
+        _chat_app(), ["tuned-run", "--compare"], input = "hi\n/exit\n"
+    )
 
     assert result.exit_code == 0, result.output
     assert loads == [("tuned-run", False), ("fake/base", True)]

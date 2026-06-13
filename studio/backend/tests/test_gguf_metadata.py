@@ -35,11 +35,17 @@ def _enc_kv_string(key: str, value: str) -> bytes:
 
 
 def _enc_kv_uint32(key: str, value: int) -> bytes:
-    return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
+    return (
+        _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
+    )
 
 
 def _enc_kv_bool(key: str, value: bool) -> bytes:
-    return _enc_string(key) + struct.pack("<I", _VTYPE_BOOL) + struct.pack("<B", 1 if value else 0)
+    return (
+        _enc_string(key)
+        + struct.pack("<I", _VTYPE_BOOL)
+        + struct.pack("<B", 1 if value else 0)
+    )
 
 
 def _enc_kv_string_array(key: str, values: Iterable[str]) -> bytes:
@@ -64,7 +70,10 @@ def _write_synthetic_gguf(
     extra_string_arrays = extra_string_arrays or {}
     extra_bools = extra_bools or {}
     kv_count = (
-        len(general_strings) + len(extra_uint32) + len(extra_string_arrays) + len(extra_bools)
+        len(general_strings)
+        + len(extra_uint32)
+        + len(extra_string_arrays)
+        + len(extra_bools)
     )
     body = b""
     for k, v in general_strings.items():
@@ -117,7 +126,10 @@ def test_extracts_general_string_fields(tmp_path: Path):
     assert meta is not None
     assert meta["general.architecture"] == "qwen2vl"
     assert meta["general.basename"] == "Qwen3.5"
-    assert meta["general.base_model.0.repo_url"] == "https://huggingface.co/Qwen/Qwen3.5-9B"
+    assert (
+        meta["general.base_model.0.repo_url"]
+        == "https://huggingface.co/Qwen/Qwen3.5-9B"
+    )
 
 
 def test_skips_unrelated_fields_without_breaking(tmp_path: Path):

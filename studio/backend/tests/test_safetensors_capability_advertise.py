@@ -363,7 +363,11 @@ def test_worker_load_reply_payload_includes_chat_template_info():
         "is_gguf": False,
     }
     _bm = getattr(backend, "models", {}) or {}
-    _entry = _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
+    _entry = (
+        _bm.get(mc.identifier)
+        or _bm.get(getattr(backend, "active_model_name", None))
+        or {}
+    )
     _tpl_info = _entry.get("chat_template_info")
     if isinstance(_tpl_info, dict):
         model_info["chat_template_info"] = {

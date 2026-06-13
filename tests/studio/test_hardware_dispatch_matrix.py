@@ -37,13 +37,17 @@ class HardwareProfile:
     system: str  # platform.system() value
     machine: str  # platform.machine() value
     cuda_available: bool  # torch.cuda.is_available() value
-    hip_version: Optional[str]  # torch.version.hip; None for NVIDIA, "6.1" etc. for ROCm
+    hip_version: Optional[
+        str
+    ]  # torch.version.hip; None for NVIDIA, "6.1" etc. for ROCm
     xpu_available: bool  # torch.xpu.is_available() value
     has_mlx: bool  # whether to inject a fake mlx into sys.modules
     mps_available: bool  # torch.backends.mps.is_available() value
 
     expect_is_mlx: bool  # unsloth._IS_MLX
-    expect_device_type: str  # Studio DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
+    expect_device_type: (
+        str  # Studio DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
+    )
     expect_is_rocm: bool  # Studio IS_ROCM
     expect_apple_silicon: bool  # Studio is_apple_silicon()
     extra_notes: str = ""
@@ -197,7 +201,9 @@ def spoof_hardware(monkeypatch):
         # Stub torch.xpu.* (detect_hardware reads both); real get_device_name
         # needs the XPU torch build, so always stub to stay hardware-agnostic.
         if hasattr(torch, "xpu"):
-            monkeypatch.setattr(torch.xpu, "is_available", lambda: profile.xpu_available)
+            monkeypatch.setattr(
+                torch.xpu, "is_available", lambda: profile.xpu_available
+            )
             monkeypatch.setattr(
                 torch.xpu,
                 "get_device_name",
@@ -213,7 +219,9 @@ def spoof_hardware(monkeypatch):
 
         # torch.backends.mps.is_available
         if hasattr(torch.backends, "mps"):
-            monkeypatch.setattr(torch.backends.mps, "is_available", lambda: profile.mps_available)
+            monkeypatch.setattr(
+                torch.backends.mps, "is_available", lambda: profile.mps_available
+            )
 
         # mlx + mlx.core in sys.modules
         if profile.has_mlx:
@@ -250,7 +258,8 @@ def spoof_hardware(monkeypatch):
                 ):
                     if name == "mlx" or name.startswith("mlx."):
                         raise ImportError(
-                            f"mlx import blocked by spoof_hardware " f"(profile={profile.name})"
+                            f"mlx import blocked by spoof_hardware "
+                            f"(profile={profile.name})"
                         )
                     return None
 
@@ -318,7 +327,8 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
         f"got {detected!r}. {profile.extra_notes}"
     )
     assert hw.IS_ROCM is profile.expect_is_rocm, (
-        f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, " f"got {hw.IS_ROCM}"
+        f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, "
+        f"got {hw.IS_ROCM}"
     )
 
 

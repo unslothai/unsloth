@@ -307,7 +307,9 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
         if in_summary and line.strip().startswith("- "):
             failure_pkgs.append(line.strip()[2:])
 
-    ok = actual_status == case.expected_status and set(failure_pkgs) == set(case.expected_failures)
+    ok = actual_status == case.expected_status and set(failure_pkgs) == set(
+        case.expected_failures
+    )
     return ok, (
         f"expected: status={case.expected_status} fails={sorted(case.expected_failures)}\n"
         f"actual:   status={actual_status} fails={sorted(failure_pkgs)}\n"
@@ -1099,7 +1101,9 @@ def run_pkg_field_cases() -> int:
         finally:
             os.unlink(base_path)
             os.unlink(head_path)
-        actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
+        actual_status = {0: "PASS", 1: "FAIL"}.get(
+            proc.returncode, f"RC{proc.returncode}"
+        )
         fails: list[str] = []
         in_summary = False
         for line in proc.stdout.splitlines():
@@ -1110,11 +1114,15 @@ def run_pkg_field_cases() -> int:
                 fails.append(line.strip()[2:])
         # The expected_failures includes the tolerated-FP case (P15); we
         # accept BOTH expected_status and expected_failures matches.
-        ok = actual_status == pc.expected_status and set(fails) == set(pc.expected_failures)
+        ok = actual_status == pc.expected_status and set(fails) == set(
+            pc.expected_failures
+        )
         mark = "PASS" if ok else "FAIL"
         print(f"  [{mark}] {pc.id}: {pc.desc}")
         if not ok:
-            print(f"      expected: status={pc.expected_status} fails={pc.expected_failures}")
+            print(
+                f"      expected: status={pc.expected_status} fails={pc.expected_failures}"
+            )
             print(f"      actual:   status={actual_status} fails={fails}")
             for ln in proc.stdout.splitlines()[:25]:
                 print(f"      {ln}")
@@ -1160,7 +1168,9 @@ def run_adversarial_cases() -> int:
                 )
             finally:
                 os.unlink(base_path)
-            actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
+            actual_status = {0: "PASS", 1: "FAIL"}.get(
+                proc.returncode, f"RC{proc.returncode}"
+            )
             fails = []
             in_summary = False
             for line in proc.stdout.splitlines():
@@ -1169,11 +1179,15 @@ def run_adversarial_cases() -> int:
                     continue
                 if in_summary and line.strip().startswith("- "):
                     fails.append(line.strip()[2:])
-            ok = actual_status == ac.expected_status and set(fails) == set(ac.expected_failures)
+            ok = actual_status == ac.expected_status and set(fails) == set(
+                ac.expected_failures
+            )
             mark = "PASS" if ok else "FAIL"
             print(f"  [{mark}] {ac.id}: {ac.desc}")
             if not ok:
-                print(f"      expected: status={ac.expected_status} fails={ac.expected_failures}")
+                print(
+                    f"      expected: status={ac.expected_status} fails={ac.expected_failures}"
+                )
                 print(f"      actual:   status={actual_status} fails={fails}")
                 for ln in proc.stdout.splitlines()[:20]:
                     print(f"      {ln}")
@@ -1353,7 +1367,9 @@ def run_enum_cases() -> int:
         if not ok:
             print(f"      expected unused superset: {sorted(ec.expected_unused)}")
             print(f"      expected used NOT in unused: {sorted(ec.expected_used)}")
-            print(f"      expected orphans superset: {sorted(ec.expected_orphan_types)}")
+            print(
+                f"      expected orphans superset: {sorted(ec.expected_orphan_types)}"
+            )
             print(f"      actual unused: {sorted(unused)}")
             print(f"      actual orphans: {sorted(orphans)}")
             for ln in proc.stdout.splitlines()[:30]:

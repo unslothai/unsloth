@@ -223,7 +223,9 @@ def _stream_file_preview_slice(path: Path, preview_size: int):
     return Dataset.from_list(rows), None
 
 
-def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
+def _load_local_preview_slice(
+    *, dataset_path: Path, train_split: str, preview_size: int
+):
     # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
@@ -258,7 +260,9 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     # Parquet/Arrow give a cheap exact total_rows via len()+select; JSON/CSV
     # carry no such metadata, so stream them and report total_rows=None.
     if suffix == ".parquet":
-        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
+        dataset = load_dataset(
+            "parquet", data_files = str(dataset_path), split = train_split
+        )
         total_rows = len(dataset)
         preview_slice = dataset.select(range(min(preview_size, total_rows)))
         return preview_slice, total_rows
@@ -272,7 +276,9 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
             )
         return preview
 
-    raise HTTPException(status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}")
+    raise HTTPException(
+        status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
+    )
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -285,7 +291,10 @@ def _sanitize_filename(filename: str) -> str:
 def _upload_too_large(size_bytes: int) -> HTTPException:
     return HTTPException(
         status_code = 413,
-        detail = (f"Upload is too large " f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."),
+        detail = (
+            f"Upload is too large "
+            f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."
+        ),
     )
 
 

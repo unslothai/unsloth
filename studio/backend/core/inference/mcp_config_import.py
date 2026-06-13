@@ -60,14 +60,19 @@ def _enabled_from_spec(label: str, spec: dict) -> tuple[Optional[bool], Optional
     return not disabled, None
 
 
-def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Optional[str]]:
+def _parse_entry(
+    name: str, spec: object
+) -> tuple[Optional[ParsedMcpEntry], Optional[str]]:
     label = str(name).strip()
     if not label:
         return None, "Server entry has an empty name."
     if not isinstance(spec, dict):
         return None, f"{label}: entry must be an object."
     if _has_variable_reference(spec):
-        return None, f"{label}: VS Code variable references are not supported by import."
+        return (
+            None,
+            f"{label}: VS Code variable references are not supported by import.",
+        )
 
     is_enabled, error = _enabled_from_spec(label, spec)
     if error:
@@ -91,8 +96,13 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         if sandbox_enabled is not None and not isinstance(sandbox_enabled, bool):
             return None, f"{label}: 'sandboxEnabled' must be true or false."
         if sandbox_enabled:
-            return None, f"{label}: sandboxed stdio servers cannot be preserved by import."
-        unsupported = [field for field in _UNSUPPORTED_STDIO_FIELDS if spec.get(field) is not None]
+            return (
+                None,
+                f"{label}: sandboxed stdio servers cannot be preserved by import.",
+            )
+        unsupported = [
+            field for field in _UNSUPPORTED_STDIO_FIELDS if spec.get(field) is not None
+        ]
         if unsupported:
             return None, f"{label}: import cannot preserve {', '.join(unsupported)}."
         if spec.get("oauth") is not None:
@@ -104,7 +114,10 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         if env is not None and not isinstance(env, dict):
             return None, f"{label}: 'env' must be an object."
         if _has_null_value(env):
-            return None, f"{label}: null environment values are not supported by import."
+            return (
+                None,
+                f"{label}: null environment values are not supported by import.",
+            )
         url = join_stdio_command([command, *(str(a) for a in args)])
         headers = _coerce_str_dict(env) if env else None
         return ParsedMcpEntry(label, url, headers, True, is_enabled = is_enabled), None
@@ -120,12 +133,21 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         field for field in _UNSUPPORTED_TIMEOUT_FIELDS if spec.get(field) is not None
     ]
     if unsupported_timeout:
-        return None, f"{label}: import cannot preserve {', '.join(unsupported_timeout)}."
+        return (
+            None,
+            f"{label}: import cannot preserve {', '.join(unsupported_timeout)}.",
+        )
     url_infers_sse = url.rstrip("/").endswith("/sse")
     if entry_type == "sse" and not url_infers_sse:
-        return None, f"{label}: explicit SSE transport cannot be preserved for this URL."
+        return (
+            None,
+            f"{label}: explicit SSE transport cannot be preserved for this URL.",
+        )
     if entry_type in _HTTP_REMOTE_TYPES and url_infers_sse:
-        return None, f"{label}: explicit HTTP transport cannot be preserved for this URL."
+        return (
+            None,
+            f"{label}: explicit HTTP transport cannot be preserved for this URL.",
+        )
     oauth_raw = spec.get("oauth")
     if oauth_raw is not None and not isinstance(oauth_raw, dict):
         return None, f"{label}: 'oauth' must be an object."

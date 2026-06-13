@@ -108,7 +108,9 @@ def _run(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES
                 )
             except Exception:
-                logger.warning("figure rendering failed for job %s", job_id, exc_info = True)
+                logger.warning(
+                    "figure rendering failed for job %s", job_id, exc_info = True
+                )
                 figures = []
             if figures:
                 _progress(conn, job_id, "captioning", 0.2)
@@ -139,12 +141,16 @@ def _run(
                 from . import locators
                 regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
             except Exception:
-                logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
+                logger.warning(
+                    "pdf region location failed for job %s", job_id, exc_info = True
+                )
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
-        store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        store.set_document_status(
+            conn, document_id, "completed", num_chunks = len(chunks)
+        )
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
@@ -267,7 +273,9 @@ def get_job_status(job_id: str) -> dict | None:
     """Read the persisted ingestion job row (status / stage / progress / error)."""
     conn = rag_db.get_connection()
     try:
-        row = conn.execute("SELECT * FROM ingestion_jobs WHERE id=?", (job_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM ingestion_jobs WHERE id=?", (job_id,)
+        ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

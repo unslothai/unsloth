@@ -74,7 +74,9 @@ except ImportError:
             "__exit__": lambda self, *a: None,
         },
     )
-    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("unstubbed httpx.get"))
+    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("unstubbed httpx.get")
+    )
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
@@ -241,7 +243,9 @@ def test_fit_ctx_skipped_without_fit_or_explicit_ctx_or_support():
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, False, 98304, 98304, _CAPS_ALL
     )
-    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(1, True, 0, 262144, _CAPS_ALL)
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, 0, 262144, _CAPS_ALL
+    )
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, 98304, 98304, _CAPS_NONE
     )

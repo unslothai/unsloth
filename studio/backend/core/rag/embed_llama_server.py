@@ -123,7 +123,9 @@ class LlamaServerBackend:
 
         repo = config.EMBED_GGUF_REPO
         token = os.environ.get("HF_TOKEN") or None
-        files = [f for f in list_repo_files(repo, token = token) if f.lower().endswith(".gguf")]
+        files = [
+            f for f in list_repo_files(repo, token = token) if f.lower().endswith(".gguf")
+        ]
         files = [f for f in files if "mmproj" not in f.lower()]
         if not files:
             raise RuntimeError(f"no .gguf file found in embedder repo {repo!r}")
@@ -161,7 +163,9 @@ class LlamaServerBackend:
         gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
-    def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
+    def _build_cmd(
+        self, binary: str, model_path: str, port: int, *, use_gpu: bool
+    ) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match
         # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
         cmd = [
@@ -204,8 +208,12 @@ class LlamaServerBackend:
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
+            os.path.join(
+                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"
+            ),
+            os.path.join(
+                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"
+            ),
         ):
             lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
         for cuda_lib in (
@@ -382,7 +390,9 @@ class LlamaServerBackend:
                 raise RuntimeError(
                     f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
                 ) from e
-        raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
+        raise RuntimeError(
+            f"llama-server embedder POST {path} failed after retry"
+        ) from last_exc
 
     def encode(
         self,

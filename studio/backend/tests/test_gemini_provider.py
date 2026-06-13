@@ -542,7 +542,9 @@ def test_finish_reason_swaps_to_tool_calls_when_function_call_emitted(monkeypatc
                 {
                     "content": {
                         "role": "model",
-                        "parts": [{"functionCall": {"name": "lookup", "args": {"k": "v"}}}],
+                        "parts": [
+                            {"functionCall": {"name": "lookup", "args": {"k": "v"}}}
+                        ],
                     },
                     "finishReason": "STOP",
                 }
@@ -626,7 +628,9 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     deltas = [
         tc
         for c in chunks
-        for tc in (c.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", [])
+        for tc in (c.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
     ]
     assert deltas, chunks
     sig = deltas[0].get("extra_content", {}).get("google", {}).get("thought_signature")
@@ -680,7 +684,10 @@ def test_image_generation_tool_on_image_model_drops_text_tools(monkeypatch):
         ],
     )
     assert "tools" not in captured["body"], captured["body"]
-    assert captured["body"]["generationConfig"].get("responseModalities") == ["TEXT", "IMAGE"]
+    assert captured["body"]["generationConfig"].get("responseModalities") == [
+        "TEXT",
+        "IMAGE",
+    ]
 
 
 def test_prompt_feedback_block_reason_surfaces_as_error(monkeypatch):
@@ -694,7 +701,9 @@ def test_prompt_feedback_block_reason_surfaces_as_error(monkeypatch):
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     error_chunks = [c for c in chunks if "error" in c]
     assert error_chunks, chunks
-    assert "SAFETY" in (error_chunks[0].get("error", {}).get("message") or ""), error_chunks
+    assert "SAFETY" in (
+        error_chunks[0].get("error", {}).get("message") or ""
+    ), error_chunks
 
 
 def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
@@ -782,7 +791,10 @@ def test_image_model_sets_response_modalities(monkeypatch):
         model = "gemini-2.5-flash-image",
         enabled_tools = ["image_generation"],
     )
-    assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
+    assert captured["body"]["generationConfig"]["responseModalities"] == [
+        "TEXT",
+        "IMAGE",
+    ]
 
 
 def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypatch):
@@ -795,7 +807,10 @@ def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypat
         model = "gemini-2.5-flash-image",
         enabled_tools = ["image_generation"],
     )
-    assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
+    assert captured["body"]["generationConfig"]["responseModalities"] == [
+        "TEXT",
+        "IMAGE",
+    ]
 
 
 def test_image_response_emits_image_b64_tool_event(monkeypatch):
@@ -983,7 +998,9 @@ def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
         )
     ]
     assert len(tool_call_chunks) == 2, tool_call_chunks
-    indices = [c["choices"][0]["delta"]["tool_calls"][0]["index"] for c in tool_call_chunks]
+    indices = [
+        c["choices"][0]["delta"]["tool_calls"][0]["index"] for c in tool_call_chunks
+    ]
     assert indices == [0, 1], indices
 
 
@@ -1030,7 +1047,10 @@ def test_function_call_ids_forwarded_into_gemini_function_call_part(monkeypatch)
     call_ids = [p["functionCall"]["id"] for p in assistant_parts if "functionCall" in p]
     assert call_ids == ["call_alpha", "call_beta"], assistant_parts
     response_ids = [
-        p["functionResponse"]["id"] for c in contents for p in c["parts"] if "functionResponse" in p
+        p["functionResponse"]["id"]
+        for c in contents
+        for p in c["parts"]
+        if "functionResponse" in p
     ]
     assert response_ids == ["call_alpha", "call_beta"], contents
 
@@ -1108,7 +1128,9 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
         if e.get("type") == "tool_start" and e.get("tool_name") == "code_execution"
     ]
     code_ends = [
-        e for e in tool_events if e.get("type") == "tool_end" and "4" in str(e.get("result", ""))
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and "4" in str(e.get("result", ""))
     ]
     assert len(code_starts) == 1, tool_events
     assert code_starts[0]["arguments"]["code"] == "print(2+2)"
@@ -1645,7 +1667,9 @@ def test_safe_fetch_image_rejects_resolved_private_host(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     res = asyncio.new_event_loop().run_until_complete(
-        ep_mod._safe_fetch_image_for_gemini("https://internal.example/x.png", "image/png")
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://internal.example/x.png", "image/png"
+        )
     )
     assert res is None
 
@@ -1719,7 +1743,9 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
     parts = captured["body"]["contents"][-1]["parts"]
     file_uris = [p["fileData"]["fileUri"] for p in parts if "fileData" in p]
     assert "https://www.youtube.com/watch?v=abc123" in file_uris, parts
-    assert "https://generativelanguage.googleapis.com/v1beta/files/abc" in file_uris, parts
+    assert (
+        "https://generativelanguage.googleapis.com/v1beta/files/abc" in file_uris
+    ), parts
 
 
 def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
@@ -1912,7 +1938,9 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
-    image_ends = [e for e in tool_events if e.get("type") == "tool_end" and e.get("image_b64")]
+    image_ends = [
+        e for e in tool_events if e.get("type") == "tool_end" and e.get("image_b64")
+    ]
     assert image_ends, tool_events
     assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
     # Multi-turn image edit must replay the original inlineData part with its
@@ -1978,7 +2006,9 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
     code_ends = [
-        e for e in tool_events if e.get("type") == "tool_end" and e.get("tool_call_id") == "code_a"
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and e.get("tool_call_id") == "code_a"
     ]
     # Two tool_end events on the same id: one for codeExecutionResult, one
     # merging in the inlineData plot. The plot one must carry the native
@@ -2025,7 +2055,9 @@ def test_text_chunk_carries_thought_signature(monkeypatch):
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
     text_chunks = [
-        c for c in chunks if c.get("choices") and c["choices"][0]["delta"].get("content") == "hello"
+        c
+        for c in chunks
+        if c.get("choices") and c["choices"][0]["delta"].get("content") == "hello"
     ]
     assert text_chunks, chunks
     extra = text_chunks[0]["choices"][0]["delta"].get("extra_content")
@@ -2203,7 +2235,8 @@ def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
     assert "executableCode" in native_keys, parts
     assert "codeExecutionResult" in native_keys, parts
     assert not any(
-        "functionCall" in p and (p["functionCall"] or {}).get("name") == "code_execution"
+        "functionCall" in p
+        and (p["functionCall"] or {}).get("name") == "code_execution"
         for p in parts
     ), parts
     exec_part = next(p for p in parts if "executableCode" in p)
@@ -2258,7 +2291,8 @@ def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
     assert inline_parts[0]["inlineData"]["data"] == pixel
     assert inline_parts[0].get("thoughtSignature") == "SIG-IMG", inline_parts
     assert not any(
-        "functionCall" in p and (p["functionCall"] or {}).get("name") == "image_generation"
+        "functionCall" in p
+        and (p["functionCall"] or {}).get("name") == "image_generation"
         for p in parts
     ), parts
 
@@ -2325,7 +2359,11 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
     )
     tools_arr = captured["body"].get("tools") or []
     decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
         None,
     )
     assert decls is not None, captured["body"]
@@ -2378,7 +2416,11 @@ def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch)
     )
     tools_arr = captured["body"].get("tools") or []
     decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
         None,
     )
     assert decls is not None, captured["body"]
@@ -2429,7 +2471,11 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
     )
     tools_arr = captured["body"].get("tools") or []
     decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
         None,
     )
     assert decls is not None
@@ -2444,7 +2490,10 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
     extras = params["properties"]["extras"]
     assert extras.get("type") == "array"
     assert extras.get("items", {}).get("type") == "object"
-    assert extras.get("items", {}).get("properties", {}).get("zip", {}).get("type") == "string"
+    assert (
+        extras.get("items", {}).get("properties", {}).get("zip", {}).get("type")
+        == "string"
+    )
 
 
 def test_function_declarations_self_referential_schema_terminates(monkeypatch):
@@ -2482,7 +2531,11 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
     )
     tools_arr = captured["body"].get("tools") or []
     decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
         None,
     )
     assert decls is not None
@@ -2545,7 +2598,9 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(monkey
                 assert fr.get("name") != "web_search", contents
 
 
-def test_gemini_native_skips_orphan_function_response_for_native_part_replay(monkeypatch):
+def test_gemini_native_skips_orphan_function_response_for_native_part_replay(
+    monkeypatch,
+):
     """Round 26: code_execution / image_generation tool_calls are replayed as
     Gemini-native executableCode / codeExecutionResult / inlineData parts. The
     matching role="tool" follow-up must NOT then be emitted as a
@@ -2761,7 +2816,9 @@ def test_chat_message_extra_content_round_trips_through_validation():
         base_url = "https://generativelanguage.googleapis.com/v1beta",
     )
     assistant_out = built[1]
-    assert assistant_out["extra_content"] == {"google": {"thought_signature": "SIG-TEXT"}}
+    assert assistant_out["extra_content"] == {
+        "google": {"thought_signature": "SIG-TEXT"}
+    }
     # Non-Gemini providers must NOT receive extra_content; Google's
     # thought_signature is unknown to OpenAI / Mistral / etc.
     built_openai = _build_external_messages(
@@ -2828,7 +2885,10 @@ def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
         c
         for c in contents
         if c.get("role") == "user"
-        and all(isinstance(p, dict) and "functionResponse" in p for p in (c.get("parts") or []))
+        and all(
+            isinstance(p, dict) and "functionResponse" in p
+            for p in (c.get("parts") or [])
+        )
     ]
     assert len(tool_result_users) == 1, contents
     fr_parts = tool_result_users[0]["parts"]
@@ -2886,7 +2946,9 @@ def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):
     )
     body = captured["body"]
     assert "tools" not in body, body.get("tools")
-    assert "thinkingConfig" not in body.get("generationConfig", {}), body["generationConfig"]
+    assert "thinkingConfig" not in body.get("generationConfig", {}), body[
+        "generationConfig"
+    ]
 
 
 def test_image_models_drop_function_declarations(monkeypatch):
@@ -2904,7 +2966,10 @@ def test_image_models_drop_function_declarations(monkeypatch):
         ],
     )
     assert captured["body"].get("tools") is None
-    assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
+    assert captured["body"]["generationConfig"]["responseModalities"] == [
+        "TEXT",
+        "IMAGE",
+    ]
 
 
 def test_safe_fetch_image_rejects_malformed_bracketed_url():
@@ -2970,14 +3035,22 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
             )
             return _StubResp()
 
-    monkeypatch.setattr("urllib.request.build_opener", lambda *_args, **_kw: _StubOpener())
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
 
-    res = _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
     assert res is not None
     assert res[0] == "image/png"
     # Outgoing URL must use the pinned IP literal, not the hostname.
     assert any("8.8.8.8" in r["url"] for r in captured["requests"]), captured
-    assert all("cdn.example.com" not in r["url"] for r in captured["requests"]), captured
+    assert all(
+        "cdn.example.com" not in r["url"] for r in captured["requests"]
+    ), captured
     # Host header still carries the original hostname for vhost/SNI.
     assert captured["requests"][0]["host_header"] == "cdn.example.com"
 
@@ -3030,9 +3103,15 @@ def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
                 None,
             )
 
-    monkeypatch.setattr("urllib.request.build_opener", lambda *_args, **_kw: _StubOpener())
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
 
-    res = _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
     assert res is None
 
 
@@ -3182,7 +3261,9 @@ def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
         model = "gemini-3-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high"
+    }
 
 
 def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
@@ -3193,7 +3274,9 @@ def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
         model = "gemini-3.1-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium"
+    }
 
 
 def test_tool_calls_extra_content_stripped_for_non_native_gemini():
@@ -3289,7 +3372,9 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
                             "type": "function",
                             "function": {
                                 "name": "user_function",
-                                "arguments": json.dumps({"_server_tool": True, "q": "x"}),
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "q": "x"}
+                                ),
                             },
                         }
                     ],
@@ -3354,7 +3439,9 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "query": "x"}
+                                ),
                             },
                         }
                     ],
@@ -3442,7 +3529,9 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(monkeypatch):
     assert either.get("nullable") is True
     inner = either.get("anyOf")
     assert isinstance(inner, list) and len(inner) == 2, either
-    assert all(not (isinstance(b, dict) and b.get("type") == "null") for b in inner), inner
+    assert all(
+        not (isinstance(b, dict) and b.get("type") == "null") for b in inner
+    ), inner
 
 
 def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
@@ -3483,16 +3572,26 @@ def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
                 None,
             )
 
-    monkeypatch.setattr("urllib.request.build_opener", lambda *_args, **_kw: _StubOpener())
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
 
-    res = _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
     assert res is None
 
 
 def test_safe_fetch_image_malformed_port_no_crash():
     """Round 18: a URL with a non-numeric port (`https://h:bad/x.png`) must
     not raise; urlparse's port property lazily ValueErrors."""
-    res = _drive(ep_mod._safe_fetch_image_for_gemini("https://example.com:bad/x.png", "image/png"))
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://example.com:bad/x.png", "image/png"
+        )
+    )
     assert res is None
 
 
@@ -3541,10 +3640,14 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
         ):
             return _StubResp()
 
-    monkeypatch.setattr("urllib.request.build_opener", lambda *_args, **_kw: _StubOpener())
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
 
     res = _drive(
-        ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/cat.png", "image/png")
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/cat.png", "image/png"
+        )
     )
     assert res is not None
     assert res[0] == "image/png"
@@ -3625,7 +3728,9 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
     tool_results: list[dict] = []
     for m in msgs:
         if m.get("role") == "user" and isinstance(m.get("content"), list):
-            tool_results.extend(b for b in m["content"] if b.get("type") == "tool_result")
+            tool_results.extend(
+                b for b in m["content"] if b.get("type") == "tool_result"
+            )
     assert any(
         tr.get("tool_use_id") == "call_a" and tr.get("content") == "result_text"
         for tr in tool_results
@@ -4105,7 +4210,9 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "query": "x"}
+                                ),
                             },
                         }
                     ],
@@ -4166,7 +4273,9 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
     assert either.get("nullable") is True
     inner = either.get("anyOf")
     assert isinstance(inner, list) and len(inner) == 2, either
-    types = sorted(b.get("type") for b in inner if isinstance(b, dict) and b.get("type"))
+    types = sorted(
+        b.get("type") for b in inner if isinstance(b, dict) and b.get("type")
+    )
     assert types == ["integer", "string"], inner
 
 
@@ -4368,7 +4477,9 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(monkeypatc
 
     _drive(run())
     # No synthetic web_search tool_start / tool_end emitted.
-    assert all(e.get("tool_name") != "web_search" for e in captured_events), captured_events
+    assert all(
+        e.get("tool_name") != "web_search" for e in captured_events
+    ), captured_events
 
 
 def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch):
@@ -4435,7 +4546,9 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch)
     tool_results: list[dict] = []
     for m in msgs:
         if m.get("role") == "user" and isinstance(m.get("content"), list):
-            tool_results.extend(b for b in m["content"] if b.get("type") == "tool_result")
+            tool_results.extend(
+                b for b in m["content"] if b.get("type") == "tool_result"
+            )
     assert any(
         tr.get("tool_use_id") == "call_a" and tr.get("content") == "result_text"
         for tr in tool_results
@@ -4561,7 +4674,13 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
     #   function_call (get_weather)
     #   function_call_output (sunny)
     #   user ("thanks")
-    assert types == ["user", "assistant", "function_call", "function_call_output", "user"], items
+    assert types == [
+        "user",
+        "assistant",
+        "function_call",
+        "function_call_output",
+        "user",
+    ], items
 
 
 def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
@@ -4631,7 +4750,9 @@ def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
     assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
 
 
-def test_gemini_code_execution_native_part_list_replays_per_part_signatures(monkeypatch):
+def test_gemini_code_execution_native_part_list_replays_per_part_signatures(
+    monkeypatch,
+):
     """Round 21: merged code-execution history must replay per-part
     `thoughtSignature`s, not fan one top-level signature across every native
     subpart. Gemini 3 strict validators reject a signature on the wrong
@@ -4847,7 +4968,9 @@ def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
         ):
             return _StubResp()
 
-    monkeypatch.setattr("urllib.request.build_opener", lambda *_args, **_kw: _StubOpener())
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
 
     res = _drive(
         ep_mod._safe_fetch_image_for_gemini(
@@ -4870,7 +4993,9 @@ def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
     import os
 
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    types_path = os.path.join(here, "frontend", "src", "features", "chat", "types", "api.ts")
+    types_path = os.path.join(
+        here, "frontend", "src", "features", "chat", "types", "api.ts"
+    )
     with open(types_path, "r", encoding = "utf-8") as f:
         src = f.read()
     assert "tool_calls?: OpenAIToolCallPart[]" in src, src[:200]
@@ -5076,7 +5201,9 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
     assert not (hosted_seen & hosted_types), body
     # The user function declaration must still be present so the pin has a
     # target.
-    user_function_seen = any(isinstance(t, dict) and t.get("type") == "function" for t in tools)
+    user_function_seen = any(
+        isinstance(t, dict) and t.get("type") == "function" for t in tools
+    )
     assert user_function_seen, body
     # And the forced-function tool_choice must be forwarded in Responses shape:
     # `{type:"function", name:"..."}`.
@@ -5300,7 +5427,9 @@ def test_strip_provider_synthetic_tool_history_drops_empty_assistant():
     assert roles == ["user", "user"], out
 
 
-def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice(monkeypatch):
+def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice(
+    monkeypatch,
+):
     """Round 22 sibling of the round-20 `tool_choice='none'` test: when the
     caller forces a specific function via `tool_choice={"type":"function", ...}`
     AND passes `enabled_tools=["web_search"]`, the OpenRouter path must NOT
@@ -5311,7 +5440,10 @@ def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = (b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' b"data: [DONE]\n\n"),
+            content = (
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
             headers = {"content-type": "text/event-stream"},
         )
 

@@ -183,7 +183,11 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
             parsed = json.loads(payload)
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict) and "usage" in parsed and parsed.get("choices") == []:
+        if (
+            isinstance(parsed, dict)
+            and "usage" in parsed
+            and parsed.get("choices") == []
+        ):
             out.append(parsed["usage"])
     return out
 
@@ -239,7 +243,9 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
     from pathlib import Path
 
     module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
-    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "_providers_route_under_test", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     providers_route = importlib.util.module_from_spec(spec)
@@ -289,7 +295,9 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
     from pathlib import Path
 
     module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
-    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "_providers_route_under_test", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     providers_route = importlib.util.module_from_spec(spec)
@@ -375,9 +383,13 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
 
     # Usage chunk must come before [DONE].
     data_lines = [ln for ln in lines if ln.startswith("data:")]
-    done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))
+    done_idx = next(
+        i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]")
+    )
     usage_idx = next(
-        i for i, ln in enumerate(data_lines) if '"usage":' in ln and '"choices": []' in ln
+        i
+        for i, ln in enumerate(data_lines)
+        if '"usage":' in ln and '"choices": []' in ln
     )
     assert usage_idx < done_idx
 

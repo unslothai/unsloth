@@ -55,7 +55,9 @@ def inference(
 
     # A running Studio server keeps the model warm between runs, which is
     # exactly what a one-shot command wants.
-    load_opts = dict(hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit)
+    load_opts = dict(
+        hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit
+    )
     chat_backend = None if no_server else connect_studio_server(model, **load_opts)
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)

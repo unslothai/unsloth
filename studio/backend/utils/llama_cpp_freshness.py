@@ -153,7 +153,9 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     return newest["tag_name"]
 
 
-def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
+def latest_published_release(
+    repo: str, *, force_refresh: bool = False
+) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:

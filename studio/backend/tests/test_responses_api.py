@@ -168,7 +168,9 @@ class TestResponsesResponse:
         resp = ResponsesResponse(
             model = "test-model",
             output = [
-                ResponsesOutputMessage(content = [ResponsesOutputTextContent(text = "Hello!")]),
+                ResponsesOutputMessage(
+                    content = [ResponsesOutputTextContent(text = "Hello!")]
+                ),
             ],
             usage = ResponsesUsage(input_tokens = 10, output_tokens = 5, total_tokens = 15),
         )

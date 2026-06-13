@@ -23,7 +23,9 @@ def _extract_template(name):
 
 def _env():
     env = Environment(undefined = StrictUndefined, trim_blocks = False, lstrip_blocks = False)
-    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
+    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(
+        TemplateError(msg)
+    )
     return env
 
 

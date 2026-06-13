@@ -77,7 +77,9 @@ class AudioCodecManager:
             return
         from snac import SNAC
 
-        self._snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
+        self._snac_model = (
+            SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
+        )
         logger.info("Loaded SNAC codec (24kHz)")
 
     def _load_bicodec(
@@ -92,7 +94,9 @@ class AudioCodecManager:
 
         # Clone SparkAudio/Spark-TTS for the sparktts package (HF model repos
         # don't contain it)
-        spark_code_dir = os.path.join(os.path.dirname(model_repo_path or "."), "Spark-TTS")
+        spark_code_dir = os.path.join(
+            os.path.dirname(model_repo_path or "."), "Spark-TTS"
+        )
         sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
         if not os.path.isdir(sparktts_pkg):
             logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...")
@@ -175,7 +179,9 @@ class AudioCodecManager:
 
     # ── Decoders ─────────────────────────────────────────────────
 
-    def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
+    def decode_snac(
+        self, generated_ids: torch.Tensor, device: str
+    ) -> Tuple[bytes, int]:
         """Decode SNAC tokens (Orpheus) into WAV bytes.
 
         Finds the START_OF_SPEECH (128257) marker, extracts codes after it,
@@ -188,7 +194,9 @@ class AudioCodecManager:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
         else:
             # Fall back to the entire output if the marker is missing
-            logger.warning("No START_OF_SPEECH token (128257) found — using full generated output")
+            logger.warning(
+                "No START_OF_SPEECH token (128257) found — using full generated output"
+            )
             cropped = generated_ids
         row = cropped[0]
 
@@ -214,7 +222,8 @@ class AudioCodecManager:
             layer_3.append(codes[7 * i + 6] - 24576)
 
         snac_codes = [
-            torch.tensor(layer).unsqueeze(0).to(device) for layer in [layer_1, layer_2, layer_3]
+            torch.tensor(layer).unsqueeze(0).to(device)
+            for layer in [layer_1, layer_2, layer_3]
         ]
 
         with torch.no_grad():
@@ -241,12 +250,16 @@ class AudioCodecManager:
             f"BiCodec decode: {len(global_matches)} global tokens, {len(semantic_matches)} semantic tokens"
         )
         if len(global_matches) < 10:
-            logger.info(f"BiCodec generated text (first 500 chars): {generated_text[:500]}")
+            logger.info(
+                f"BiCodec generated text (first 500 chars): {generated_text[:500]}"
+            )
 
         if not semantic_matches:
             raise ValueError("No bicodec_semantic tokens found in generated output")
 
-        semantic_ids = torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
+        semantic_ids = (
+            torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
+        )
 
         # Speaker encoder expects exactly 32 global tokens (token_num=32);
         # pad with zeros or truncate.

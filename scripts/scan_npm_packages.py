@@ -768,7 +768,8 @@ def download_tarball(
                     written += len(chunk)
                     if written > max_bytes:
                         return dest, (
-                            f"download exceeded cap {max_bytes} bytes " f"after {written} bytes"
+                            f"download exceeded cap {max_bytes} bytes "
+                            f"after {written} bytes"
                         )
                     h.update(chunk)
                     out.write(chunk)
@@ -865,7 +866,11 @@ def safe_extract(
                 # each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
-                file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
+                file_cap = (
+                    HARD_MAX_BINARY_FILE_BYTES
+                    if is_binary
+                    else HARD_MAX_TEXT_FILE_BYTES
+                )
                 if declared > file_cap:
                     return (
                         f"member {name!r} declared size {declared} > "
@@ -988,7 +993,9 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if isinstance(opt, dict):
         for k, v in opt.items():
             if isinstance(v, str) and (
-                v.startswith("github:") or v.startswith("git+") or v.startswith("git://")
+                v.startswith("github:")
+                or v.startswith("git+")
+                or v.startswith("git://")
             ):
                 findings.append(
                     Finding(
@@ -1104,7 +1111,9 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 filename = rel,
                 pattern = "js-fetch-eval",
                 evidence = _evidence(text, _JS_FETCH_EVAL),
-                detail = ("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
+                detail = (
+                    "Function/eval against base64-decoded payload (obfuscated dropper shape)"
+                ),
             )
         )
     if _JS_ENV_TOKEN.search(text):
@@ -1345,7 +1354,8 @@ def main(argv: list[str] | None = None) -> int:
     if hard_errors or blocking:
         if blocking:
             print(
-                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) " f"at or above {threshold}",
+                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) "
+                f"at or above {threshold}",
                 file = sys.stderr,
             )
         return 1

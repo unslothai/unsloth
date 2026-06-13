@@ -141,7 +141,10 @@ def expected_default_model():
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF" for t in node.targets):
+        if not any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF"
+            for t in node.targets
+        ):
             continue
         try:
             models = ast.literal_eval(node.value)
@@ -318,7 +321,9 @@ with sync_playwright() as p:
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
-            page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+            page.goto(
+                f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000
+            )
             try:
                 page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
@@ -377,7 +382,9 @@ with sync_playwright() as p:
                     flush = True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(
+                    f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True
+                )
             try:
                 shoot(f"01-change-password-attempt-{_form_attempt + 1}-fail")
             except Exception:
@@ -451,7 +458,9 @@ with sync_playwright() as p:
                     flush = True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(
+                    f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True
+                )
             try:
                 shoot(f"03-composer-wait-attempt-{_attempt + 1}-fail")
             except Exception:
@@ -548,7 +557,9 @@ with sync_playwright() as p:
     try:
         sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
     except Exception as _sel_err:
-        info(f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}")
+        info(
+            f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}"
+        )
     if sel_text:
         info(f"model selector button text: {sel_text!r}")
         shoot("03b-default-model-button")
@@ -584,7 +595,10 @@ with sync_playwright() as p:
     if load_resp.get("error"):
         fail(f"/api/inference/load wedged: {load_resp['error']!r}")
     if load_resp["status"] != 200:
-        fail(f"/api/inference/load returned {load_resp['status']}: " f"{load_resp.get('body')!r}")
+        fail(
+            f"/api/inference/load returned {load_resp['status']}: "
+            f"{load_resp.get('body')!r}"
+        )
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
     # Studio caches the per-context model state in zustand; reload
@@ -831,7 +845,8 @@ with sync_playwright() as p:
         # Look for either "Disable X" or "Enable X" -- whichever
         # is currently rendered.
         toggle = page.locator(
-            f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+            f'button[aria-label="Disable {feature}"], '
+            f'button[aria-label="Enable {feature}"]'
         ).first
         if toggle.count() == 0:
             info(f"toggle '{feature}' not present on this layout")
@@ -847,7 +862,8 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
         after = (
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], '
+                f'button[aria-label="Enable {feature}"]'
             ).first.get_attribute("aria-label")
             or ""
         )
@@ -858,7 +874,8 @@ with sync_playwright() as p:
         # Flip back so test state is unchanged.
         try:
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], '
+                f'button[aria-label="Enable {feature}"]'
             ).first.click()
         except Exception:
             pass
@@ -951,7 +968,8 @@ with sync_playwright() as p:
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(
-                            f"theme cycle {cycle + 1}: account-menu click failed " f"({exc!r})"
+                            f"theme cycle {cycle + 1}: account-menu click failed "
+                            f"({exc!r})"
                         )
                     continue
                 try:
@@ -1002,7 +1020,8 @@ with sync_playwright() as p:
             if click_err is not None:
                 page.keyboard.press("Escape")
                 soft_fail(
-                    f"theme cycle {cycle + 1}: theme menuitem click failed " f"({click_err!r})"
+                    f"theme cycle {cycle + 1}: theme menuitem click failed "
+                    f"({click_err!r})"
                 )
                 break
             # Settle. The ".dark" class on <html> is the ground
@@ -1059,7 +1078,9 @@ with sync_playwright() as p:
         # progressively more permissive locators so the test stays
         # green on both platforms.
         candidates = [
-            page.get_by_role("button", name = re.compile(rf"^\s*{label}\s*$", re.I)).first,
+            page.get_by_role(
+                "button", name = re.compile(rf"^\s*{label}\s*$", re.I)
+            ).first,
             page.locator(f'button:has-text("{label}")').first,
             page.locator(f'a:has-text("{label}")').first,
             page.locator(f'[data-sidebar="menu-button"]:has-text("{label}")').first,
@@ -1095,15 +1116,21 @@ with sync_playwright() as p:
     click_nav("New Chat", r"/chat")
     shoot("11-new-chat")
     # Compare moved into the composer + menu (Tools and attachments).
-    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
+    plus_btn = page.get_by_role(
+        "button", name = re.compile(r"Tools and attachments", re.I)
+    ).first
     if plus_btn.count() > 0:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        compare_item = page.get_by_role(
+            "menuitem", name = re.compile(r"Compare chat", re.I)
+        ).first
         if compare_item.count() == 0:
             # The plus menu was decluttered: Compare chat now lives in the
             # "More" submenu; hover (then click as fallback) to open it.
-            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
+            more_trigger = page.get_by_role(
+                "menuitem", name = re.compile(r"^More$", re.I)
+            ).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
                 page.wait_for_timeout(400)
@@ -1150,7 +1177,9 @@ with sync_playwright() as p:
         step("Developer (API) tab via account menu")
         acct.click()
         page.wait_for_timeout(400)
-        dev = page.get_by_role("menuitem", name = re.compile(r"developer|api", re.I)).first
+        dev = page.get_by_role(
+            "menuitem", name = re.compile(r"developer|api", re.I)
+        ).first
         if dev.count() > 0:
             dev.click()
             page.wait_for_timeout(800)
@@ -1167,7 +1196,9 @@ with sync_playwright() as p:
                 re.compile(r"api keys|developer", re.I),
             ).first
             if keys_section.count() > 0:
-                info(f"OK API tab text: {(keys_section.text_content() or '').strip()[:80]!r}")
+                info(
+                    f"OK API tab text: {(keys_section.text_content() or '').strip()[:80]!r}"
+                )
             # Close dialog with Escape.
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
@@ -1185,7 +1216,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(1500)
     # Recipe cards are rendered as <a> or button elements; count
     # all clickable headings under main + screenshot.
-    headings = page.locator("main h2, main h3, [data-recipe], a[href*='/data-recipes/']")
+    headings = page.locator(
+        "main h2, main h3, [data-recipe], a[href*='/data-recipes/']"
+    )
     n_cards = headings.count()
     info(f"Recipes route headings/cards: {n_cards}")
     shoot("15b-recipes-cards")
@@ -1274,7 +1307,10 @@ with sync_playwright() as p:
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
     if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline " f"(n_threads={n_threads})")
+        soft_fail(
+            f"no Recents entry was clickable within 30s deadline "
+            f"(n_threads={n_threads})"
+        )
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')

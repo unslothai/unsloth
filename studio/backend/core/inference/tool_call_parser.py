@@ -194,7 +194,11 @@ def parse_tool_calls_from_text(
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
             body_start = fm.end()
-            next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+            next_func = (
+                func_starts[idx + 1].start()
+                if idx + 1 < len(func_starts)
+                else len(content)
+            )
             end_tag = _TC_END_TAG_RE.search(content[body_start:])
             if end_tag:
                 body_end = body_start + end_tag.start()

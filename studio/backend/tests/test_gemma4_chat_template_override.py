@@ -32,7 +32,9 @@ chat_templates = importlib.util.module_from_spec(_ct_spec)
 _ct_spec.loader.exec_module(chat_templates)
 
 is_unsloth_gemma4_gguf = chat_templates.is_unsloth_gemma4_gguf
-resolve_effective_chat_template_override = chat_templates.resolve_effective_chat_template_override
+resolve_effective_chat_template_override = (
+    chat_templates.resolve_effective_chat_template_override
+)
 load_bundled_chat_template = chat_templates.load_bundled_chat_template
 is_unsloth_gemma4_edge_gguf = chat_templates.is_unsloth_gemma4_edge_gguf
 
@@ -137,7 +139,9 @@ def test_is_unsloth_gemma4_edge_gguf(model_id, expected_edge):
 
 def test_resolver_returns_edge_template_for_e2b_e4b():
     for mid in ("unsloth/gemma-4-E2B-it-GGUF", "unsloth/gemma-4-E4B-it-GGUF"):
-        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
+        out = resolve_effective_chat_template_override(
+            model_identifier = mid, user_override = None
+        )
         assert out == EDGE
         assert out != BUNDLED
 
@@ -165,7 +169,9 @@ def test_resolver_returns_standard_template_for_larger_models():
         "unsloth/gemma-4-26B-A4B-it-GGUF",
         "unsloth/gemma-4-31B-it-GGUF",
     ):
-        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
+        out = resolve_effective_chat_template_override(
+            model_identifier = mid, user_override = None
+        )
         assert out == BUNDLED
 
 
@@ -268,7 +274,9 @@ def _convo_with_prior_tool_reasoning():
         {
             "role": "assistant",
             "reasoning_content": "SECRET_THOUGHT",
-            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": {"x": 1}}}],
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "f", "arguments": {"x": 1}}}
+            ],
         },
         {"role": "tool", "tool_call_id": "c1", "content": "42"},
         {"role": "user", "content": "q2"},
@@ -281,12 +289,18 @@ def test_preserve_thinking_off_omits_prior_reasoning():
 
 
 def test_preserve_thinking_on_keeps_prior_reasoning():
-    assert "SECRET_THOUGHT" in _render(_convo_with_prior_tool_reasoning(), preserve_thinking = True)
+    assert "SECRET_THOUGHT" in _render(
+        _convo_with_prior_tool_reasoning(), preserve_thinking = True
+    )
 
 
 def test_enable_thinking_gates_think_token():
-    assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
-    assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
+    assert "<|think|>" in _render(
+        [{"role": "user", "content": "hi"}], enable_thinking = True
+    )
+    assert "<|think|>" not in _render(
+        [{"role": "user", "content": "hi"}], enable_thinking = False
+    )
 
 
 # ── Reload dedup interaction (why the route resolves the effective override) ──
@@ -334,9 +348,14 @@ def test_already_in_target_state_consistent_with_bundled_override():
         is_vision = False,
     )
     # Effective (resolved bundled) override -> already loaded, no reload.
-    assert backend._already_in_target_state(chat_template_override = BUNDLED, **common) is True
+    assert (
+        backend._already_in_target_state(chat_template_override = BUNDLED, **common)
+        is True
+    )
     # Raw None (unresolved) -> false match, would force a needless reload.
-    assert backend._already_in_target_state(chat_template_override = None, **common) is False
+    assert (
+        backend._already_in_target_state(chat_template_override = None, **common) is False
+    )
 
 
 def _import_backend():

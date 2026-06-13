@@ -41,7 +41,12 @@ def get_colab_url(port: int = 8888) -> str:
         try:
             url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
             # Valid proxy URL is https:// and embeds the port.
-            if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
+            if (
+                url
+                and isinstance(url, str)
+                and url.startswith("https://")
+                and str(port) in url
+            ):
                 return url.rstrip("/")
         except Exception as e:
             logger.info(f"Note: Could not get Colab URL (attempt {attempt + 1}/3: {e})")
@@ -107,7 +112,9 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     """Return True if a Studio backend is already answering health checks on *port*."""
     import urllib.request
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout):
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/api/health", timeout = timeout
+        ):
             return True
     except Exception:
         return False
@@ -179,7 +186,9 @@ def start(port: int = 8888):
     # Fast path: Studio already running (cell re-run). Re-launching would collide on
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
-        logger.info(f"   Studio is already running on port {port} — reusing existing server.")
+        logger.info(
+            f"   Studio is already running on port {port} — reusing existing server."
+        )
         _show_and_embed(port)
         try:
             for _ in range(10000):
@@ -202,7 +211,9 @@ def start(port: int = 8888):
 
     logger.info("   Starting server...")
     try:
-        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+        app = run_server(
+            host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True
+        )
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
@@ -223,7 +234,9 @@ def start(port: int = 8888):
     server_ready = False
     for _ in range(40):
         try:
-            with urllib.request.urlopen(f"http://localhost:{actual_port}/api/health", timeout = 1):
+            with urllib.request.urlopen(
+                f"http://localhost:{actual_port}/api/health", timeout = 1
+            ):
                 server_ready = True
                 break
         except Exception:

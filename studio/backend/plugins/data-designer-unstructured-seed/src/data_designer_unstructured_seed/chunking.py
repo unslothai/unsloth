@@ -42,7 +42,9 @@ def build_unstructured_preview_rows(
     try:
         import pandas as pd
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(f"pandas is required for unstructured seed processing: {exc}") from exc
+        raise RuntimeError(
+            f"pandas is required for unstructured seed processing: {exc}"
+        ) from exc
 
     dataframe = pd.read_parquet(parquet_path).head(count)
     return [
@@ -69,7 +71,9 @@ def build_multi_file_preview_rows(
     return _round_robin_preview(rows, preview_size)
 
 
-def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[dict[str, str]]:
+def _round_robin_preview(
+    rows: list[dict[str, str]], preview_size: int
+) -> list[dict[str, str]]:
     """Pick preview rows round-robin across source files so each is represented."""
     if not rows or preview_size <= 0:
         return []
@@ -133,7 +137,9 @@ def materialize_unstructured_seed_dataset(
     try:
         import pandas as pd
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(f"pandas is required for unstructured seed processing: {exc}") from exc
+        raise RuntimeError(
+            f"pandas is required for unstructured seed processing: {exc}"
+        ) from exc
 
     tmp_path = _CACHE_DIR / f"{key}.tmp.parquet"
     pd.DataFrame(rows).to_parquet(tmp_path, index = False)
@@ -192,7 +198,9 @@ def normalize_unstructured_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", normalized).strip()
 
 
-def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+def split_text_into_chunks(
+    *, text: str, chunk_size: int, chunk_overlap: int
+) -> list[str]:
     if not text:
         return []
     if chunk_size <= 0:
@@ -246,7 +254,9 @@ def _to_int(value: Any, fallback: int) -> int:
     return parsed
 
 
-def _compute_cache_key(*, source_path: Path, chunk_size: int, chunk_overlap: int) -> str:
+def _compute_cache_key(
+    *, source_path: Path, chunk_size: int, chunk_overlap: int
+) -> str:
     stat = source_path.stat()
     payload = "|".join(
         [

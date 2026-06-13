@@ -101,7 +101,9 @@ def test_compare_composer_has_stuck_compositionend_watchdog():
     assert (
         "IME_STUCK_TIMEOUT_MS" in src
     ), "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
-    assert "onCompositionUpdate" in src, "compare composer is missing onCompositionUpdate wiring"
+    assert (
+        "onCompositionUpdate" in src
+    ), "compare composer is missing onCompositionUpdate wiring"
 
 
 def test_main_composer_keydown_repins_composing_during_ime():

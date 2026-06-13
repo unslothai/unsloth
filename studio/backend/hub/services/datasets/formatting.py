@@ -177,10 +177,14 @@ def _repo_file_matches_split(path: str, split: str) -> bool:
 def _select_tier1_repo_file(
     files: list[str], *, subset: Optional[str], train_split: str
 ) -> Optional[str]:
-    data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
+    data_files = sorted(
+        f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS)
+    )
     if not data_files:
         return None
-    tabular_files = [f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)]
+    tabular_files = [
+        f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)
+    ]
     candidates = tabular_files or data_files
     if subset:
         candidates = [f for f in candidates if _repo_file_matches_label(f, subset)]
@@ -405,7 +409,9 @@ def check_format_response(
                     processed = format_dataset_preview(preview_slice)
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+                    logger.warning(
+                        f"Processed preview generation failed (non-fatal): {e}"
+                    )
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
@@ -416,7 +422,9 @@ def check_format_response(
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
+                if isinstance(sample_val, str) and sample_val.startswith(
+                    ("http://", "https://")
+                ):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -483,7 +491,8 @@ def ai_assist_mapping_response(
         from hub.utils.llm_assist import llm_conversion_advisor
 
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns}
+            for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(

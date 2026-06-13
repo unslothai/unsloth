@@ -116,7 +116,9 @@ def test_clean_wheel_no_findings():
         str(FIXTURES / "clean_wheel.whl"),
         "clean_fixture",
     )
-    assert findings == [], f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
+    assert (
+        findings == []
+    ), f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +233,8 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
     assert corrupted, (
-        "no archive_corrupted finding; got " f"{[(f.severity, f.check) for f in findings]}"
+        "no archive_corrupted finding; got "
+        f"{[(f.severity, f.check) for f in findings]}"
     )
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 

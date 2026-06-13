@@ -55,13 +55,19 @@ def _env_offline() -> bool:
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
-_MODEL_SIZE_RE = _re.compile(r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
 # MoE active-parameter pattern: "A3B", "A3.5B", etc.
-_ACTIVE_SIZE_RE = _re.compile(r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
+_ACTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
 # Gemma 3n/4 effective-parameter pattern: "E2B", "E4B" -- the runtime
 # footprint (MatFormer + per-layer embeddings), which is the size that
 # matters for size-gated policies like sub-3B speculative-decoding fallback.
-_EFFECTIVE_SIZE_RE = _re.compile(r"(?:^|[-_/])e(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
+_EFFECTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])e(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
 
 
 def extract_model_size_b(model_id: str) -> float | None:
@@ -555,7 +561,10 @@ def _raw_config_has_vision_config(
         if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
         return (
-            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+            any(
+                isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES)
+                for x in architectures
+            )
             or "vision_config" in config
             or "img_processor" in config
             or "image_token_index" in config
@@ -627,7 +636,9 @@ except Exception as exc:
 )
 
 
-def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _is_vision_model_subprocess(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
     """Run is_vision_model in a subprocess with transformers 5.x.
 
     Spawns a clean subprocess with .venv_t5/ on sys.path so AutoConfig
@@ -773,7 +784,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     return False
 
 
-def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _is_vision_model_uncached(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
     """Uncached vision detection; use is_vision_model() instead.
 
     Returns True/False for definitive results, or None on transient errors
@@ -855,7 +868,9 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: (
+        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
+    ),
 }
 
 
@@ -877,7 +892,9 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     return result
 
 
-def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+def _detect_audio_from_tokenizer(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
     """Detect audio type from tokenizer special tokens.
 
     Checks local HF cache first, then fetches tokenizer_config.json from HF;
@@ -938,7 +955,9 @@ def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None
 
         return None
     except Exception as e:
-        logger.debug(f"Could not detect audio type from tokenizer for {model_name}: {e}")
+        logger.debug(
+            f"Could not detect audio type from tokenizer for {model_name}: {e}"
+        )
         return None
 
 
@@ -1209,7 +1228,9 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             if not (name.startswith("mtp-") and name.endswith(".gguf")):
                 continue
             stem = name[len("mtp-") : -len(".gguf")]
-            if not stem or (weight_name is not None and not weight_name.startswith(stem)):
+            if not stem or (
+                weight_name is not None and not weight_name.startswith(stem)
+            ):
                 continue
             try:
                 if f.is_file():
@@ -1253,7 +1274,8 @@ def detect_gguf_model(path: str) -> Optional[str]:
             (
                 f
                 for f in _iter_gguf_files(p)
-                if not _is_mmproj(f.name) and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
+                if not _is_mmproj(f.name)
+                and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
             ),
             key = lambda f: f.stat().st_size,
             reverse = True,
@@ -1450,7 +1472,9 @@ def _iter_hf_cache_snapshots(repo_id: str):
     yield from snap_dirs
 
 
-def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def _list_gguf_variants_from_hf_cache(
+    repo_id: str,
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached."""
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
@@ -1652,14 +1676,17 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         rel_files = [
             rel
             for f in _iter_gguf_files(snap, recursive = True)
-            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix()) and not _is_mmproj(f.name)
+            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix())
+            and not _is_mmproj(f.name)
         ]
         if rel_files:
             return _pick_best_gguf(rel_files)
     return None
 
 
-def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
+def detect_gguf_model_remote(
+    repo_id: str, hf_token: Optional[str] = None
+) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
     Retries (3 attempts, 1s/2s/4s backoff) on transient HF Hub failures: a
@@ -1705,7 +1732,9 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         )
         return cached
 
-    logger.warning(f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}")
+    logger.warning(
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
+    )
     return None
 
 
@@ -1828,7 +1857,9 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
+def scan_trained_models(
+    outputs_dir: str = str(outputs_root()),
+) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Studio models.
 
     Returns:
@@ -1894,7 +1925,9 @@ def scan_exported_models(
 
             # Flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/).
             # Skip mmproj (vision projection) files — not loadable as main models.
-            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
+            gguf_files = [
+                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -1968,7 +2001,9 @@ def scan_exported_models(
 
                 # Fallback: base model from ./outputs/{run_name}/adapter_config.json
                 if not base_model:
-                    outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
+                    outputs_adapter_cfg = (
+                        resolve_output_dir(run_dir.name) / "adapter_config.json"
+                    )
                     try:
                         if outputs_adapter_cfg.exists():
                             cfg = json.loads(outputs_adapter_cfg.read_text())
@@ -2001,7 +2036,9 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info("Detected base model from adapter_config.json: %s", base_model)
+                    logger.info(
+                        "Detected base model from adapter_config.json: %s", base_model
+                    )
                     return base_model
 
         config_path = checkpoint_path_obj / "config.json"
@@ -2066,7 +2103,9 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info(f"Detected base model from adapter_config.json: {base_model}")
+                    logger.info(
+                        f"Detected base model from adapter_config.json: {base_model}"
+                    )
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
@@ -2126,7 +2165,9 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
-                        logger.info(f"Loaded model defaults from {config_path} (via mapping)")
+                        logger.info(
+                            f"Loaded model defaults from {config_path} (via mapping)"
+                        )
                         return config
 
         # For local paths (e.g. /home/.../Spark-TTS-0.5B/LLM from
@@ -2195,11 +2236,17 @@ class ModelConfig:
     is_lora: bool  # LoRA adapter?
     is_gguf: bool = False  # GGUF model?
     is_audio: bool = False  # TTS audio model?
-    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    audio_type: Optional[str] = (
+        None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    )
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
-    gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
-    gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
+    gguf_mmproj_file: Optional[str] = (
+        None  # Full path to the mmproj .gguf file (vision projection)
+    )
+    gguf_mtp_file: Optional[str] = (
+        None  # Full path to the separate MTP drafter (local mode)
+    )
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -2337,7 +2384,9 @@ class ModelConfig:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
-                    logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
+                    logger.warning(
+                        f"Base model is vision but no mmproj file found in {gguf_dir}"
+                    )
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -2406,11 +2455,15 @@ class ModelConfig:
         # Auto-detect LoRA for local paths (adapter_config.json on disk)
         if not is_lora and is_local:
             detected_base = (
-                get_base_model_from_lora(path) if _looks_like_lora_adapter(Path(path)) else None
+                get_base_model_from_lora(path)
+                if _looks_like_lora_adapter(Path(path))
+                else None
             )
             if detected_base:
                 is_lora = True
-                logger.info(f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})")
+                logger.info(
+                    f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
+                )
 
         # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
         # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
@@ -2424,14 +2477,18 @@ class ModelConfig:
                     is_lora = True
                     logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
             except Exception as e:
-                logger.debug(f"Could not check remote LoRA status for '{identifier}': {e}")
+                logger.debug(
+                    f"Could not check remote LoRA status for '{identifier}': {e}"
+                )
 
             # API may have failed; adapter_config.json could still be cached.
             if not is_lora:
                 for snap in _iter_hf_cache_snapshots(identifier):
                     if (snap / "adapter_config.json").is_file():
                         is_lora = True
-                        logger.info(f"Auto-detected cached LoRA adapter: '{identifier}'")
+                        logger.info(
+                            f"Auto-detected cached LoRA adapter: '{identifier}'"
+                        )
                         break
 
         # Handle LoRA adapters
@@ -2445,7 +2502,9 @@ class ModelConfig:
                 try:
                     from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(identifier, "adapter_config.json", token = hf_token)
+                    config_path = hf_hub_download(
+                        identifier, "adapter_config.json", token = hf_token
+                    )
                     with open(config_path, "r") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")
@@ -2506,7 +2565,9 @@ class ModelConfig:
 
         # Resolve display names via the 'local_models' parameter
         if " (Active)" in selected or " (Ready)" in selected:
-            clean_display_name = selected.replace(" (Active)", "").replace(" (Ready)", "")
+            clean_display_name = selected.replace(" (Active)", "").replace(
+                " (Ready)", ""
+            )
             if local_models:
                 for local_display, local_path in local_models:
                     if local_display == clean_display_name:

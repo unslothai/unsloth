@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 
 
-DownloadJobState = Literal["idle", "running", "cancelling", "cancelled", "complete", "error"]
+DownloadJobState = Literal[
+    "idle", "running", "cancelling", "cancelled", "complete", "error"
+]
 
 
 class DownloadModelRequest(BaseModel):

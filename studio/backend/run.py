@@ -26,7 +26,9 @@ try:
     configure_cpu_threads()
 except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
-    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}"
+    ) from None
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
 # that trigger attrs -> rich -> structlog -> platform crash.
@@ -91,7 +93,9 @@ def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> N
     import re
 
     rewrite_host = (
-        bind_host in ("0.0.0.0", "::") and bool(display_host) and display_host != bind_host
+        bind_host in ("0.0.0.0", "::")
+        and bool(display_host)
+        and display_host != bind_host
     )
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
@@ -175,7 +179,9 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
         return None
 
     try:
-        addr_info = socket.getaddrinfo("localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        addr_info = socket.getaddrinfo(
+            "localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
     except Exception:
         return None
 
@@ -367,7 +373,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 flush = True,
             )
             print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} "
+                f"<user>@{display_host}{reset}",
                 flush = True,
             )
             print(
@@ -520,7 +527,9 @@ def _find_free_port(
         candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
-    raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
+    raise RuntimeError(
+        f"Could not find a free port in range {start}-{start + max_attempts - 1}"
+    )
 
 
 from utils.paths.storage_roots import studio_root as _studio_root
@@ -679,7 +688,9 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:
@@ -882,7 +893,9 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(
+                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
+                )
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1029,7 +1042,9 @@ def run_server(
     global _cloudflare_url
     _cloudflare_url = None
     app.state.cloudflare_url = None
-    _cloudflare_enabled = cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
+    _cloudflare_enabled = (
+        cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
+    )
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1127,7 +1142,9 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         traceback.print_exc(file = sys.stderr)
         sys.stderr.write("\n")
-        sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
+        sys.stderr.write(
+            "If a package is missing, try re-running: unsloth studio setup\n"
+        )
         sys.stderr.flush()
         sys.exit(1)
 

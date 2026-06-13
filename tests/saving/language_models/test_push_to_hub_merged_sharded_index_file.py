@@ -36,7 +36,9 @@ from tests.utils.perplexity_eval import (
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+        tokenizer.apply_chat_template(
+            convo, tokenize = False, add_generation_prompt = False
+        )
         for convo in convos
     ]
     return {"text": texts}
@@ -192,7 +194,9 @@ try:
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
     # Force download even if cached
-    model, tokenizer = FastLanguageModel.from_pretrained(f"{hf_username}/merged_llama_text_model")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        f"{hf_username}/merged_llama_text_model"
+    )
     success["download"] = True
     print("✅ Model downloaded successfully!")
 except Exception as e:

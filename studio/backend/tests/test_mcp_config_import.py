@@ -102,7 +102,11 @@ def test_parse_windows_apostrophes_as_literals(monkeypatch):
         "C:\\Users\\O'Reilly\\server.js",
     ]
     assert mcp_client.parse_stdio_command("node 'draft'") == ["node", "'draft'"]
-    assert mcp_client.parse_stdio_command("node 'open close'") == ["node", "'open", "close'"]
+    assert mcp_client.parse_stdio_command("node 'open close'") == [
+        "node",
+        "'open",
+        "close'",
+    ]
 
 
 def test_parse_rejects_unterminated_windows_double_quote(monkeypatch):
@@ -187,11 +191,18 @@ def test_parse_accepts_cline_streamable_http_alias():
     [
         {"command": "node", "args": ["server.js"], "cwd": "/tmp/server"},
         {"command": "node", "args": ["server.js"], "envFile": ".env"},
-        {"command": "node", "args": ["server.js"], "env": {"API_KEY": "${input:api-key}"}},
+        {
+            "command": "node",
+            "args": ["server.js"],
+            "env": {"API_KEY": "${input:api-key}"},
+        },
         {"command": "node", "args": ["${workspaceFolder}/server.js"]},
         {"command": "node", "args": ["server.js"], "env": {"HTTP_PROXY": None}},
         {"command": "node", "args": ["server.js"], "sandboxEnabled": True},
-        {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${input:token}"}},
+        {
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer ${input:token}"},
+        },
         {"url": "https://example.com/mcp", "headers": {"Authorization": None}},
         {"type": "http", "url": "https://example.com/sse"},
         {"type": "http", "url": "https://example.com/sse "},
@@ -217,7 +228,9 @@ def test_servers_alias_key():
 
 
 def test_env_and_args_values_coerced_to_str():
-    cfg = {"mcpServers": {"fs": {"command": "node", "args": [8080], "env": {"PORT": 8080}}}}
+    cfg = {
+        "mcpServers": {"fs": {"command": "node", "args": [8080], "env": {"PORT": 8080}}}
+    }
     entries, errors = parse_mcp_config(cfg)
     assert errors == []
     assert entries[0].headers == {"PORT": "8080"}
@@ -296,11 +309,18 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
         }
     }
     res = asyncio.run(
-        routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(config = cfg), current_subject = "u"
+        )
     )
     assert res.errors == []
     assert res.skipped == []
-    assert {c.display_name for c in res.created} == {"fs", "remote", "oauth", "disabled"}
+    assert {c.display_name for c in res.created} == {
+        "fs",
+        "remote",
+        "oauth",
+        "disabled",
+    }
     fs = next(c for c in res.created if c.display_name == "fs")
     assert fs.headers == {"API_KEY": "sk"}
     assert fs.use_oauth is False
@@ -312,7 +332,9 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
 
     # Re-importing the same config skips both by url.
     res2 = asyncio.run(
-        routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(config = cfg), current_subject = "u"
+        )
     )
     assert res2.created == []
     assert set(res2.skipped) == {"fs", "remote", "oauth", "disabled"}
@@ -333,7 +355,9 @@ def test_import_route_gates_stdio_when_disabled(tmp_path, monkeypatch):
         }
     }
     res = asyncio.run(
-        routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(config = cfg), current_subject = "u"
+        )
     )
     # Remote still imports; the stdio entry is rejected per-entry (gate off).
     assert {c.display_name for c in res.created} == {"remote"}

@@ -662,7 +662,9 @@ IDENTITY_DROPOUT = torch.nn.Identity
 
 @torch._disable_dynamo
 def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-    raise NotImplementedError("Unsloth: Currently not supported yet - reshaping done incorrectly")
+    raise NotImplementedError(
+        "Unsloth: Currently not supported yet - reshaping done incorrectly"
+    )
     self._check_forward_args(x, *args, **kwargs)
     adapter_names = kwargs.pop("adapter_names", None)
 
@@ -671,7 +673,9 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
             self.unmerge()
         result = self.base_layer(x, *args, **kwargs)
     elif adapter_names is not None:
-        result = self._mixed_batch_forward(x, *args, adapter_names = adapter_names, **kwargs)
+        result = self._mixed_batch_forward(
+            x, *args, adapter_names = adapter_names, **kwargs
+        )
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
@@ -682,7 +686,10 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 return self.base_layer(x, *args, **kwargs)
 
             dropout = self.lora_dropout[active_adapter]
-            if isinstance(dropout, IDENTITY_DROPOUT) and not self.use_dora[active_adapter]:
+            if (
+                isinstance(dropout, IDENTITY_DROPOUT)
+                and not self.use_dora[active_adapter]
+            ):
                 lora_A = self.lora_A[active_adapter].weight
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]

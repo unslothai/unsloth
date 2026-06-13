@@ -42,7 +42,9 @@ inputs = merged_tokenizer.apply_chat_template(
     reasoning_effort = "low",  # low, medium or high
 ).to(merged_model.device)
 
-_ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))
+_ = merged_model.generate(
+    **inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer)
+)
 print("\n✅ Inference complete.")
 
 # --- Final Cleanup ---
@@ -52,5 +54,7 @@ torch.cuda.empty_cache()
 gc.collect()
 
 safe_remove_directory("./gpt-oss-finetuned-merged")
-safe_remove_directory("./unsloth_compiled_cache")  # Clean up cache created by this process
+safe_remove_directory(
+    "./unsloth_compiled_cache"
+)  # Clean up cache created by this process
 print("✅ Final cleanup complete. Exiting inference script.")

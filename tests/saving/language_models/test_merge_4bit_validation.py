@@ -16,7 +16,9 @@ from tests.utils.cleanup_utils import safe_remove_directory
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+        tokenizer.apply_chat_template(
+            convo, tokenize = False, add_generation_prompt = False
+        )
         for convo in convos
     ]
     return {"text": texts}
@@ -48,7 +50,9 @@ tokenizer = get_chat_template(
     chat_template = "llama-3.1",
 )
 
-dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train[:100]")
+dataset_train = load_dataset(
+    "allenai/openassistant-guanaco-reformatted", split = "train[:100]"
+)
 dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
 
 print("✅ Base model loaded successfully!")

@@ -141,11 +141,15 @@ class TestZeroHost:
 
 
 class TestIsExternalHost:
-    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"])
+    @pytest.mark.parametrize(
+        "host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"]
+    )
     def test_loopback_aliases_are_local(self, host):
         assert is_external_host(host) is False
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"])
+    @pytest.mark.parametrize(
+        "host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"]
+    )
     def test_non_loopback_is_external(self, host):
         assert is_external_host(host) is True
 

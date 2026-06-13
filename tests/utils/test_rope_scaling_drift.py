@@ -150,7 +150,8 @@ def _reference_inv_freq(config, rope_type):
 
 def _vanilla_inv_freq():
     return 1.0 / (
-        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
+        ROPE_THETA
+        ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
     )
 
 
@@ -275,7 +276,9 @@ def test_object_style_rope_scaling_does_not_crash():
         original_max_position_embeddings: int = 8192
 
     config = _make_config(LLAMA3_ROPE_SCALING)
-    inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, FakeRopeScalingConfig())
+    inv_freq, attention_scaling = _compute_config_rope_inv_freq(
+        config, FakeRopeScalingConfig()
+    )
     assert inv_freq is not None, (
         "object-style (non-dict) config.rope_scaling must be normalized, not "
         "dropped; otherwise scaled models silently lose RoPE scaling again "

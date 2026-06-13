@@ -91,7 +91,9 @@ class TestSetupServerDiskLogging:
 
     def test_run_server_wires_logging_before_main_import(self):
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
-        call_idx = src.index("_setup_server_disk_logging()", src.index("def run_server"))
+        call_idx = src.index(
+            "_setup_server_disk_logging()", src.index("def run_server")
+        )
         main_import_idx = src.index("from main import app", src.index("def run_server"))
         assert call_idx < main_import_idx, (
             "disk logging must be armed before importing main so import-time "

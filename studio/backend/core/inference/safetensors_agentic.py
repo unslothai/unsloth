@@ -92,7 +92,9 @@ def _detect_render_html_tool_start(content: str) -> bool:
     if not function_match and tool_call_index < 0:
         return False
 
-    if function_match and (tool_call_index < 0 or function_match.start() < tool_call_index):
+    if function_match and (
+        tool_call_index < 0 or function_match.start() < tool_call_index
+    ):
         return function_match.group(1) == "render_html"
 
     if tool_call_index >= 0:
@@ -182,7 +184,9 @@ def run_safetensors_tool_loop(
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
     from core.inference.tools import build_rag_autoinject
 
-    _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+    _auto = (
+        None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+    )
     if _auto:
         for _ev in _auto["events"]:
             yield _ev
@@ -201,7 +205,9 @@ def run_safetensors_tool_loop(
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
         return any(
-            record.executed and not record.is_error and record.key.startswith(key_prefix)
+            record.executed
+            and not record.is_error
+            and record.key.startswith(key_prefix)
             for record in tool_controller.history
         )
 
@@ -226,7 +232,9 @@ def run_safetensors_tool_loop(
                 final_attempt_done = True
                 active_tools = []
 
-        tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
+        tool_protocol_active = not final_attempt_done and (
+            unrestricted_tools or bool(active_tools)
+        )
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
 
         detect_state = _state_buffering
@@ -515,11 +523,15 @@ def run_safetensors_tool_loop(
                 conversation.append(assistant_msg)
                 assistant_appended = True
             else:
-                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+                assistant_msg.setdefault("tool_calls", []).append(
+                    decision.as_assistant_tool_call()
+                )
 
             needs_confirm = bool(confirm_tool_calls)
             approval_id = new_approval_id() if needs_confirm else ""
-            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            decision_slot = (
+                begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            )
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm

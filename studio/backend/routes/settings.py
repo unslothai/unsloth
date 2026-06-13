@@ -68,7 +68,9 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
-def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
+def get_upload_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
 
 

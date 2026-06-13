@@ -204,7 +204,9 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
     try:
-        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
+        has_config = (d / "config.json").exists() or (
+            d / "adapter_config.json"
+        ).exists()
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
@@ -212,7 +214,9 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path, *, limit: int | None = None
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -471,7 +475,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return None
 
 
-def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
+def _scan_ollama_dir(
+    ollama_dir: Path, limit: Optional[int] = None
+) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
     Ollama uses a content-addressable layout
@@ -546,7 +552,9 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                 if tmp_path.is_symlink() or tmp_path.exists():
                     tmp_path.unlink()
             except OSError as cleanup_err:
-                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
+                logger.debug(
+                    "Could not clean up tmp path %s: %s", tmp_path, cleanup_err
+                )
             return None
 
     try:
@@ -563,7 +571,11 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
             repo_parts = list(parts[1:-1])
             tag = parts[-1]
 
-            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
+            if (
+                host == "registry.ollama.ai"
+                and repo_parts
+                and repo_parts[0] == "library"
+            ):
                 repo_name = "/".join(repo_parts[1:])
             elif host == "registry.ollama.ai":
                 repo_name = "/".join(repo_parts)
@@ -620,7 +632,9 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     candidate = blobs_dir / digest.replace(":", "-")
                     if candidate.is_file():
                         link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
+                        gguf_link_path = _make_link(
+                            model_link_dir, link_name, candidate
+                        )
 
                 elif media == "application/vnd.ollama.image.projector":
                     candidate = blobs_dir / digest.replace(":", "-")
@@ -752,7 +766,10 @@ async def list_local_models(
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
-                    if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+                    if not any(
+                        p in (".studio_links", "ollama_links")
+                        for p in Path(m.path).parts
+                    )
                 ]
                 custom_models = _generic
                 if len(custom_models) < _MAX_MODELS_PER_FOLDER:
@@ -763,7 +780,9 @@ async def list_local_models(
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
-            local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+            local_models += [
+                m.model_copy(update = {"source": "custom"}) for m in custom_models
+            ]
 
         # Deduplicate, but always keep custom folder entries (keyed by
         # (id, source)) so they show in the "Custom Folders" UI section
@@ -1122,7 +1141,9 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
             detail = f"Permission denied reading {current.name}",
         ) from None
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", current, exc, exc_info = True)
+        logger.warning(
+            "browse-folders: could not read %s: %s", current, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(current))}",
@@ -1260,7 +1281,9 @@ async def browse_folders(
             detail = f"Permission denied reading {os.path.basename(str(target))}",
         )
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", target, exc, exc_info = True)
+        logger.warning(
+            "browse-folders: could not read %s: %s", target, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(target))}",
@@ -1313,7 +1336,9 @@ async def browse_folders(
     # sandbox (else the up-row would 403 on click); users can still hop
     # to other allowed roots via the suggestion chips.
     parent: Optional[str]
-    if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
+    if target.parent == target or not _is_path_inside_allowlist(
+        target.parent, allowed_roots
+    ):
         parent = None
     else:
         parent = str(target.parent)
@@ -1454,12 +1479,16 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     """Extract max_position_embeddings from a config, with text_config fallback."""
     if hasattr(config, "max_position_embeddings"):
         return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
+    if hasattr(config, "text_config") and hasattr(
+        config.text_config, "max_position_embeddings"
+    ):
         return config.text_config.max_position_embeddings
     return None
 
 
-def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
+def _get_model_size_bytes(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -1472,7 +1501,9 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
         weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
         total = 0
         for sibling in info.siblings:
-            if sibling.rfilename and any(sibling.rfilename.endswith(ext) for ext in weight_exts):
+            if sibling.rfilename and any(
+                sibling.rfilename.endswith(ext) for ext in weight_exts
+            ):
                 if sibling.size is not None:
                     total += sibling.size
 
@@ -1652,10 +1683,14 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
-        return active_lower == target_lower or active_lower.startswith(f"{target_lower}{os.sep}")
+        return active_lower == target_lower or active_lower.startswith(
+            f"{target_lower}{os.sep}"
+        )
 
 
-def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Path) -> bool:
+def _loading_model_matches_deleted_path(
+    loading_model: object, deleted_path: Path
+) -> bool:
     if not loading_model:
         return False
     return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
@@ -1874,7 +1909,9 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
+        logger.warning(
+            "Could not check inference backend loaded model before delete: %s", e
+        )
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -1946,7 +1983,9 @@ async def delete_finetuned_model(
 
 
 @router.get("/loras/{lora_path:path}/base-model", response_model = LoRABaseModelResponse)
-async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get_current_subject)):
+async def get_lora_base_model(
+    lora_path: str, current_subject: str = Depends(get_current_subject)
+):
     """
     Get the base model for a LoRA adapter.
 
@@ -1979,7 +2018,9 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
-async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
+async def check_vision_model(
+    model_name: str, current_subject: str = Depends(get_current_subject)
+):
     """
     Check if a model is a vision model.
 
@@ -2020,7 +2061,9 @@ async def check_embedding_model(
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
 
-        logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
+        logger.info(
+            f"Embedding check result for {model_name}: is_embedding={is_embedding}"
+        )
         return EmbeddingCheckResponse(
             model_name = model_name,
             is_embedding = is_embedding,
@@ -2041,7 +2084,9 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
-    hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    hf_token: Optional[str] = Query(
+        None, description = "HuggingFace token for private repos"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory.
@@ -2200,7 +2245,11 @@ async def get_gguf_download_progress(
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
-        progress = min(total_progress_bytes / expected_bytes, 0.99) if expected_bytes > 0 else 0
+        progress = (
+            min(total_progress_bytes / expected_bytes, 0.99)
+            if expected_bytes > 0
+            else 0
+        )
         # Report 1.0 only when all bytes are in completed files.
         if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
             progress = 1.0
@@ -2486,7 +2535,9 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        lm = max(
+                            last_modified, (existing or {}).get("last_modified", 0.0)
+                        )
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row
@@ -2527,7 +2578,9 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     if _repo_has_gguf_files(repo_info):
                         continue
                     total_size = sum(
-                        (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
+                        (f.size_on_disk or 0)
+                        for rev in repo_info.revisions
+                        for f in rev.files
                     )
                     if total_size == 0:
                         continue
@@ -2556,7 +2609,9 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        lm = max(
+                            last_modified, (existing or {}).get("last_modified", 0.0)
+                        )
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row

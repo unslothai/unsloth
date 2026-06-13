@@ -109,13 +109,16 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
         pytest.skip("frontend runtime.ts not present")
 
     with open(runtime_ts, encoding = "utf-8") as fh:
-        block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
+        block = re.search(
+            r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL
+        )
     assert block, "InferenceParams interface not found in runtime.ts"
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
     assert persisted == backend, (
-        f"schema drift: frontend-only {persisted - backend}, " f"backend-only {backend - persisted}"
+        f"schema drift: frontend-only {persisted - backend}, "
+        f"backend-only {backend - persisted}"
     )
 
 

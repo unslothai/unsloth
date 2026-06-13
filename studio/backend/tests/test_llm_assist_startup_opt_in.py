@@ -72,9 +72,13 @@ def test_settings_route_persists_helper_precache_toggle(monkeypatch):
 
 
 def test_main_startup_uses_helper_precache_gate_instead_of_unconditional_precache():
-    source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parent.parent / "main.py").read_text(
+        encoding = "utf-8"
+    )
     startup_section = source[
-        source.index("cleanup_orphaned_runs") : source.index("# Initialize RSA key pair")
+        source.index("cleanup_orphaned_runs") : source.index(
+            "# Initialize RSA key pair"
+        )
     ]
 
     assert "_start_helper_precache_if_enabled()" in startup_section

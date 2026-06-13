@@ -19,7 +19,9 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
-_STACK_SPEC = importlib.util.spec_from_file_location("studio_install_python_stack", _STACK_PATH)
+_STACK_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_python_stack", _STACK_PATH
+)
 assert _STACK_SPEC is not None and _STACK_SPEC.loader is not None
 stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
@@ -54,7 +56,9 @@ def _make_run(
             return result
         # nvidia-smi version probe (text = True)
         result.returncode = smi_rc
-        out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        out = (
+            f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        )
         result.stdout = out if kwargs.get("text") else out.encode()
         return result
 

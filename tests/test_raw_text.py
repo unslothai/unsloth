@@ -45,7 +45,9 @@ sys.modules["datasets"] = datasets_mock
 
 # Import the raw_text module directly to avoid unsloth/__init__.py dependencies
 current_dir = os.path.dirname(__file__)
-raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep", "raw_text.py")
+raw_text_path = os.path.join(
+    os.path.dirname(current_dir), "unsloth", "dataprep", "raw_text.py"
+)
 
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
@@ -127,14 +129,20 @@ def test_raw_text_loader():
         # Verify tokenized data structure
         first_sample = tokenized_dataset[0]
         assert isinstance(first_sample["input_ids"], list), "input_ids should be a list"
-        assert isinstance(first_sample["attention_mask"], list), "attention_mask should be a list"
+        assert isinstance(
+            first_sample["attention_mask"], list
+        ), "attention_mask should be a list"
         assert len(first_sample["input_ids"]) == len(
             first_sample["attention_mask"]
         ), "input_ids and attention_mask should have same length"
 
         # Verify labels field exists (for causal LM training)
-        assert "labels" in tokenized_dataset.column_names, "Dataset should have 'labels' column"
-        assert first_sample["labels"] == first_sample["input_ids"], "labels should match input_ids"
+        assert (
+            "labels" in tokenized_dataset.column_names
+        ), "Dataset should have 'labels' column"
+        assert (
+            first_sample["labels"] == first_sample["input_ids"]
+        ), "labels should match input_ids"
 
         # Test constructor validation
         try:
@@ -173,7 +181,8 @@ def test_raw_text_loader():
         ]
         for raw, expected in unicode_whitespace_cases:
             assert preprocessor.clean_text(raw) == expected, (
-                f"Should normalize Unicode/control whitespace to a single space " f"for {raw!r}"
+                f"Should normalize Unicode/control whitespace to a single space "
+                f"for {raw!r}"
             )
 
         # Mixed paragraph + Unicode whitespace realistic input

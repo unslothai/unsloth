@@ -169,7 +169,9 @@ class TestResponsesMultiTurnInput:
 
     def test_function_call_output_missing_call_id_rejected(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionCallOutputInputItem(type = "function_call_output", output = "x")
+            ResponsesFunctionCallOutputInputItem(
+                type = "function_call_output", output = "x"
+            )
 
     def test_function_call_output_accepts_content_array(self):
         item = ResponsesFunctionCallOutputInputItem(
@@ -229,7 +231,9 @@ class TestToolsTranslation:
         assert _translate_responses_tools_to_chat([]) is None
 
     def test_only_builtin_tools_returns_none(self):
-        assert _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
+        assert (
+            _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
+        )
 
     def test_description_optional(self):
         out = _translate_responses_tools_to_chat(
@@ -261,7 +265,9 @@ class TestToolChoiceTranslation:
         """A client sending the Chat Completions nested shape isn't
         double-wrapped."""
         already_nested = {"type": "function", "function": {"name": "get_weather"}}
-        assert _translate_responses_tool_choice_to_chat(already_nested) == already_nested
+        assert (
+            _translate_responses_tool_choice_to_chat(already_nested) == already_nested
+        )
 
     def test_unknown_shape_passes_through(self):
         obj = {"type": "allowed_tools", "tools": [{"type": "function", "name": "x"}]}
@@ -650,14 +656,20 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan"}
+        ]
         assert body["output"][0]["summary"] == []
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
-    def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
-        body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
+    def test_literal_think_tags_remain_visible_without_reasoning_request(
+        self, monkeypatch
+    ):
+        body = self._run_with_message(
+            monkeypatch, {"content": "show <think>x</think> tags"}
+        )
 
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
@@ -691,7 +703,9 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan next"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan next"}
+        ]
         assert body["output"][1]["content"][0]["text"] == "33"
 
     def test_plain_content_remains_message_only(self, monkeypatch):
@@ -779,12 +793,16 @@ class TestResponsesStreamAdapter:
                 supports_reasoning = supports_reasoning,
                 reasoning_always_on = reasoning_always_on,
                 _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                    lambda enable_thinking = None,
+                    reasoning_effort = None,
+                    preserve_thinking = None: None
                 ),
             ),
         )
 
-    def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
+    def test_split_think_markers_stream_as_reasoning_and_visible_text(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "<thi"}}]},
             {"choices": [{"delta": {"content": "nk>pla"}}]},
@@ -793,7 +811,9 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -814,7 +834,9 @@ class TestResponsesStreamAdapter:
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
 
-    def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(self, monkeypatch):
+    def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "show <thi"}}]},
             {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
@@ -833,21 +855,28 @@ class TestResponsesStreamAdapter:
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert reasoning_deltas == []
-        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        assert (
+            "".join(event["delta"] for event in text_deltas)
+            == "show <think>x</think> tags"
+        )
         completed = self._payloads(lines, "response.completed")[0]
         assert [item["type"] for item in completed["response"]["output"]] == ["message"]
         assert completed["response"]["output"][0]["content"][0]["text"] == (
             "show <think>x</think> tags"
         )
 
-    def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
+    def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "show <thi"}}]},
             {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks, supports_reasoning = False)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -859,7 +888,10 @@ class TestResponsesStreamAdapter:
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert reasoning_deltas == []
-        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        assert (
+            "".join(event["delta"] for event in text_deltas)
+            == "show <think>x</think> tags"
+        )
         completed = self._payloads(lines, "response.completed")[0]
         assert [item["type"] for item in completed["response"]["output"]] == ["message"]
         assert completed["response"]["output"][0]["content"][0]["text"] == (
@@ -872,7 +904,9 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -950,7 +984,9 @@ class TestResponsesStreamAdapter:
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
         assert "".join(event["delta"] for event in text_deltas) == "33"
-        assert "reasoning_text" not in "".join(event["delta"] for event in reasoning_deltas)
+        assert "reasoning_text" not in "".join(
+            event["delta"] for event in reasoning_deltas
+        )
         completed = self._payloads(lines, "response.completed")[0]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan next"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
@@ -988,7 +1024,10 @@ class TestResponsesStreamAdapter:
 
         done_events = self._payloads(lines, "response.output_item.done")
         assert [event["output_index"] for event in done_events] == [0, 1]
-        assert [event["item"]["type"] for event in done_events] == ["function_call", "message"]
+        assert [event["item"]["type"] for event in done_events] == [
+            "function_call",
+            "message",
+        ]
         completed = self._payloads(lines, "response.completed")[0]
         assert [item["type"] for item in completed["response"]["output"]] == [
             "function_call",
@@ -1012,13 +1051,19 @@ class TestResponsesStreamAdapter:
                                         "index": 0,
                                         "id": "call_0",
                                         "type": "function",
-                                        "function": {"name": "first", "arguments": "{}"},
+                                        "function": {
+                                            "name": "first",
+                                            "arguments": "{}",
+                                        },
                                     },
                                     {
                                         "index": 1,
                                         "id": "call_1",
                                         "type": "function",
-                                        "function": {"name": "second", "arguments": "{}"},
+                                        "function": {
+                                            "name": "second",
+                                            "arguments": "{}",
+                                        },
                                     },
                                 ]
                             }
@@ -1055,7 +1100,9 @@ class TestResponsesStreamAdapter:
                 base_url = "http://llama.test",
                 # Non-reasoning template: the real backend returns None here.
                 _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                    lambda enable_thinking = None,
+                    reasoning_effort = None,
+                    preserve_thinking = None: None
                 ),
             ),
         )
@@ -1104,7 +1151,9 @@ class TestResponsesStreamAdapter:
 
 class TestResponsesOutputFunctionCall:
     def test_reasoning_output_item_serialises_full_reasoning_content(self):
-        item = ResponsesOutputReasoning(content = [{"type": "reasoning_text", "text": "plan"}])
+        item = ResponsesOutputReasoning(
+            content = [{"type": "reasoning_text", "text": "plan"}]
+        )
         d = item.model_dump()
         assert d["type"] == "reasoning"
         assert d["id"].startswith("rs_")
@@ -1230,7 +1279,9 @@ class TestCodexStyleRequestShapes:
         msgs = _normalise_responses_input(payload)
 
         assert [m.role for m in msgs] == ["user", "assistant", "user"]
-        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
+        assert all(
+            "plan" not in (m.content or "") for m in msgs if isinstance(m.content, str)
+        )
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as
@@ -1321,7 +1372,9 @@ class TestCodexStyleRequestShapes:
             input = [
                 {
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
                 },
                 {"role": "user", "content": "next"},
             ],

@@ -68,7 +68,9 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
 
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(
+        studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python"
+    )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
@@ -114,7 +116,9 @@ def _invoke_run(monkeypatch, args):
         ("--no-cloudflare", "--no-cloudflare", "--cloudflare"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, user_flag, expected, unexpected):
+def test_run_reexec_forwards_cloudflare_polarity(
+    monkeypatch, user_flag, expected, unexpected
+):
     extras = [user_flag] if user_flag else []
     captured = _invoke_run(monkeypatch, _BASE + extras)
     assert len(captured) == 1, captured
@@ -140,7 +144,9 @@ def _invoke_studio_default(
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     monkeypatch.setattr(studio_mod, "_ensure_studio_env_exported", lambda: None)
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(
+        studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python"
+    )
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
     monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
     monkeypatch.setattr(sys, "platform", platform)
@@ -164,7 +170,9 @@ def _invoke_studio_default(
         ("--no-cloudflare", "--no-cloudflare", "--cloudflare"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, user_flag, expected, unexpected):
+def test_studio_default_reexec_forwards_cloudflare(
+    monkeypatch, user_flag, expected, unexpected
+):
     extras = [user_flag] if user_flag else []
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extras)
     assert len(captured) == 1, captured
@@ -182,7 +190,9 @@ class _RunServerCaptured(SystemExit):
         self.kwargs = dict(kwargs)
 
 
-@pytest.mark.parametrize("user_flag,expected", [(None, True), ("--no-cloudflare", False)])
+@pytest.mark.parametrize(
+    "user_flag,expected", [(None, True), ("--no-cloudflare", False)]
+)
 def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, expected):
     import types
 
@@ -237,7 +247,9 @@ def test_studio_default_rejects_no_cloudflare_with_subcommand(monkeypatch):
     studio_mod = _studio()
     app = _typer.Typer()
     app.add_typer(studio_mod.studio_app, name = "studio")
-    result = CliRunner().invoke(app, ["studio", "--no-cloudflare", "run", "--model", "X"])
+    result = CliRunner().invoke(
+        app, ["studio", "--no-cloudflare", "run", "--model", "X"]
+    )
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--no-cloudflare" in combined, combined
@@ -267,7 +279,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
             server_port = 8888
 
     shutdown_calls = []
-    backend = sys.modules.setdefault("studio.backend.run", types.ModuleType("studio.backend.run"))
+    backend = sys.modules.setdefault(
+        "studio.backend.run", types.ModuleType("studio.backend.run")
+    )
     backend.run_server = lambda **k: _App()
     backend._resolve_external_ip = lambda: "1.2.3.4"
     backend._server = object()
@@ -279,7 +293,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
 
     # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
-    tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
+    tp_mod = sys.modules.setdefault(
+        "state.tool_policy", types.ModuleType("state.tool_policy")
+    )
     tp_mod.set_tool_policy = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 

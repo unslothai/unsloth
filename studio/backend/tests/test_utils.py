@@ -187,7 +187,9 @@ class TestGetGpuMemoryInfo:
 
     # --- When a GPU IS available ---
 
-    @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
+    @pytest.mark.skipif(
+        _actual_device() == "cpu", reason = "No GPU available on this machine"
+    )
     def test_gpu_available_fields(self):
         result = get_gpu_memory_info()
         assert result["available"] is True
@@ -285,7 +287,9 @@ class TestLogGpuMemory:
             "free_gb": 14.0,
         }
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
+        ):
             log_gpu_memory("unit-test")
 
         captured = capfd.readouterr()
@@ -296,7 +300,9 @@ class TestLogGpuMemory:
     def test_logs_cpu_fallback_when_no_gpu(self, capfd):
         fake_info = {"available": False, "backend": "cpu"}
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
+        ):
             log_gpu_memory("cpu-test")
 
         captured = capfd.readouterr()

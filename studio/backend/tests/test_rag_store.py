@@ -36,7 +36,9 @@ def _chunk(
 def _add_doc(conn, scope, doc_id, filename, sha, texts):
     chunks = [_chunk(t, i) for i, t in enumerate(texts)]
     vectors = [embed(t) for t in texts]
-    store.create_document(conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id)
+    store.create_document(
+        conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id
+    )
     store.add_chunks(conn, scope, doc_id, chunks, vectors)
 
 
@@ -50,7 +52,9 @@ def test_lexical_returns_only_matching_docs(rag_conn):
 def test_scope_isolation(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
     _add_doc(rag_conn, "kb_b", "d2", "f", "h2", ["alpha bravo"])
-    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_b", "alpha", 10)] == ["d2:0"]
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_b", "alpha", 10)] == [
+        "d2:0"
+    ]
 
 
 def test_match_query_sanitizes_special_chars():
@@ -100,7 +104,9 @@ def test_incremental_add_is_flat(rag_conn):
     after = rag_conn.execute(
         "SELECT rowid, chunk_id FROM chunks_fts WHERE scope='kb_a' AND chunk_id LIKE 'd1:%'"
     ).fetchall()
-    before_d1 = [(r["rowid"], r["chunk_id"]) for r in before if r["chunk_id"].startswith("d1:")]
+    before_d1 = [
+        (r["rowid"], r["chunk_id"]) for r in before if r["chunk_id"].startswith("d1:")
+    ]
     after_d1 = [(r["rowid"], r["chunk_id"]) for r in after]
     assert before_d1 == after_d1
 

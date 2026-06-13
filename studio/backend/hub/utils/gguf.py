@@ -143,7 +143,9 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
         for name in filenames
-        if is_gguf_filename(name) and not is_mmproj_filename(name) and not is_mtp_drafter_path(name)
+        if is_gguf_filename(name)
+        and not is_mmproj_filename(name)
+        and not is_mtp_drafter_path(name)
     ]
     if not gguf_files:
         return None
@@ -246,7 +248,9 @@ def iter_hf_cache_snapshots(repo_id: str):
     yield from snapshots
 
 
-def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def list_gguf_variants_from_hf_cache(
+    repo_id: str,
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         if variants or has_vision:
@@ -372,7 +376,9 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
+        quant_totals[quant] = quant_totals.get(quant, 0) + int(
+            getattr(sibling, "size", 0) or 0
+        )
         quant_first_file.setdefault(quant, filename)
 
     for quant, total_size in quant_totals.items():

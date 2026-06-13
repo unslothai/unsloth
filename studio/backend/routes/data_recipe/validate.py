@@ -21,9 +21,7 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-_GITHUB_VALIDATE_NOTE = (
-    "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
-)
+_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
 _GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
 
 
@@ -46,17 +44,23 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     else:
         for repo in repos:
             if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
-                errors.append(ValidateError(message = "GitHub repos must be owner/name strings."))
+                errors.append(
+                    ValidateError(message = "GitHub repos must be owner/name strings.")
+                )
                 break
 
     item_types = source.get("item_types")
     if not isinstance(item_types, list) or not item_types:
-        errors.append(ValidateError(message = "GitHub seed requires at least one item type."))
+        errors.append(
+            ValidateError(message = "GitHub seed requires at least one item type.")
+        )
     else:
         invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
         if invalid_items:
             errors.append(
-                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
+                ValidateError(
+                    message = "GitHub item types must be issues, pulls, or commits."
+                )
             )
 
     try:

@@ -184,9 +184,15 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         captured["bias"] = attn_bias
         return torch.zeros_like(Q)
 
-    monkeypatch.setattr(attention_dispatch, "build_xformers_block_causal_mask", _fake_builder)
-    monkeypatch.setattr(attention_dispatch, "xformers_attention", _fake_attention, raising = False)
-    monkeypatch.setattr(attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising = False)
+    monkeypatch.setattr(
+        attention_dispatch, "build_xformers_block_causal_mask", _fake_builder
+    )
+    monkeypatch.setattr(
+        attention_dispatch, "xformers_attention", _fake_attention, raising = False
+    )
+    monkeypatch.setattr(
+        attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising = False
+    )
 
     config = attention_dispatch.AttentionConfig(
         backend = attention_dispatch.XFORMERS,

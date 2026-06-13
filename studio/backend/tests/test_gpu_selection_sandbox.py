@@ -382,7 +382,9 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
     def test_uuid_env_var_rejects_explicit_ids(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-abc,GPU-def"}, clear = False),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-abc,GPU-def"}, clear = False
+            ),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             with self.assertRaises(ValueError):

@@ -132,7 +132,10 @@ def test_family_token_mistral_does_not_match_ministral():
     assert _detect_family_token("Ministral-3-8B-Instruct-2512-BF16.gguf") == "ministral"
     assert _detect_family_token("Mistral-7B-Instruct-v0.3.gguf") == "mistral"
     assert _detect_family_token("Magistral-Small-2506-BF16.gguf") == "magistral"
-    assert _detect_family_token("Devstral-Small-2-24B-Instruct-2512-BF16.gguf") == "devstral"
+    assert (
+        _detect_family_token("Devstral-Small-2-24B-Instruct-2512-BF16.gguf")
+        == "devstral"
+    )
 
 
 def test_family_token_picks_leftmost_when_multiple_present():
@@ -157,7 +160,9 @@ def test_family_token_new_families_recognised():
 
 def test_blocks_cross_family_for_new_token_pair(tmp_path: Path):
     """Nemotron weight + lone Gemma projector returns None."""
-    model = _touch(tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf")
+    model = _touch(
+        tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf"
+    )
     _touch(tmp_path / "gemma-4-26B-A4B-it.mmproj-q8_0.gguf")
     assert detect_mmproj_file(str(model)) is None
 

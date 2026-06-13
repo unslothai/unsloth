@@ -173,11 +173,15 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
         fake_dir.mkdir()
         fake_smi = fake_dir / "nvidia-smi"
         fake_smi.write_text("#!/bin/sh\nsleep 30\n")
-        fake_smi.chmod(fake_smi.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        fake_smi.chmod(
+            fake_smi.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+        )
 
         # Build a minimal PATH that includes the fake nvidia-smi plus the real
         # `timeout`/`awk`/`ls` it needs. Use the fake dir first so it wins.
-        real_bins = {Path(shutil.which(c)).parent for c in ("timeout", "awk", "ls", "sh")}
+        real_bins = {
+            Path(shutil.which(c)).parent for c in ("timeout", "awk", "ls", "sh")
+        }
         path_env = os.pathsep.join([str(fake_dir)] + [str(p) for p in real_bins])
 
         # Force the /proc fallback off so the result depends only on the probe,

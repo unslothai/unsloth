@@ -65,7 +65,9 @@ def generate_smart_vlm_instruction(
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long Latin/Arabic passages
+            "content_hints": [
+                r"[A-Za-z\u0600-\u06FF]{10,}"
+            ],  # Long Latin/Arabic passages
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },

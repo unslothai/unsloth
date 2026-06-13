@@ -50,7 +50,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         return _DummyModelConfig()
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model")
+    monkeypatch.setattr(
+        models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model"
+    )
     monkeypatch.setattr(models_route, "load_model_defaults", _record_load)
     monkeypatch.setattr(models_route, "is_vision_model", _record_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", _record_embedding)

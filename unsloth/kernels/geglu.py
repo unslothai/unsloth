@@ -34,7 +34,9 @@ def _exact_forward_kernel(
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -87,7 +89,9 @@ def _exact_backward_kernel(
     """
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -145,7 +149,9 @@ def _approx_forward_kernel(
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -159,7 +165,9 @@ def _approx_forward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
-    f_row = 0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
+    f_row = (
+        0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
+    )
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
@@ -205,7 +213,9 @@ def _approx_backward_kernel(
     """
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)

@@ -267,7 +267,10 @@ class TestChatCompletionRequestToolFields:
         assert self._make(stop = "\nUser:").stop == "\nUser:"
 
     def test_stop_list(self):
-        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == ["\nUser:", "\nAssistant:"]
+        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == [
+            "\nUser:",
+            "\nAssistant:",
+        ]
 
     def test_tools_default_none(self):
         req = self._make()
@@ -307,7 +310,9 @@ class TestChatCompletionRequestToolFields:
         req = self._make()
         assert req.stream is False
 
-    def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
+    def test_post_without_stream_field_decodes_to_stream_false_over_http(
+        self, monkeypatch
+    ):
         # Wire-level guard: a POST body omitting `stream` must deserialise to
         # stream=False and return application/json, never text/event-stream.
         # Mounts the real router to catch middleware/aliasing regressions;
@@ -357,9 +362,13 @@ class TestChatCompletionRequestToolFields:
         from auth.authentication import get_current_subject
         from utils.api_errors import install_api_error_handlers
 
-        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
+        monkeypatch.setattr(
+            inference_route, "get_llama_cpp_backend", lambda: llama_backend
+        )
         if inference_backend is not None:
-            monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
+            monkeypatch.setattr(
+                inference_route, "get_inference_backend", lambda: inference_backend
+            )
 
         app = FastAPI()
         app.include_router(inference_route.router, prefix = "/v1")
@@ -514,7 +523,9 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_n(resp)
 
-    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
+        self, monkeypatch
+    ):
         import routes.inference as inference_route
 
         class _NoGGUFBackend:
@@ -611,7 +622,9 @@ class TestAnthropicToolChoiceToOpenAI:
         assert anthropic_tool_choice_to_openai({"type": "none"}) == "none"
 
     def test_tool_named(self):
-        result = anthropic_tool_choice_to_openai({"type": "tool", "name": "get_weather"})
+        result = anthropic_tool_choice_to_openai(
+            {"type": "tool", "name": "get_weather"}
+        )
         assert result == {"type": "function", "function": {"name": "get_weather"}}
 
     def test_tool_missing_name_returns_none(self):
@@ -856,11 +869,16 @@ class TestOpenAICompatibilityHelpers:
         usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
         payload = SimpleNamespace(stream_options = None)
         assert (
-            _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
+            _openai_stream_usage_chunk(
+                payload, "chatcmpl-test", 123, "model", usage, None
+            )
+            is None
         )
 
         payload.stream_options = {"include_usage": True}
-        line = _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None)
+        line = _openai_stream_usage_chunk(
+            payload, "chatcmpl-test", 123, "model", usage, None
+        )
         assert line is not None
         assert '"choices":[]' in line
         assert '"usage"' in line
@@ -895,7 +913,9 @@ class TestOpenAICompatibilityHelpers:
             if message.role == "developer":
                 message.role = "system"
 
-        system_prompt, chat_messages, image_b64 = _extract_content_parts(payload.messages)
+        system_prompt, chat_messages, image_b64 = _extract_content_parts(
+            payload.messages
+        )
 
         assert system_prompt == "original system\n\ndeveloper rules"
         assert chat_messages == [{"role": "user", "content": "hi"}]
@@ -930,11 +950,15 @@ class TestFriendlyErrorHttpx:
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
         # — a context-size message must still produce "Message too long".
-        ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
+        ctx_msg = (
+            "request (4096 tokens) exceeds the available context size (2048 tokens)"
+        )
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
     def test_generic_exception_returns_generic_message(self):
-        assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
+        assert (
+            _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
+        )
 
 
 from routes.inference import (  # noqa: E402
@@ -952,7 +976,10 @@ class TestDropEmptyAssistantSentinels:
             {"role": "user", "content": "again"},
         ]
         out = _drop_empty_assistant_sentinels(msgs)
-        assert out == [{"role": "user", "content": "hi"}, {"role": "user", "content": "again"}]
+        assert out == [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
 
     def test_drops_assistant_with_no_content_key(self):
         # exclude_none=True strips the content key entirely; filter must catch it.
@@ -962,7 +989,10 @@ class TestDropEmptyAssistantSentinels:
             {"role": "user", "content": "ok"},
         ]
         out = _drop_empty_assistant_sentinels(msgs)
-        assert out == [{"role": "user", "content": "hi"}, {"role": "user", "content": "ok"}]
+        assert out == [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "ok"},
+        ]
 
     def test_preserves_assistant_with_text(self):
         msgs = [
@@ -1062,10 +1092,16 @@ class TestGgufVisionMessages:
         messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
 
         assert has_image is True
-        assert messages[0]["content"][0] == {"type": "text", "text": "describe image one"}
+        assert messages[0]["content"][0] == {
+            "type": "text",
+            "text": "describe image one",
+        }
         assert messages[0]["content"][1]["type"] == "image_url"
         assert len(messages[0]["content"]) == 2
-        assert messages[2]["content"][0] == {"type": "text", "text": "describe image two"}
+        assert messages[2]["content"][0] == {
+            "type": "text",
+            "text": "describe image two",
+        }
         assert messages[2]["content"][1]["type"] == "image_url"
         assert len(messages[2]["content"]) == 2
         assert isinstance(messages[1]["content"], str)
@@ -1088,9 +1124,14 @@ class TestGgufVisionMessages:
         messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
 
         assert has_image is True
-        assert messages[0]["content"][0] == {"type": "text", "text": "describe this image"}
+        assert messages[0]["content"][0] == {
+            "type": "text",
+            "text": "describe this image",
+        }
         assert messages[0]["content"][1]["type"] == "image_url"
-        assert messages[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert messages[0]["content"][1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
 
     def test_rejects_image_parts_for_text_only_gguf(self):
         req = ChatCompletionRequest(
@@ -1156,7 +1197,9 @@ class TestGgufVisionMessages:
             {"role": "user", "content": "now"},
         ]
 
-        updated = _set_or_prepend_system_message(messages, "Mid instructions.\n\nUse tools.")
+        updated = _set_or_prepend_system_message(
+            messages, "Mid instructions.\n\nUse tools."
+        )
 
         assert [m["role"] for m in updated] == ["system", "user", "user"]
         assert updated[0]["content"] == "Mid instructions.\n\nUse tools."
@@ -1216,7 +1259,9 @@ class TestGgufVisionToolRouting:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": (f"data:image/png;base64,{TestGgufVisionMessages._PNG_B64}"),
+                                "url": (
+                                    f"data:image/png;base64,{TestGgufVisionMessages._PNG_B64}"
+                                ),
                             },
                         },
                     ],
@@ -1225,7 +1270,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -1268,7 +1315,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -1323,7 +1372,11 @@ class TestGgufVisionToolRouting:
             yield "done"
             yield {
                 "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
                 "finish_reason": "stop",
             }
 
@@ -1346,7 +1399,9 @@ class TestGgufVisionToolRouting:
         )
 
         self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(), current_subject = "test"
+            )
         )
 
         assert captured["messages"] == [
@@ -1361,7 +1416,9 @@ class TestGgufVisionToolRouting:
             (-1, [-1, -1, -1]),
         ],
     )
-    def test_gguf_n_choices_vary_explicit_non_negative_seed(self, monkeypatch, seed, expected):
+    def test_gguf_n_choices_vary_explicit_non_negative_seed(
+        self, monkeypatch, seed, expected
+    ):
         import routes.inference as inf_mod
 
         seen_seeds = []
@@ -1396,7 +1453,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(), current_subject = "test"
+            )
         )
         body = json.loads(response.body)
 

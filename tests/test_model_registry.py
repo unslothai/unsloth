@@ -54,7 +54,8 @@ def _test_model_uploaded(model_ids: list[str]):
 
 
 TestParams = [
-    ModelTestParam(name, models) for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
+    ModelTestParam(name, models)
+    for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
 ]
 
 
@@ -66,7 +67,9 @@ def test_model_registration(model_test_param: ModelTestParam):
     registration_method()
     registered_models = MODEL_REGISTRY.keys()
     missing_models = _test_model_uploaded(registered_models)
-    assert not missing_models, f"{model_test_param.name} missing following models: {missing_models}"
+    assert (
+        not missing_models
+    ), f"{model_test_param.name} missing following models: {missing_models}"
 
 
 def test_all_model_registration():

@@ -43,7 +43,9 @@ _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
-    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True
+    )
 
 
 def test_strips_well_formed_tool_call():
@@ -91,7 +93,9 @@ def test_strips_orphan_tool_call_no_close():
 
 
 def test_strips_orphan_function_no_close():
-    text = "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    text = (
+        "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    )
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "<function=" not in cleaned
     assert "I'll call python:" in cleaned

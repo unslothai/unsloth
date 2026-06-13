@@ -176,9 +176,7 @@ def _get_new_mapper():
     try:
         import requests
 
-        new_mapper = (
-            "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-        )
+        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         with requests.get(new_mapper, timeout = 3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
@@ -199,7 +197,12 @@ def _get_new_mapper():
 
 
 def _resolve_with_mappers(
-    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
 ):
     return __get_model_name(
         model_name = model_name,
@@ -237,7 +240,11 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
-    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
+    if (
+        new_model_name is None
+        and model_name.count("/") == 1
+        and model_name[0].isalnum()
+    ):
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
@@ -314,14 +321,18 @@ def _offline_quantize_to_fp8(
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
-    print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    print(
+        f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
+    )
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        load_kwargs = dict(
+            torch_dtype = "auto", device_map = "auto", quantization_config = qconfig
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -415,9 +426,13 @@ def _get_fp8_mode_and_check_settings(
 
     # Check user settings
     if fp8_mode not in ["row", "block"]:
-        raise ValueError(f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'")
+        raise ValueError(
+            f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
+        )
     if full_finetuning:
-        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
+        raise ValueError(
+            "Unsloth: `load_in_fp8` is not compatible with full finetuning"
+        )
     if load_in_4bit or load_in_8bit or load_in_16bit:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",

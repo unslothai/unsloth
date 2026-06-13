@@ -217,7 +217,9 @@ def _client(
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
-        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
+        SSETransport
+        if infer_transport_type_from_url(url) == "sse"
+        else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
@@ -252,7 +254,9 @@ _probe_cooloff_until: dict[str, float] = {}
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {"url", "headers_json", "use_oauth", "is_enabled"}
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -265,7 +269,11 @@ def cache_tools(server_id: str, tools: list[dict]) -> None:
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
-    cooloff = OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+    cooloff = (
+        OAUTH_FAILED_PROBE_COOLOFF_SECONDS
+        if use_oauth
+        else FAILED_PROBE_COOLOFF_SECONDS
+    )
     _probe_cooloff_until[server_id] = time.monotonic() + cooloff
 
 

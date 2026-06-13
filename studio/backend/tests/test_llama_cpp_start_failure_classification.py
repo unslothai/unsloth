@@ -30,7 +30,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # Give the structlog stub a real get_logger: a bare ModuleType poisons
 # sys.modules for later tests that call structlog.get_logger at import time.
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
+    "structlog"
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -107,7 +109,8 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 class TestOllamaAndFallback:
     _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
+        f"/home/u/.ollama{__import__('os').sep}ollama_links"
+        f"{__import__('os').sep}m.gguf"
     )
 
     def test_ollama_compat_message_still_works(self):

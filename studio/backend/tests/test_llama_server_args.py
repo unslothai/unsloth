@@ -18,7 +18,12 @@ import pytest
 
 # Load llama_server_args.py directly to avoid dragging in the full backend
 # chain via core/inference/__init__.py. The validator is dependency-free.
-_LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
+_LSA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "core"
+    / "inference"
+    / "llama_server_args.py"
+)
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
@@ -487,7 +492,9 @@ def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
 
 
 def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
-    out = strip_shadowing_flags(["--no-jinja", "trailing-positional"], strip_template = True)
+    out = strip_shadowing_flags(
+        ["--no-jinja", "trailing-positional"], strip_template = True
+    )
     assert out == ["trailing-positional"]
 
 
@@ -664,11 +671,15 @@ def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
 
 
 def test_strip_shadowing_flags_drops_split_mode_short_alias_and_equals():
-    assert strip_shadowing_flags(["-sm", "tensor", "--top-k", "20"], strip_split_mode = True) == [
+    assert strip_shadowing_flags(
+        ["-sm", "tensor", "--top-k", "20"], strip_split_mode = True
+    ) == [
         "--top-k",
         "20",
     ]
-    assert strip_shadowing_flags(["--split-mode=row", "--seed", "-1"], strip_split_mode = True) == [
+    assert strip_shadowing_flags(
+        ["--split-mode=row", "--seed", "-1"], strip_split_mode = True
+    ) == [
         "--seed",
         "-1",
     ]

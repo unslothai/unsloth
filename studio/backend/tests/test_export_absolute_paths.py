@@ -154,7 +154,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
 
     utils_model_config = types.ModuleType("utils.models.model_config")
-    utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None
+    utils_model_config._pick_best_gguf = (
+        lambda variants: variants[0] if variants else None
+    )
     utils_model_config._extract_quant_label = lambda value: value
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
     monkeypatch.setitem(
@@ -268,7 +270,9 @@ def _install_export_backend_stubs(monkeypatch):
 
 def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkeypatch):
     _install_export_backend_stubs(monkeypatch)
-    export_mod = _load_module("test_core_export_backend", "core/export/export.py", monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend", "core/export/export.py", monkeypatch
+    )
 
     cwd = tmp_path / "cwd"
     save_dir = tmp_path / "export"
@@ -310,7 +314,9 @@ def test_save_directory_validator_rejects_windows_parent_segments(monkeypatch):
 
 def test_save_directory_validator_allows_deep_absolute_paths(monkeypatch, tmp_path):
     _install_pydantic_stub(monkeypatch)
-    export_models = _load_module("test_models_export_deep_path", "models/export.py", monkeypatch)
+    export_models = _load_module(
+        "test_models_export_deep_path", "models/export.py", monkeypatch
+    )
 
     deep_path = tmp_path
     for index in range(40):
@@ -331,7 +337,9 @@ def test_save_directory_validator_rejects_long_path_component(monkeypatch, tmp_p
         export_models._validate_save_directory(str(tmp_path / ("a" * 256)))
 
 
-def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(tmp_path, monkeypatch):
+def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(
+    tmp_path, monkeypatch
+):
     storage_roots = _load_module(
         "test_storage_roots_accept_external",
         "utils/paths/storage_roots.py",
@@ -365,7 +373,10 @@ def test_export_write_dir_accepts_expanded_home_path(tmp_path, monkeypatch):
     else:
         monkeypatch.setenv("HOME", str(home))
 
-    assert storage_roots.resolve_export_write_dir("~/exports/model") == home / "exports" / "model"
+    assert (
+        storage_roots.resolve_export_write_dir("~/exports/model")
+        == home / "exports" / "model"
+    )
 
 
 def test_resolve_export_write_dir_rejects_backslash_parent_segment():
@@ -378,7 +389,9 @@ def test_resolve_export_write_dir_rejects_backslash_parent_segment():
         storage_roots.resolve_export_write_dir(r"exports\..\outside")
 
 
-def test_export_write_dir_handles_non_native_windows_absolute_as_relative(tmp_path, monkeypatch):
+def test_export_write_dir_handles_non_native_windows_absolute_as_relative(
+    tmp_path, monkeypatch
+):
     storage_roots = _load_module(
         "test_storage_roots_non_native_windows_path",
         "utils/paths/storage_roots.py",

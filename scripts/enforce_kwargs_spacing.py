@@ -123,7 +123,9 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
     lines = text.splitlines(keepends=True)
     changed = False
 
-    for node in sorted(redundant, key=lambda item: (item.lineno, item.col_offset), reverse=True):
+    for node in sorted(
+        redundant, key=lambda item: (item.lineno, item.col_offset), reverse=True
+    ):
         start = node.lineno - 1
         end = (node.end_lineno or node.lineno) - 1
         if start >= len(lines):
@@ -181,7 +183,11 @@ def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
         out: list[list[ast.stmt]] = []
         for attr in ("body", "orelse", "finalbody"):
             val = getattr(node, attr, None)
-            if isinstance(val, list) and val and all(isinstance(s, ast.stmt) for s in val):
+            if (
+                isinstance(val, list)
+                and val
+                and all(isinstance(s, ast.stmt) for s in val)
+            ):
                 out.append(val)
         return out
 
@@ -199,7 +205,9 @@ def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
                     j += 1
                 if j + 1 < len(suite):  # an import block followed by another statement
                     last_imp, nxt = suite[j], suite[j + 1]
-                    gap = range((last_imp.end_lineno or last_imp.lineno) + 1, nxt.lineno)
+                    gap = range(
+                        (last_imp.end_lineno or last_imp.lineno) + 1, nxt.lineno
+                    )
                     nums = [n for n in gap if 1 <= n <= len(lines)]
                     if nums and all(lines[n - 1].strip() == "" for n in nums):
                         drop.update(nums)
@@ -211,7 +219,13 @@ def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
     return "".join(kept), True
 
 
-_STRING_TRIVIA = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT)
+_STRING_TRIVIA = (
+    tokenize.NL,
+    tokenize.NEWLINE,
+    tokenize.COMMENT,
+    tokenize.INDENT,
+    tokenize.DEDENT,
+)
 
 
 _DEF_MIN_PARAMS_FOR_MULTILINE = 3  # signatures with < this many params stay one line

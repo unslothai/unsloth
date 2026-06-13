@@ -89,7 +89,9 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
+        threading.Thread(
+            target = self._fetch_top_models, daemon = True, name = "top-models"
+        ).start()
 
     # ------------------------------------------------------------------
     # Default models (top GGUFs fetched dynamically from HF)
@@ -129,12 +131,14 @@ class InferenceOrchestrator:
             if resp.status_code == 200:
                 models = resp.json()
                 # Top 40 GGUFs (deep pool for frontend infinite scroll)
-                gguf_ids = [m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")][
-                    :40
-                ]
+                gguf_ids = [
+                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
+                ][:40]
                 # Top 40 non-GGUF hub models
                 hub_ids = [
-                    m["id"] for m in models if not m.get("id", "").upper().endswith("-GGUF")
+                    m["id"]
+                    for m in models
+                    if not m.get("id", "").upper().endswith("-GGUF")
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
@@ -272,7 +276,8 @@ class InferenceOrchestrator:
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
             return (
-                f"{message}{suffix} " f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
+                f"{message}{suffix} "
+                f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
             )
 
         return f"{message} Details: pid={pid}, exitcode={exitcode}."
@@ -355,7 +360,8 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response " f"(no activity for {timeout}s)"
+            f"Timeout waiting for '{expected_type}' response "
+            f"(no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:
@@ -733,9 +739,13 @@ class InferenceOrchestrator:
                     # without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
                     if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name]["chat_template_info"] = _tpl_info
+                        self.models[self.active_model_name]["chat_template_info"] = (
+                            _tpl_info
+                        )
                     self.loading_models.discard(model_name)
-                    logger.info("Model '%s' loaded successfully in subprocess", model_name)
+                    logger.info(
+                        "Model '%s' loaded successfully in subprocess", model_name
+                    )
                     return True
                 else:
                     error = resp.get("error", "Failed to load model")
@@ -1166,7 +1176,9 @@ class InferenceOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError(self._subprocess_crash_message("audio generation"))
+                    raise RuntimeError(
+                        self._subprocess_crash_message("audio generation")
+                    )
                 continue
 
             rtype = resp.get("type", "")
@@ -1258,7 +1270,9 @@ class InferenceOrchestrator:
 
             # numpy array -> list for mp.Queue serialization
             audio_data = (
-                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
+                audio_array.tolist()
+                if hasattr(audio_array, "tolist")
+                else list(audio_array)
             )
 
             cmd = {
@@ -1288,7 +1302,10 @@ class InferenceOrchestrator:
 
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        yield ("Error: " + self._subprocess_crash_message("audio input generation"))
+                        yield (
+                            "Error: "
+                            + self._subprocess_crash_message("audio input generation")
+                        )
                         return
                     continue
 

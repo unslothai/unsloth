@@ -26,8 +26,12 @@ def backend_dir() -> Path:
 
 
 def resolve_transport(use_xet: bool) -> str:
-    transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
-    unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
+    transport = (
+        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    )
+    unavailable_reason = download_registry.download_transport_unavailable_reason(
+        transport
+    )
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
@@ -49,7 +53,9 @@ def spawn_worker(
     shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
     """
     cwd = backend_dir()
-    mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    mode = (
+        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    )
     env = os.environ.copy()
     if protected_blob_hashes:
         env["UNSLOTH_PROTECTED_BLOB_HASHES"] = ",".join(sorted(protected_blob_hashes))
@@ -73,7 +79,9 @@ def spawn_worker(
     if hf_token:
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
+    env["PYTHONPATH"] = (
+        f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
+    )
     return subprocess.Popen(
         [
             sys.executable,
@@ -216,7 +224,9 @@ def finalize_worker_exit(
                     f"{label}: {stderr_text}"
                 )
             else:
-                logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")
+                logger.info(
+                    f"{log_prefix} worker diagnostics for {label}: {stderr_text}"
+                )
         logger.info(f"{log_prefix} complete: {label}")
         # Defensive cleanup: the canonical clear is at download-start; this
         # catches the rare case where that failed but the download succeeded.
@@ -422,13 +432,18 @@ def idle_status(
 
 
 def active_download_refs(
-    registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
+    registry: download_registry.DownloadRegistry,
+    repo_id: Optional[str],
+    *,
+    with_variant: bool,
 ) -> list[ActiveDownload]:
     downloads: list[ActiveDownload] = []
     for ref in registry.active_job_refs(repo_id):
         metadata = ref.metadata
         if with_variant:
-            ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
+            ref_repo_id = (
+                metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
+            )
             if metadata is not None:
                 variant = metadata.variant
             else:

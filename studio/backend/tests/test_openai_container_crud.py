@@ -79,7 +79,9 @@ def test_create_sends_openai_beta_header(monkeypatch):
         return httpx.Response(200, json = {"id": "cntr_new", "name": "analysis"})
 
     _mock_http_client(monkeypatch, handler)
-    result = _drive(_make_client().create_openai_container(name = "analysis", ttl_minutes = 30))
+    result = _drive(
+        _make_client().create_openai_container(name = "analysis", ttl_minutes = 30)
+    )
 
     assert result == {"id": "cntr_new", "name": "analysis"}
     assert seen["headers"].get("openai-beta") == "containers=v1"

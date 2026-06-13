@@ -80,7 +80,9 @@ if _IS_MLX:
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
-    _raw_text_spec = importlib.util.spec_from_file_location("unsloth._mlx_raw_text", _raw_text_path)
+    _raw_text_spec = importlib.util.spec_from_file_location(
+        "unsloth._mlx_raw_text", _raw_text_path
+    )
     if _raw_text_spec is None or _raw_text_spec.loader is None:
         raise ImportError("Unsloth: could not load MLX raw_text dataprep helpers.")
     _raw_text = importlib.util.module_from_spec(_raw_text_spec)

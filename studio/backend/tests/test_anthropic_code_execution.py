@@ -174,7 +174,9 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     # Pill off: no code_execution variant on the wire.
     assert all("code_execution" not in (t.get("type") or "") for t in tools)
     # Beta header must omit code-execution when the tool is off (opt-in only).
-    assert "code-execution-2025-08-25" not in captured["headers"].get("anthropic-beta", "")
+    assert "code-execution-2025-08-25" not in captured["headers"].get(
+        "anthropic-beta", ""
+    )
 
 
 def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
@@ -247,7 +249,11 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
     assert start["tool_name"] == "code_execution"
     assert start["tool_call_id"] == "srvtoolu_1"
     # `_server_tool: True` marks a provider-side synthetic tool card.
-    assert start["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
+    assert start["arguments"] == {
+        "kind": "bash",
+        "command": "ls -la",
+        "_server_tool": True,
+    }
 
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_1"

@@ -8,7 +8,9 @@ class PhiModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}"
-        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
+        return super().construct_model_name(
+            base_name, version, size, quant_type, instruct_tag, key
+        )
 
 
 # Phi Model Meta

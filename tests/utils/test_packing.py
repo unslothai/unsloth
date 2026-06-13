@@ -190,7 +190,9 @@ class _DummyTrainer:
         ]
         for extra in optional_flags:
             try:
-                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
+                self.data_collator = DataCollatorForLanguageModeling(
+                    **collator_args, **extra
+                )
                 break
             except TypeError:
                 continue
@@ -245,7 +247,9 @@ def test_enable_sample_packing():
 
     # packed lengths are aggregated into a single tensor
     assert "packed_seq_lengths" in batch
-    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
+    assert torch.equal(
+        batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32)
+    )
 
     assert batch["input_ids"].shape == (1, 6)
     expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
@@ -274,7 +278,9 @@ def test_enable_sample_packing_trl_collator(tmp_path):
     batch = trainer.data_collator.torch_call(examples)
 
     assert batch["input_ids"].shape == (1, 6)
-    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
+    assert torch.equal(
+        batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32)
+    )
 
     expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
@@ -304,7 +310,9 @@ def test_enable_padding_free_metadata():
         {"input_ids": [3, 4]},
     ]
     batch = collator.torch_call(examples)
-    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32))
+    assert torch.equal(
+        batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32)
+    )
     assert trainer.args.remove_unused_columns is False
 
 
@@ -323,7 +331,10 @@ def test_packing_sdpa(tmp_path):
     assert "position_ids" in batch
     flat_positions = batch["position_ids"].reshape(-1)[:packed_tokens]
     expected_positions = torch.cat(
-        [torch.arange(length, dtype = torch.long) for length in batch["packed_seq_lengths"].tolist()]
+        [
+            torch.arange(length, dtype = torch.long)
+            for length in batch["packed_seq_lengths"].tolist()
+        ]
     )
     assert torch.equal(flat_positions.cpu(), expected_positions)
     inputs = _trim_batch_to_total_tokens(batch, packed_tokens)
@@ -358,8 +369,12 @@ def test_packing_sdpa(tmp_path):
         return torch.zeros((), device = logits.device, dtype = logits.dtype)
 
     with ExitStack() as stack:
-        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
-        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_XFORMERS", False))
+        stack.enter_context(
+            patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False)
+        )
+        stack.enter_context(
+            patch.object(attention_dispatch_utils, "HAS_XFORMERS", False)
+        )
         stack.enter_context(
             patch.object(
                 attention_dispatch_utils,
@@ -382,7 +397,10 @@ def test_packing_sdpa(tmp_path):
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
     boundaries = (
-        torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0) - 1
+        torch.cumsum(
+            batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0
+        )
+        - 1
     )
     for idx in boundaries.tolist():
         assert flat_loss_labels[idx].item() == -100

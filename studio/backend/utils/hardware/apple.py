@@ -154,7 +154,11 @@ def _load_iokit() -> ctypes.CDLL:
 def _load_cf() -> ctypes.CDLL:
     cf = ctypes.CDLL(_CF_PATH)
     cf.CFStringCreateWithCString.restype = ctypes.c_void_p
-    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+    ]
     cf.CFStringGetCString.restype = ctypes.c_bool
     cf.CFStringGetCString.argtypes = [
         ctypes.c_void_p,
@@ -191,9 +195,17 @@ def _load_ioreport() -> ctypes.CDLL:
         ctypes.c_void_p,
     ]
     ior.IOReportCreateSamples.restype = ctypes.c_void_p
-    ior.IOReportCreateSamples.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    ior.IOReportCreateSamples.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
     ior.IOReportCreateSamplesDelta.restype = ctypes.c_void_p
-    ior.IOReportCreateSamplesDelta.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    ior.IOReportCreateSamplesDelta.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
     ior.IOReportChannelGetChannelName.restype = ctypes.c_void_p
     ior.IOReportChannelGetChannelName.argtypes = [ctypes.c_void_p]
     ior.IOReportChannelGetUnitLabel.restype = ctypes.c_void_p
@@ -204,7 +216,9 @@ def _load_ioreport() -> ctypes.CDLL:
 
 
 def _cfstr(cf: ctypes.CDLL, text: str) -> int:
-    return cf.CFStringCreateWithCString(None, text.encode("utf-8"), _CF_STRING_ENCODING_UTF8)
+    return cf.CFStringCreateWithCString(
+        None, text.encode("utf-8"), _CF_STRING_ENCODING_UTF8
+    )
 
 
 def _from_cfstr(cf: ctypes.CDLL, ref: Optional[int]) -> str:
@@ -235,7 +249,12 @@ class _SMCConnection:
     def _open(self) -> int:
         iterator = ctypes.c_uint32(0)
         matching = self._iokit.IOServiceMatching(b"AppleSMC")
-        if self._iokit.IOServiceGetMatchingServices(0, matching, ctypes.byref(iterator)) != 0:
+        if (
+            self._iokit.IOServiceGetMatchingServices(
+                0, matching, ctypes.byref(iterator)
+            )
+            != 0
+        ):
             raise OSError("AppleSMC service not found")
         try:
             conn = self._open_keys_endpoint(iterator.value)
@@ -290,7 +309,9 @@ class _SMCConnection:
         try:
             key_id = _fourcc(key)
             info = self._read_key_info(key_id)
-            oval = self._call(_SMCKeyData(key = key_id, data8 = _SMC_CMD_READ_BYTES, key_info = info))
+            oval = self._call(
+                _SMCKeyData(key = key_id, data8 = _SMC_CMD_READ_BYTES, key_info = info)
+            )
             return bytes(oval.bytes[: info.data_size])
         except OSError:
             return None
@@ -386,7 +407,9 @@ class _IOReportEnergy:
             watts = _watts(energy, unit, elapsed_s)
             if watts is not None:
                 total = (total or 0.0) + watts
-        if total is None or total < 0:  # negative = counter reset; show -- not a bogus draw
+        if (
+            total is None or total < 0
+        ):  # negative = counter reset; show -- not a bogus draw
             return None
         return round(total, 1)
 

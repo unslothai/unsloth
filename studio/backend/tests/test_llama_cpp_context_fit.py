@@ -218,7 +218,9 @@ def _drive(
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
-            effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+            effective_ctx = (
+                min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+            )
 
     return {
         "c_arg": effective_ctx if effective_ctx > 0 else 0,

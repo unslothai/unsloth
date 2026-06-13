@@ -21,17 +21,28 @@ def test_caption_images_disabled_by_default(monkeypatch):
 def test_caption_images_groups_by_page(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 8)
-    monkeypatch.setattr(captioner, "_caption_one", lambda base, model, b, t: "a chart of results")
-    out = captioner.caption_images([_img(1), _img(1), _img(3)], endpoint = ("http://x", "local"))
-    assert out == {1: ["a chart of results", "a chart of results"], 3: ["a chart of results"]}
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda base, model, b, t: "a chart of results"
+    )
+    out = captioner.caption_images(
+        [_img(1), _img(1), _img(3)], endpoint = ("http://x", "local")
+    )
+    assert out == {
+        1: ["a chart of results", "a chart of results"],
+        3: ["a chart of results"],
+    }
 
 
 def test_caption_images_respects_cap(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 2)
     calls = []
-    monkeypatch.setattr(captioner, "_caption_one", lambda *a: (calls.append(1) or "cap"))
-    captioner.caption_images([_img(i) for i in range(5)], endpoint = ("http://x", "local"))
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda *a: (calls.append(1) or "cap")
+    )
+    captioner.caption_images(
+        [_img(i) for i in range(5)], endpoint = ("http://x", "local")
+    )
     assert len(calls) == 2
 
 

@@ -99,7 +99,9 @@ def run(args):
             loader = RawTextDataLoader(tokenizer)
             dataset = loader.load_from_file(args.dataset)
         else:
-            use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
+            use_modelscope = strtobool(
+                os.environ.get("UNSLOTH_USE_MODELSCOPE", "False")
+            )
             if use_modelscope:
                 from modelscope import MsDataset
                 dataset = MsDataset.load(args.dataset, split = "train")
@@ -153,7 +155,9 @@ def run(args):
         if args.save_gguf:
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:
-                    print(f"Saving model with quantization method: {quantization_method}")
+                    print(
+                        f"Saving model with quantization method: {quantization_method}"
+                    )
                     model.save_pretrained_gguf(
                         args.save_path,
                         tokenizer,
@@ -187,7 +191,9 @@ def run(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = "🦥 Fine-tune your llm faster using unsloth!")
+    parser = argparse.ArgumentParser(
+        description = "🦥 Fine-tune your llm faster using unsloth!"
+    )
 
     model_group = parser.add_argument_group("🤖 Model Options")
     model_group.add_argument(
@@ -437,11 +443,15 @@ if __name__ == "__main__":
         help = "Token for pushing the model to Hugging Face hub",
     )
 
-    parser.add_argument("--raw_text_file", type = str, help = "Path to raw text file for training")
+    parser.add_argument(
+        "--raw_text_file", type = str, help = "Path to raw text file for training"
+    )
     parser.add_argument(
         "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
     )
-    parser.add_argument("--stride", type = int, default = 512, help = "Overlap between chunks")
+    parser.add_argument(
+        "--stride", type = int, default = 512, help = "Overlap between chunks"
+    )
 
     args = parser.parse_args()
     run(args)

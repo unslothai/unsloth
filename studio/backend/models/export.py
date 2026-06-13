@@ -21,7 +21,11 @@ def _validate_save_directory(value: str) -> str:
     if any(ch in raw for ch in ("\r", "\n")):
         raise ValueError("save_directory may not contain control characters")
     path = Path(raw).expanduser()
-    path_parts = (*path.parts, *PureWindowsPath(raw).parts, *raw.replace("\\", "/").split("/"))
+    path_parts = (
+        *path.parts,
+        *PureWindowsPath(raw).parts,
+        *raw.replace("\\", "/").split("/"),
+    )
     if any(len(part) > 255 for part in path_parts if part not in ("", ".", "/", "\\")):
         raise ValueError("save_directory path components must be <= 255 characters")
     if (

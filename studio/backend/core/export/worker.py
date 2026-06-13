@@ -428,7 +428,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
         import transformers
 
-        logger.info("Export subprocess loaded transformers %s", transformers.__version__)
+        logger.info(
+            "Export subprocess loaded transformers %s", transformers.__version__
+        )
 
     except Exception as exc:
         _send_response(
@@ -529,7 +531,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                 )
 
         except Exception as exc:
-            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
+            logger.error(
+                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
+            )
             _send_response(
                 resp_queue,
                 {

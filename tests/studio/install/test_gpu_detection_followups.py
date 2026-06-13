@@ -91,9 +91,15 @@ def _run_detect_host(
     patches = [
         patch.object(prebuilt_mod.platform, "system", return_value = system),
         patch.object(prebuilt_mod.platform, "machine", return_value = machine),
-        patch.object(prebuilt_mod.platform, "mac_ver", return_value = ("", ("", "", ""), "")),
-        patch.object(prebuilt_mod.shutil, "which", side_effect = lambda n: which_map.get(n)),
-        patch.object(prebuilt_mod, "run_capture", side_effect = _make_run_capture(rocminfo_stdout)),
+        patch.object(
+            prebuilt_mod.platform, "mac_ver", return_value = ("", ("", "", ""), "")
+        ),
+        patch.object(
+            prebuilt_mod.shutil, "which", side_effect = lambda n: which_map.get(n)
+        ),
+        patch.object(
+            prebuilt_mod, "run_capture", side_effect = _make_run_capture(rocminfo_stdout)
+        ),
         patch.object(prebuilt_mod.os.path, "isdir", side_effect = fake_isdir),
         patch.object(prebuilt_mod.os, "listdir", side_effect = fake_listdir),
         patch.object(prebuilt_mod.os, "access", return_value = False),
@@ -326,7 +332,9 @@ class TestBackendExportLeafClassification:
             out = sp.run(
                 ["sh", str(script), url], capture_output = True, text = True, timeout = 30
             ).stdout.strip()
-            assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
+            assert (
+                out == expected
+            ), f"{url} classified as {out!r}, expected {expected!r}"
 
 
 # TEST: CUDA_VISIBLE_DEVICES=""/-1 hides NVIDIA in every usable-GPU helper
@@ -414,7 +422,9 @@ class TestHiddenCvdNotUsable:
         with (
             patch.object(stack_mod.shutil, "which", side_effect = which_map.get),
             patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
-            patch.dict(stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False),
+            patch.dict(
+                stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False
+            ),
         ):
             assert stack_mod._has_rocm_gpu() is True
 
@@ -474,7 +484,11 @@ class TestHiddenCvdNotUsable:
         out = self._run_sh_helper(
             tmp_path,
             src,
-            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            [
+                "_setup_run_smi",
+                "_setup_cvd_hides_nvidia",
+                "_setup_has_usable_nvidia_gpu",
+            ],
             cvd,
         )
         assert out == expected

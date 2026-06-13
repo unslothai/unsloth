@@ -194,7 +194,9 @@ def _hf_datasets_cache_roots() -> list[Path]:
     if hf_home:
         _add(Path(hf_home).expanduser() / "datasets")
 
-    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    ).expanduser()
     _add(xdg_cache / "huggingface" / "datasets")
     return roots
 
@@ -284,7 +286,11 @@ def _scan_hf_dataset_caches() -> list[dict]:
                         rev_id = getattr(rev, "commit_hash", None) or str(id(rev))
                         for f in rev.files:
                             blob_path = getattr(f, "blob_path", None)
-                            key = str(blob_path) if blob_path else f"{rev_id}:{f.file_name}"
+                            key = (
+                                str(blob_path)
+                                if blob_path
+                                else f"{rev_id}:{f.file_name}"
+                            )
                             unique_blobs[key] = int(f.size_on_disk or 0)
                     total_size = sum(unique_blobs.values())
                 key = repo_info.repo_id.lower()
@@ -320,7 +326,9 @@ def _scan_hf_dataset_caches() -> list[dict]:
         existing = seen_lower.get(key)
         if _prefer_dataset_cache_row(row, existing):
             seen_lower[key] = row
-        elif existing is not None and bool(existing.get("partial")) == bool(row.get("partial")):
+        elif existing is not None and bool(existing.get("partial")) == bool(
+            row.get("partial")
+        ):
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
             existing["cache_path"] = existing.get("cache_path") or row.get("cache_path")
             if (
@@ -332,7 +340,9 @@ def _scan_hf_dataset_caches() -> list[dict]:
     for row in _scan_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)
-        if existing is None or (bool(existing.get("partial")) and not bool(row.get("partial"))):
+        if existing is None or (
+            bool(existing.get("partial")) and not bool(row.get("partial"))
+        ):
             seen_lower[key] = row
         else:
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
@@ -366,7 +376,9 @@ async def delete_cached_dataset_response(repo_id: str) -> dict:
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
-    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    repo_key = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     if not downloads.registry.begin_delete(repo_key):
         raise HTTPException(
             status_code = 400,
@@ -401,7 +413,9 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
         if str(repo_info.repo_id) not in matched_repo_ids:
             continue
         try:
-            strategy = hf_cache.delete_revisions(*(rev.commit_hash for rev in repo_info.revisions))
+            strategy = hf_cache.delete_revisions(
+                *(rev.commit_hash for rev in repo_info.revisions)
+            )
             strategy.execute()
             deleted = True
         except Exception as exc:
@@ -430,7 +444,9 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
     cache_purged = purge_repo_cache_dirs("dataset", repo_id)
     partial_purged = purge_partial_repo("dataset", repo_id)
     state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0
-    if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
+    if not (
+        deleted or processed_deleted or cache_purged or partial_purged or state_purged
+    ):
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}
 

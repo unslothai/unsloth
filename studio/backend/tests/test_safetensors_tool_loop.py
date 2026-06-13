@@ -40,7 +40,9 @@ from utils.datasets import is_gpt_oss_model_name
 
 class TestParser:
     def test_json_tool_call(self):
-        text = '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        text = (
+            '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         tc = result[0]
@@ -85,9 +87,7 @@ class TestParser:
     def test_code_with_embedded_xml(self):
         # A code parameter with a literal </parameter> must not truncate: the
         # parser uses end-of-body as the only boundary for single-param calls.
-        text = (
-            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
-        )
+        text = "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
@@ -293,7 +293,10 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
     assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
     assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
-    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    assert any(
+        event.get("type") == "content" and event.get("text") == "Done."
+        for event in events
+    )
 
 
 class TestLoopBasic:
@@ -392,7 +395,9 @@ class TestLoopBasic:
         assert exec_fn.calls[0][0] == "render_html"
         assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
 
-    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
+    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(
+        self,
+    ):
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -409,7 +414,9 @@ class TestLoopBasic:
 
         assert len(tool_starts) == 1
         assert tool_starts[0]["tool_name"] == "python"
-        assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
+        assert exec_fn.calls == [
+            ("python", {"code": "print('<function=render_html>')"})
+        ]
 
     def test_render_html_success_blocks_second_artifact_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
@@ -444,7 +451,10 @@ class TestLoopBasic:
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
         assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
-        assert [e["arguments"] for e in tool_starts] == [{}, {"code": "<html>one</html>"}]
+        assert [e["arguments"] for e in tool_starts] == [
+            {},
+            {"code": "<html>one</html>"},
+        ]
 
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(
@@ -464,7 +474,9 @@ class TestLoopBasic:
         loop, exec_fn = _make_loop(
             turns = [
                 # ``arguments`` is a string _coerce_arguments can't parse, so heal runs.
-                ['<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'
+                ],
                 ["ok"],
             ],
             exec_results = ["..."],
@@ -479,8 +491,12 @@ class TestLoopBehaviour:
         captured_messages: list[list[dict]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -505,11 +521,14 @@ class TestLoopBehaviour:
         )
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
-        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["call_0"]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
+            "call_0"
+        ]
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1"
+            and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -524,9 +543,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -571,7 +596,8 @@ class TestLoopBehaviour:
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1"
+            and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -586,9 +612,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final from first result"],
             ]
         )
@@ -620,11 +652,14 @@ class TestLoopBehaviour:
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert captured_tool_names[-1] == []
         assert any(
-            event.get("type") == "content" and "final from first result" in event.get("text", "")
+            event.get("type") == "content"
+            and "final from first result" in event.get("text", "")
             for event in events
         )
 
@@ -671,7 +706,9 @@ class TestLoopBehaviour:
         # carries the raw result for the UI.
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
+                ],
                 ["see chart"],
             ],
             exec_results = ["chart\n__IMAGES__:/tmp/chart.png"],
@@ -709,7 +746,9 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs, "no tool message reached the model"
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], f"sentinel leaked to model: {tm['content']!r}"
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"sentinel leaked to model: {tm['content']!r}"
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
         # Consecutive sentinels: cut at the first, nothing leaks.
@@ -739,13 +778,19 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], f"second sentinel leaked: {tm['content']!r}"
-            assert tm["content"] == "panel", f"expected payload-only 'panel', got {tm['content']!r}"
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"second sentinel leaked: {tm['content']!r}"
+            assert (
+                tm["content"] == "panel"
+            ), f"expected payload-only 'panel', got {tm['content']!r}"
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["sorry, that failed"],
             ],
             exec_results = ["Error: network unreachable"],
@@ -760,7 +805,9 @@ class TestLoopBehaviour:
     def test_exception_in_executor_does_not_raise(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["recovered"],
             ],
             exec_results = [RuntimeError("boom")],
@@ -796,7 +843,9 @@ class TestLoopControl:
         loop, exec_fn = _make_loop(
             turns = [
                 # Tool call (executes once).
-                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
+                ],
                 # Model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
@@ -813,19 +862,24 @@ class TestStatusFormatting:
     def test_status_for_known_tools(self):
         # Call the private helper directly to verify status formatting.
         assert (
-            safetensors_agentic._status_for_tool("web_search", {"query": "abc"}) == "Searching: abc"
+            safetensors_agentic._status_for_tool("web_search", {"query": "abc"})
+            == "Searching: abc"
         )
         assert (
-            safetensors_agentic._status_for_tool("web_search", {"url": "https://www.example.com/x"})
+            safetensors_agentic._status_for_tool(
+                "web_search", {"url": "https://www.example.com/x"}
+            )
             == "Reading: example.com"
         )
-        assert safetensors_agentic._status_for_tool("python", {"code": "x = 1"}).startswith(
-            "Running Python:"
+        assert safetensors_agentic._status_for_tool(
+            "python", {"code": "x = 1"}
+        ).startswith("Running Python:")
+        assert safetensors_agentic._status_for_tool(
+            "terminal", {"command": "ls"}
+        ).startswith("Running:")
+        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith(
+            "Calling:"
         )
-        assert safetensors_agentic._status_for_tool("terminal", {"command": "ls"}).startswith(
-            "Running:"
-        )
-        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith("Calling:")
 
 
 class TestProseMentioningToolCall:
@@ -835,7 +889,9 @@ class TestProseMentioningToolCall:
         loop, exec_fn = _make_loop(
             turns = [
                 # A real tool call so the loop advances a turn.
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 # Prose that mentions the literal text.
                 ["the docs say <tool_call> means an LLM tool call wrapper"],
             ],
@@ -854,7 +910,9 @@ class TestProseMentioningToolCall:
         # loop parses only model output, so exactly one call.
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["the docs mention <tool_call> wrappers"],
             ],
             exec_results = ["Page text: <tool_call> appears here in the docs"],
@@ -955,18 +1013,23 @@ class TestGuardrails:
         )
 
         assert exec_fn.calls == []
-        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+        assert not [
+            event for event in events if event.get("type") in {"tool_start", "tool_end"}
+        ]
         disabled_nudges = [
             message
             for message in captured_messages[-1]
-            if message.get("role") == "user" and "not enabled" in message.get("content", "")
+            if message.get("role") == "user"
+            and "not enabled" in message.get("content", "")
         ]
         assert len(disabled_nudges) == 1
 
     def test_empty_tools_list_means_allow_all_in_core_loop(self):
         turns = iter(
             [
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["done"],
             ]
         )
@@ -993,7 +1056,11 @@ class TestGuardrails:
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
-            turns = [['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>']],
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ]
+            ],
             exec_results = ["OK"],
             max_tool_iterations = 0,
         )
@@ -1024,7 +1091,9 @@ class TestGuardrails:
     def test_auto_heal_disabled_still_parses_valid_tool_call(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["OK"],
@@ -1039,7 +1108,11 @@ class TestGuardrails:
         monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: approval_id)
 
         loop, exec_fn = _make_loop(
-            turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
+            turns = [
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ]
+            ],
             exec_results = ["OK"],
             confirm_tool_calls = True,
             session_id = "sess",
@@ -1068,21 +1141,30 @@ class TestGuardrails:
         def fail_autoinject(*_args, **_kwargs):
             raise AssertionError("RAG autoinject must not run before approval")
 
-        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        monkeypatch.setattr(
+            "core.inference.tools.build_rag_autoinject", fail_autoinject
+        )
         loop, exec_fn = _make_loop(
             turns = [["plain answer"]],
             confirm_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
         events = _collect_events(loop)
-        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
+        assert any(
+            e.get("type") == "content" and e.get("text") == "plain answer"
+            for e in events
+        )
         assert exec_fn.calls == []
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'
+                ],
             ]
         )
 
@@ -1142,18 +1224,29 @@ class TestGuardrails:
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
                 ["final"],
             ],
             exec_results = ["res-A", "res-B"],
             max_tool_iterations = 4,
         )
         events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "A"}), ("web_search", {"query": "B"})]
+        assert exec_fn.calls == [
+            ("web_search", {"query": "A"}),
+            ("web_search", {"query": "B"}),
+        ]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0", "call_1"]
         assert not [
             event
@@ -1177,7 +1270,9 @@ class TestGuardrails:
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "A"})]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert not [
             event
@@ -1187,16 +1282,24 @@ class TestGuardrails:
         ]
 
     def test_coerce_string_args_python_uses_code_key(self):
-        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
+        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {
+            "code": "print(1)"
+        }
 
     def test_coerce_string_args_terminal_uses_command_key(self):
-        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {"command": "ls -la"}
+        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {
+            "command": "ls -la"
+        }
 
     def test_tool_call_ids_unique_across_loop_iterations(self):
         loop, _exec = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["A", "B"],

@@ -40,7 +40,9 @@ class TestFunctionStyleTrailingText:
         assert call == {"name": "web_search", "arguments": {"query": "weather london"}}
 
     def test_closed_function_with_trailing_whitespace_is_accepted(self):
-        text = "<function=web_search><parameter=query>cats</parameter></function>   \n\n"
+        text = (
+            "<function=web_search><parameter=query>cats</parameter></function>   \n\n"
+        )
         call = _only(text)
         assert call == {"name": "web_search", "arguments": {"query": "cats"}}
 

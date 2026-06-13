@@ -65,7 +65,9 @@ def test_is_same_origin_request_https_default_port_stripped_on_origin():
     """RFC 6454 strips default ports on Origin; canonicalise both sides so this stays same-origin."""
     from main import _is_same_origin_request
 
-    req = _build_request("example.com:443", origin = "https://example.com", scheme = "https")
+    req = _build_request(
+        "example.com:443", origin = "https://example.com", scheme = "https"
+    )
     assert _is_same_origin_request(req) is True
 
 
@@ -79,7 +81,9 @@ def test_is_same_origin_request_default_port_present_on_origin():
     """Mirror case: Origin carries the default port, netloc doesn't. Same-origin."""
     from main import _is_same_origin_request
 
-    req = _build_request("example.com", origin = "https://example.com:443", scheme = "https")
+    req = _build_request(
+        "example.com", origin = "https://example.com:443", scheme = "https"
+    )
     assert _is_same_origin_request(req) is True
 
 
@@ -127,5 +131,7 @@ def test_is_same_origin_request_explicit_non_default_port_still_mismatch():
     """Canonicalisation does NOT collapse non-default ports to default."""
     from main import _is_same_origin_request
 
-    req = _build_request("example.com", origin = "https://example.com:9999", scheme = "https")
+    req = _build_request(
+        "example.com", origin = "https://example.com:9999", scheme = "https"
+    )
     assert _is_same_origin_request(req) is False

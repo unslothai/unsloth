@@ -42,15 +42,23 @@ def search_models(
 
     model_infos = MODEL_REGISTRY.values()
     if org:
-        model_infos = [model_info for model_info in model_infos if model_info.org == org]
+        model_infos = [
+            model_info for model_info in model_infos if model_info.org == org
+        ]
     if base_name:
         model_infos = [
-            model_info for model_info in model_infos if model_info.base_name == base_name
+            model_info
+            for model_info in model_infos
+            if model_info.base_name == base_name
         ]
     if version:
-        model_infos = [model_info for model_info in model_infos if model_info.version == version]
+        model_infos = [
+            model_info for model_info in model_infos if model_info.version == version
+        ]
     if size:
-        model_infos = [model_info for model_info in model_infos if model_info.size == size]
+        model_infos = [
+            model_info for model_info in model_infos if model_info.size == size
+        ]
     if quant_types:
         model_infos = [
             model_info
@@ -59,7 +67,9 @@ def search_models(
         ]
     if search_pattern:
         model_infos = [
-            model_info for model_info in model_infos if search_pattern in model_info.model_path
+            model_info
+            for model_info in model_infos
+            if search_pattern in model_info.model_path
         ]
 
     return model_infos

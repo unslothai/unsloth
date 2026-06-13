@@ -220,7 +220,9 @@ async def auth_status() -> AuthStatusResponse:
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+        requires_password_change = storage.requires_password_change(
+            storage.DEFAULT_ADMIN_USERNAME
+        )
         if storage.is_initialized()
         else True,
     )
@@ -237,7 +239,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (
+                f"Too many failed login attempts. "
+                f"Try again in {blocked_for} seconds."
+            ),
             headers = {"Retry-After": str(blocked_for)},
         )
 
@@ -273,7 +278,8 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -322,7 +328,9 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
         access_token = new_access_token,
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False if is_desktop else storage.requires_password_change(username),
+        must_change_password = False
+        if is_desktop
+        else storage.requires_password_change(username),
     )
 
 
@@ -408,7 +416,9 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
+async def list_api_keys(
+    current_subject: str = Depends(get_current_subject),
+) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -417,7 +427,9 @@ async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(
+    key_id: int, current_subject: str = Depends(get_current_subject)
+) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(
