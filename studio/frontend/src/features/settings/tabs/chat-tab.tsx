@@ -51,6 +51,7 @@ import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -137,6 +138,19 @@ export function ChatTab() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const archivedChatsRequested = useSettingsDialogStore(
+    (s) => s.archivedChatsRequested,
+  );
+  const consumeArchivedChatsRequest = useSettingsDialogStore(
+    (s) => s.consumeArchivedChatsRequest,
+  );
+
+  // Open the archived list when the archive toast asked to jump here.
+  useEffect(() => {
+    if (!archivedChatsRequested) return;
+    setArchivedOpen(true);
+    consumeArchivedChatsRequest();
+  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
   const collapseHtmlArtifacts = useChatRuntimeStore(

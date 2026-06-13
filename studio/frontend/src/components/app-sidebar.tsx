@@ -406,7 +406,19 @@ export function AppSidebar() {
             : { new: view.newThreadNonce },
         });
       });
-      toast("You can view archived chats in Settings", { closeButton: true });
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedChats();
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived chats in Settings
+        </button>,
+        { closeButton: true },
+      );
     } catch (err) {
       toast.error("Failed to archive chat", {
         description: err instanceof Error ? err.message : undefined,
