@@ -5309,15 +5309,29 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
-def _responses_tool_output_text(output: Union[str, list]) -> str:
+def _responses_tool_output_content(output: Union[str, list]) -> str:
     """Return Chat Completions-safe content for a Responses tool result."""
     if isinstance(output, str):
         return output if output.strip() else "(no output)"
 
-    if output:
+    if not output:
+        return "(no output)"
+
+    text_parts: list[str] = []
+    for part in output:
+        if not isinstance(part, dict):
+            return json.dumps(output)
+        part_type = part.get("type")
+        if part_type in ("input_text", "output_text", "text"):
+            text = part.get("text")
+            if text is None:
+                return json.dumps(output)
+            text_parts.append(str(text))
+            continue
         return json.dumps(output)
 
-    return "(no output)"
+    text = "\n".join(text_parts)
+    return text if text.strip() else "(no output)"
 
 
 _RESPONSES_THINK_OPEN = "<think>"
@@ -5521,10 +5535,10 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
-            # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output and keep empty outputs from
-            # tripping the stricter ChatMessage role validator.
-            output = _responses_tool_output_text(item.output)
+            # Chat Completions tool messages are text-only. Flatten pure text
+            # content arrays, but preserve mixed / unsupported arrays as JSON
+            # rather than silently dropping file/image parts.
+            output = _responses_tool_output_content(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",
