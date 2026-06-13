@@ -11,8 +11,11 @@
 #        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
 #        Password rotation via /api/auth/change-password (old fails,
 #        new works), then OpenAI + Anthropic Python SDKs against /v1/*
-#        with temperature=0 and a fixed seed. Asserts the four-turn
-#        conversation is deterministic across two runs.
+#        with temperature=0 and a fixed seed. Asserts the turn-1
+#        arithmetic answer is reproducible across two runs and that
+#        all four turns stay grounded in conversation history (the
+#        free-form turns are not bitwise-comparable -- see the step
+#        for why).
 #
 #   2. Tool calling Tests
 #        Qwen3.5-2B UD-IQ3_XXS (~890 MiB). OpenAI function calling,
