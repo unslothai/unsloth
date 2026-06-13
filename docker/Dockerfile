@@ -272,9 +272,15 @@ RUN set -eux \
 # matplotlib rides along for the notebook crowd: plotting is table stakes in
 # a Jupyter image, and several model repos' trust_remote_code modeling files
 # (e.g. DeepSeek-OCR) import it unconditionally.
+# soundfile (TTS notebooks read/write audio; bundles libsndfile in its wheel),
+# evaluate (Whisper notebook's WER metric), and tensorboard (default
+# TrainingArguments report_to backend) are declared by notebook install cells
+# that the in-image runner neutralises, so bake them here. All pure-Python or
+# self-contained wheels; none names torch, so the cu128 pin is undisturbed.
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        jupyterlab notebook ipywidgets matplotlib
+        jupyterlab notebook ipywidgets matplotlib \
+        soundfile evaluate tensorboard
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:
