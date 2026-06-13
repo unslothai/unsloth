@@ -55,7 +55,12 @@ def _fake_inference_backend(
     return inf
 
 
-def _fake_llama_backend(*, active = False, identifier = "model.gguf", gpu_offload = None):
+def _fake_llama_backend(
+    *,
+    active = False,
+    identifier = "model.gguf",
+    gpu_offload = None,
+):
     llama = SimpleNamespace(
         is_active = active, model_identifier = identifier, _gpu_offload_active = gpu_offload
     )
