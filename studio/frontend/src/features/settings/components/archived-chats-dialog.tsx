@@ -28,7 +28,7 @@ import {
 import { toast } from "@/lib/toast";
 import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -50,7 +50,16 @@ export function ArchivedChatsDialog({
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const navigate = useNavigate();
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  // Open chat id from the route. Compare panes do not write the store, so the
+  // pair id only lives in the search params; mirror how the sidebar reads it.
+  const openChatId = useRouterState({
+    select: (s) => {
+      if (!s.location.pathname.startsWith("/chat")) return undefined;
+      const search = s.location.search as Record<string, string | undefined>;
+      return search.thread ?? search.compare ?? storeThreadId ?? undefined;
+    },
+  });
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
@@ -82,8 +91,8 @@ export function ArchivedChatsDialog({
 
   async function handleDelete(item: SidebarItem) {
     try {
-      // Pass the active thread so deleting the open chat resets navigation.
-      await deleteChatItem(item, activeThreadId ?? undefined, (view) => {
+      // Pass the open chat id (single or compare) so deleting it resets nav.
+      await deleteChatItem(item, openChatId, (view) => {
         navigate({
           to: "/chat",
           search: item.projectId
