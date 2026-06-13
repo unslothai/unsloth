@@ -45,7 +45,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
-  Archive01Icon,
+  Archive03Icon,
   ArchiveRestoreIcon,
   ChefHatIcon,
   CursorInfo02Icon,
@@ -62,6 +62,8 @@ import {
   Logout05Icon,
   MoreVerticalIcon,
   Search01Icon,
+  PinIcon,
+  PinOffIcon,
   PlusSignIcon,
   PowerIcon,
   PencilEdit02Icon,
@@ -100,6 +102,7 @@ import {
   useChatProjects,
   useChatSearchStore,
   useChatSidebarItems,
+  usePinnedChatsStore,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -302,10 +305,25 @@ export function AppSidebar() {
       enabled: !isStudioRoute,
       requireMessages: false,
     });
+  const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
+  const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
+  const unpinChat = usePinnedChatsStore((s) => s.unpin);
+  const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const recentChatItems = useMemo(
-    () => allChatItems.filter((item) => !item.projectId),
-    [allChatItems],
+    () =>
+      allChatItems.filter(
+        (item) => !item.projectId && !pinnedIdSet.has(item.id),
+      ),
+    [allChatItems, pinnedIdSet],
   );
+  // Pinned chats, in pin order (most recent first).
+  const pinnedChatItems = useMemo(() => {
+    const byId = new Map(allChatItems.map((item) => [item.id, item]));
+    return pinnedIds
+      .map((id) => byId.get(id))
+      .filter((item): item is SidebarItem => Boolean(item));
+  }, [allChatItems, pinnedIds]);
+  const [pinnedOpen, setPinnedOpen] = useState(true);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
@@ -499,6 +517,7 @@ export function AppSidebar() {
     if (target.kind === "chat") {
       try {
         await handleDeleteThread(target.item);
+        unpinChat(target.item.id);
       } catch (err) {
         toast.error(translate("shell.toast.failedToDeleteChat"), {
           description: err instanceof Error ? err.message : undefined,
@@ -584,6 +603,7 @@ export function AppSidebar() {
     item: SidebarItem,
     variant: "project" | "recent",
   ) {
+    const isPinned = pinnedIdSet.has(item.id);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -598,7 +618,10 @@ export function AppSidebar() {
       variant === "project" ? "pl-[39px]" : "pl-3.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
-        : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
+        : isPinned
+          ? // Pinned rows show an extra unpin button on hover, so reserve more room.
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+          : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
     );
 
     return (
@@ -650,6 +673,10 @@ export function AppSidebar() {
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
+              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+              <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
@@ -728,7 +755,7 @@ export function AppSidebar() {
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive01Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </DropdownMenuItem>
             <DropdownMenuItem
@@ -740,6 +767,28 @@ export function AppSidebar() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {isPinned ? (
+          <Tooltip>
+            <TooltipPrimitive.Trigger asChild>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  unpinChat(item.id);
+                }}
+                aria-label="Unpin chat"
+                className={cn(actionClass, "is-unpin-action")}
+              >
+                <span className="sidebar-row-action-glyph">
+                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+                </span>
+              </button>
+            </TooltipPrimitive.Trigger>
+            <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+              Unpin
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
       </SidebarMenuItem>
     );
   }
@@ -976,16 +1025,37 @@ export function AppSidebar() {
           </SidebarGroup>
         </Collapsible>
 
+        {/* Pinned chats: own section above Recents */}
+        {!isStudioRoute && pinnedChatItems.length > 0 && (
+          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  Pinned
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className="pl-1 pr-1.5">
+                  <SidebarMenu>
+                    {pinnedChatItems.map((item) =>
+                      renderChatSidebarItem(item, "recent"),
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        )}
+
         {!isStudioRoute && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <div className="flex w-full items-center group/sb-collap">
-                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
-                    {t("shell.navigation.recents")}
-                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                  </CollapsibleTrigger>
-                </div>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  {t("shell.navigation.recents")}
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="pl-1 pr-1.5">
@@ -1268,7 +1338,7 @@ export function AppSidebar() {
                     <span>{t("shell.navigation.guidedTour")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-0! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                 >

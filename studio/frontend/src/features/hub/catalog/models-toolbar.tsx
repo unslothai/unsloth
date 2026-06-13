@@ -322,7 +322,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={formatOptions}
             onValueChange={onFormatFilterChange}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "min-w-[124px]")}
+            className={cn(triggerBase, "min-w-[120px]")}
           />
         )}
 
@@ -332,7 +332,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "min-w-[136px]")}
+            className={cn(triggerBase, "min-w-[120px]")}
           />
         )}
 
@@ -342,7 +342,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "min-w-[140px]")}
+            className={cn(triggerBase, "min-w-[120px]")}
           />
         )}
 

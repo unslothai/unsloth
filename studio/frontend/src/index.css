@@ -578,6 +578,11 @@
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* Secondary row action (the pinned-chat unpin button) sits just left of
+	   the primary "…" options button. */
+	.sidebar-row-action.is-unpin-action {
+		right: 1.875rem;
+	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
 	   (size-8, rounded-full). Height + radius match for visual
@@ -744,7 +749,7 @@
 	}
 
 	.tooltip-compact {
-		@apply rounded-[9px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
