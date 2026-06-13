@@ -1059,12 +1059,17 @@ def run(
             raise typer.Exit(2)
         host = "127.0.0.1"
 
+    # Gate tools on the *public* exposure, not the bind address: --secure serves
+    # over a public Cloudflare tunnel, so tools must default off (and prompt when
+    # explicitly enabled) even though the bind is loopback.
+    tool_policy_host = "0.0.0.0" if secure else host
+
     # Resolve tool policy here so the re-exec'd child inherits a
     # concrete decision and never re-prompts.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
-        host = host,
+        host = tool_policy_host,
         flag = enable_tools,
         yes = yes,
         silent = silent,
@@ -1114,8 +1119,8 @@ def run(
         else:
             args.append("--disable-tools")
         # Forward --yes if the parent already cleared the network-bind
-        # prompt, else the child re-prompts.
-        if yes or (enable_tools and is_external_host(host)):
+        # prompt, else the child re-prompts (use the public exposure host).
+        if yes or (enable_tools and is_external_host(tool_policy_host)):
             args.append("--yes")
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
@@ -1217,16 +1222,18 @@ def run(
     # Orange so the tool-policy notice stands out; printed under
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
-    _is_external = is_external_host(host)
+    # Secure mode binds loopback but is public via the tunnel; describe that surface.
+    _is_external = is_external_host(tool_policy_host)
+    _exposure = "the public Cloudflare tunnel" if secure else host
     if _is_external and enable_tools:
         _tool_notice = (
-            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Server-side tools are ENABLED on {_exposure} (network-reachable). "
             f"Anyone with the API key can run code on this machine. "
             f"Do not share the API key."
         )
     elif _is_external:
         _tool_notice = (
-            f"Server-side tools are disabled by default on {host} "
+            f"Server-side tools are disabled by default on {_exposure} "
             f"(network-reachable). Pass --enable-tools to turn on "
             f"(you will be warned about API-key risk)."
         )

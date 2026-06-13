@@ -869,6 +869,11 @@ def run_server(
 
     # --secure exposes only the Cloudflare link: force a loopback bind (cloudflared
     # reaches localhost) so the raw port is never public, even with -H 0.0.0.0.
+    # Reject the contradictory combo here too so direct callers fail fast.
+    if secure and not cloudflare:
+        raise SystemExit(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        )
     if secure:
         host = "127.0.0.1"
 
@@ -1166,6 +1171,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
+    if args.secure and not args.cloudflare:
+        parser.error("--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare")
 
     kwargs = dict(
         host = args.host,

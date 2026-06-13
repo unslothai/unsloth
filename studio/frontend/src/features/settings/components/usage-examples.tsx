@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
@@ -11,7 +11,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 // Example type (what to call the API with) and OS axis (curl quoting differs;
 // Python is byte-identical across OSes so its OS row is hidden).
@@ -66,13 +66,29 @@ const DOC_LINKS = [
   },
 ];
 
+// JSON-encode a string (quoted, escaped). The result is also a valid Python
+// string literal, so model names with backslashes (Windows paths) or quotes
+// never break the generated JSON or Python.
+const j = (s: string): string => JSON.stringify(s);
+// Embed inside a POSIX single-quoted string: close, escaped quote, reopen.
+const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
+// Embed inside a PowerShell single-quoted string: '' is a literal quote.
+const psSingle = (s: string): string => s.replace(/'/g, "''");
+const toolsJson = TOOLS.map(j).join(", ");
+
 // Compact one-line JSON for the Windows body file (PowerShell mangles inline
 // double quotes passed to curl.exe, so the body is written to disk instead).
 function winBody(model: string, tools: boolean): string {
-  const toolsPart = tools
-    ? `,"enable_tools":true,"enabled_tools":[${TOOLS.map((t) => `"${t}"`).join(",")}]`
-    : "";
-  return `{"model":"${model}","messages":[{"role":"user","content":"${PROMPT}"}]${toolsPart},"stream":true}`;
+  const body: Record<string, unknown> = {
+    model,
+    messages: [{ role: "user", content: PROMPT }],
+  };
+  if (tools) {
+    body.enable_tools = true;
+    body.enabled_tools = TOOLS;
+  }
+  body.stream = true;
+  return JSON.stringify(body);
 }
 
 function curlUnix(
@@ -84,16 +100,17 @@ function curlUnix(
   const toolsLines = tools
     ? `
     "enable_tools": true,
-    "enabled_tools": [${TOOLS.map((t) => `"${t}"`).join(", ")}],`
+    "enabled_tools": [${toolsJson}],`
     : "";
+  const body = `{
+    "model": ${j(model)},
+    "messages": [{"role": "user", "content": ${j(PROMPT)}}],${toolsLines}
+    "stream": true
+  }`;
   return `curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
-  -d '{
-    "model": "${model}",
-    "messages": [{"role": "user", "content": "${PROMPT}"}],${toolsLines}
-    "stream": true
-  }'`;
+  -d '${shSingle(body)}'`;
 }
 
 // Windows: PowerShell. curl is aliased to Invoke-WebRequest, so call curl.exe;
@@ -104,7 +121,7 @@ function curlWindows(
   model: string,
   tools: boolean,
 ): string {
-  return `$body = '${winBody(model, tools)}'
+  return `$body = '${psSingle(winBody(model, tools))}'
 Set-Content -Path body.json -Value $body -Encoding ascii
 curl.exe ${base}/v1/chat/completions \`
   -H "Authorization: Bearer ${key}" \`
@@ -124,7 +141,7 @@ function pythonSnippet(
     ? `
     extra_body={
         "enable_tools": True,
-        "enabled_tools": [${TOOLS.map((t) => `"${t}"`).join(", ")}],
+        "enabled_tools": [${toolsJson}],
     },`
     : "";
   // With tools, the stream interleaves tool-lifecycle events that carry no
@@ -138,13 +155,13 @@ function pythonSnippet(
   return `from openai import OpenAI
 
 client = OpenAI(
-    base_url="${base}/v1",
-    api_key="${key}",
+    base_url=${j(`${base}/v1`)},
+    api_key=${j(key)},
 )
 
 response = client.chat.completions.create(
-    model="${model}",
-    messages=[{"role": "user", "content": "${PROMPT}"}],${toolsArg}
+    model=${j(model)},
+    messages=[{"role": "user", "content": ${j(PROMPT)}}],${toolsArg}
     stream=True,
 )
 ${loop}`;
@@ -216,6 +233,12 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+
+  // The tunnel can start after the first /api/health read, leaving cloudflareUrl
+  // stuck at null; refresh on mount so a running tunnel surfaces here.
+  useEffect(() => {
+    void fetchDeviceType({ force: true });
+  }, []);
 
   const model = useLoadedModelName();
   // Show the real key while it's still revealed (before "Done"); otherwise the

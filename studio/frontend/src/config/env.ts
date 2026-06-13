@@ -44,9 +44,13 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   isChatOnly: () => get().chatOnly,
 }));
 
-export async function fetchDeviceType(): Promise<DeviceType> {
+// `force` re-reads /api/health even if cached: the tunnel URL may arrive after
+// the first health call, so consumers can refresh to pick it up.
+export async function fetchDeviceType(options?: {
+  force?: boolean;
+}): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
-  if (fetched) return usePlatformStore.getState().deviceType;
+  if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
 
   try {
     // /api/health only reports the server's device_type to authed callers.

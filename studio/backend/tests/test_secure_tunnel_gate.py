@@ -64,6 +64,16 @@ def test_run_server_accepts_secure_kwarg():
     assert inspect.signature(run.run_server).parameters["secure"].default is False
 
 
+def test_run_server_rejects_secure_without_cloudflare():
+    # Direct backend callers (not just the CLI) must reject the contradictory
+    # combo before binding anything.
+    import run
+
+    with pytest.raises(SystemExit) as exc:
+        run.run_server(secure = True, cloudflare = False)
+    assert "A secure Cloudflare link is not allowed" in str(exc.value)
+
+
 def test_failclosed_message_present_in_source():
     # The exact, user-facing fail-closed message must not drift.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")

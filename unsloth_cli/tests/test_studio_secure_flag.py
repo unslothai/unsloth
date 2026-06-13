@@ -239,3 +239,62 @@ def test_studio_default_rejects_secure_with_subcommand():
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--secure" in combined, combined
+
+
+# ── secure resolves tools against the PUBLIC exposure, not the loopback bind ──
+
+
+def test_run_secure_resolves_tools_against_public_host(monkeypatch):
+    # --secure binds 127.0.0.1 but is public via the tunnel, so tool policy must
+    # be resolved against 0.0.0.0 (default OFF), not the loopback default (ON).
+    studio_mod = _studio()
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    fake_bin = fake_venv / "bin" / "unsloth"
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    calls = []
+
+    def rec(host, flag, yes, silent):
+        calls.append(host)
+        return (not _tp_mod.is_external_host(host)) if flag is None else bool(flag)
+
+    monkeypatch.setattr(_tp_mod, "resolve_tool_policy", rec)
+
+    captured = []
+
+    def fake_execvp(file, argv):
+        captured.append(list(argv))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
+
+    assert calls and calls[0] == "0.0.0.0", calls
+    assert len(captured) == 1, captured
+    assert "--disable-tools" in captured[0] and "--enable-tools" not in captured[0], captured[0]
+
+
+def test_run_secure_enable_tools_forwards_yes(monkeypatch):
+    # Enabling tools on a public secure endpoint must forward --yes so the
+    # re-exec'd child doesn't re-prompt on the network-bind warning.
+    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--enable-tools" in argv and "--yes" in argv, argv
