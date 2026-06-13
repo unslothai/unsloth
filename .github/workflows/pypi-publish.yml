@@ -9,7 +9,7 @@
 # been worded several different ways over time. The `decide` job publishes only
 # when both installer pins (install.sh + install.ps1) equal __version__ and that
 # version is not already complete on PyPI, so it fires exactly once per release
-# and ignores unrelated install.sh edits and re-runs.
+# and ignores unrelated edits and re-runs.
 #
 # We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta).
 # They are unrelated to the PyPI package version (taken from __version__), but
@@ -35,8 +35,13 @@ name: Publish to PyPI
 on:
   push:
     branches: [main]
+    # Watch every file the decide gate reads. A release that lands one gate at a
+    # time (e.g. install.ps1 or __version__ fixed in a follow-up commit) must
+    # still retrigger, or the new version would stay unpublished.
     paths:
       - install.sh
+      - install.ps1
+      - unsloth/models/_utils.py
 
 permissions:
   contents: read
