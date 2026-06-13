@@ -393,7 +393,21 @@ function Get-PytorchCudaTag {
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
 function Find-VsBuildTools {
-    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+    # vswhere returns catalog_productLineVersion as the year label (e.g. "2026").
+    $yearToGenerator = @{
+        '2026' = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'
+    }
+    # VS 2026 changed install directory convention: uses internal version number
+    # (18) rather than the year (2026). All prior versions used the year.
+    $dirToGenerator = @{
+        '18'   = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'
+    }
 
     # --- Try vswhere first (works when VS is properly registered) ---
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -402,32 +416,41 @@ function Find-VsBuildTools {
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($info -and $path) {
             $y = $info.Trim()
-            $n = $map[$y]
-            if ($n) {
-                return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
+            $gen = $yearToGenerator[$y]
+            if ($gen) {
+                return @{ Generator = $gen; InstallPath = $path.Trim(); Source = 'vswhere' }
             }
         }
     }
 
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
-    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    # VS 2026+ uses internal version number as directory name; prior versions use year.
+    $dirs = @('18', '2022', '2019', '2017')
 
-    foreach ($y in $years) {
+    foreach ($d in $dirs) {
+        $gen = $dirToGenerator[$d]
+        if (-not $gen) { continue }
         foreach ($r in $roots) {
-            foreach ($ed in $editions) {
-                $candidate = Join-Path $r "Microsoft Visual Studio\$y\$ed"
-                if (Test-Path $candidate) {
-                    $vcDir = Join-Path $candidate "VC\Tools\MSVC"
-                    if (Test-Path $vcDir) {
-                        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($cl) {
-                            $n = $map[$y]
-                            if ($n) {
-                                return @{ Generator = "Visual Studio $n $y"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
-                            }
-                        }
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
+            if (-not (Test-Path $vsBase)) { continue }
+            # VS 2026 (dir '18') may use non-standard edition names (e.g. Preview);
+            # scan all subdirs. Older versions use stable edition names only.
+            if ($d -eq '18') {
+                $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.FullName }
+            } else {
+                $editionCandidates = $knownEditions | ForEach-Object { Join-Path $vsBase $_ }
+            }
+            foreach ($candidate in $editionCandidates) {
+                if (-not (Test-Path $candidate)) { continue }
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (Test-Path $vcDir) {
+                    $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cl) {
+                        $ed = Split-Path $candidate -Leaf
+                        return @{ Generator = $gen; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                     }
                 }
             }
