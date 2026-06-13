@@ -137,7 +137,8 @@ export function WebUpdateBanner({
               >
                 Release notes
               </a>
-              <div className="flex items-center gap-x-1">
+              {/* wrap + right-align so buttons stack instead of clipping on very narrow banners */}
+              <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                 <Button
                   size="sm"
                   variant="ghost"
