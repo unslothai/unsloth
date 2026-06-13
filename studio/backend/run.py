@@ -408,7 +408,10 @@ def _emit_secure_startup_output(port: int) -> None:
 
 
 def _emit_startup_output(
-    host: str, port: int, display_host: str, secure: bool = False
+    host: str,
+    port: int,
+    display_host: str,
+    secure: bool = False,
 ) -> None:
     """Print the access banner plus any post-startup warnings.
 
@@ -829,19 +832,12 @@ def _setup_server_disk_logging():
 
 
 def _cloudflare_tunnel_should_start(
-    *,
-    cloudflare: bool,
-    host: str,
-    secure: bool,
-    api_only: bool,
-    is_colab: bool,
+    *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
     """Whether to start the Cloudflare quick-tunnel. --secure tunnels a loopback bind
     too (cloudflared targets localhost); non-secure keeps the 0.0.0.0-only rule.
     Colab has its own proxy; api-only has no UI to share."""
-    return (
-        cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
-    )
+    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
 
 
 def run_server(
