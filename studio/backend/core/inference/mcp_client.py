@@ -117,9 +117,11 @@ def join_stdio_command(parts: list[str]) -> str:
 
 def stdio_mcp_enabled() -> bool:
     """stdio MCP servers spawn local processes as the backend user (bypassing the
-    sandbox), so allowed only when the host is the user's own machine. The Tauri
-    app sets UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1; localhost/self-hosted users can opt
-    in with the same var. Off for Colab and any network (0.0.0.0) bind."""
+    sandbox), so allowed only when the host is the user's own machine. On startup
+    a loopback bind defaults UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see
+    utils.host_policy.apply_stdio_mcp_loopback_default, called from run.py); the
+    Tauri app does the same. Off for Colab and any network (0.0.0.0) bind unless
+    an operator sets the var out-of-band; set it to 0 to force-disable."""
     return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
 
 

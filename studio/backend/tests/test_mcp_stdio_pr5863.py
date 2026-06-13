@@ -7,6 +7,7 @@ and reaches it when enabled. The transport is stubbed so no subprocess spawns;
 a recorder asserts whether it was reached.
 """
 
+import os
 import sys
 
 import pytest
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 
 from core.inference import mcp_client
 from storage import mcp_servers_db
+from utils import host_policy
 
 
 def _reset_db(tmp_path, monkeypatch):
@@ -31,6 +33,19 @@ def _enable(monkeypatch):
 
 def _disable(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_stdio_env():
+    # apply_stdio_mcp_loopback_default() mutates os.environ via a raw setdefault
+    # that monkeypatch can't roll back, so snapshot/restore the flag here to keep
+    # it from leaking into later tests or other test files.
+    saved = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
+    yield
+    if saved is None:
+        os.environ.pop("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", None)
+    else:
+        os.environ["UNSLOTH_STUDIO_ALLOW_STDIO_MCP"] = saved
 
 
 # ── transport stub + recorder ───────────────────────────────────────
@@ -178,6 +193,47 @@ def test_stdio_enabled_only_for_exact_one(monkeypatch):
     _disable(monkeypatch)
     assert mcp_client.stdio_mcp_enabled() is False
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
+# ── 3b. loopback bind defaults the gate on ──────────────────────────
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
+def test_is_external_host_false_for_loopback(host):
+    assert host_policy.is_external_host(host) is False
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "example.com"])
+def test_is_external_host_true_for_network(host):
+    assert host_policy.is_external_host(host) is True
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
+def test_loopback_bind_enables_stdio(monkeypatch, host):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default(host)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "example.com"])
+def test_network_bind_leaves_stdio_off(monkeypatch, host):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default(host)
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_explicit_disable_survives_loopback(monkeypatch):
+    # setdefault must not override an operator's force-disable on a shared box.
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_explicit_enable_survives_network_bind(monkeypatch):
+    # setdefault must not clobber a deliberate network opt-in (-H 0.0.0.0 + var).
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
     assert mcp_client.stdio_mcp_enabled() is True
 
 

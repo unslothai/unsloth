@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+from utils.host_policy import is_external_host
+
 
 def stdout_supports_color() -> bool:
     """True if we should emit ANSI colors."""
@@ -94,7 +96,7 @@ def print_studio_access_banner(
         external_url = f"http://{display_host}:{port}"
 
     listen_all = bind_host in ("0.0.0.0", "::")
-    loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
+    loopback_bind = not is_external_host(bind_host)
 
     # Use the loopback URL only when reachable on loopback; otherwise show
     # the actual bound address.
