@@ -183,10 +183,13 @@ def get_installed_llama_version() -> Optional[str]:
     """Display string for the active llama.cpp install (e.g. 'b9585' or
     'b9601-mix-a0e2906'), or None.
 
-    Prefers the install marker's tag -- the authoritative installed identity,
-    same field the update banner shows as installed_tag -- so a '-mix-<commit>'
-    release reads back in full. Falls back to ``b<build>`` parsed from
-    ``llama-server --version`` for source/custom builds that have no marker.
+    Prefers the install marker's release_tag -- the full unsloth release
+    identity, the same field the update banner compares as installed (see
+    #6219) -- so a 'b9601-mix-a0e2906' build reads back in full rather than
+    collapsing to its base 'b9601'. The marker's bare ``tag`` is only the
+    upstream llama.cpp build (no '-mix-<commit>' suffix), so it's the fallback.
+    Last resort is ``b<build>`` parsed from ``llama-server --version`` for
+    source/custom builds that have no marker.
 
     Lightweight: reads the local marker and at most runs ``--version``. Does no
     network or release-freshness work (unlike get_update_status), so it is safe
@@ -195,7 +198,7 @@ def get_installed_llama_version() -> Optional[str]:
     binary = _find_binary()
     marker = read_install_marker(binary)
     if marker:
-        tag = marker.get("tag") or marker.get("release_tag")
+        tag = marker.get("release_tag") or marker.get("tag")
         if tag:
             return tag
     n = _installed_build_number(binary)
