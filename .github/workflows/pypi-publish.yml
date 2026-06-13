@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Publishes the unsloth wheel + sdist to PyPI when a release lands on main.
+#
+# A release is marked by the installer-pin bump (e.g. "Bump install.sh /
+# install.ps1 pin to unsloth>=2026.6.6"), where the `unsloth>=` floor in
+# install.sh reaches __version__. We gate on that content rather than the
+# commit title, which has been worded several different ways over time. The
+# `decide` job publishes only when the install.sh pin equals __version__ and
+# that version is not already on PyPI, so it fires exactly once per release and
+# ignores unrelated install.sh edits and re-runs.
+#
+# We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta),
+# unrelated to the PyPI package version.
+#
+# Uses PyPI Trusted Publishing (OIDC) -- no API token is stored in the repo;
+# the publisher must be registered on PyPI for unslothai/unsloth +
+# pypi-publish.yml (+ the `pypi` environment below).
+
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Decide whether to publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - id: check
+        run: |
+          # `|| true`: steps run under `set -eo pipefail`, so a no-match grep
+          # would abort the step. We want a missing/odd pin to skip, not fail.
+          pin=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.sh | sort -u || true)
+          ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
+          echo "install.sh pin: ${pin:-<none>} / __version__: $ver"
+          publish=false
+          if [ "$(printf '%s\n' "$pin" | grep -c .)" = "1" ] && [ "$pin" = "$ver" ]; then
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/unsloth/$ver/json" || true)
+            case "${code:-000}" in
+              404) publish=true; echo "unsloth $ver not on PyPI -> publish" ;;
+              200) echo "unsloth $ver already on PyPI -> skip" ;;
+              *)   echo "::error::unexpected PyPI status ${code:-000} for unsloth $ver"; exit 1 ;;
+            esac
+          else
+            echo "pin does not match __version__ (or is ambiguous) -> skip"
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build + publish to PyPI
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write  # required for PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Build frontend + wheel + sdist
+        run: |
+          python -m pip install --upgrade pip build
+          ./build.sh
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
