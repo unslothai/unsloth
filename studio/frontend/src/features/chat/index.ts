@@ -19,6 +19,7 @@ export {
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
   PLUS_MENU_ORDER,
   usePlusMenuPrefsStore,

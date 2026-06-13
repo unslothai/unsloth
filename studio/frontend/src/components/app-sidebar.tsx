@@ -101,6 +101,7 @@ import {
   useChatSearchStore,
   useChatSidebarItems,
   usePinnedChatsStore,
+  useChatPreferencesStore,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -305,6 +306,9 @@ export function AppSidebar() {
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const unpinChat = usePinnedChatsStore((s) => s.unpin);
+  const confirmDeleteChats = useChatPreferencesStore(
+    (s) => s.confirmDeleteChats,
+  );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const recentChatItems = useMemo(
     () =>
@@ -753,13 +757,18 @@ export function AppSidebar() {
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
               <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
-              onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+              onSelect={() =>
+                confirmDeleteChats
+                  ? setConfirmingDelete({ kind: "chat", item })
+                  : void handleDeleteThread(item)
+              }
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
               <span>Delete</span>

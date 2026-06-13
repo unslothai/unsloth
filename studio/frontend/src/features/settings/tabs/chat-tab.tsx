@@ -30,6 +30,7 @@ import {
   downloadChatExport,
   importConversationsFromFile,
   useChatRuntimeStore,
+  useChatPreferencesStore,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
@@ -167,6 +168,12 @@ export function ChatTab() {
   );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
+  );
+  const confirmDeleteChats = useChatPreferencesStore(
+    (state) => state.confirmDeleteChats,
+  );
+  const setConfirmDeleteChats = useChatPreferencesStore(
+    (state) => state.setConfirmDeleteChats,
   );
 
   useEffect(() => {
@@ -333,6 +340,16 @@ export function ChatTab() {
         </SettingsRow>
 
         <SettingsRow
+          label="Confirm before deleting"
+          description="Ask for confirmation before a chat is deleted. Turn off to delete instantly."
+        >
+          <Switch
+            checked={confirmDeleteChats}
+            onCheckedChange={setConfirmDeleteChats}
+          />
+        </SettingsRow>
+
+        <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
         >
@@ -434,6 +451,8 @@ export function ChatTab() {
 
         <SettingsRow
           destructive
+          // divide-y already draws the row separator; drop the extra border.
+          className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
             count === null
