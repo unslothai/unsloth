@@ -26,6 +26,8 @@ export interface ChannelPreset {
   idSuffix?: string;
   format: ModelFormatFilter;
   sort: HfSortKey;
+  // Keep only formats Unsloth can fine-tune (drops fp8, nvfp4, w4a16, etc.).
+  finetunableOnly?: boolean;
 }
 
 export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
@@ -55,6 +57,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     owner: "unsloth",
     format: "checkpoint",
     sort: "lastModified",
+    finetunableOnly: true,
   },
 ];
 

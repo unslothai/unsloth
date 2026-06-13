@@ -234,7 +234,7 @@ function DropdownMenuSubTrigger({
       <HugeiconsIcon
         icon={ChevronRightStandardIcon}
         strokeWidth={1.5}
-        className="ml-auto size-[13px]"
+        className="ml-auto size-[12px]"
       />
     </DropdownMenuPrimitive.SubTrigger>
   );

@@ -53,6 +53,7 @@ import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
@@ -390,7 +391,9 @@ export function ModelsPage() {
         if (isDatasetMode) return true;
         return (
           matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
-          matchesCapability(row.capabilities, deferredCapabilityFilter)
+          matchesCapability(row.capabilities, deferredCapabilityFilter) &&
+          (!activeChannel?.finetunableOnly ||
+            isUnslothFinetunable(row.result))
         );
       }),
     [
@@ -398,6 +401,7 @@ export function ModelsPage() {
       isDatasetMode,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      activeChannel,
     ],
   );
 
