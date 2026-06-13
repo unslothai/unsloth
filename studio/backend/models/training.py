@@ -29,6 +29,43 @@ _MIN_VISION_IMAGE_SIZE = 256
 _MAX_VISION_IMAGE_SIZE = 2048
 
 
+class S3Config(BaseModel):
+    """S3 bucket configuration for loading datasets from AWS S3"""
+
+    # Accept both snake_case and the frontend's camelCase field names.
+    model_config = ConfigDict(populate_by_name = True)
+
+    bucket: str = Field(..., description = "S3 bucket name")
+    region: str = Field("us-east-1", description = "AWS region")
+    prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
+    access_key_id: Optional[str] = Field(
+        None,
+        alias = "accessKeyId",
+        description = "AWS access key ID (optional if using IAM role)",
+    )
+    secret_access_key: Optional[str] = Field(
+        None,
+        alias = "secretAccessKey",
+        description = "AWS secret access key (optional if using IAM role)",
+    )
+    use_iam_role: bool = Field(
+        False,
+        alias = "useIamRole",
+        description = "Use IAM role credentials instead of access keys",
+    )
+
+    @model_validator(mode = "after")
+    def _check_credentials(self) -> "S3Config":
+        # Require either IAM role auth or a full key pair so credentials are
+        # never half-configured.
+        if not self.use_iam_role and not (self.access_key_id and self.secret_access_key):
+            raise ValueError(
+                "s3_config requires either use_iam_role=True or both "
+                "access_key_id and secret_access_key"
+            )
+        return self
+
+
 def _parse_lr(v: Any) -> float:
     """Parse learning_rate as a positive float strictly below _MAX_LR_VALUE."""
     if v is None:
@@ -366,6 +403,12 @@ class TrainingStartRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+    )
+
+    # S3 dataset source configuration
+    s3_config: Optional[S3Config] = Field(
+        None,
+        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
 
     @model_validator(mode = "after")

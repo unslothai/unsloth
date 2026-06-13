@@ -420,8 +420,8 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
-def test_rocm_install_args_lemonade_gfx():
-    # Lemonade HIP app bundle: gfx family lives in the asset name.
+def test_rocm_install_args_gfx_family():
+    # Per-gfx ROCm bundle: gfx family lives in the asset name.
     assert upd._rocm_install_args("app-b9585-linux-x64-rocm-gfx110X.tar.gz") == [
         "--rocm-gfx",
         "gfx110x",

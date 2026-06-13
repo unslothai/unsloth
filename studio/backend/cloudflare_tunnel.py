@@ -24,12 +24,20 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 # cloudflared logs the quick-tunnel URL; match only the URL so we do not depend
-# on the surrounding wording, which Cloudflare may change.
-_URL_RE = re.compile(r"https://[A-Za-z0-9-]+\.trycloudflare\.com")
+# on the surrounding wording, which Cloudflare may change. The negative lookahead
+# drops cloudflared's own API host, which appears in failure lines such as
+#   failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel"
+# and must never be mistaken for a usable tunnel URL.
+_URL_RE = re.compile(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com")
+
+# cloudflared logs this once per edge connection it establishes. Until at least
+# one appears the quick-tunnel URL returns Cloudflare error 1033 (HTTP 530), so
+# we wait for it before advertising the URL.
+_REGISTERED_MARKER = "Registered tunnel connection"
 
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
-_URL_TIMEOUT = 15.0  # seconds to wait for the public URL before giving up
+_READY_TIMEOUT = 15.0  # seconds to wait for the URL + a registered edge connection
 _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 
 
@@ -180,13 +188,24 @@ class CloudflareTunnel:
     upstream stays local-only.
     """
 
-    def __init__(self, port: int, binary: str):
+    def __init__(
+        self,
+        port: int,
+        binary: str,
+        protocol: Optional[str] = None,
+    ):
         self.port = port
         self.binary = binary
+        # None lets cloudflared pick its default (quic, with its own http2
+        # fallback); set to "http2" to force it when quic is blocked.
+        self.protocol = protocol
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._stopped = False
         self._url_event = threading.Event()
+        self._ready_event = threading.Event()
         self.url: Optional[str] = None
+        self.ready = False
         self.error: Optional[str] = None
 
     def start(self) -> None:
@@ -197,25 +216,33 @@ class CloudflareTunnel:
             f"http://localhost:{self.port}",
             "--no-autoupdate",
         ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            stdin = subprocess.DEVNULL,
-            text = True,
-            errors = "replace",
-            bufsize = 1,
-            **_windows_hidden_kwargs(),
-        )
+        if self.protocol:
+            cmd += ["--protocol", self.protocol]
         with self._lock:
+            # A stop() that landed before us (e.g. a shutdown in the caller's
+            # register->start window) marks the tunnel stopped; spawning now would
+            # orphan a process nobody owns, so refuse.
+            if self._stopped:
+                return
+            proc = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                errors = "replace",
+                bufsize = 1,
+                **_windows_hidden_kwargs(),
+            )
             self._proc = proc
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
         ).start()
 
     def _reader(self, proc: subprocess.Popen) -> None:
-        # Drain cloudflared's output, capture the first trycloudflare URL, and
-        # keep draining so it never blocks on a full pipe.
+        # Drain cloudflared's output: capture the first trycloudflare URL and the
+        # first edge-connection registration, and keep draining so it never
+        # blocks on a full pipe.
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
@@ -224,20 +251,35 @@ class CloudflareTunnel:
                         if match:
                             self.url = match.group(0)
                             self._url_event.set()
+                    if not self.ready and _REGISTERED_MARKER in line:
+                        self.ready = True
+                        self._ready_event.set()
         except Exception:
             pass
         finally:
+            # stdout closed -> cloudflared has exited. Record why, and unblock any
+            # waiters at once instead of letting them wait out the full timeout.
             if self.url is None:
                 self.error = "cloudflared exited before emitting a tunnel URL"
-                self._url_event.set()
+            elif not self.ready:
+                self.error = "cloudflared exited before the tunnel connection registered"
+            self._url_event.set()
+            self._ready_event.set()
 
-    def wait_for_url(self, timeout: float = _URL_TIMEOUT) -> Optional[str]:
-        self._url_event.wait(timeout)
-        return self.url
+    def wait_for_ready(self, timeout: float = _READY_TIMEOUT) -> Optional[str]:
+        """Block until the tunnel is actually serving -- the URL has been minted
+        *and* at least one edge connection has registered -- or until timeout.
+
+        Returns the URL only when ready, so callers never advertise a URL that
+        would return Cloudflare error 1033 (HTTP 530)."""
+        self._ready_event.wait(timeout)
+        return self.url if self.ready else None
 
     def stop(self) -> None:
         """Terminate the tunnel. Idempotent and safe to call from a signal handler."""
         with self._lock:
+            # Mark stopped so a start() racing behind us refuses to spawn.
+            self._stopped = True
             proc, self._proc = self._proc, None
         if proc is None:
             return
@@ -260,43 +302,74 @@ class CloudflareTunnel:
 # enough; the lock guards the start/stop/shutdown races.
 _active_tunnel: Optional[CloudflareTunnel] = None
 _active_lock = threading.Lock()
+# Latched by stop_studio_tunnel so a shutdown landing *between* a start's retry
+# attempts aborts the loop instead of starting a tunnel nobody will ever stop.
+_shutdown_requested = False
 
 
-def start_studio_tunnel(port: int, timeout: float = _URL_TIMEOUT) -> Optional[str]:
-    """Start a quick tunnel and return its public URL, or None (best-effort).
+def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[str]:
+    """Start a quick tunnel and return its public URL once it is actually
+    serving, or None (best-effort).
 
-    On any failure (no binary, no URL within timeout, early crash) the tunnel is
-    stopped and None is returned, so the caller prints a hint and continues.
+    Waits for cloudflared to both mint the URL and register an edge connection
+    before returning, so the caller never advertises a URL that yields Cloudflare
+    error 1033 (HTTP 530). If a URL is minted but no connection registers within
+    the window (e.g. quic is blocked on this network), retries once forcing the
+    http2 protocol. On any failure the tunnel is stopped and None is returned.
     """
-    global _active_tunnel
+    global _active_tunnel, _shutdown_requested
     binary = ensure_cloudflared()
     if not binary:
         return None
-    tunnel = CloudflareTunnel(port, binary)
-    # Register before start/wait so a shutdown during the URL wait can stop it.
     with _active_lock:
-        prior, _active_tunnel = _active_tunnel, tunnel
-    if prior is not None:
-        prior.stop()
-    try:
-        tunnel.start()
-        url = tunnel.wait_for_url(timeout)
-    except Exception:
-        url = None
-    if url:
-        return url
-    # No URL (or crash): drop it unless a concurrent shutdown already replaced it.
-    with _active_lock:
-        if _active_tunnel is tunnel:
-            _active_tunnel = None
-    tunnel.stop()
+        _shutdown_requested = False  # fresh session
+    # Default protocol first (quic, with cloudflared's own http2 fallback); if a
+    # URL appears but no connection registers, quic is likely blocked -> retry
+    # once forcing http2.
+    for protocol in (None, "http2"):
+        # Create + register under the lock, and bail if a stop already landed
+        # (e.g. between this and the previous attempt) so we never start a tunnel
+        # after shutdown has run.
+        with _active_lock:
+            if _shutdown_requested:
+                _active_tunnel = None
+                return None
+            tunnel = CloudflareTunnel(port, binary, protocol = protocol)
+            prior, _active_tunnel = _active_tunnel, tunnel
+        if prior is not None:
+            prior.stop()
+        try:
+            tunnel.start()
+            url = tunnel.wait_for_ready(timeout)
+        except Exception:
+            url = None
+        if url:
+            return url
+        saw_url = tunnel.url is not None
+        # Not ready: drop it, but only if we are still the active tunnel.
+        with _active_lock:
+            was_active = _active_tunnel is tunnel
+            if was_active:
+                _active_tunnel = None
+        tunnel.stop()
+        # A concurrent shutdown or start took over while we waited; retrying would
+        # spawn a tunnel nobody owns (orphaned after shutdown), so bail instead.
+        if not was_active:
+            return None
+        # No URL at all is an API/network failure, not a protocol one; forcing
+        # http2 will not help, so do not burn another window on it.
+        if not saw_url:
+            return None
     return None
 
 
 def stop_studio_tunnel() -> None:
     """Terminate the active tunnel, if any. Idempotent."""
-    global _active_tunnel
+    global _active_tunnel, _shutdown_requested
     with _active_lock:
+        # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel
+        # (e.g. its http2 retry) after we have already torn down.
+        _shutdown_requested = True
         tunnel, _active_tunnel = _active_tunnel, None
     if tunnel is not None:
         tunnel.stop()
