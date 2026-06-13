@@ -151,11 +151,11 @@ function ModelSelectorTrigger({
           "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
-          // Less right padding than left: the trailing chevron already adds
-          // visual space, so symmetric padding looks heavy on the right.
-          size === "sm" && "h-8 pl-2.5 pr-1.5 text-xs",
-          size === "default" && "h-9 pl-3 pr-2 text-sm",
-          size === "lg" && "h-10 pl-3.5 pr-2.5 text-sm",
+          // More left padding than right; the chevron is pulled close to the
+          // label (below) so the trigger reads balanced around the text.
+          size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
+          size === "default" && "h-9 pl-4 pr-2 text-sm",
+          size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
           className,
         )}
       >
@@ -187,7 +187,7 @@ function ModelSelectorTrigger({
             </span>
           )}
         </span>
-        <span className="flex size-4 shrink-0 items-center justify-center">
+        <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={1.75}
