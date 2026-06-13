@@ -493,6 +493,33 @@ class TestNormaliseResponsesInputWithTools:
             },
         ]
 
+    def test_content_array_image_output_allows_original_detail(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/screenshot.png",
+                            "detail": "original",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://example.com/screenshot.png",
+                    "detail": "original",
+                },
+            },
+        ]
+
     def test_content_array_file_id_image_output_rejected_clearly(self):
         payload = ResponsesRequest(
             input = [

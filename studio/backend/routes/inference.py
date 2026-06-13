@@ -5350,10 +5350,10 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
             detail = part.get("detail", "auto")
             if detail is None:
                 detail = "auto"
-            if detail not in ("auto", "low", "high"):
+            if detail not in ("auto", "low", "high", "original"):
                 _raise_unsupported_openai_parameter(
                     "input",
-                    "Responses function_call_output.output input_image detail must be auto, low, or high.",
+                    "Responses function_call_output.output input_image detail must be auto, low, high, or original.",
                 )
             chat_parts.append(
                 ImageContentPart(
