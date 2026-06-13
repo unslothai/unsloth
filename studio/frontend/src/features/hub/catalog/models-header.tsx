@@ -77,7 +77,7 @@ export function ModelsHeader({
         subtitle={
           isDataset
             ? "Discover, download, and train on datasets locally."
-            : "Discover, download, and run inference models locally."
+            : "Discover, download, and run models locally."
         }
       />
 
