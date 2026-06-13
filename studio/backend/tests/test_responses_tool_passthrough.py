@@ -36,6 +36,7 @@ import json
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -449,7 +450,7 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[0].role == "tool"
         assert msgs[0].content == "ok"
 
-    def test_content_array_image_output_preserves_raw_payload(self):
+    def test_content_array_image_output_becomes_multimodal_tool_content(self):
         payload = ResponsesRequest(
             input = [
                 {
@@ -469,16 +470,30 @@ class TestNormaliseResponsesInputWithTools:
         msgs = _normalise_responses_input(payload)
         assert msgs[0].role == "tool"
         assert msgs[0].tool_call_id == "call_1"
-        assert json.loads(msgs[0].content) == [
-            {"type": "input_text", "text": "see image"},
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {"type": "text", "text": "see image"},
             {
-                "type": "input_image",
-                "image_url": "data:image/png;base64,AAA",
-                "detail": "high",
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
             },
         ]
 
-    def test_content_array_file_id_image_output_preserves_raw_payload(self):
+        chat_req = _build_chat_request(payload, msgs, stream = False)
+        assert chat_req.model_dump(exclude_none = True)["messages"][0]["content"] == [
+            {"type": "text", "text": "see image"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
+            },
+        ]
+
+    def test_content_array_file_id_image_output_rejected_clearly(self):
         payload = ResponsesRequest(
             input = [
                 {
@@ -491,14 +506,12 @@ class TestNormaliseResponsesInputWithTools:
                 }
             ],
         )
-        msgs = _normalise_responses_input(payload)
-        assert msgs[0].role == "tool"
-        assert json.loads(msgs[0].content) == [
-            {"type": "input_text", "text": "see image"},
-            {"type": "input_image", "file_id": "file_abc"},
-        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
 
-    def test_content_array_file_output_preserves_raw_payload(self):
+    def test_content_array_file_output_rejected_clearly(self):
         payload = ResponsesRequest(
             input = [
                 {
@@ -515,16 +528,25 @@ class TestNormaliseResponsesInputWithTools:
                 }
             ],
         )
-        msgs = _normalise_responses_input(payload)
-        assert msgs[0].role == "tool"
-        assert json.loads(msgs[0].content) == [
-            {"type": "input_text", "text": "see file"},
-            {
-                "type": "input_file",
-                "file_data": "data:application/pdf;base64,AAA",
-                "filename": "report.pdf",
-            },
-        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_content_array_malformed_image_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [{"type": "input_image", "detail": "high"}],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "image_url" in str(exc.value.detail)
 
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
