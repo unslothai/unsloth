@@ -341,13 +341,17 @@ function Uninstall-UnslothStudio {
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
+    # Canonical name is "Unsloth Studio.lnk"; also sweep legacy distro-suffixed names
+    # ("Unsloth Studio (WSL - <distro>).lnk") left by pre-release dev builds.
     _Step "Removing desktop and Start Menu shortcuts..."
-    try {
-        $desktop = [Environment]::GetFolderPath("Desktop")
-        if ($desktop) { _RemovePath (Join-Path $desktop "Unsloth Studio.lnk") }
-    } catch { }
-    if ($env:APPDATA) {
-        _RemovePath (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk")
+    $shortcutDirs = @()
+    try { $d = [Environment]::GetFolderPath("Desktop"); if ($d) { $shortcutDirs += $d } } catch { }
+    if ($env:APPDATA) { $shortcutDirs += (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs") }
+    foreach ($dir in $shortcutDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        _RemovePath (Join-Path $dir "Unsloth Studio.lnk")
+        Get-ChildItem -LiteralPath $dir -Filter "Unsloth Studio (*.lnk" -ErrorAction SilentlyContinue |
+            ForEach-Object { _RemovePath $_.FullName }
     }
     # Invalidate the Win11 Start Menu tile cache so the removed shortcut's tile
     # disappears promptly instead of lingering stale (mirrors install.ps1's
@@ -417,6 +421,82 @@ function Uninstall-UnslothStudio {
         Remove-Item -LiteralPath 'HKCU:\Software\Unsloth' -Recurse -Force -ErrorAction SilentlyContinue
     } catch { }
 
+    # ── Windows-on-Arm WSL-fallback artifacts ──
+    # The ARM64+NVIDIA fallback puts Studio in WSL plus a native shim + launcher under
+    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- none caught above.
+    _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
+    $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
+    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without the env
+    # var set; read it BEFORE the directory is removed below.
+    $_recordedDistro = $null
+    if ($unslothDir) {
+        try {
+            $_distroFile = Join-Path $unslothDir "wsl-distro.txt"
+            if (Test-Path -LiteralPath $_distroFile) {
+                $_recordedDistro = (Get-Content -LiteralPath $_distroFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+                if ($_recordedDistro) { $_recordedDistro = $_recordedDistro.Trim() }
+            }
+        } catch { }
+    }
+    if ($unslothDir) {
+        $shimDir = (Join-Path $unslothDir "bin").TrimEnd('\', '/')
+        try {
+            $rk = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+            if ($rk) {
+                try {
+                    $rp = $rk.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if ($rp) {
+                        $kept = @(); $removed = $false
+                        foreach ($e in ($rp -split ';')) {
+                            if ([string]::IsNullOrWhiteSpace($e)) { continue }
+                            if (([Environment]::ExpandEnvironmentVariables($e).TrimEnd('\', '/')) -ieq $shimDir) { $removed = $true; _Substep "removed PATH entry: $e" "Green"; continue }
+                            $kept += $e
+                        }
+                        if ($removed) { $rk.SetValue('Path', ($kept -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString) }
+                    }
+                } finally { $rk.Close() }
+            }
+        } catch { }
+        _RemovePath $unslothDir
+    }
+    # The WoA shortcut icon lives under the user profile (icon broker can't read AppData\Local).
+    if ($env:USERPROFILE) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
+    # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
+    if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+        try {
+            # Probe candidates by exit code ('' = default distro) since `wsl --list` emits UTF-16 PS
+            # mis-parses. rm runs FIRST (the kills could SIGKILL this shell) and drops the dangling
+            # /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (the fallback's install dir);
+            # /home/*/.unsloth may be another user's. The 8888 kill is gated on an Unsloth install
+            # existing (checked BEFORE rm deletes the marker) so an unrelated listener survives. pkill
+            # matches argv containing /root/.unsloth/ (not bare names that would hit a user's own
+            # llama-server); the backslash + [h]-bracket in '/root/\.unslot[h]/' keep it from matching
+            # this command's own argv.
+            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then fuser -k 8888/tcp 2>/dev/null; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
+            # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker or an
+            # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy marker-less
+            # installs (ARM64 only); on x86 it would delete distros this installer never touched
+            # (e.g. a ROCm-on-WSL Studio under /root).
+            $_cands = @()
+            if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
+            if ($_recordedDistro) { $_cands += $_recordedDistro }
+            if ((-not $_cands) -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) {
+                $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
+            }
+            $_done = @{}
+            foreach ($d in $_cands) {
+                if ($d) { & wsl.exe -d $d -- true *> $null } else { & wsl.exe -- true *> $null }
+                if ($LASTEXITCODE -ne 0) { continue }
+                $_label = if ($d) { $d } else { "(default)" }
+                if ($_done[$_label]) { continue }
+                $_done[$_label] = $true
+                if ($d) { & wsl.exe -d $d -u root -- bash -lc $_clean *> $null }
+                else    { & wsl.exe -u root -- bash -lc $_clean *> $null }
+                _Substep "cleaned Unsloth from WSL distro: $_label" "Green"
+            }
+        } catch { }
+    }
+
     Write-Host ""
     Write-Host "Unsloth Studio uninstalled."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
@@ -428,6 +508,10 @@ function Uninstall-UnslothStudio {
         Write-Host "set to also remove that install tree, e.g.:"
         Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
+
+    # The distro probes leave a failing $LASTEXITCODE; reset so success exits 0. Set the var
+    # rather than `exit 0` so `irm ... | iex` doesn't terminate the caller's shell.
+    $global:LASTEXITCODE = 0
 }
 
 Uninstall-UnslothStudio @args

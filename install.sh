@@ -732,9 +732,9 @@ _open_browser() {
     elif grep -qi microsoft /proc/version 2>/dev/null; then
         # WSL: xdg-open is unreliable; use Windows browser via PowerShell or cmd
         if command -v powershell.exe >/dev/null 2>&1; then
-            powershell.exe -NoProfile -Command "Start-Process '$_url'" >/dev/null 2>&1 &
+            powershell.exe -NoProfile -Command "Start-Process '$_url'" </dev/null >/dev/null 2>&1 &
         elif command -v cmd.exe >/dev/null 2>&1; then
-            cmd.exe /c start "" "$_url" >/dev/null 2>&1 &
+            cmd.exe /c start "" "$_url" </dev/null >/dev/null 2>&1 &
         elif command -v xdg-open >/dev/null 2>&1; then
             xdg-open "$_url" >/dev/null 2>&1 &
         else
@@ -1279,7 +1279,7 @@ WSLPS1_EOF
             # Convert WSL path to Windows path for powershell.exe
             _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
             if [ -n "$_css_ps1_win" ]; then
-                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" </dev/null >/dev/null 2>&1 && _css_created=1
             fi
             rm -f "$_css_ps1_tmp"
         fi
@@ -2664,9 +2664,31 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+    elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
+        # Pre-merge testing: install unsloth from a git ref (set by install.ps1)
+        # so the branch's setup.sh + patches run. Name unsloth-zoo explicitly --
+        # not a base dep, and SKIP_STUDIO_BASE skips base.txt, so it never installs.
+        substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
+        run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth --upgrade-package unsloth-zoo \
+            "unsloth @ git+https://github.com/unslothai/unsloth@${UNSLOTH_INSTALL_REF}" unsloth-zoo
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
+    fi
+    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X): unsloth's x86_64-oriented cuXXX
+    # extras break 4-bit QLoRA, but aarch64 manylinux wheels work (verified on
+    # sm_121 via PTX JIT). Best-effort: no wheel keeps 16-bit LoRA / full finetuning.
+    # SKIP_TORCH gate stops a --no-torch (GGUF-only) install dragging torch back in.
+    if [ "$SKIP_TORCH" = false ] \
+            && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
+            && command -v nvidia-smi >/dev/null 2>&1 \
+            && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+            && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then
+        substep "installing bitsandbytes (aarch64 wheels; enables 4-bit QLoRA)..."
+        if ! uv pip install --python "$_VENV_PY" "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0" >/dev/null 2>&1; then
+            substep "(no bitsandbytes wheel for this platform; 16-bit LoRA + full finetuning still work)"
+        fi
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.

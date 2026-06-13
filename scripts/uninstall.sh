@@ -216,6 +216,8 @@ _remove_path "$HOME/.unsloth/studio"
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
+# provision_llama_cuda.sh fetched by the WoA/Spark CUDA-build path. No-op when absent.
+_remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
 _remove_path "$HOME/.unsloth/.cache"
 # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
 # Normally pruned after activate, but an interrupted build can leave it behind;
@@ -275,6 +277,7 @@ case "$_os" in
                 # receive trailing tokens as $args. WSL distro names are safe to
                 # embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
+                # $env:APPDATA/$distro are PowerShell-side; $_wsl_distro is shell-injected.
                 powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
@@ -298,6 +301,20 @@ case "$_os" in
                                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                             } catch { }
                         }
+                    }
+                    # Remove the WoA WSL-fallback native shim/launcher dir
+                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry that install.ps1
+                    # created, so a WSL-side bash uninstall is complete. Only when THIS
+                    # distro owns the fallback (wsl-distro.txt) -- else uninstalling a
+                    # different distro would break the still-installed shim.
+                    $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
+                    $owner = $null;
+                    if ($ud) { $of = Join-Path $ud "wsl-distro.txt"; if (Test-Path -LiteralPath $of) { $owner = (Get-Content -LiteralPath $of | Select-Object -First 1).Trim() } }
+                    if ($ud -and ((-not $owner) -or (-not $distro) -or ($owner -ieq $distro))) {
+                        $shim = (Join-Path $ud "bin").TrimEnd("\","/");
+                        $up = [Environment]::GetEnvironmentVariable("Path","User");
+                        if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }
+                        if (Test-Path -LiteralPath $ud) { Remove-Item -LiteralPath $ud -Recurse -Force -ErrorAction SilentlyContinue }
                     }' >/dev/null 2>&1 || true
             fi
             # Fallback when powershell.exe can't run (interop disabled): remove the
