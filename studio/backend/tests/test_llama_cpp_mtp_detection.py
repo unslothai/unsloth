@@ -9,6 +9,7 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import os
 import struct
 import sys
 import types as _types
@@ -520,6 +521,38 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] == "draft-mtp"
     assert caps["supports_mtp"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,mtp,ngram-simple\n",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.child_env_without_native_path_secret",
+        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+    )
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
+
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is True
+    assert captured["cmd"] == [str(fake), "--help"]
+    assert captured["env"] is not None
+    ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(fake.parent) in ld_dirs
+    assert "/already-there" in ld_dirs
 
 
 @_NEEDS_BASH

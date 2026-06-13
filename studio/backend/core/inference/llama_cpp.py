@@ -1258,12 +1258,14 @@ class LlamaCppBackend:
         supports_kv_unified = False
         supports_fit_ctx = False
         try:
+            probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
@@ -1765,6 +1767,100 @@ class LlamaCppBackend:
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
         return path_dirs
+
+    @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs."""
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            # Ordering: see _build_windows_path_dirs. #5106.
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+            # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+            # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
+            # <binary_dir>/rocblas/library/ which doesn't exist.
+            _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
+            if _hip_path:
+                _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
+                if os.path.isdir(_rocblas_lib):
+                    env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        else:
+            # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
+            # CUDA runtime libs (libcudart, libcublas, etc.)
+            import platform
+
+            lib_dirs = []
+            # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                lib_dirs.append(_wsl_rocm)
+            if lib_dirs:
+                env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            lib_dirs.append(binary_dir)
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
+            # libcudart.so.13 / libcublas.so.13 which live here, not in
+            # /usr/local/cuda.
+            import glob as _glob
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with CUDA 12
+                # where default /usr/local/cuda is CUDA 13+).
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        return env
 
     @staticmethod
     def _select_gpus(
@@ -4096,11 +4192,7 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                import os
-                import sys
-
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                env = self._llama_server_env_for_binary(binary)
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
@@ -4115,96 +4207,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
-
-                if sys.platform == "win32":
-                    # Ordering: see _build_windows_path_dirs. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-
-                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
-                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
-                    # searches <binary_dir>/rocblas/library/ which doesn't exist
-                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install.
-                    _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
-                    if _hip_path:
-                        _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
-                        if os.path.isdir(_rocblas_lib):
-                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
-                else:
-                    # Linux: LD_LIBRARY_PATH for shared libs next to the binary
-                    # plus CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = []
-                    # WSL: system HIP before the bundle's (which segfaults on
-                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
-                    # validates the prebuilt with this same ordering.
-                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                        lib_dirs.append(_wsl_rocm)
-                    if lib_dirs:
-                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-                    lib_dirs.append(binary_dir)
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
-                    # binary links libcudart.so.13 / libcublas.so.13 which live
-                    # here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 where default /usr/local/cuda is CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
