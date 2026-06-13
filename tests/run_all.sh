@@ -9,6 +9,7 @@ sh "$TESTS_DIR/sh/test_get_torch_index_url.sh"
 sh "$TESTS_DIR/sh/test_mac_intel_compat.sh"
 sh "$TESTS_DIR/sh/test_torch_constraint.sh"
 sh "$TESTS_DIR/sh/test_nvcc_meets_llama_minimum.sh"
+sh "$TESTS_DIR/sh/test_torch_flavor.sh"
 
 echo ""
 echo "=== Python tests ==="

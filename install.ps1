@@ -1804,6 +1804,55 @@ shell.Run cmd, 0, False
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
+
+    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+    # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
+    # matching setup.ps1's stale-venv parse.
+    function ConvertTo-TorchFlavorTag {
+        param([string]$TorchVersion)
+        if (-not $TorchVersion) { return $null }
+        if ($TorchVersion -match '\+(cu\d+)') { return $Matches[1] }
+        if ($TorchVersion -match '\+rocm')    { return 'rocm' }
+        if ($TorchVersion -match '\+cpu')     { return 'cpu' }
+        return 'cpu'
+    }
+
+    # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a
+    # gfx* leaf -> rocm). $null on an unknown leaf (odd mirror) so repair no-ops.
+    function Get-ExpectedTorchFlavorTag {
+        param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
+        if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
+        if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
+        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if ($leaf -match '^cu\d+$') { return $leaf }
+        if ($leaf -eq 'cpu')        { return 'cpu' }
+        if ($leaf -match '^rocm')   { return 'rocm' }
+        if ($leaf -match '^gfx')    { return 'rocm' }
+        return $null
+    }
+
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses
+    # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
+    function Get-InstalledTorchTag {
+        param([string]$PythonExe)
+        if (-not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
+            $finished = $proc.WaitForExit(30000)
+            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
+            if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
+            return ConvertTo-TorchFlavorTag $torchVer
+        } catch { return $null }
+    }
+
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
@@ -2046,6 +2095,36 @@ shell.Run cmd, 0, False
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
+            }
+        }
+    }
+
+    # ── Enforce the installed torch flavor matches the detected GPU build ──
+    # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+    # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
+    # "torch cpu != required cuXXX". Reinstall the right CUDA triplet when a GPU
+    # build is expected; ROCm (already --force-reinstalled) or a migrated AMD venv
+    # just warns. --no-torch / CPU-only hosts (expected cpu) are no-ops.
+    if (-not $SkipTorch) {
+        $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
+        if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
+            $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+            # Auto-repair CUDA only; ROCm is force-reinstalled above, migrated AMD warns below.
+            if ($expectedTorchTag -ne 'rocm' -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+                substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
+                $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                if ($torchFixExit -ne 0) {
+                    Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
+                }
+                $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+            }
+            # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
+            if ($installedTorchTag -eq 'cpu') {
+                Write-Host ""
+                Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
+                Write-Host "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
+                Write-Host "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
             }
         }
     }

@@ -1927,6 +1927,42 @@ get_torch_index_url() {
     else echo "$_base/cpu"; fi
 }
 
+# ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu.
+_torch_flavor_tag() {
+    case "$1" in
+        *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
+        *+rocm*)    echo "rocm" ;;
+        *+cpu*)     echo "cpu" ;;
+        "")         echo "" ;;
+        *)          echo "cpu" ;;
+    esac
+}
+
+# Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
+# rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
+_expected_torch_flavor_tag() {
+    _u="${1%/}"
+    _leaf="${_u##*/}"
+    case "$_leaf" in
+        cu[0-9]*)   echo "$_leaf" ;;
+        cpu)        echo "cpu" ;;
+        rocm*|gfx*) echo "rocm" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# Whether index ($1) supports a plain --index-url reinstall. repo.amd.com gfx*
+# indexes do not (partial listing, need --find-links) -> warned, not reinstalled.
+_torch_index_repairable() {
+    _u="${1%/}"
+    _leaf="${_u##*/}"
+    case "$_leaf" in
+        cu[0-9]*|rocm[0-9]*) echo "yes" ;;
+        *)                   echo "no" ;;
+    esac
+}
+
 get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
@@ -2698,6 +2734,40 @@ else
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
+    fi
+fi
+
+# ── Enforce the installed torch flavor matches the detected GPU build ──
+# PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+# keeps a stale torch==X+cpu against a GPU index and the venv silently trains on
+# CPU. Reinstall the right wheel triplet when a GPU build is expected; if it
+# can't be reinstalled, warn loudly. --no-torch / CPU-only / macOS: no-op.
+if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
+    _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
+    # Only act when a GPU build is expected (cuXXX / rocm); cpu and unknown skip.
+    if [ -n "$_expected_torch_tag" ] && [ "$_expected_torch_tag" != "cpu" ]; then
+        _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+        _installed_torch_tag=""
+        [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
+        # Repair when flavor is wrong AND index is plain-reinstallable (gfx* -> warn).
+        if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
+           && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
+            substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
+            run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --index-url "$TORCH_INDEX_URL" \
+                --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
+            _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+            _installed_torch_tag=""
+            [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
+        fi
+        # Safety net (incl. AMD/WSL): GPU build expected but still CPU -> warn loudly.
+        if [ "$_installed_torch_tag" = "cpu" ]; then
+            substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
+            substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
+            substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" torchvision torchaudio --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+        fi
     fi
 fi
 
