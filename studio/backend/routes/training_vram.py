@@ -41,6 +41,7 @@ def summarize_resident_chat() -> Dict[str, Any]:
     VRAM at that point). Never raises.
     """
     hf_name: Optional[str] = None
+    hf_loading: bool = False
     gguf_name: Optional[str] = None
 
     try:
@@ -53,6 +54,10 @@ def summarize_resident_chat() -> Dict[str, Any]:
         # CUDA context and is intentionally NOT treated as resident.
         if inf.active_model_name or inf.loading_models:
             hf_name = inf.active_model_name or next(iter(inf.loading_models), None)
+            # An in-flight load (no active model yet) is still allocating, so its
+            # final footprint can't be sized -- flag it so the caller frees it
+            # instead of trying to keep it alongside training.
+            hf_loading = not inf.active_model_name and bool(inf.loading_models)
     except Exception as e:
         logger.warning("Could not inspect inference backend: %s", e)
 
@@ -60,14 +65,17 @@ def summarize_resident_chat() -> Dict[str, Any]:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
         # is_active (process exists) rather than is_loaded (process exists AND
-        # healthy) -- a server mid-start is already allocating VRAM.
-        if llama.is_active:
+        # healthy) -- a server mid-start is already allocating VRAM. A GGUF
+        # server confirmed to run entirely on CPU (_gpu_offload_active is False)
+        # holds no VRAM, so it is NOT a GPU resident and must not be torn down.
+        if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             gguf_name = llama.model_identifier or "gguf"
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
     return {
         "hf": hf_name,
+        "hf_loading": hf_loading,
         "gguf": gguf_name,
         "any": bool(hf_name or gguf_name),
     }
@@ -227,7 +235,9 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     try:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
-        if llama.is_active:
+        # Leave a confirmed CPU-only GGUF server alone: it holds no VRAM, so
+        # killing it cannot help training fit (mirrors summarize_resident_chat).
+        if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             name = llama.model_identifier or "gguf"
             logger.info(
                 "Unloading GGUF chat model '%s' to free GPU memory for training (%s)",

@@ -187,11 +187,17 @@ class TrainingBackend:
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
-    def start_training(self, job_id: str, **kwargs) -> bool:
+    def start_training(self, job_id: str, *, before_spawn = None, **kwargs) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
         Returns True if the subprocess started successfully.
+
+        ``before_spawn`` is an optional no-arg callable run once the start
+        guards have passed (so a subprocess will be spawned) but before any GPU
+        work begins. Callers use it to free VRAM (e.g. unload a resident chat
+        model) without tearing it down when the start is refused. Failures in
+        the hook are logged and never block the start.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -205,6 +211,14 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
+
+        # Guards passed: a subprocess will be spawned. Safe to free VRAM now
+        # (after this point we only bail on an unexpected spawn exception).
+        if before_spawn is not None:
+            try:
+                before_spawn()
+            except Exception:
+                logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
         # Build config dict for the subprocess
         config = {

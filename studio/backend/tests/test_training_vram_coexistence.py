@@ -55,8 +55,10 @@ def _fake_inference_backend(
     return inf
 
 
-def _fake_llama_backend(*, active = False, identifier = "model.gguf"):
-    llama = SimpleNamespace(is_active = active, model_identifier = identifier)
+def _fake_llama_backend(*, active = False, identifier = "model.gguf", gpu_offload = None):
+    llama = SimpleNamespace(
+        is_active = active, model_identifier = identifier, _gpu_offload_active = gpu_offload
+    )
     llama.unload_model = MagicMock()
     return llama
 
@@ -77,7 +79,10 @@ def _patch_backends(inf, llama):
 class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_nothing_resident(self):
         with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active = False)):
-            self.assertEqual(tv.summarize_resident_chat(), {"hf": None, "gguf": None, "any": False})
+            self.assertEqual(
+                tv.summarize_resident_chat(),
+                {"hf": None, "hf_loading": False, "gguf": None, "any": False},
+            )
 
     def test_hf_resident_via_active_model(self):
         with _patch_backends(
@@ -85,17 +90,30 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/Qwen3-4B")
+        self.assertFalse(out["hf_loading"])
         self.assertTrue(out["any"])
 
     def test_hf_resident_while_still_loading(self):
-        # active_model_name is None mid-load, but VRAM is already held.
+        # active_model_name is None mid-load, but VRAM is already held; flag it
+        # as in-flight so the caller frees it rather than trying to size it.
         with _patch_backends(
             _fake_inference_backend(active = None, loading = ["unsloth/Qwen3-4B"]),
             _fake_llama_backend(active = False),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/Qwen3-4B")
+        self.assertTrue(out["hf_loading"])
         self.assertTrue(out["any"])
+
+    def test_cpu_only_gguf_is_not_a_vram_resident(self):
+        # A llama-server confirmed to run entirely on CPU holds no VRAM.
+        with _patch_backends(
+            _fake_inference_backend(),
+            _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False),
+        ):
+            out = tv.summarize_resident_chat()
+        self.assertIsNone(out["gguf"])
+        self.assertFalse(out["any"])
 
     def test_bare_alive_subprocess_without_model_is_not_resident(self):
         # After an unload the orchestrator subprocess stays alive holding only
@@ -342,6 +360,15 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_called_once()
         self.assertEqual(freed, ["gguf:gemma.gguf"])
+
+    def test_leaves_cpu_only_gguf_alone(self):
+        # Killing a CPU-only llama-server cannot reclaim VRAM, so don't.
+        inf = _fake_inference_backend()
+        llama = _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False)
+        with _patch_backends(inf, llama):
+            freed = tv.free_chat_models_for_training(reason = "test")
+        llama.unload_model.assert_not_called()
+        self.assertEqual(freed, [])
 
     def test_unloads_inflight_hf_load(self):
         inf = _fake_inference_backend(active = None, loading = ["unsloth/Qwen3-4B"])

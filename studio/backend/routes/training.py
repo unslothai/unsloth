@@ -258,33 +258,38 @@ async def start_training(
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
 
-        # Always free the export subprocess first (transient GPU work, not an
-        # interactive session) so its VRAM is reflected when we size the chat
-        # coexistence decision below.
-        try:
-            from core.export import get_export_backend
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info("Shutting down export subprocess to free GPU memory for training")
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # Free GPU memory for training: stop the export subprocess, and unload
+        # the resident chat model unless it can coexist. Runs as a before_spawn
+        # hook so start_training invokes it only AFTER its start guards pass --
+        # we never tear down chat/export VRAM for a start that is then refused.
+        def _free_vram_for_training() -> None:
+            try:
+                from core.export import get_export_backend
+                exp_backend = get_export_backend()
+                if exp_backend.current_checkpoint:
+                    logger.info("Shutting down export subprocess to free GPU memory for training")
+                    exp_backend._shutdown_subprocess()
+                    exp_backend.current_checkpoint = None
+                    exp_backend.is_vision = False
+                    exp_backend.is_peft = False
+            except Exception as e:
+                logger.warning("Could not shut down export subprocess: %s", e)
 
-        # Keep a resident chat model loaded only if there's enough free VRAM to
-        # run training alongside it (so the user can train and chat at once);
-        # otherwise unload it across all inference backends. Never block a
-        # training start on a coordination failure.
-        try:
-            from routes.training_vram import (
-                can_keep_chat_during_training,
-                free_chat_models_for_training,
-                summarize_resident_chat,
-            )
-            resident = summarize_resident_chat()
-            if resident["any"]:
+            try:
+                from routes.training_vram import (
+                    can_keep_chat_during_training,
+                    free_chat_models_for_training,
+                    summarize_resident_chat,
+                )
+                resident = summarize_resident_chat()
+                if not resident["any"]:
+                    return
+                if resident.get("hf_loading"):
+                    # An in-flight load's final footprint can't be sized, so free
+                    # it rather than risk both OOMing as the load completes.
+                    freed = free_chat_models_for_training(reason = "chat model still loading")
+                    logger.info("Freed in-flight chat load for training: %s", freed)
+                    return
                 keep, info = can_keep_chat_during_training(
                     model_name = training_kwargs["model_name"],
                     hf_token = training_kwargs["hf_token"],
@@ -311,11 +316,15 @@ async def start_training(
                         reason = "insufficient VRAM to run training alongside chat",
                     )
                     logger.info("Freed chat model(s) for training: %s", freed)
-        except Exception as e:
-            logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
+            except Exception as e:
+                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
-        # start_training spawns a subprocess (non-blocking).
-        success = backend.start_training(job_id = job_id, **training_kwargs)
+        # start_training spawns a subprocess (non-blocking) and runs the hook
+        # above only once its start guards pass, so VRAM is freed iff a training
+        # subprocess is actually started.
+        success = backend.start_training(
+            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+        )
 
         if not success:
             progress_error = backend.trainer.training_progress.error
