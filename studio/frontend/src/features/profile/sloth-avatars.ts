@@ -27,13 +27,10 @@ export const SLOTH_AVATARS: readonly string[] = [
   "Sloth emojis/sloth sir large.png",
   "Sloth emojis/sloth huglove large.png",
   "Sloth emojis/sloth headphones.png",
-  "Sloth emojis/sloth pc emoji.png",
   "Sloth emojis/sloth pc square.png",
   "Sloth emojis/sloth on phone.png",
-  "Sloth emojis/sloth w pc transparent.png",
   "Sloth emojis/sloth magnify final.png",
   "Sloth emojis/Sloth loca pc.png",
   "Sloth emojis/UnSloth GPU Front square.png",
   "Sloth emojis/UnSloth Sparkling large.png",
-  "Sloth emojis/FO2C6766BA42 Sloth Gift.png",
 ];
