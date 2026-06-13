@@ -799,9 +799,11 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            # shell.Run(cmd, 0, ...) already hides the window, so -WindowStyle Hidden
+            # is redundant; omitting it trims an AV-heuristic token (Kaspersky FP).
             $vbsContent = @"
 Set shell = CreateObject("WScript.Shell")
-cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
+cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File ""$launcherPs1"""
 shell.Run cmd, 0, False
 "@
             # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
