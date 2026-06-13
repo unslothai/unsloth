@@ -190,13 +190,13 @@ export const en = {
       title: "Chat",
       description: "Manage chat history stored on this device.",
       artifacts: {
-        title: "Artifacts",
+        title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
         collapseHtmlBlocksDescription:
-          "Artifacts mode collapses full HTML automatically. Turn on to also collapse fenced HTML documents when Artifacts is off.",
-        allowNetworkAccess: "Allow artifact network access",
+          "Canvas mode collapses full HTML automatically. Turn this on to also collapse fenced HTML documents when Canvas is off.",
+        allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
-          "Let artifact previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+          "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
       },
       data: "Data",
       exportHistory: "Export chat history",

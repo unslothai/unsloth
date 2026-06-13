@@ -101,7 +101,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     tool_call_id = "call_render_late"
     first_stream = [
-        _sse({"content": "Here is the artifact.\n\n"}),
+        _sse({"content": "Here is the canvas.\n\n"}),
         _sse(
             {
                 "tool_calls": [
@@ -135,7 +135,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: Simple Red Square."
+        return "Rendered HTML canvas: Simple Red Square."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -163,7 +163,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     )
 
     content_events = [e for e in events if e.get("type") == "content"]
-    assert content_events[0]["text"] == "Here is the artifact.\n\n"
+    assert content_events[0]["text"] == "Here is the canvas.\n\n"
 
     first_content_index = next(
         i for i, event in enumerate(events) if event.get("type") == "content"
@@ -190,7 +190,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     # plus the structured tool call, preserving OpenAI-compatible ordering.
     assert len(payloads) == 2
     assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
-    assert assistant_messages[-1]["content"] == "Here is the artifact.\n\n"
+    assert assistant_messages[-1]["content"] == "Here is the canvas.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
 
@@ -252,7 +252,7 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: First."
+        return "Rendered HTML canvas: First."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -341,7 +341,7 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
 
     def fake_execute_tool(name, arguments, **_kwargs):
-        return "Rendered HTML artifact: Done."
+        return "Rendered HTML canvas: Done."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -778,7 +778,7 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: One."
+        return "Rendered HTML canvas: One."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -864,7 +864,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     The post-tool model pass can say it will use render_html again without
     emitting a tool call. That should be accepted as a final model mistake,
-    not turned into repeated internal re-prompts after the artifact already
+    not turned into repeated internal re-prompts after the canvas already
     exists.
     """
 
@@ -902,7 +902,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: First."
+        return "Rendered HTML canvas: First."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1141,7 +1141,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: Forced."
+        return "Rendered HTML canvas: Forced."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 

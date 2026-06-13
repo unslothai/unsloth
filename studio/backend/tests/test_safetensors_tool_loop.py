@@ -263,7 +263,7 @@ def _make_loop(
 
 def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     captured_tool_names: list[list[str]] = []
-    exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
 
     def fake_single_turn(_messages, *, active_tools = None):
         captured_tool_names.append(
@@ -356,7 +356,7 @@ class TestLoopBasic:
         assert "Result: 1" in contents[-1]["text"]
 
     def test_render_html_emits_provisional_tool_start(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
             [
                 [
@@ -411,8 +411,8 @@ class TestLoopBasic:
         assert tool_starts[0]["tool_name"] == "python"
         assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
 
-    def test_render_html_success_blocks_second_artifact_call(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+    def test_render_html_success_blocks_second_canvas_call(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
             [
                 [
