@@ -179,6 +179,40 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     return n if n > 1 else None
 
 
+def get_installed_llama_version() -> Optional[str]:
+    """Display string for the active llama.cpp install (e.g. 'b9585' or
+    'b9601-mix-a0e2906'), or None.
+
+    Prefers the install marker's release_tag -- the full unsloth release
+    identity, the same field the update banner compares as installed (see
+    #6219) -- so a 'b9601-mix-a0e2906' build reads back in full rather than
+    collapsing to its base 'b9601'. The marker's bare ``tag`` is only the
+    upstream llama.cpp build (no '-mix-<commit>' suffix), so it's the fallback.
+    Last resort is ``b<build>`` parsed from ``llama-server --version`` for
+    source/custom builds that have no marker.
+
+    Lightweight: reads the local marker and at most runs ``--version``. Does no
+    network or release-freshness work (unlike get_update_status), so it is safe
+    to call from latency-sensitive paths like the About panel.
+    """
+    binary = _find_binary()
+    marker = read_install_marker(binary)
+    if marker:
+        tag = marker.get("release_tag") or marker.get("tag")
+        if tag:
+            return tag
+    # Markerless/source build: the fallback execs ``llama-server --version``.
+    # Skip it while an update is swapping the tree -- on Windows that exec can
+    # make the installer's os.replace fail (the same race get_update_status's
+    # source-build probe guards against). The panel just omits the row.
+    with _job_lock:
+        job_running = _job["state"] == _JOB_RUNNING
+    if job_running:
+        return None
+    n = _installed_build_number(binary)
+    return f"b{n}" if n is not None else None
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         p, r = path.resolve(), root.resolve()
