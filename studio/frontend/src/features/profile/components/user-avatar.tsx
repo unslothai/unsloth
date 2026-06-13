@@ -37,7 +37,7 @@ export function UserAvatar({ name, imageUrl, size, className, shape }: UserAvata
 
   if (imageUrl) {
     return (
-      <span className={cn("relative inline-flex shrink-0 overflow-hidden", shapeClass, SIZE[size], className)}>
+      <span className={cn("relative inline-flex shrink-0 overflow-hidden bg-muted", shapeClass, SIZE[size], className)}>
         <img src={imageUrl} alt="" className="size-full object-cover" />
       </span>
     );

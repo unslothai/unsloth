@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,6 +12,7 @@ import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
+import { SLOTH_AVATARS } from "../sloth-avatars";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
 import { useUserProfileStore } from "../stores/user-profile-store";
@@ -109,27 +111,37 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
+  // Persist an avatar value (data URL or asset URL) and toast the result.
+  const applyAvatar = (value: string) => {
+    setAvatarDataUrl(value);
+    const persisted = readPersistedProfile();
+    if (persisted && persisted.avatarDataUrl === value) {
+      toastSuccess(t("settings.profile.photoUpdated"));
+    } else {
+      toastError(
+        t("settings.profile.photoPersistErrorTitle"),
+        t("settings.profile.photoPersistErrorDescription"),
+      );
+    }
+  };
+
   const onPickFile = async (file: File | undefined) => {
     if (!file) return;
     setImageError(null);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file);
-      setAvatarDataUrl(dataUrl);
-      const persisted = readPersistedProfile();
-      if (persisted && persisted.avatarDataUrl === dataUrl) {
-        toastSuccess(t("settings.profile.photoUpdated"));
-      } else {
-        toastError(
-          t("settings.profile.photoPersistErrorTitle"),
-          t("settings.profile.photoPersistErrorDescription"),
-        );
-      }
+      applyAvatar(await resizeImageFileToDataUrl(file));
     } catch (e) {
       const message =
         e instanceof Error ? e.message : t("settings.profile.imageUseError");
       setImageError(message);
       toastError(t("settings.profile.photoUpdateErrorTitle"), message);
     }
+  };
+
+  // Use a bundled sloth sticker as the avatar.
+  const pickSloth = (path: string) => {
+    setImageError(null);
+    applyAvatar(publicAssetUrl(path));
   };
 
   return (
@@ -236,6 +248,32 @@ export function ProfilePersonalizationPanel() {
                 : t("settings.profile.avatarShapeRounded")}
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.chooseSloth")}
+        </Label>
+        <div className="grid grid-cols-7 gap-2 sm:grid-cols-9">
+          {SLOTH_AVATARS.map((path) => {
+            const url = publicAssetUrl(path);
+            const selected = avatarDataUrl === url;
+            return (
+              <button
+                key={path}
+                type="button"
+                onClick={() => pickSloth(path)}
+                aria-pressed={selected}
+                className={cn(
+                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border transition hover:ring-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  selected && "ring-2 ring-primary",
+                )}
+              >
+                <img src={url} alt="" loading="lazy" className="size-full object-cover" />
+              </button>
+            );
+          })}
         </div>
       </div>
 

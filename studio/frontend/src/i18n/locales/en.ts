@@ -158,6 +158,7 @@ export const en = {
       avatarShape: "Profile picture shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
+      chooseSloth: "Or pick a sloth",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:

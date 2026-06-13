@@ -145,6 +145,7 @@ export const zhCN = {
       avatarShape: "头像形状",
       avatarShapeCircle: "圆形",
       avatarShapeRounded: "圆角矩形",
+      chooseSloth: "或选择一只树懒",
       nameSaved: "个人资料名称已保存",
       namePersistErrorTitle: "无法持久保存个人资料名称",
       namePersistErrorDescription:
