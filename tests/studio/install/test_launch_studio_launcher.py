@@ -1,5 +1,6 @@
 """Guard install.ps1's launch-studio.vbs against re-introducing the AV-heuristic
 shape: a WScript .vbs spawning a hidden, ExecutionPolicy-Bypass PowerShell."""
+
 import re
 from pathlib import Path
 
@@ -10,7 +11,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 def _vbs_block() -> str:
-    text = INSTALL_PS1.read_text(encoding="utf-8")
+    text = INSTALL_PS1.read_text(encoding = "utf-8")
     m = re.search(r'\$vbsContent\s*=\s*@"\r?\n(.*?)\r?\n"@', text, re.S)
     assert m, "could not locate the $vbsContent here-string in install.ps1"
     return m.group(1)
