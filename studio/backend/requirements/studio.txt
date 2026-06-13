@@ -27,6 +27,7 @@ python-multipart>=0.0.26
 # end-to-end with onnxruntime 1.25.0 + numpy 2.4.x.
 onnxruntime>=1.19
 cryptography>=42.0.0
+boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
 fastmcp>=3.0.2
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in

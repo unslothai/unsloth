@@ -209,8 +209,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         currentStep:
           typeof detailStep === "number" ? Math.max(detailStep, 0) : state.currentStep,
         totalSteps:
-          typeof detailTotal === "number"
-            ? Math.max(detailTotal, 0)
+          typeof detailTotal === "number" && detailTotal > 0
+            ? detailTotal
             : state.totalSteps,
         currentLoss:
           typeof detailLoss === "number" ? detailLoss : state.currentLoss,
@@ -273,7 +273,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         ...state,
         jobId: payload.job_id || state.jobId,
         currentStep: step,
-        totalSteps: Math.max(payload.total_steps, state.totalSteps),
+        totalSteps:
+          typeof payload.total_steps === "number" && payload.total_steps > 0
+            ? payload.total_steps
+            : state.totalSteps,
         // A null loss at a new step means the backend reported a non-finite
         // loss; clear the display instead of keeping the stale value.
         currentLoss:

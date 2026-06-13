@@ -107,6 +107,7 @@ export function providerTypeSupportsVision(
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
+export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -130,7 +131,7 @@ export const CUSTOM_PROVIDER_PRESETS = [
 ] as const;
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
-  [LEGACY_CUSTOM_PROVIDER_TYPE]: "Custom",
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: CUSTOM_PROVIDER_DISPLAY_NAME,
   ...Object.fromEntries(
     CUSTOM_PROVIDER_PRESETS.map((preset) => [
       preset.providerType,
@@ -166,8 +167,9 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
-/** Local OpenAI-compat presets that expose GET /v1/models (no API key). */
+/** OpenAI-compat custom types that may expose GET /v1/models. */
 const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
+  LEGACY_CUSTOM_PROVIDER_TYPE,
   "ollama",
   "vllm",
   "llama_cpp",
@@ -189,7 +191,7 @@ export function customPresetSkipsApiKeyField(
   return providerType === "ollama" || providerType === "llama_cpp";
 }
 
-/** Catalog load plus optional manual model IDs (OpenRouter + local presets). */
+/** Catalog load plus optional manual model IDs. */
 export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
@@ -201,7 +203,7 @@ export function allowsManualModelIdsWithCatalog(
 export function customProviderDisplayName(
   providerType: string | null | undefined,
 ): string {
-  if (!providerType) return "Custom";
+  if (!providerType) return CUSTOM_PROVIDER_DISPLAY_NAME;
   return CUSTOM_PROVIDER_LABELS[providerType] ?? providerType;
 }
 
@@ -246,6 +248,11 @@ export function toExternalBackendProviderType(
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
+  // Generic custom servers are OpenAI-compatible, but should still use the
+  // chat-completions backend path instead of OpenAI's Responses API route.
+  if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
+  }
   return isCustomProviderType(providerType)
     ? CUSTOM_BACKEND_PROVIDER_TYPE
     : providerType;

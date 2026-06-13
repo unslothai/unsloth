@@ -15,6 +15,7 @@
 	--format-gguf: #60a5fa;
 	--format-checkpoint: #f472b6;
 	--format-adapter: #8b5cf6;
+	--format-mlx: #f59e0b;
 	--status-warning: #eab308;
 	--status-danger: #ef4444;
 	--status-success: #11b686;
@@ -24,6 +25,7 @@
 	--format-gguf: #60a5fa;
 	--format-checkpoint: #f472b6;
 	--format-adapter: #a78bfa;
+	--format-mlx: #fbbf24;
 	--status-warning: #fbbf24;
 	--status-danger: #ef4444;
 	--status-success: #11b686;
@@ -33,6 +35,7 @@
 	--color-format-gguf: var(--format-gguf);
 	--color-format-checkpoint: var(--format-checkpoint);
 	--color-format-adapter: var(--format-adapter);
+	--color-format-mlx: var(--format-mlx);
 	--color-status-warning: var(--status-warning);
 	--color-status-danger: var(--status-danger);
 	--color-status-success: var(--status-success);
@@ -320,7 +323,7 @@
 @layer utilities {
 	.hub-tag-soft,
 	.hub-tag-meta {
-		@apply min-h-[26px] rounded-[11px] bg-muted/70 ring-1 ring-inset;
+		@apply min-h-[26px] rounded-full bg-muted/70 ring-1 ring-inset;
 		--tw-ring-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 
@@ -333,6 +336,11 @@
 		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
 		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
 		box-shadow: none;
+	}
+
+	/* Single-row state (variant + actions only) reads as a full pill. */
+	.hub-download-card:not(:has(> :nth-child(2))) {
+		border-radius: 9999px;
 	}
 
 	.dark .hub-download-card {
@@ -729,7 +737,7 @@ html:not(.dark) .hub-page [data-hub-scroll="true"] {
 }
 
 html.dark .hub-page [data-hub-scroll="true"] {
-	scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+	scrollbar-color: oklch(0.72 0 0 / 0.3) transparent;
 }
 
 html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
@@ -737,7 +745,7 @@ html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 }
 
 html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
-	background: oklch(0.55 0 0 / 0.16);
+	background: oklch(0.72 0 0 / 0.3);
 }
 
 /* While a modal dialog is open (delete confirmation, transport-mode swap, the

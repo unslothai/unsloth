@@ -7,6 +7,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -48,7 +49,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,7 +70,15 @@ import {
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
+  PLUS_MENU_ORDER,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
+} from "./stores/plus-menu-prefs-store";
+import {
   type ReasoningEffort,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -86,6 +94,7 @@ import {
   type MutableRefObject,
   type ReactElement,
   type ReactNode,
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -522,12 +531,15 @@ export function SharedComposer({
   const refreshRecentPrompts = useCallback(async () => {
     try {
       const rows = await listPromptEntries();
-      setRecentPrompts(
-        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
-      );
+      const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+      // Pinned prompts take over the submenu; fall back to the 3 most recent.
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
+      const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
+      setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
     }
   }, []);
+  const plusPins = usePlusMenuPrefsStore((s) => s.pins);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -1247,6 +1259,9 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
+      const specSettings = resolveSpeculativeSettingsForLoad({
+        usePersistedPreference: true,
+      });
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -1288,7 +1303,12 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
+          // Honor the Tensor Parallelism toggle on compare loads too.
+          tensor_parallel: currentStore.tensorParallel,
         });
+        saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1303,7 +1323,10 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          tensorParallel: resp.tensor_parallel ?? false,
+          loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
@@ -1494,6 +1517,157 @@ export function SharedComposer({
       }
     }
   }
+
+  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
+  // level; the rest fall into the "More" overflow submenu. Core items (photos,
+  // web search, code) and "More" itself live outside this map.
+  const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    chatWithFiles: (
+      <DropdownMenuItem
+        disabled={ragDisabled}
+        className={
+          ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
+        }
+        onSelect={() => setRagEnabled(!ragEnabled)}
+      >
+        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        Chat with Files
+        {ragEnabled && !ragDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    mcp: (
+      <DropdownMenuItem
+        disabled={!supportsTools}
+        className={mcpEnabledForChat ? "text-primary font-medium" : undefined}
+        onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+      >
+        <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+        MCP
+        {mcpEnabledForChat ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    savedPrompts: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {recentPrompts.map((p) => (
+            <DropdownMenuItem
+              key={p.id}
+              onSelect={() => {
+                setText(p.text);
+                requestAnimationFrame(() => textareaRef.current?.focus());
+              }}
+            >
+              <span className="truncate">{p.name}</span>
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+            All saved prompts…
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    compareChat: (
+      // Always active: this menu only renders in compare mode. Click exits.
+      <DropdownMenuItem
+        className="text-primary font-medium"
+        onSelect={handleExitCompare}
+      >
+        <Columns2Icon />
+        Compare chat
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      </DropdownMenuItem>
+    ),
+    exportChat: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+          Export chat
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {[
+            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "CSV", fn: exportConversationCsv },
+            { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+          ].map(({ label, fn }) => (
+            <DropdownMenuItem
+              key={label}
+              disabled={exportThreadIds.length === 0}
+              onSelect={() => {
+                if (!exportThreadIds.length) {
+                  toast.error("No conversation to export yet.");
+                  return;
+                }
+                Promise.all(exportThreadIds.map((id) => fn(id))).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              {label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    canvas: (
+      <DropdownMenuItem
+        className={artifactsEnabled ? "text-primary font-medium" : undefined}
+        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+      >
+        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+        Canvas
+        {artifactsEnabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    projects: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          Projects
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+          <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+            New project
+          </DropdownMenuItem>
+          <DropdownMenuLabel>Recents</DropdownMenuLabel>
+          {recentProjects.length > 0 ? (
+            recentProjects.map((project) => (
+              <DropdownMenuItem
+                key={project.id}
+                onSelect={() => openProject(project.id)}
+              >
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <span className="truncate">{project.name}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem disabled={true}>
+              No recent projects
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+  };
+  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
+  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
 
   return (
     <div
@@ -1792,7 +1966,7 @@ export function SharedComposer({
               align="start"
               sideOffset={0}
               avoidCollisions={true}
-              className="unsloth-plus-menu w-[212px]"
+              className="unsloth-plus-menu w-[244px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
@@ -1881,179 +2055,22 @@ export function SharedComposer({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                disabled={ragDisabled}
-                className={
-                  ragEnabled && !ragDisabled
-                    ? "text-primary font-medium"
-                    : undefined
-                }
-                onSelect={() => setRagEnabled(!ragEnabled)}
-              >
-                <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-                Chat with Files
-                {ragEnabled && !ragDisabled ? (
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!supportsTools}
-                className={
-                  mcpEnabledForChat ? "text-primary font-medium" : undefined
-                }
-                onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
-              >
-                <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
-                MCP
-                {mcpEnabledForChat ? (
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-              {/* RAG hidden temporarily */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <MoreHorizontalIcon className="size-4" />
-                  More
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  {/* Always active: this menu only renders in compare mode. Ticked
-                      like Web search/Code; click toggles it off. */}
-                  <DropdownMenuItem
-                    className="text-primary font-medium"
-                    onSelect={handleExitCompare}
-                  >
-                    <Columns2Icon />
-                    Compare chat
-                    <HugeiconsIcon
-                      icon={Tick02Icon}
-                      strokeWidth={2}
-                      className="ml-auto"
-                    />
-                  </DropdownMenuItem>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                      Saved prompts
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      collisionPadding={16}
-                      className="unsloth-plus-menu w-[176px]"
-                    >
-                      {recentPrompts.map((p) => (
-                        <DropdownMenuItem
-                          key={p.id}
-                          onSelect={() => {
-                            setText(p.text);
-                            requestAnimationFrame(() =>
-                              textareaRef.current?.focus(),
-                            );
-                          }}
-                        >
-                          <span className="truncate">{p.name}</span>
-                        </DropdownMenuItem>
-                      ))}
-                      {recentPrompts.length > 0 ? (
-                        <DropdownMenuSeparator />
-                      ) : null}
-                      <DropdownMenuItem
-                        onSelect={() => setPromptStorageOpen(true)}
-                      >
-                        All saved prompts…
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger
-                      disabled={exportThreadIds.length === 0}
-                    >
-                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                      Export chat
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      collisionPadding={16}
-                      className="unsloth-plus-menu w-[176px]"
-                    >
-                      {[
-                        { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                        { label: "CSV", fn: exportConversationCsv },
-                        {
-                          label: "ShareGPT JSONL",
-                          fn: exportConversationShareGPT,
-                        },
-                      ].map(({ label, fn }) => (
-                        <DropdownMenuItem
-                          key={label}
-                          disabled={exportThreadIds.length === 0}
-                          onSelect={() => {
-                            if (!exportThreadIds.length) {
-                              toast.error("No conversation to export yet.");
-                              return;
-                            }
-                            Promise.all(
-                              exportThreadIds.map((id) => fn(id)),
-                            ).catch(() => toast.error("Export failed."));
-                          }}
-                        >
-                          {label}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuItem
-                    className={
-                      artifactsEnabled ? "text-primary font-medium" : undefined
-                    }
-                    onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-                  >
-                    <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                    Canvas
-                    {artifactsEnabled ? (
-                      <HugeiconsIcon
-                        icon={Tick02Icon}
-                        strokeWidth={2}
-                        className="ml-auto"
-                      />
-                    ) : null}
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSeparator />
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                  Projects
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
-                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
-                    New project
-                  </DropdownMenuItem>
-                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
-                  {recentProjects.length > 0 ? (
-                    recentProjects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        onSelect={() => openProject(project.id)}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))
-                  ) : (
-                    <DropdownMenuItem disabled={true}>
-                      No recent projects
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
+              {pinnedPlusItems.map((id) => (
+                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+              ))}
+              {overflowPlusItems.length > 0 ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <MoreHorizontalIcon className="size-4" />
+                    More
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+                    {overflowPlusItems.map((id) => (
+                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}

@@ -76,6 +76,7 @@ import {
   SlidersHorizontalIcon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -676,6 +677,11 @@ export function ChatSettingsPanel({
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
+  const loadedTensorParallel = useChatRuntimeStore(
+    (s) => s.loadedTensorParallel,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -696,7 +702,9 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
+  const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  const modelSettingsDirty =
+    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -1066,7 +1074,7 @@ export function ChatSettingsPanel({
                     >
                       <SelectTrigger
                         animateRadius={false}
-                        icon={ArrowDown01Icon}
+                        icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
                         className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
@@ -1106,7 +1114,7 @@ export function ChatSettingsPanel({
                     >
                       <SelectTrigger
                         animateRadius={false}
-                        icon={ArrowDown01Icon}
+                        icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
                         className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
@@ -1189,6 +1197,24 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Tensor Parallelism
+                    </span>
+                    <InfoHint>
+                      No effect on a single GPU. On multi-GPU setups, improves
+                      tokens/sec during generation when using dense models. MoE
+                      models don't benefit and can be much slower.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={tensorParallel}
+                    onCheckedChange={setTensorParallel}
+                    data-test-id="tensor-parallel-switch"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -1223,9 +1249,12 @@ export function ChatSettingsPanel({
                 )}
               </>
             )}
-            <ChatTemplateFields />
+            {/* Apply/Reset belongs to the model-reload settings above (context
+                length, KV cache, speculative decoding). Render it here, before
+                the Chat Template row, so it never reads as attached to Chat
+                Template (which is edited via its own dialog). */}
             {modelSettingsDirty && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
                   onClick={() => onReloadModel?.()}
@@ -1243,6 +1272,7 @@ export function ChatSettingsPanel({
                     setKvCacheDtype(loadedKvCacheDtype);
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
+                    setTensorParallel(loadedTensorParallel ?? false);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
@@ -1251,6 +1281,7 @@ export function ChatSettingsPanel({
                 </Button>
               </div>
             )}
+            <ChatTemplateFields />
           </div>
         </CollapsibleSection>
         )}
@@ -1304,7 +1335,7 @@ export function ChatSettingsPanel({
                         aria-hidden="true"
                       >
                         <HugeiconsIcon
-                          icon={ArrowDown01Icon}
+                          icon={ChevronDownStandardIcon}
                           className="size-3.5"
                           strokeWidth={2}
                         />
@@ -1658,6 +1689,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <ConfirmToolCallsToggle />
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
@@ -1680,10 +1712,7 @@ export function ChatSettingsPanel({
           setSystemPromptEditorOpen(nextOpen);
         }}
       >
-        <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
-          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-        >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit System Prompt</DialogTitle>
             <DialogDescription>
@@ -2547,6 +2576,30 @@ function DocumentExtractionSection() {
   );
 }
 
+function ConfirmToolCallsToggle() {
+  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
+  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Confirm tool calls
+        </span>
+        <InfoHint>
+          When on, local Studio tool calls pause for your approval before they
+          run. Provider-hosted tools are not gated here.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={confirmToolCalls}
+        onCheckedChange={setConfirmToolCalls}
+      />
+    </div>
+  );
+}
+
 function ChatTemplateFields() {
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
@@ -2637,10 +2690,7 @@ function ChatTemplateFields() {
         </div>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
-          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-        >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit Chat Template</DialogTitle>
             <DialogDescription>

@@ -52,6 +52,14 @@ def _is_hidden_model(*values: str | None) -> bool:
     return any(v and any(n in v.lower() for n in needles) for v in values)
 
 
+def _safe_resolve(path: Path) -> Optional[str]:
+    """resolve() to a string, or None when the path is inaccessible."""
+    try:
+        return str(path.resolve())
+    except OSError:
+        return None
+
+
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
@@ -720,9 +728,9 @@ async def list_local_models(
     # trusted Path objects are used for FS access; the user string is
     # used for matching only, never for path construction.
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
-    if legacy_hf.is_dir():
+    if _safe_is_dir(legacy_hf):
         allowed_roots.append(legacy_hf)
-    if hf_default.is_dir():
+    if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
     try:
         from utils.paths import studio_root, outputs_root
@@ -746,15 +754,20 @@ async def list_local_models(
     try:
         local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
 
+        # Resolve once; an inaccessible aux cache must skip that scan, not 500.
+        hf_cache_real = _safe_resolve(hf_cache_dir)
+        legacy_real = _safe_resolve(legacy_hf)
+        default_real = _safe_resolve(hf_default)
+
         # Scan legacy Unsloth HF cache for backward compatibility.
-        if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
+        if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
             local_models += _scan_hf_cache(legacy_hf)
 
         # Scan HF system default cache (may differ under env overrides).
         if (
-            hf_default.is_dir()
-            and hf_default.resolve() != hf_cache_dir.resolve()
-            and hf_default.resolve() != legacy_hf.resolve()
+            _safe_is_dir(hf_default)
+            and default_real != hf_cache_real
+            and default_real != legacy_real
         ):
             local_models += _scan_hf_cache(hf_default)
 
@@ -2195,13 +2208,10 @@ async def get_gguf_variants(
         best = _pick_best_gguf(filenames)
         default_variant = _extract_quant_label(best) if best else None
 
-        # Which variants are fully downloaded in the HF cache. For split
-        # GGUFs ALL shards must be present, so sum cached bytes per variant
-        # vs. the expected total. Cache dir casing may differ from the
-        # canonical repo_id, so match case-insensitively.
-        cached_bytes_by_quant: dict[str, int] = {}
+        # Per-snapshot so a split GGUF's shards must all sit in one snapshot;
+        # mmproj adapters are excluded so they can't inflate a quant's bytes.
+        cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
         try:
-            import re as _re
             from huggingface_hub import constants as hf_constants
 
             if not _is_valid_repo_id(repo_id):
@@ -2214,21 +2224,31 @@ async def get_gguf_variants(
                     snapshots = entry / "snapshots"
                     if snapshots.is_dir():
                         for snap in snapshots.iterdir():
+                            by_quant: dict[str, int] = {}
                             for f in _iter_gguf_paths(snap):
-                                q = _extract_quant_label(f.name)
-                                cached_bytes_by_quant[q] = (
-                                    cached_bytes_by_quant.get(q, 0) + f.stat().st_size
-                                )
+                                if _is_mmproj_filename(f.name):
+                                    continue
+                                try:
+                                    size = f.stat().st_size
+                                except OSError:
+                                    continue  # broken symlink / unreadable: skip
+                                q = _extract_quant_label(f.name).lower()
+                                by_quant[q] = by_quant.get(q, 0) + size
+                            if by_quant:
+                                cached_bytes_by_quant_per_snapshot.append(by_quant)
                     break
         except Exception:
             pass
 
         def _is_fully_downloaded(variant) -> bool:
-            cached = cached_bytes_by_quant.get(variant.quant, 0)
-            if cached == 0 or variant.size_bytes == 0:
+            if variant.size_bytes == 0:
                 return False
-            # Rounding tolerance (symlinks vs real sizes).
-            return cached >= variant.size_bytes * 0.99
+            # Complete within one snapshot (tolerance for symlink size jitter).
+            quant = variant.quant.lower()
+            return any(
+                by_quant.get(quant, 0) >= variant.size_bytes * 0.99
+                for by_quant in cached_bytes_by_quant_per_snapshot
+            )
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -2283,16 +2303,26 @@ async def get_gguf_download_progress(
         for entry in cache_dir.iterdir():
             if entry.name.lower() == target:
                 # Completed .gguf files for this variant in snapshots.
+                # Exclude mmproj so a vision adapter can't satisfy a same-label
+                # main variant (e.g. mmproj-F16 vs an F16 weight).
                 for f in _iter_gguf_paths(entry):
+                    if _is_mmproj_filename(f.name):
+                        continue
                     fname = f.name.lower().replace("-", "").replace("_", "")
                     if not variant_lower or variant_lower in fname:
-                        downloaded_bytes += f.stat().st_size
+                        try:
+                            downloaded_bytes += f.stat().st_size
+                        except OSError:
+                            continue  # broken symlink / unreadable: skip
                 # In-progress (.incomplete) downloads in blobs.
                 blobs_dir = entry / "blobs"
                 if blobs_dir.is_dir():
                     for f in blobs_dir.iterdir():
                         if f.is_file() and f.name.endswith(".incomplete"):
-                            in_progress_bytes += f.stat().st_size
+                            try:
+                                in_progress_bytes += f.stat().st_size
+                            except OSError:
+                                continue
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
@@ -2426,11 +2456,22 @@ def _get_repo_size_cached(repo_id: str) -> int:
 
 
 def _all_hf_cache_scans():
-    """scan_cache_dir results for the active, legacy, and default HF caches."""
+    """scan_cache_dir for the active, legacy, and default HF caches.
+
+    Each probe is isolated: an unreadable auxiliary cache (permission denied,
+    broken symlink, OS-redirected ~/.cache) is skipped, not fatal, so the
+    Downloaded list never blanks out and downloads never leak into Recommended.
+    """
     from huggingface_hub import scan_cache_dir
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
 
-    scans = [scan_cache_dir()]
+    scans = []
+    # Guard the active cache too: degrade to "no downloads" instead of raising.
+    try:
+        scans.append(scan_cache_dir())
+    except Exception as exc:
+        logger.warning("Could not scan active HF cache: %s", exc)
+
     seen: set[str] = set()
     try:
         # Resolve the active cache dir for dedup.
@@ -2440,13 +2481,18 @@ def _all_hf_cache_scans():
         pass
 
     for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-        extra = extra_fn()
-        if extra.is_dir() and str(extra.resolve()) not in seen:
-            seen.add(str(extra.resolve()))
-            try:
-                scans.append(scan_cache_dir(cache_dir = str(extra)))
-            except Exception as exc:
-                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+        try:
+            extra = extra_fn()
+            # is_dir()/resolve() can raise on an inaccessible path; skip it.
+            if not extra.is_dir():
+                continue
+            resolved = str(extra.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            scans.append(scan_cache_dir(cache_dir = str(extra)))
+        except Exception as exc:
+            logger.warning("Could not scan HF cache %s: %s", extra_fn.__name__, exc)
     return scans
 
 
@@ -2514,6 +2560,38 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
+def _blob_mtime(f) -> float:
+    """Blob modification time in epoch seconds (0.0 if unknown).
+
+    Prefers HF metadata ``blob_last_modified``, falls back to stat(); uses
+    only mtimes (portable across Windows, macOS, Linux), never path parsing.
+    """
+    ts = getattr(f, "blob_last_modified", None)
+    if isinstance(ts, (int, float)) and ts > 0:
+        return float(ts)
+    blob_path = getattr(f, "blob_path", None)
+    if blob_path:
+        try:
+            return float(Path(blob_path).stat().st_mtime)
+        except OSError:
+            pass
+    return 0.0
+
+
+def _repo_gguf_last_modified(repo_info) -> float:
+    """Newest mtime among a repo's primary (non-mmproj) GGUF blobs.
+
+    Drives the Downloaded list's "last downloaded" ordering and groups a
+    multi-quant repo by its most recently downloaded quant.
+    """
+    latest = 0.0
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if _is_main_gguf_filename(f.file_name):
+                latest = max(latest, _blob_mtime(f))
+    return latest
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -2534,18 +2612,31 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         continue
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
+                    last_modified = _repo_gguf_last_modified(repo_info)
                     if existing is None or total_size > existing["size_bytes"]:
-                        seen_lower[key] = {
+                        row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
                             "has_mmproj": _repo_has_mmproj(repo_info),
                         }
+                        # Keep the newest timestamp across duplicate caches;
+                        # attach only when known so absent rows sort as oldest.
+                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        if lm > 0:
+                            row["last_modified"] = lm
+                        seen_lower[key] = row
+                    elif last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                     continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        # Newest download first; stable repo_id tie-break for equal/missing mtimes.
+        cached = sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
@@ -2583,18 +2674,39 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     )
                     if not has_weights:
                         continue
+                    last_modified = max(
+                        (
+                            _blob_mtime(f)
+                            for rev in repo_info.revisions
+                            for f in rev.files
+                            if f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                        ),
+                        default = 0.0,
+                    )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
-                        seen_lower[key] = {
+                        row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                         }
+                        # Keep the newest timestamp across duplicate caches;
+                        # attach only when known so absent rows sort as oldest.
+                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        if lm > 0:
+                            row["last_modified"] = lm
+                        seen_lower[key] = row
+                    elif last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        # Newest download first; stable repo_id tie-break for equal/missing mtimes.
+        cached = sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)

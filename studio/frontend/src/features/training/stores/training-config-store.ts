@@ -12,6 +12,7 @@ import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
+import { validateS3Source } from "../lib/validation";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
@@ -124,6 +125,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "s3Config",
 ]);
 
 function partializePersistedState(
@@ -148,9 +150,13 @@ function canProceedForStep(state: TrainingConfigState): boolean {
     case 2:
       return state.selectedModel !== null;
     case 3:
-      return state.datasetSource === "upload"
-        ? state.uploadedFile !== null
-        : state.dataset !== null;
+      if (state.datasetSource === "upload") {
+        return state.uploadedFile !== null;
+      }
+      if (state.datasetSource === "s3") {
+        return validateS3Source(state).ok;
+      }
+      return state.dataset !== null;
     case 4:
     case 5:
       return true;
@@ -578,6 +584,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             runDatasetCheck(uploadedFile, "train");
           }
         },
+        selectS3Source: () => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "s3",
+            dataset: null,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
+        },
         setDatasetFormat: (datasetFormat) =>
           set((state) => {
             if (state.trainingMethod === "cpt") {
@@ -755,6 +772,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setFinetuneMLPModules: (finetuneMLPModules) =>
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
+        setS3Config: (s3Config) => set({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;

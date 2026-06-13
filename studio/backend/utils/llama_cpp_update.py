@@ -310,8 +310,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
 
 def _rocm_install_args(asset: Optional[str]) -> list[str]:
     """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; lemonade
-    bundles carry the family in the name (rocm-gfx110X), fork bundles only rocm/hip."""
+    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
+    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
+    bundles only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()
@@ -406,10 +407,13 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             tail = "".join(tail_lines).strip()[-1500:]
             raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop in-memory caches and
-        # re-prime the 24h disk freshness cache with the true newest, so the
-        # banner can't linger on a stale same-base value after the swap.
-        reset_caches()
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
+        # on-disk freshness caches, then re-prime the 24h disk cache with the
+        # true newest, so the banner can't linger on a stale same-base value
+        # after the swap. drop_disk matters when the refresh below can't reach
+        # GitHub: without it, latest_published_release would replay the stale
+        # disk value; with it, latest reads as None and the banner fails open.
+        reset_caches(drop_disk = True)
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive

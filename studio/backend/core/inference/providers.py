@@ -249,6 +249,23 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
         "hidden": True,
     },
+    "custom": {
+        "display_name": "Custom",
+        # User-supplied via provider_base_url.
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": (
+            "User-supplied OpenAI-compatible server. Routed to "
+            "/v1/chat/completions; /models is optional."
+        ),
+        # Surfaced by the frontend's generic Custom option, not the dropdown.
+        "hidden": True,
+    },
     "ollama": {
         "display_name": "Ollama",
         "base_url": "http://localhost:11434/v1",

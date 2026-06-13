@@ -120,12 +120,40 @@ export async function unloadModel(
   await parseJsonOrThrow<unknown>(response);
 }
 
+/**
+ * Allow or deny a tool call that is paused awaiting user confirmation
+ * (when the "Confirm tool calls" toggle is on). The call is identified by
+ * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
+ * is a scope check. Resolves to ``true`` only when the backend matched a
+ * pending call, so the caller can surface a retry on a stale/failed post.
+ */
+export async function resolveToolConfirmation(
+  sessionId: string,
+  approvalId: string,
+  decision: "allow" | "deny",
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/tool-confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      approval_id: approvalId,
+      decision,
+    }),
+  });
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
+  return parsed.resolved === true;
+}
+
 export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
   /** Repo ships an mmproj vision adapter (known vision-capable). */
   has_mmproj?: boolean;
+  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
 }
 
 export async function getGgufDownloadProgress(
@@ -228,6 +256,9 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
+  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
 }
 
 export async function listCachedModels(): Promise<CachedModelRepo[]> {
@@ -730,6 +761,15 @@ export async function* streamChatCompletions(
       if ("type" in parsed && parsed.type === "tool_status") {
         yield {
           _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
+      // Diffusion frame: a per-step canvas snapshot. Custom SSE payload (not an OpenAI chunk) with
+      // no assistant text, surfaced as a transient marker for the in-place renderer, never the transcript.
+      if ("type" in parsed && parsed.type === "diffusion_frame") {
+        yield {
+          _diffusionFrame: parsed,
         } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
