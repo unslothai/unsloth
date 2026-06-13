@@ -15,7 +15,10 @@
 # They are unrelated to the PyPI package version (taken from __version__), but
 # the published wheel must still carry the current Studio version in its stamp
 # (release-desktop.yml verifies the downloaded wheel's STUDIO_RELEASE_VERSION),
-# so the build job resolves it via `git describe` and stamps it.
+# so the build job resolves it via `git describe` and stamps it. The stamp is
+# the newest reachable v* tag, so push the Studio release tag before (or with)
+# the installer-pin bump; otherwise the immutable wheel gets a stale tag and the
+# desktop preflight for the new tag fails.
 #
 # Build and publish are separate jobs: the frontend/package build (npm + many
 # third-party deps) runs unprivileged and hands dist/ to the publish job as an
@@ -39,7 +42,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: pypi-publish
+  # Per-commit group. A global group would let GitHub cancel an earlier *pending*
+  # publish (it keeps only one pending run per group) when a newer release-pin
+  # push queues, dropping that intermediate version. Per-SHA, every release runs.
+  group: pypi-publish-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -96,6 +102,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        # build.sh runs `npm install`, which executes lifecycle scripts. This
+        # structural lockfile scan -- the same one wheel-smoke runs -- is the
+        # practical defence against the npm postinstall-dropper class: it fires
+        # before any tarball runs, on the injection pattern itself.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Resolve Studio release version
         id: studio
         run: |
@@ -117,6 +130,59 @@ jobs:
         env:
           STUDIO: ${{ steps.studio.outputs.studio }}
         run: python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO"
+
+      - name: Wheel content sanity
+        # wheel-smoke runs this too, but in a parallel workflow that can't block
+        # this upload -- so we gate on it here before shipping to PyPI.
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          w = glob.glob("dist/unsloth-*.whl")
+          if not w:
+              print("FAIL: no wheel produced"); sys.exit(2)
+          w = w[0]
+          print(f"wheel: {w}")
+          with zipfile.ZipFile(w) as z:
+              n = z.namelist()
+              checks = {
+                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
+                "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
+              }
+              js = [s for s in n
+                    if "studio/frontend/dist/assets/" in s
+                    and s.endswith(".js")
+                    and "/index-" in s]
+              if not js:
+                  print("FAIL: no main bundle index-*.js in wheel"); sys.exit(2)
+              data = z.read(js[0]).decode("utf-8", "replace")
+              hits = data.count("unstable_Provider:")
+              print(f"main bundle: {js[0]}")
+              print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
+              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+
+              print()
+              for k, v in checks.items():
+                  print(f"  [{'PASS' if v else 'FAIL'}] {k}")
+              sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Studio backend import smoke
+        # Import the app from the freshly-built wheel in a clean venv -- catches
+        # the 2026.5.1 class (missing frontend dist / lockfile, broken source).
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          /tmp/v/bin/pip install -r studio/backend/requirements/studio.txt
+          /tmp/v/bin/pip install \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 mammoth unpdf requests \
+            'numpy<3'
+          /tmp/v/bin/pip install --no-deps dist/unsloth-*.whl
+          # Run from /tmp so Python imports the installed package, not the source tree.
+          cd /tmp
+          /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
