@@ -2380,6 +2380,15 @@ class LlamaCppBackend:
                         # what we have.
                         break
 
+            # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
+            # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
+            self._is_diffusion = bool((arch and arch.lower().startswith("diffusion")) or canvas_seen)
+            if self._is_diffusion:
+                logger.info(
+                    f"GGUF metadata: diffusion model detected (architecture={arch}); "
+                    "will serve via the diffusion runner"
+                )
+
             # Expand a scalar period straight from the GGUF first.
             if (
                 self._sliding_window_pattern is None
@@ -2390,9 +2399,10 @@ class LlamaCppBackend:
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
                 ]
 
-            # Otherwise hand off to the resolver (cache / bootstrap /
-            # transformers / HF); see `_resolve_swa_pattern`.
-            if self._sliding_window_pattern is None and self._sliding_window and self._n_layers:
+            # Otherwise hand off to the resolver (cache / bootstrap / transformers / HF). Diffusion models
+            # skip it: they do not use Studio's SWA pattern and the resolver can raise for them.
+            if (self._sliding_window_pattern is None and self._sliding_window
+                    and self._n_layers and not self._is_diffusion):
                 hf_repo_candidates = (
                     general.get("general.source.huggingface.repository"),
                     _hf_repo_from_url(general.get("general.source.url")),
@@ -2417,17 +2427,6 @@ class LlamaCppBackend:
                     arch,
                     self._n_layers,
                     hf_repo_candidates,
-                )
-
-            # Block-diffusion models (DiffusionGemma) report a diffusion arch
-            # and/or a diffusion.canvas_length KV; they need the diffusion runner.
-            self._is_diffusion = bool(
-                (arch and arch.lower().startswith("diffusion")) or canvas_seen
-            )
-            if self._is_diffusion:
-                logger.info(
-                    f"GGUF metadata: diffusion model detected (architecture={arch}); "
-                    "will serve via the diffusion runner"
                 )
 
             if self._context_length:
