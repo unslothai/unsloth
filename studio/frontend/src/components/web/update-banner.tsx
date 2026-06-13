@@ -137,24 +137,27 @@ export function WebUpdateBanner({
               >
                 Release notes
               </a>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-auto rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground"
-                onClick={snooze}
-                data-testid="web-update-snooze-button"
-              >
-                Remind me later
-              </Button>
-              <Button
-                size="sm"
-                // ml offsets the pill's filled edge so visual gaps stay equal
-                className="ml-2.5 h-auto rounded-full px-3.5 py-2 text-[13px]"
-                onClick={handleCopyCommand}
-                data-testid="web-update-copy-button"
-              >
-                {copied ? "Copied" : "Copy command"}
-              </Button>
+              {/* wrap + right-align so buttons stack instead of clipping on very narrow banners */}
+              <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                  onClick={snooze}
+                  data-testid="web-update-snooze-button"
+                >
+                  Remind me later
+                </Button>
+                <Button
+                  size="sm"
+                  // -mr optically aligns the filled pill's edge with the card padding
+                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  onClick={handleCopyCommand}
+                  data-testid="web-update-copy-button"
+                >
+                  {copied ? "Copied" : "Copy command"}
+                </Button>
+              </div>
             </div>
           </div>
         </motion.div>
