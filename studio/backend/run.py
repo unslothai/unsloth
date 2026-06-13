@@ -1172,7 +1172,9 @@ if __name__ == "__main__":
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
     if args.secure and not args.cloudflare:
-        parser.error("--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare")
+        parser.error(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
+        )
 
     kwargs = dict(
         host = args.host,

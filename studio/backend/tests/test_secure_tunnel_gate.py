@@ -68,7 +68,6 @@ def test_run_server_rejects_secure_without_cloudflare():
     # Direct backend callers (not just the CLI) must reject the contradictory
     # combo before binding anything.
     import run
-
     with pytest.raises(SystemExit) as exc:
         run.run_server(secure = True, cloudflare = False)
     assert "A secure Cloudflare link is not allowed" in str(exc.value)
