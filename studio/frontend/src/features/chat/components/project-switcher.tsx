@@ -72,7 +72,7 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="app-user-menu menu-soft-surface ring-0 min-w-56 max-w-72 max-h-72 px-[9px] py-2 font-heading rounded-[21px] border-0"
+        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
       >
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">

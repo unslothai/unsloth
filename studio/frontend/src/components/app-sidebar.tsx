@@ -780,7 +780,7 @@ export function AppSidebar() {
                 className={cn(actionClass, "is-unpin-action")}
               >
                 <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-4" />
                 </span>
               </button>
             </TooltipPrimitive.Trigger>
