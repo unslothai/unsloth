@@ -232,7 +232,7 @@ def test_network_bind_leaves_stdio_off(monkeypatch, host):
 
 
 def test_explicit_disable_survives_loopback(monkeypatch):
-    # setdefault must not override an operator's force-disable on a shared box.
+    # An explicit =0 must not be overridden by the loopback auto-default.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is False
@@ -255,14 +255,16 @@ def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is False
 
 
-def test_force_disable_after_auto_default_in_same_process(monkeypatch):
+@pytest.mark.parametrize("second_host", ["127.0.0.1", "0.0.0.0"])
+def test_force_disable_after_auto_default_in_same_process(monkeypatch, second_host):
     # Reuse: a loopback launch auto-enables, then the operator sets =0 before a
-    # later loopback launch. The force-disable must win, not be rewritten to 1.
+    # later launch. The force-disable must win whether the later bind is loopback
+    # (must not rewrite to 1) or public (the relinquish path must not pop the =0).
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is True
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")
-    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    host_policy.apply_stdio_mcp_loopback_default(second_host)
     assert mcp_client.stdio_mcp_enabled() is False
 
 
