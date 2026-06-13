@@ -121,6 +121,19 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    if isinstance(exc, httpx.ReadTimeout):
+        if "stopped producing tokens" in str(exc).lower():
+            return (
+                "The model stopped producing tokens before the response "
+                "completed. Try stopping and retrying, or reduce max tokens."
+            )
+        return (
+            "The model is still processing the prompt but did not produce a "
+            "first token within 20 minutes. Try reducing context length, "
+            "using more GPU offload, or loading a smaller model."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return "Timed out communicating with the model server. Try again shortly."
     # httpx transport failures from the async pass-through helpers. Any
     # RequestError subclass (ConnectError, ReadError, RemoteProtocolError,
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
@@ -224,7 +237,11 @@ def _openai_stream_error_chunk(exc) -> dict:
     (a code-less error hides it)."""
     _cls = _classify_llama_generation_error(exc)
     if _cls:
-        return openai_error_body(_friendly_error(exc), status = 400, code = "context_length_exceeded")
+        return openai_error_body(
+            _friendly_error(exc),
+            status = 400,
+            code = "context_length_exceeded",
+        )
     if _cls is False:
         return openai_error_body(_friendly_error(exc), status = 400)
     return openai_error_body(_friendly_error(exc), status = 500)
@@ -415,17 +432,15 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     return True
 
 
-def _anthropic_stream_error_event(exc):
-    """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
-    to fall through to a normal message_delta finish. Returns an event only for a
-    classifiable upstream client error (context overflow / 4xx) so a streaming
-    over-context request surfaces a real error instead of a silent empty
-    end_turn message."""
-    if _classify_llama_generation_error(exc) is None:
+def _anthropic_stream_error_event(exc, *, force: bool = False):
+    """Return an Anthropic in-band stream error event when one is useful."""
+    _cls = _classify_llama_generation_error(exc)
+    if _cls is None and not force:
         return None
+    status = 400 if _cls is not None else 500
     return build_anthropic_sse_event(
         "error",
-        anthropic_error_body(_friendly_error(exc), status = 400),
+        anthropic_error_body(_friendly_error(exc), status = status),
     )
 
 
@@ -588,17 +603,20 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -619,17 +637,20 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
@@ -644,6 +665,152 @@ except ImportError:
         verify_native_path_lease,
     )
 
+
+def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
+def _llama_streaming_generation_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
+def _set_stream_response_read_timeout(
+    response: httpx.Response, read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S
+) -> None:
+    try:
+        timeout_ext = response.request.extensions.get("timeout")
+        if isinstance(timeout_ext, dict):
+            timeout_ext["read"] = read_timeout_s
+    except Exception:
+        pass
+
+
+async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if request is not None and await request.is_disconnected():
+        if cancel_event is not None:
+            cancel_event.set()
+        return True
+    return False
+
+
+async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request] = None) -> None:
+    while not await _preheader_cancelled(cancel_event, request):
+        await asyncio.sleep(0.05)
+
+
+async def _send_stream_with_preheader_cancel(
+    client: httpx.AsyncClient,
+    req: httpx.Request,
+    cancel_event = None,
+    request: Optional[Request] = None,
+) -> Optional[httpx.Response]:
+    if cancel_event is None and request is None:
+        return await client.send(req, stream = True)
+    if await _preheader_cancelled(cancel_event, request):
+        return None
+
+    send_task = asyncio.create_task(client.send(req, stream = True))
+    cancel_task = asyncio.create_task(_wait_preheader_cancel(cancel_event, request))
+
+    async def _stop_send_task() -> None:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+        send_task.cancel()
+        try:
+            await send_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    try:
+        done, _pending = await asyncio.wait(
+            {send_task, cancel_task},
+            return_when = asyncio.FIRST_COMPLETED,
+        )
+        if send_task in done:
+            return await send_task
+
+        await _stop_send_task()
+        return None
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            cancel_event.set()
+        await _stop_send_task()
+        raise
+    finally:
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _aiter_llama_stream_items(
+    async_iter,
+    *,
+    cancel_event = None,
+    request: Optional[Request] = None,
+    first_token_deadline: Optional[float] = None,
+    response: Optional[httpx.Response] = None,
+    post_first_item_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+):
+    if first_token_deadline is None:
+        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    last_item_at: Optional[float] = None
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        if request is not None and await request.is_disconnected():
+            if cancel_event is not None:
+                cancel_event.set()
+            return
+        waiting_first_item = last_item_at is None
+        try:
+            if waiting_first_item:
+                remaining_s = first_token_deadline - time.monotonic()
+                if remaining_s <= 0:
+                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                if response is not None:
+                    _set_stream_response_read_timeout(response, remaining_s)
+                item = await asyncio.wait_for(async_iter.__anext__(), timeout = remaining_s)
+            else:
+                item = await async_iter.__anext__()
+        except asyncio.TimeoutError as exc:
+            if waiting_first_item:
+                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
+            raise
+        except StopAsyncIteration:
+            return
+        except httpx.ReadTimeout:
+            now = time.monotonic()
+            if last_item_at is None:
+                if now >= first_token_deadline:
+                    raise
+                continue
+            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+        if (
+            last_item_at is None
+            and response is not None
+            and post_first_item_read_timeout_s is not None
+        ):
+            _set_stream_response_read_timeout(response, post_first_item_read_timeout_s)
+        last_item_at = time.monotonic()
+        yield item
+
+
 from models.inference import (
     LoadRequest,
     UnloadRequest,
@@ -655,6 +822,7 @@ from models.inference import (
     ChatCompletionRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -677,6 +845,8 @@ from models.inference import (
     ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputReasoningContent,
     ResponsesOutputFunctionCall,
     ResponsesUsage,
     ResponsesResponse,
@@ -702,10 +872,12 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import safe_error_detail, log_and_http_error
 
@@ -1157,15 +1329,58 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaCppBackend) -> bool:
+def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
+    """Whether an inherited --split-mode should be stripped on reload.
+
+    The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
+    layer modes, so only strip when the toggle overrides it: tensor being turned
+    on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
+    survive. Shared by the inheritance strip and the already-loaded stale check
+    so they agree on what reload would do.
+    """
+    fields_set = getattr(request, "model_fields_set", set())
+    return "tensor_parallel" in fields_set and (
+        request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
+    )
+
+
+def _request_matches_loaded_settings(
+    request: LoadRequest,
+    llama_backend: LlamaCppBackend,
+    effective_chat_template_override: Optional[str] = None,
+) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
-    Caller has already checked model+variant+is_loaded. See #5401."""
+    Caller has already checked model+variant+is_loaded. See #5401.
+
+    ``effective_chat_template_override`` is the resolved template that will be
+    launched (user override, else a bundled family template such as the
+    gemma-4 override), so the dedup compares against what the backend actually
+    holds rather than the raw request field. Defaults to the request field for
+    callers that do not resolve a bundled override."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
+    ):
+        return False
+    # Reconcile a user --split-mode in extras into the effective tensor state.
+    # When the request omits llama_extra_args ("inherit"), compare using the
+    # stored extras stripped the way the reload strips them, so an extras-driven
+    # tensor load isn't seen as a mismatch that needlessly reloads the server.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    effective_extra = (
+        request.llama_extra_args
+        if request.llama_extra_args is not None
+        else strip_shadowing_flags(
+            backend_extra,
+            strip_split_mode = _should_strip_split_mode(request, backend_extra),
+        )
+    )
+    if (
+        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
+        != llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
@@ -1181,15 +1396,29 @@ def _request_matches_loaded_settings(request: LoadRequest, llama_backend: LlamaC
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
             return False
-    if (request.chat_template_override or None) != (llama_backend.chat_template_override or None):
+    _effective_cto = (
+        effective_chat_template_override
+        if effective_chat_template_override is not None
+        else request.chat_template_override
+    )
+    if (_effective_cto or None) != (llama_backend.chat_template_override or None):
         return False
     # llama_extra_args=None means "inherit"; only an explicit differing list
     # forces a reload. On the inherit path, refuse to match if stored extras
     # contain any shadow flag, so the reload path strips them rather than
-    # leaving a stale override in effect.
-    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
-        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+        # Mirror the reload's conditional split-mode strip, so a preserved
+        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
+        # trigger a needless reload of a healthy server.
+        if (
+            backend_extra
+            and strip_shadowing_flags(
+                backend_extra,
+                strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            )
+            != backend_extra
+        ):
             return False
     else:
         if list(request.llama_extra_args) != backend_extra:
@@ -1298,6 +1527,17 @@ async def load_model(
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
+        # Resolve the effective chat-template override once, up front: an
+        # explicit user override, else a bundled family template (e.g. the
+        # gemma-4 override that ships preserve_thinking without re-downloading
+        # quants), else None. Used for both the reload-dedup check below and the
+        # load_model calls, so the live backend state and the incoming request
+        # compare against the same template text.
+        effective_chat_template_override = resolve_effective_chat_template_override(
+            model_identifier = model_identifier,
+            user_override = request.chat_template_override,
+        )
+
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
@@ -1315,7 +1555,9 @@ async def load_model(
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
-                and _request_matches_loaded_settings(request, llama_backend)
+                and _request_matches_loaded_settings(
+                    request, llama_backend, effective_chat_template_override
+                )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
@@ -1340,6 +1582,7 @@ async def load_model(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
@@ -1358,6 +1601,7 @@ async def load_model(
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
             if (
@@ -1478,7 +1722,13 @@ async def load_model(
                 else:
                     # Strip only the groups whose first-class field was set by
                     # the caller, so an inherited --chat-template-file survives
-                    # an Apply that omits chat_template_override.
+                    # an Apply that omits chat_template_override. A bundled family
+                    # template (e.g. the gemma-4 override) is an effective
+                    # first-class template setting even when the raw request
+                    # omits chat_template_override, so strip the inherited
+                    # --chat-template-file in that case too -- otherwise the stale
+                    # extra arg (appended last) shadows the bundled template while
+                    # Studio reports the bundled template's capabilities.
                     fields_set = getattr(request, "model_fields_set", set())
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
@@ -1487,7 +1737,13 @@ async def load_model(
                         strip_spec = (
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
-                        strip_template = "chat_template_override" in fields_set,
+                        strip_template = (
+                            "chat_template_override" in fields_set
+                            or effective_chat_template_override is not None
+                        ),
+                        strip_split_mode = _should_strip_split_mode(
+                            request, llama_backend.extra_args
+                        ),
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
@@ -1495,8 +1751,7 @@ async def load_model(
                         # Shouldn't happen on already-validated args; degrade to
                         # no-extras rather than 400 if managed flags changed.
                         logger.warning(
-                            "Stored llama_extra_args failed revalidation; "
-                            "loading without them: %s",
+                            "Stored llama_extra_args failed revalidation; loading without them: %s",
                             stripped,
                         )
                         extra_llama_args = []
@@ -1513,22 +1768,25 @@ async def load_model(
             # during the (potentially long) GGUF download + llama-server start.
             _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
+            # Load kwargs common to HF and local modes; the two differ only by
+            # the model-source args (hf_repo/-token vs gguf_path/mmproj).
+            _common_load_kwargs = dict(
+                model_identifier = config.identifier,
+                is_vision = config.is_vision,
+                n_ctx = request.max_seq_length,
+                chat_template_override = effective_chat_template_override,
+                cache_type_kv = request.cache_type_kv,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                n_parallel = _n_parallel,
+                extra_args = extra_llama_args,
+            )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -1547,8 +1805,7 @@ async def load_model(
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     mtp_draft_path = config.gguf_mtp_file,
@@ -1556,16 +1813,35 @@ async def load_model(
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
                     hf_variant = config.gguf_variant,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
+
+            # Run a single load attempt with the given tensor flag + extras.
+            async def _attempt_gguf_load(
+                tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
+            ) -> bool:
+                attempt_kwargs = {
+                    **_common_load_kwargs,
+                    "extra_args": attempt_extra_args,
+                }
+                return await asyncio.to_thread(
+                    llama_backend.load_model,
+                    **_source_load_kwargs,
+                    **attempt_kwargs,
+                    tensor_parallel = tensor_parallel,
+                )
+
+            # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
+            # outright (e.g. Gemma 3n aborts with a GGML_ASSERT). The helper auto-
+            # falls back to layer split so the checkbox never blocks a model from
+            # loading; the response reports the backend's actual tensor_parallel
+            # state so the UI toggle reflects the fallback.
+            success = await load_with_tensor_fallback(
+                _attempt_gguf_load,
+                requested_tensor = request.tensor_parallel,
+                extra_args = extra_llama_args,
+                label = config.identifier,
+                cancelled = llama_backend.load_cancelled,
+            )
 
             if not success:
                 raise HTTPException(
@@ -1594,6 +1870,7 @@ async def load_model(
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
@@ -1611,6 +1888,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1938,6 +2216,20 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     return {"cancelled": n}
 
 
+@studio_router.post("/tool-confirm")
+async def confirm_tool_call(
+    request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
+):
+    matched = resolve_tool_decision(
+        request.approval_id,
+        request.decision,
+        session_id = request.session_id,
+    )
+    if not matched:
+        raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
+    return {"resolved": True}
+
+
 @router.post("/generate/stream")
 async def generate_stream(
     request: GenerateRequest, current_subject: str = Depends(get_current_subject)
@@ -2057,11 +2349,27 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
+            # Don't surface Studio's auto-applied bundled family template (e.g. the
+            # gemma-4 override) as a user-authored override: the frontend adopts
+            # status.chat_template_override as editable state and would otherwise
+            # re-send it as an explicit override for a later, unrelated model. Only
+            # expose a genuine user override.
+            _reported_chat_template_override = llama_backend.chat_template_override
+            _auto_chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = _model_id,
+                user_override = None,
+            )
+            if (
+                _auto_chat_template_override is not None
+                and _reported_chat_template_override == _auto_chat_template_override
+            ):
+                _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
+                is_diffusion = llama_backend.is_diffusion,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = _audio_type,
@@ -2082,9 +2390,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
-                chat_template_override = llama_backend.chat_template_override,
+                chat_template_override = _reported_chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
@@ -3196,6 +3505,22 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        if payload.confirm_tool_calls and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls is only supported for local streaming tools.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request)
@@ -3567,6 +3892,16 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            if payload.confirm_tool_calls and not payload.stream:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "confirm_tool_calls requires stream=true for local tool execution.",
+                        status = 400,
+                        code = "invalid_request_error",
+                        param = "confirm_tool_calls",
+                    ),
+                )
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
@@ -3637,6 +3972,7 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
+                    confirm_tool_calls = bool(payload.confirm_tool_calls),
                 )
 
             _tool_sentinel = object()
@@ -3646,6 +3982,7 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                gen = None
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -3768,6 +4105,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except (RuntimeError, ValueError):
+                            pass
                     _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
@@ -3851,6 +4193,10 @@ async def openai_chat_completions(
                                 _stream_usage = cumulative.get("usage")
                                 _stream_timings = cumulative.get("timings")
                                 _stream_finish = cumulative.get("finish_reason")
+                            elif cumulative.get("type") == "diffusion_frame":
+                                # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
+                                # tool_status channel. No assistant text, so it never enters the cumulative diff.
+                                yield f"data: {json.dumps(cumulative)}\n\n"
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
@@ -4091,6 +4437,16 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
+        if payload.confirm_tool_calls and not payload.stream:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
@@ -4167,6 +4523,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
+                confirm_tool_calls = bool(payload.confirm_tool_calls),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -4177,6 +4534,7 @@ async def openai_chat_completions(
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
+            gen = None
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -4293,6 +4651,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
@@ -4735,6 +5098,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         )
 
     body = await request.json()
+    if body.get("max_tokens") is None:
+        body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
 
@@ -4752,15 +5117,27 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            client = httpx.AsyncClient(timeout = 600)
+            client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
             resp = None
             bytes_iter = None
             try:
                 req = client.build_request("POST", target_url, json = body)
-                resp = await client.send(req, stream = True)
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                async for chunk in bytes_iter:
+                async for chunk in _aiter_llama_stream_items(
+                    bytes_iter,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                ):
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
@@ -4776,6 +5153,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         yield out + b"\n\n"
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
+                error_chunk = _openai_stream_error_chunk(e)
+                yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                return
             finally:
                 if bytes_iter is not None:
                     try:
@@ -4795,7 +5175,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
 
         if resp.status_code != 200:
             raise _openai_passthrough_error(resp.status_code, resp.text)
@@ -4833,7 +5217,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     return Response(
         content = resp.content,
         status_code = resp.status_code,
@@ -4925,15 +5309,215 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
-def _responses_tool_output_text(output: Union[str, list]) -> str:
+def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]:
     """Return Chat Completions-safe content for a Responses tool result."""
     if isinstance(output, str):
         return output if output.strip() else "(no output)"
 
-    if output:
+    if not output:
+        return "(no output)"
+
+    text_parts: list[str] = []
+    chat_parts: list = []
+    has_multimodal = False
+    for part in output:
+        if not isinstance(part, dict):
+            return json.dumps(output)
+        part_type = part.get("type")
+        if part_type in ("input_text", "output_text", "text"):
+            text = part.get("text")
+            if text is None:
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output text parts require a text field.",
+                )
+            text = str(text)
+            text_parts.append(text)
+            chat_parts.append(TextContentPart(type = "text", text = text))
+            continue
+        if part_type == "input_image":
+            image_url = part.get("image_url")
+            if not isinstance(image_url, str) or not image_url:
+                if part.get("file_id"):
+                    _raise_unsupported_openai_parameter(
+                        "input",
+                        "Responses function_call_output.output input_image parts with file_id are not supported by the local adapter. Use image_url instead.",
+                    )
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image parts require an image_url string.",
+                )
+            detail = part.get("detail", "auto")
+            if detail is None:
+                detail = "auto"
+            if detail not in ("auto", "low", "high", "original"):
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image detail must be auto, low, high, or original.",
+                )
+            chat_parts.append(
+                ImageContentPart(
+                    type = "image_url",
+                    image_url = ImageUrl(url = image_url, detail = detail),
+                )
+            )
+            has_multimodal = True
+            continue
+        if part_type == "input_file":
+            _raise_unsupported_openai_parameter(
+                "input",
+                "Responses function_call_output.output input_file parts are not supported by the local adapter.",
+            )
         return json.dumps(output)
 
-    return "(no output)"
+    if has_multimodal:
+        return chat_parts
+
+    text = "\n".join(text_parts)
+    return text if text.strip() else "(no output)"
+
+
+_RESPONSES_THINK_OPEN = "<think>"
+_RESPONSES_THINK_CLOSE = "</think>"
+_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _coerce_responses_reasoning_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_coerce_responses_reasoning_text(part) for part in value)
+    if isinstance(value, dict):
+        for key in ("text", "reasoning_text", "content"):
+            text = _coerce_responses_reasoning_text(value.get(key))
+            if text:
+                return text
+        return ""
+    return json.dumps(value)
+
+
+def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
+    """Number of trailing chars to retain because they may start a marker."""
+    for size in range(min(len(text), max(len(m) for m in markers) - 1), 0, -1):
+        suffix = text[-size:]
+        if any(marker.startswith(suffix) for marker in markers):
+            return size
+    return 0
+
+
+class _ResponsesReasoningExtractor:
+    """Split local <think> markup into Responses reasoning and visible text."""
+
+    def __init__(self, *, parse_think_markers: bool = False) -> None:
+        self._buffer = ""
+        self._in_reasoning = False
+        self._parse_think_markers = parse_think_markers
+
+    def feed(
+        self,
+        text: str = "",
+        reasoning_content: Any = None,
+    ) -> tuple[str, str]:
+        reasoning_parts: list[str] = []
+        visible_parts: list[str] = []
+        structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
+        if structured_reasoning:
+            reasoning_parts.append(structured_reasoning)
+        if text:
+            self._buffer += text
+        if not self._parse_think_markers:
+            visible_parts.append(self._buffer)
+            self._buffer = ""
+            return "".join(reasoning_parts), "".join(visible_parts)
+
+        while self._buffer:
+            if self._in_reasoning:
+                close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+                if close_idx != -1:
+                    reasoning_parts.append(self._buffer[:close_idx])
+                    self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    self._in_reasoning = False
+                    continue
+                keep = _responses_marker_holdback(self._buffer, (_RESPONSES_THINK_CLOSE,))
+                if keep == len(self._buffer):
+                    break
+                reasoning_parts.append(self._buffer[:-keep] if keep else self._buffer)
+                self._buffer = self._buffer[-keep:] if keep else ""
+                break
+
+            open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)
+            close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                visible_parts.append(self._buffer[:close_idx])
+                self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                continue
+            if open_idx != -1:
+                visible_parts.append(self._buffer[:open_idx])
+                self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
+                self._in_reasoning = True
+                continue
+
+            keep = _responses_marker_holdback(
+                self._buffer,
+                (_RESPONSES_THINK_OPEN, _RESPONSES_THINK_CLOSE),
+            )
+            if keep == len(self._buffer):
+                break
+            visible_parts.append(self._buffer[:-keep] if keep else self._buffer)
+            self._buffer = self._buffer[-keep:] if keep else ""
+            break
+
+        return "".join(reasoning_parts), "".join(visible_parts)
+
+    def finish(self) -> tuple[str, str]:
+        if not self._buffer:
+            return "", ""
+        remaining = self._buffer
+        self._buffer = ""
+        if not self._parse_think_markers:
+            return "", remaining
+        if self._in_reasoning:
+            self._in_reasoning = False
+            return remaining, ""
+        return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
+
+
+def _extract_responses_reasoning(
+    text: str = "",
+    reasoning_content: Any = None,
+    *,
+    parse_think_markers: bool = False,
+) -> tuple[str, str]:
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = parse_think_markers)
+    reasoning, visible = extractor.feed(text, reasoning_content)
+    final_reasoning, final_visible = extractor.finish()
+    return reasoning + final_reasoning, visible + final_visible
+
+
+def _responses_should_parse_think_markers(
+    chat_req: ChatCompletionRequest, llama_backend: Any = None
+) -> bool:
+    if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
+        if getattr(llama_backend, "reasoning_always_on", False):
+            return True
+        if not getattr(llama_backend, "supports_reasoning", False):
+            return False
+    if chat_req.enable_thinking is True:
+        return True
+    return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
+
+
+def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+    kwargs: dict[str, Any] = {
+        "status": "completed",
+        "summary": [],
+        "content": [ResponsesOutputReasoningContent(text = reasoning_text)],
+    }
+    if item_id is not None:
+        kwargs["id"] = item_id
+    return ResponsesOutputReasoning(**kwargs).model_dump()
 
 
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
@@ -4994,10 +5578,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
-            # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output and keep empty outputs from
-            # tripping the stricter ChatMessage role validator.
-            output = _responses_tool_output_text(item.output)
+            # Flatten pure text arrays for broad template compatibility, and
+            # forward image URL outputs as real multimodal parts for vision models.
+            output = _responses_tool_output_content(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",
@@ -5094,6 +5677,33 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
+    # ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``) arrives via
+    # the Responses extra-body: ResponsesRequest has ``extra="allow"``, so the
+    # OpenAI SDK's ``extra_body`` spread lands the dict in ``model_extra``. The
+    # downstream Chat Completions paths consume the typed ``enable_thinking``
+    # field -- the non-streaming path lifts it in ``openai_chat_completions``
+    # only when it is still ``None``, and the streaming pass-through reads
+    # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
+    # handler, to cover both Responses paths.
+    explicit_enable_thinking = False
+    _extra = getattr(payload, "model_extra", None)
+    if isinstance(_extra, dict):
+        _tpl_kw = _extra.get("chat_template_kwargs")
+        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
+            chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
+            explicit_enable_thinking = True
+
+    if isinstance(payload.reasoning, dict):
+        effort = payload.reasoning.get("effort")
+        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+            if not explicit_enable_thinking:
+                chat_kwargs["reasoning_effort"] = effort
+                chat_kwargs["enable_thinking"] = effort != "none"
+            elif chat_kwargs.get("enable_thinking") is False:
+                chat_kwargs["reasoning_effort"] = "none"
+            elif effort != "none":
+                chat_kwargs["reasoning_effort"] = effort
+
     return ChatCompletionRequest(**chat_kwargs)
 
 
@@ -5137,10 +5747,18 @@ async def _responses_non_streaming(
 
     choices = body.get("choices", [])
     text = ""
+    reasoning_text = ""
     tool_calls: list[dict] = []
     if choices:
         msg = choices[0].get("message", {}) or {}
-        text = msg.get("content", "") or ""
+        raw_content = msg.get("content", "") or ""
+        raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+        llama_backend = get_llama_cpp_backend()
+        reasoning_text, text = _extract_responses_reasoning(
+            raw_text,
+            msg.get("reasoning_content"),
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+        )
         tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
@@ -5154,6 +5772,10 @@ async def _responses_non_streaming(
     # the model produced content, so clients expecting a pure tool-call turn
     # (finish_reason="tool_calls") don't see a spurious empty message item.
     output_items: list[dict] = []
+    if reasoning_text and not text and not tool_calls:
+        text = reasoning_text
+    if reasoning_text:
+        output_items.append(_responses_reasoning_output_item(reasoning_text))
     if text:
         msg_id = f"msg_{uuid.uuid4().hex[:12]}"
         output_items.append(
@@ -5201,16 +5823,15 @@ async def _responses_stream(
     avoids that. Non-GGUF falls back to the wrapper (which doesn't use httpx, so
     the issue doesn't apply).
 
-    Text deltas arrive as ``response.output_text.delta`` on a single
-    ``message`` output item at ``output_index=0``. Each tool call from
+    Output items are allocated as upstream deltas appear. Reasoning/text deltas
+    open top-level ``reasoning`` / ``message`` items; each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
-    output item (one per distinct ``tool_calls[].index``) and relayed as
+    item (one per distinct ``tool_calls[].index``) and relayed as
     ``response.function_call_arguments.delta`` / ``.done`` events so clients
     (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
     with a ``function_call_output`` item next turn.
     """
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
@@ -5250,61 +5871,188 @@ async def _responses_stream(
 
     async def event_generator():
         full_text = ""
+        full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
+        extractor = _ResponsesReasoningExtractor(
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
+        )
+        reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
+        message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
         # stable across chunks for the same call. Values:
         #   {output_index, item_id, call_id, name, arguments, opened}
         tool_call_state: dict[int, dict] = {}
-        # Text message lives at output_index 0; tool calls claim 1, 2, ...
-        next_output_index = 1
+        next_output_index = 0
+
+        def _sse(event_name: str, payload: dict) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+
+        def _claim_output_index() -> int:
+            nonlocal next_output_index
+            output_index = next_output_index
+            next_output_index += 1
+            return output_index
+
+        def _ensure_reasoning_open() -> list[str]:
+            if reasoning_state["opened"]:
+                return []
+            reasoning_state["output_index"] = _claim_output_index()
+            reasoning_state["item_id"] = f"rs_{uuid.uuid4().hex[:12]}"
+            reasoning_state["opened"] = True
+            output_index = reasoning_state["output_index"]
+            item_id = reasoning_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "reasoning",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "summary": [],
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": ""},
+                    },
+                ),
+            ]
+
+        def _ensure_message_open() -> list[str]:
+            if message_state["opened"]:
+                return []
+            message_state["output_index"] = _claim_output_index()
+            message_state["item_id"] = f"msg_{uuid.uuid4().hex[:12]}"
+            message_state["opened"] = True
+            output_index = message_state["output_index"]
+            item_id = message_state["item_id"]
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "message",
+                            "id": item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []},
+                    },
+                ),
+            ]
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
-            items: list[dict] = [
-                {
-                    "type": "message",
-                    "id": msg_id,
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [
+            indexed_items: list[tuple[int, dict]] = []
+            if reasoning_state["opened"]:
+                indexed_items.append(
+                    (
+                        reasoning_state["output_index"],
                         {
-                            "type": "output_text",
-                            "text": full_text,
-                            "annotations": [],
-                        }
-                    ],
-                }
-            ]
-            for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
-                items.append(
-                    {
-                        "type": "function_call",
-                        "id": st["item_id"],
-                        "status": "completed",
-                        "call_id": st["call_id"],
-                        "name": st["name"],
-                        "arguments": st["arguments"],
-                    }
+                            "type": "reasoning",
+                            "id": reasoning_state["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    )
                 )
-            return items
+            if message_state["opened"]:
+                indexed_items.append(
+                    (
+                        message_state["output_index"],
+                        {
+                            "type": "message",
+                            "id": message_state["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": full_text,
+                                    "annotations": [],
+                                }
+                            ],
+                        },
+                    )
+                )
+            for st in tool_call_state.values():
+                indexed_items.append(
+                    (
+                        st["output_index"],
+                        {
+                            "type": "function_call",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "call_id": st["call_id"],
+                            "name": st["name"],
+                            "arguments": st["arguments"],
+                        },
+                    )
+                )
+            return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
+
+        def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+            return {
+                "type": "response.failed",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "failed",
+                    "model": payload.model,
+                    "output": _snapshot_output(),
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                    "error": {
+                        "code": status_code,
+                        "message": _friendly_error(exc),
+                    },
+                },
+            }
 
         # ── Preamble events ──
-        yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
-
-        # output_item.added (text message at output_index 0)
-        output_item = {
-            "type": "message",
-            "id": msg_id,
-            "status": "in_progress",
-            "role": "assistant",
-            "content": [],
-        }
-        yield f"event: response.output_item.added\ndata: {json.dumps({'type': 'response.output_item.added', 'output_index': 0, 'item': output_item})}\n\n"
-
-        # content_part.added
-        content_part = {"type": "output_text", "text": "", "annotations": []}
-        yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
+        yield _sse(
+            "response.created",
+            {
+                "type": "response.created",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "in_progress",
+                    "model": payload.model,
+                    "output": [],
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                },
+            },
+        )
 
         # ── Direct httpx lifecycle to llama-server ──
         # Full same-task open + close, same pattern as
@@ -5312,16 +6060,33 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = 600)
+        client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
         try:
             req = client.build_request("POST", target_url, json = body)
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await client.send(req, stream = True)
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {"code": 502, "message": _friendly_error(e)},
+                        },
+                    },
+                )
                 return
 
             if resp.status_code != 200:
@@ -5332,13 +6097,33 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
-                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
+                yield _sse(
+                    "response.failed",
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": resp_id,
+                            "object": "response",
+                            "created_at": created_at,
+                            "status": "failed",
+                            "model": payload.model,
+                            "output": [],
+                            "error": {
+                                "code": resp.status_code,
+                                "message": f"llama-server error: {err_text[:500]}",
+                            },
+                        },
+                    },
+                )
                 return
 
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if await request.is_disconnected():
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                request = request,
+                first_token_deadline = first_token_deadline,
+                response = resp,
+            ):
                 if not raw_line:
                     continue
                 if not raw_line.startswith("data: "):
@@ -5362,17 +6147,38 @@ async def _responses_stream(
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
-                content = delta.get("content")
-                if content:
-                    full_text += content
-                    delta_event = {
-                        "type": "response.output_text.delta",
-                        "item_id": msg_id,
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": content,
-                    }
-                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+                reasoning_delta, visible_delta = extractor.feed(
+                    delta.get("content") or "",
+                    delta.get("reasoning_content"),
+                )
+                if reasoning_delta:
+                    for event in _ensure_reasoning_open():
+                        yield event
+                    full_reasoning += reasoning_delta
+                    yield _sse(
+                        "response.reasoning_text.delta",
+                        {
+                            "type": "response.reasoning_text.delta",
+                            "item_id": reasoning_state["item_id"],
+                            "output_index": reasoning_state["output_index"],
+                            "content_index": 0,
+                            "delta": reasoning_delta,
+                        },
+                    )
+                if visible_delta:
+                    for event in _ensure_message_open():
+                        yield event
+                    full_text += visible_delta
+                    yield _sse(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": message_state["item_id"],
+                            "output_index": message_state["output_index"],
+                            "content_index": 0,
+                            "delta": visible_delta,
+                        },
+                    )
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
@@ -5382,14 +6188,13 @@ async def _responses_stream(
                         # First chunk for this tool call -- allocate an
                         # output_index and emit output_item.added.
                         st = {
-                            "output_index": next_output_index,
+                            "output_index": _claim_output_index(),
                             "item_id": f"fc_{uuid.uuid4().hex[:12]}",
                             "call_id": tc.get("id") or "",
                             "name": fn.get("name") or "",
                             "arguments": "",
                             "opened": False,
                         }
-                        next_output_index += 1
                         tool_call_state[idx] = st
                     else:
                         # Later chunks sometimes carry id/name only once; merge
@@ -5412,7 +6217,7 @@ async def _responses_stream(
                                 "arguments": "",
                             },
                         }
-                        yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                        yield _sse("response.output_item.added", item_added)
                         st["opened"] = True
 
                     arg_delta = fn.get("arguments") or ""
@@ -5424,7 +6229,7 @@ async def _responses_stream(
                             "output_index": st["output_index"],
                             "delta": arg_delta,
                         }
-                        yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                        yield _sse("response.function_call_arguments.delta", args_delta_event)
                     elif arg_delta:
                         # Buffer args until we can open the item (some models
                         # send id/name in the same chunk as the first arg delta;
@@ -5437,6 +6242,12 @@ async def _responses_stream(
                     output_tokens = usage.get("completion_tokens", output_tokens)
         except Exception as e:
             logger.error("responses stream error: %s", e)
+            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+            yield _sse(
+                "response.failed",
+                _failed_response_payload(e, status_code),
+            )
+            return
         finally:
             if lines_iter is not None:
                 try:
@@ -5453,8 +6264,134 @@ async def _responses_stream(
             except Exception:
                 pass
 
-        # ── Closing events for tool calls ──
-        for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+        final_reasoning, final_visible = extractor.finish()
+        if final_reasoning:
+            for event in _ensure_reasoning_open():
+                yield event
+            full_reasoning += final_reasoning
+            yield _sse(
+                "response.reasoning_text.delta",
+                {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_state["item_id"],
+                    "output_index": reasoning_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_reasoning,
+                },
+            )
+        if final_visible:
+            for event in _ensure_message_open():
+                yield event
+            full_text += final_visible
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": final_visible,
+                },
+            )
+        if full_reasoning and not full_text and not tool_call_state:
+            for event in _ensure_message_open():
+                yield event
+            full_text = full_reasoning
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_state["item_id"],
+                    "output_index": message_state["output_index"],
+                    "content_index": 0,
+                    "delta": full_text,
+                },
+            )
+
+        close_items: list[tuple[int, str, dict[str, Any]]] = []
+        if reasoning_state["opened"]:
+            close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
+        if message_state["opened"]:
+            close_items.append((message_state["output_index"], "message", message_state))
+        close_items.extend((st["output_index"], "tool", st) for st in tool_call_state.values())
+
+        for _, kind, st in sorted(close_items, key = lambda item: item[0]):
+            if kind == "reasoning":
+                yield _sse(
+                    "response.reasoning_text.done",
+                    {
+                        "type": "response.reasoning_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_reasoning,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "reasoning_text", "text": full_reasoning},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "reasoning",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "summary": [],
+                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        },
+                    },
+                )
+                continue
+
+            if kind == "message":
+                yield _sse(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "text": full_text,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": st["item_id"],
+                        "output_index": st["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": full_text, "annotations": []},
+                    },
+                )
+                yield _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": st["output_index"],
+                        "item": {
+                            "type": "message",
+                            "id": st["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": full_text, "annotations": []}
+                            ],
+                        },
+                    },
+                )
+                continue
+
             # If id/name never arrived (malformed upstream), synthesise so the
             # client still sees a coherent frame sequence.
             if not st["opened"]:
@@ -5472,20 +6409,16 @@ async def _responses_stream(
                         "arguments": "",
                     },
                 }
-                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                yield _sse("response.output_item.added", item_added)
                 if st["arguments"]:
-                    yield (
-                        "event: response.function_call_arguments.delta\n"
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": st["item_id"],
-                                "output_index": st["output_index"],
-                                "delta": st["arguments"],
-                            }
-                        )
-                        + "\n\n"
+                    yield _sse(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": st["arguments"],
+                        },
                     )
                 st["opened"] = True
 
@@ -5496,7 +6429,7 @@ async def _responses_stream(
                 "name": st["name"],
                 "arguments": st["arguments"],
             }
-            yield f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done)}\n\n"
+            yield _sse("response.function_call_arguments.done", args_done)
 
             item_done = {
                 "type": "response.output_item.done",
@@ -5510,14 +6443,7 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
-            yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
-
-        # ── Closing events for text message ──
-        yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
-
-        yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
-
-        yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
+            yield _sse("response.output_item.done", item_done)
 
         # response.completed
         total_tokens = input_tokens + output_tokens
@@ -5537,7 +6463,7 @@ async def _responses_stream(
                 },
             },
         }
-        yield f"event: response.completed\ndata: {json.dumps(completed_response)}\n\n"
+        yield _sse("response.completed", completed_response)
 
     return StreamingResponse(
         event_generator(),
@@ -5934,6 +6860,15 @@ async def anthropic_messages(
         )
 
     if server_tools:
+        if bool(getattr(payload, "confirm_tool_calls", False)):
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "confirm_tool_calls is not supported for Anthropic Messages server tools.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
         from core.inference.tools import ALL_TOOLS
 
         openai_tools = _select_anthropic_server_tools(
@@ -6422,7 +7357,6 @@ def _build_passthrough_payload(
     body["max_tokens"] = (
         max_tokens if max_tokens is not None else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
-    body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     # Normalize stop the same way the non-passthrough path does (the passthrough
     # was previously the one path that forwarded an empty stop string verbatim).
     _stop = _normalize_stop_sequences(stop)
@@ -6532,7 +7466,7 @@ async def _anthropic_passthrough_stream(
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -6540,7 +7474,12 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         try:
             req = client.build_request("POST", target_url, json = body)
-            resp = await client.send(req, stream = True)
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            resp = await _send_stream_with_preheader_cancel(
+                client, req, cancel_event, request = request
+            )
+            if resp is None:
+                return
 
             # Upstream client error (e.g. over-context 400) arrives before any
             # SSE. The 200 stream headers are already flushed, so surface it as
@@ -6569,12 +7508,13 @@ async def _anthropic_passthrough_stream(
             # The watcher closes `resp` on cancel, raising in aiter_lines.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if cancel_event.is_set():
-                    break
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                cancel_event = cancel_event,
+                request = request,
+                first_token_deadline = first_token_deadline,
+                response = resp,
+            ):
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
                 data_str = raw_line[6:]
@@ -6588,11 +7528,26 @@ async def _anthropic_passthrough_stream(
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
                     yield line
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
-                raise
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                event = _anthropic_stream_error_event(
+                    e,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         except Exception as e:
-            logger.error("anthropic_messages passthrough stream error: %s", e)
+            if not cancel_event.is_set():
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                event = _anthropic_stream_error_event(
+                    e,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         finally:
             if cancel_watcher is not None:
                 cancel_watcher.cancel()
@@ -6666,7 +7621,11 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -7020,15 +7979,13 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
 
-    # Outer guard: asyncio.CancelledError at `await client.send(...)` is a
-    # BaseException that bypasses `except httpx.RequestError`; without this the
-    # tracker leaks. The generator's finally only runs once iteration starts.
+    # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         # Dispatch BEFORE returning StreamingResponse so transport errors and
         # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
         # rely on status codes to raise APIError/BadRequestError.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -7038,7 +7995,10 @@ async def _openai_passthrough_stream(
         while True:
             try:
                 req = client.build_request("POST", target_url, json = body)
-                resp = await client.send(req, stream = True)
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
@@ -7054,6 +8014,21 @@ async def _openai_passthrough_stream(
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
+                )
+            if resp is None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                _tracker.__exit__(None, None, None)
+                return StreamingResponse(
+                    iter(()),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
 
             if resp.status_code == 200:
@@ -7098,12 +8073,13 @@ async def _openai_passthrough_stream(
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
             try:
                 lines_iter = resp.aiter_lines()
-                async for raw_line in lines_iter:
-                    if cancel_event.is_set():
-                        break
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        break
+                async for raw_line in _aiter_llama_stream_items(
+                    lines_iter,
+                    cancel_event = cancel_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                ):
                     if not raw_line:
                         continue
                     if not raw_line.startswith("data: "):
@@ -7182,7 +8158,11 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     while True:
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.post(target_url, json = body, timeout = 600)
+                resp = await client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
         except httpx.RequestError as e:
             # llama-server subprocess crashed / starting / unreachable. Surface the
             # same friendly message the sync chat path emits so operators don't see

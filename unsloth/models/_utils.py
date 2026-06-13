@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.3"
+__version__ = "2026.6.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -2703,6 +2703,16 @@ class EmptyLogits:
     def __str__(self):
         return LOGITS_ERROR_STRING
 
+    def __reduce__(self):
+        # Stateless pickling so gather_object works on the sentinel
+        return (type(self), ())
+
+    def __eq__(self, other):
+        # Gathered copies must compare equal in accelerate debug mode
+        return type(other).__name__ == "EmptyLogits"
+
+    __hash__ = object.__hash__
+
 
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
@@ -2713,6 +2723,13 @@ for j, function in enumerate(functions):
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
             continue
+# The loop above stomps pickle hooks with stubs returning None, which breaks
+# gather_object on EMPTY_LOGITS in distributed runs. Restore default pickling.
+for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
+    try:
+        delattr(EMPTY_LOGITS, function)
+    except Exception:
+        pass
 
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):

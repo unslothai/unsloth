@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
-
-Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
-extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
-tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
-mapping. No server or GPU required.
-"""
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
 import sys
@@ -28,11 +22,13 @@ from models.inference import (
     ChatMessage,
     CompletionChoice,
     CompletionMessage,
+    ResponsesRequest,
 )
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
+    _build_chat_request,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -401,6 +397,28 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_n(resp)
 
+    def test_confirm_tool_calls_rejected_for_provider_tools(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "external_model": "gpt-4.1",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "only supported for local streaming tools" in body["error"]["message"]
+
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
             is_loaded = False
@@ -480,6 +498,7 @@ class TestChatCompletionRequestToolFields:
     def test_n_rejected_for_non_gguf_path(self, monkeypatch):
         class _NoGGUFBackend:
             is_loaded = False
+            supports_tools = False
 
         class _InferenceBackend:
             active_model_name = "test-model"
@@ -494,6 +513,45 @@ class TestChatCompletionRequestToolFields:
             },
         )
         self._assert_unsupported_n(resp)
+
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {"chat_template_info": {"template": "chatml"}}}
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                raise AssertionError("tool loop should be rejected before starting")
+
+            def generate_chat_completion(self, **kwargs):
+                raise AssertionError("plain path should not be used")
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda backend, chat_template: {"supports_tools": True},
+        )
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "requires stream=true" in body["error"]["message"]
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -724,6 +782,22 @@ class TestPassthroughReasoningKwargs:
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
 
+    def test_reasoning_effort_none_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False, reasoning_effort = "none"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "none"}
+
+    def test_reasoning_effort_minimal_maps_to_low_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = True, reasoning_effort = "minimal"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
     def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
             self._payload(enable_thinking = False),
@@ -834,12 +908,6 @@ class TestOpenAICompatibilityHelpers:
 
 
 class TestFriendlyErrorHttpx:
-    """When llama-server is down, httpx RequestError strings lack the
-    "Lost connection to llama-server" substring the sync path keys off, so the
-    old substring-only `_friendly_error` returned a useless generic message.
-    These tests pin the new isinstance-based mapping.
-    """
-
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
@@ -857,7 +925,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "Lost connection" in _friendly_error(exc)
+        assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -1206,6 +1274,45 @@ class TestGgufVisionToolRouting:
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
 
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            raise AssertionError("tool loop should be rejected before starting")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            confirm_tool_calls = True,
+            stream = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+        assert exc.value.status_code == 400
+        assert "requires stream=true" in exc.value.detail["error"]["message"]
+
     def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1295,3 +1402,47 @@ class TestGgufVisionToolRouting:
 
         assert seen_seeds == expected
         assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+
+
+# =====================================================================
+# Responses API -> Chat Completions translation: chat_template_kwargs
+# (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
+# reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
+# otherwise /v1/responses silently ignores reasoning control (issue #6198).
+# =====================================================================
+
+
+class TestResponsesChatTemplateKwargs:
+    _messages = [ChatMessage(role = "user", content = "What is 100 - 67?")]
+
+    def test_enable_thinking_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "What is 100 - 67?",
+            chat_template_kwargs = {"enable_thinking": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is True
+
+    def test_enable_thinking_false_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": False},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+        assert chat_req.enable_thinking is False
+
+    def test_no_chat_template_kwargs_leaves_enable_thinking_unset(self):
+        payload = ResponsesRequest(model = "qwen-local", input = "hi")
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None
+
+    def test_chat_template_kwargs_without_enable_thinking_is_ignored(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"some_other_flag": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None
