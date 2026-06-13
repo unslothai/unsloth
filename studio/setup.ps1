@@ -823,7 +823,13 @@ if (-not $HasNvidiaSmi) {
         $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+            if ($hipOut -match "(?i)gcnArchName") {
+                # Accept partial output even when hipinfo crashes (e.g. exit code
+                # 0xC0000005 / STATUS_ACCESS_VIOLATION on some RDNA 4 hosts): if
+                # the output already contains gcnArchName the device was enumerated
+                # successfully before the crash, so treating it as a ROCm-capable
+                # device is correct.  Discarding this output causes a silent CPU
+                # PyTorch fallback (issue #6043).
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                 $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -833,8 +839,13 @@ if (-not $HasNvidiaSmi) {
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
                 }
+                if ($LASTEXITCODE -ne 0) {
+                    substep "[INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" "Cyan"
+                }
             } elseif ($LASTEXITCODE -ne 0) {
-                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                # hipinfo ran but returned a HIP runtime error without any gcnArchName
+                # output (e.g. "no ROCm-capable device detected"), or crashed before
+                # printing device info.
                 $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
                 substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
                 substep "       $firstLine" "Yellow"

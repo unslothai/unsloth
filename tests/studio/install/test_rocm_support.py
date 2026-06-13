@@ -1820,10 +1820,27 @@ class TestDetectWindowsGfxArch:
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1200"
 
-    def test_returns_none_on_nonzero_returncode(self):
+    def test_returns_arch_on_crash_with_gcnarchname_in_output(self):
+        # Regression test for issue #6043: hipinfo may exit with a non-zero
+        # code (e.g. 0xC0000005 / STATUS_ACCESS_VIOLATION on RDNA 4 hosts)
+        # while still printing the gcnArchName line before crashing.  The
+        # previous guard `if result.returncode == 0` discarded this output,
+        # causing a CPU PyTorch fallback.  The fix: accept the arch whenever
+        # gcnArchName is present in stdout regardless of exit code.
+        mock_result = MagicMock()
+        mock_result.returncode = -1073741819  # 0xC0000005 STATUS_ACCESS_VIOLATION
+        mock_result.stdout = b"gcnArchName : gfx1200\nsome other line\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
+
+    def test_returns_none_on_nonzero_returncode_without_gcnarchname(self):
+        # Non-zero exit without any gcnArchName output (e.g. no device detected)
+        # must still return None and fall through to amd-smi / WMI.
         mock_result = MagicMock()
         mock_result.returncode = 1
-        mock_result.stdout = b"gcnArchName : gfx1200\n"
+        mock_result.stdout = b"HIP runtime error: no device detected\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
