@@ -53,6 +53,14 @@ function encodeCanvasWithinLimit(
   return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
 }
 
+// Lossless PNG keeps alpha and, unlike WebP encoding, works in every browser
+// (Safari cannot encode WebP). Size is controlled only by dimensions.
+function encodePngWithinLimit(canvas: HTMLCanvasElement): string | null {
+  const dataUrl = canvas.toDataURL("image/png");
+  if (!dataUrl.startsWith("data:image/png")) return null;
+  return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
+}
+
 // Draw the image onto a canvas scaled to fit within maxEdge.
 function drawScaled(
   img: HTMLImageElement,
@@ -83,12 +91,15 @@ export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   const hasTransparency = canvasHasTransparency(base.ctx, base.cw, base.ch);
 
   if (hasTransparency) {
-    // Keep alpha: encode as WebP, shrinking to fit. Never fall back to JPEG,
-    // which would paint a background behind a transparent image.
+    // Keep alpha, shrinking to fit. WebP is smallest where supported; PNG is
+    // the universal fallback (Safari cannot encode WebP). Never JPEG, which
+    // would paint a background behind a transparent image.
     for (let edge = MAX_EDGE; edge >= MIN_EDGE; edge -= EDGE_STEP) {
       const { canvas } = edge === MAX_EDGE ? base : drawScaled(img, w, h, edge);
       const webpDataUrl = encodeCanvasWithinLimit(canvas, "image/webp", WEBP_QUALITY_START);
       if (webpDataUrl) return webpDataUrl;
+      const pngDataUrl = encodePngWithinLimit(canvas);
+      if (pngDataUrl) return pngDataUrl;
     }
     throw new Error("Image is still too large after compression. Try a smaller file.");
   }
