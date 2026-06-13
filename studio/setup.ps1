@@ -2260,9 +2260,12 @@ if ($script:UnslothVerbose) {
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
 # Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
-# the auto-generated filenames are extremely long. Use a short cache directory.
-$TorchCacheDir = "C:\tc"
-if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+# the auto-generated filenames are extremely long. Keep the cache directory
+# under the user's Studio home (NOT the C:\ drive root) -- long paths are already
+# enabled above, and Python opts into them, so deep inductor paths still fit
+# without polluting the system drive.
+$TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+if (-not (Test-Path -LiteralPath $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
@@ -2360,6 +2363,7 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }
 
@@ -2414,9 +2418,14 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
 }
 
 # Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
+# Skip entirely in the install.ps1 flow (SKIP_STUDIO_BASE=1): there the base
+# packages (unsloth + unsloth-zoo) are NOT reinstalled, so unsloth.exe is never
+# rewritten -- and since setup runs *via* unsloth.exe, renaming our own running
+# launcher only fails with a sharing violation (WinError 32). Only the
+# 'studio update' flow (base reinstalled) actually needs the rename.
 $VenvScriptsDir = Join-Path $VenvDir "Scripts"
 $RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
-if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
+if ($env:SKIP_STUDIO_BASE -ne "1" -and (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf)) {
     $StaleUnslothExe = "$RunningUnslothExe.deleteme"
     if (Test-Path -LiteralPath $StaleUnslothExe) {
         Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue

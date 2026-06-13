@@ -34,10 +34,30 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
+def _path_inside_venv(path: str) -> bool:
+    """True if ``path`` lives inside the active virtual environment (sys.prefix).
+
+    The AMD torch wheel ships hipInfo.exe inside the venv (Scripts/ and
+    _rocm_sdk_core/bin/), and main.py/worker.py prepend the venv Scripts dir to
+    PATH so bitsandbytes can find it. That venv-internal hipInfo is NOT a HIP
+    SDK and must not be mistaken for one (see _hip_sdk_present)."""
+    try:
+        root = os.path.abspath(sys.prefix)
+        return os.path.commonpath([os.path.abspath(path), root]) == root
+    except (ValueError, OSError):
+        # Different drive / unresolvable -> treat as outside the venv.
+        return False
+
+
 def _hip_sdk_present() -> bool:
     """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
-    ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated."""
-    if shutil.which("hipinfo"):
+    ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated.
+
+    Ignores the venv-internal hipInfo.exe shipped by the AMD torch wheel (which
+    main.py/worker.py put on PATH for bitsandbytes) -- it is not a HIP SDK and
+    does NOT stop amd-smi from popping the DiskPart UAC."""
+    hip = shutil.which("hipinfo")
+    if hip and not _path_inside_venv(hip):
         return True
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         root = os.environ.get(var)
