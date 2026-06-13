@@ -231,6 +231,21 @@ def test_network_bind_leaves_stdio_off(monkeypatch, host):
     assert mcp_client.stdio_mcp_enabled() is False
 
 
+def test_colab_loopback_does_not_auto_enable(monkeypatch):
+    # Colab loopback is a hosted VM reachable via the proxy, so it stays off.
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab = True)
+    assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_explicit_enable_survives_colab(monkeypatch):
+    # An explicit operator opt-in still wins over the Colab exclusion (apply_
+    # early-returns on an explicit value, before the is_colab check).
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab = True)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
 def test_explicit_disable_survives_loopback(monkeypatch):
     # An explicit =0 must not be overridden by the loopback auto-default.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")

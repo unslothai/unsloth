@@ -34,16 +34,17 @@ def is_external_host(host: str) -> bool:
     return host.lower() not in _LOOPBACK_HOSTS
 
 
-def apply_stdio_mcp_loopback_default(host: str) -> None:
+def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:
     """Default stdio MCP servers on when bound to loopback.
 
     A loopback bind is the user's own machine -- the same trust boundary the
     Tauri desktop app relies on (see main.py, which also binds 127.0.0.1 and
-    setdefaults this var). An explicit operator value wins: a pre-set
-    `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0` force-disables and `=1` opts in, including
-    on a network bind. We only ever set or clear a default we applied ourselves,
-    so reusing run_server with a public host after a loopback one does not leave
-    the gate on.
+    setdefaults this var). Colab is excluded: even its loopback is a hosted VM
+    reachable through Colab's proxy, so it stays off unless opted in. An explicit
+    operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0`
+    force-disables and `=1` opts in, including on a network bind. We only ever
+    set or clear a default we applied ourselves, so reusing run_server with a
+    public host after a loopback one does not leave the gate on.
     """
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
@@ -56,7 +57,7 @@ def apply_stdio_mcp_loopback_default(host: str) -> None:
     # An explicit operator value is one we did not set; never touch it.
     if current is not None and not _auto_enabled:
         return
-    if is_external_host(host):
+    if is_colab or is_external_host(host):
         if _auto_enabled:
             os.environ.pop("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", None)
             _auto_enabled = False
