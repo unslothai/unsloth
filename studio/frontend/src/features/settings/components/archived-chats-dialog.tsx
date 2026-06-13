@@ -2,6 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -10,6 +20,8 @@ import {
 import {
   deleteChatItem,
   unarchiveChatItem,
+  useChatPreferencesStore,
+  useChatRuntimeStore,
   useChatSidebarItems,
   type SidebarItem,
 } from "@/features/chat";
@@ -17,6 +29,7 @@ import { toast } from "@/lib/toast";
 import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 function formatCreatedAt(ms: number): string {
@@ -37,6 +50,13 @@ export function ArchivedChatsDialog({
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const navigate = useNavigate();
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const confirmDeleteChats = useChatPreferencesStore(
+    (s) => s.confirmDeleteChats,
+  );
+  const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
+    null,
+  );
 
   // Open an archived chat: leave it archived, just navigate to it.
   function openChat(item: SidebarItem) {
@@ -62,13 +82,26 @@ export function ArchivedChatsDialog({
 
   async function handleDelete(item: SidebarItem) {
     try {
-      await deleteChatItem(item, undefined, () => {});
+      // Pass the active thread so deleting the open chat resets navigation.
+      await deleteChatItem(item, activeThreadId ?? undefined, (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      });
       toast.success("Chat deleted");
     } catch (err) {
       toast.error("Failed to delete chat", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
+  }
+
+  function requestDelete(item: SidebarItem) {
+    if (confirmDeleteChats) setConfirmingDelete(item);
+    else void handleDelete(item);
   }
 
   return (
@@ -121,7 +154,7 @@ export function ArchivedChatsDialog({
                   </button>
                   <button
                     type="button"
-                    onClick={() => void handleDelete(item)}
+                    onClick={() => requestDelete(item)}
                     aria-label="Delete chat"
                     title="Delete"
                     className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
@@ -138,6 +171,39 @@ export function ArchivedChatsDialog({
           </div>
         )}
       </DialogContent>
+
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete chat</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                &quot;{confirmingDelete?.title}&quot;
+              </span>
+              ? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const item = confirmingDelete;
+                setConfirmingDelete(null);
+                if (item) void handleDelete(item);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

@@ -91,7 +91,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const channelValue: ChannelOptionValue = activeChannelId ?? "all";
   const formatOptions = useMemo<HubOption<ModelFormatFilter>[]>(
     () =>
-      FORMAT_FILTER_OPTIONS.map((option) => ({
+      FORMAT_FILTER_OPTIONS.filter(
+        // Downloaded inventory rows are never tagged mlx, so only Discover can
+        // match the MLX filter; hide it elsewhere to avoid an empty list.
+        (option) => option.value !== "mlx" || tab === "discover",
+      ).map((option) => ({
         value: option.value,
         triggerLabel: option.label,
         label: (
@@ -109,7 +113,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           </>
         ),
       })),
-    [],
+    [tab],
   );
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>

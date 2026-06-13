@@ -400,6 +400,19 @@ export function AppSidebar() {
     });
   }
 
+  // Shared chat delete: same error toast and pin cleanup whether or not the
+  // confirm dialog is used.
+  async function deleteChatWithCleanup(item: SidebarItem) {
+    try {
+      await handleDeleteThread(item);
+      unpinChat(item.id);
+    } catch (err) {
+      toast.error(translate("shell.toast.failedToDeleteChat"), {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
   async function handleArchiveThread(item: SidebarItem) {
     try {
       await archiveChatItem(item, activeThreadId, (view) => {
@@ -438,6 +451,8 @@ export function AppSidebar() {
     null,
   );
   const [renameDraft, setRenameDraft] = useState("");
+  // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
+  const skipRenameBlurRef = useRef(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
@@ -497,6 +512,30 @@ export function AppSidebar() {
     }
   }
 
+  // Inline chat rename commits on Enter or blur, cancels on Escape.
+  function handleInlineRenameKeyDown(
+    event: React.KeyboardEvent<HTMLInputElement>,
+  ) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      skipRenameBlurRef.current = true;
+      void commitRename();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      skipRenameBlurRef.current = true;
+      setRenamingTarget(null);
+    }
+  }
+
+  function handleInlineRenameBlur() {
+    if (skipRenameBlurRef.current) {
+      skipRenameBlurRef.current = false;
+      return;
+    }
+    if (renameDirty) void commitRename();
+    else setRenamingTarget(null);
+  }
+
   type DeleteTarget =
     | { kind: "chat"; item: SidebarItem }
     | { kind: "project"; project: ProjectRecord }
@@ -518,14 +557,7 @@ export function AppSidebar() {
       target.kind === "project" && deleteProjectFiles;
     setConfirmingDelete(null);
     if (target.kind === "chat") {
-      try {
-        await handleDeleteThread(target.item);
-        unpinChat(target.item.id);
-      } catch (err) {
-        toast.error(translate("shell.toast.failedToDeleteChat"), {
-          description: err instanceof Error ? err.message : undefined,
-        });
-      }
+      await deleteChatWithCleanup(target.item);
       return;
     }
     if (target.kind === "project") {
@@ -626,6 +658,31 @@ export function AppSidebar() {
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
           : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
     );
+
+    const isRenamingThis =
+      renamingTarget?.kind === "chat" && renamingTarget.item.id === item.id;
+
+    // Inline rename edits the title in place as a rounded pill, no dialog.
+    if (isRenamingThis) {
+      return (
+        <SidebarMenuItem key={item.id} className={itemClass}>
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={handleInlineRenameKeyDown}
+            onBlur={handleInlineRenameBlur}
+            onFocus={(event) => event.currentTarget.select()}
+            maxLength={120}
+            aria-label={translate("shell.dialog.renameChat.placeholder")}
+            className={cn(
+              "border-primary ring-primary/15 bg-background text-foreground h-[33px] w-full rounded-full border pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none ring-[3px]",
+              variant === "project" ? "pl-[39px]" : "pl-3.5",
+            )}
+          />
+        </SidebarMenuItem>
+      );
+    }
 
     return (
       <SidebarMenuItem key={item.id} className={itemClass}>
@@ -767,7 +824,7 @@ export function AppSidebar() {
               onSelect={() =>
                 confirmDeleteChats
                   ? setConfirmingDelete({ kind: "chat", item })
-                  : void handleDeleteThread(item)
+                  : void deleteChatWithCleanup(item)
               }
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -1390,7 +1447,7 @@ export function AppSidebar() {
       </DialogContent>
     </Dialog>
     <Dialog
-      open={renamingTarget !== null}
+      open={renamingTarget !== null && renamingTarget.kind !== "chat"}
       onOpenChange={(open) => {
         if (!open) setRenamingTarget(null);
       }}
