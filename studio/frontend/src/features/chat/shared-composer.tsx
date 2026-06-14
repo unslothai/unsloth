@@ -64,9 +64,12 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
+  getExternalProviderApiKey,
+  isCustomProviderType,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import { isGeminiCustomOpenAICompatBase } from "./provider-capabilities";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
@@ -941,6 +944,17 @@ export function SharedComposer({
           if (!provider) {
             throw new Error(
               "Connection not found. Open Settings -> Connections and add it again.",
+            );
+          }
+
+          const apiKey = getExternalProviderApiKey(provider.id).trim();
+          const providerIsCustom = isCustomProviderType(provider.providerType);
+          const providerIsGeminiCustomBase =
+            provider.providerType === "gemini" &&
+            isGeminiCustomOpenAICompatBase(provider.baseUrl);
+          if (!apiKey && !providerIsCustom && !providerIsGeminiCustomBase) {
+            throw new Error(
+              "Missing API key for selected connection. Open Settings → Connections and set the API key again.",
             );
           }
 

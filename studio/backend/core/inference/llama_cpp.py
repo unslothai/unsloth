@@ -731,6 +731,7 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._launch_context_length: Optional[int] = None
         self._launch_use_fit: Optional[bool] = None
+        self._launch_kv_unified: bool = False
         self._launch_n_parallel: Optional[int] = None
         self._requested_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
@@ -906,6 +907,7 @@ class LlamaCppBackend:
         launch_ctx: Optional[int],
         use_fit: bool,
         n_parallel: int,
+        kv_unified: bool = False,
     ) -> None:
         """Sync effective/requested context from probed per-slot ``n_ctx``."""
         slots = max(1, n_parallel)
@@ -920,7 +922,12 @@ class LlamaCppBackend:
         if launch_ctx is None or launch_ctx <= 0:
             return
 
-        expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
+        # With --kv-unified, parallel slots share one KV pool sized to the
+        # full launch -c; only the non-unified split uses -c / --parallel.
+        if kv_unified and slots > 1:
+            expected_per_slot = launch_ctx
+        else:
+            expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
         if use_fit and runtime_ctx < expected_per_slot:
             logger.warning(
                 "llama-server per-slot context (%s) is below the launch "
@@ -4411,10 +4418,7 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
                 self._launch_context_length = effective_ctx if effective_ctx > 0 else None
-                # Pass-through --fit last-wins over Studio's GPU-selection
-                # decision, since extras are appended after Studio's flags.
-                fit_override = parse_fit_override(extra_args)
-                self._launch_use_fit = use_fit if fit_override is None else fit_override
+                self._launch_kv_unified = "--kv-unified" in cmd
                 self._launch_n_parallel = max(1, n_parallel)
 
                 healthy = _spawn_and_wait(cmd)
@@ -4516,6 +4520,14 @@ class LlamaCppBackend:
 
                 self._healthy = True
 
+                # Resolve fit from the command that actually started (covers
+                # --fit off retry and pass-through overrides). llama-server
+                # defaults --fit on when the flag is omitted.
+                launched_fit = parse_fit_override(cmd)
+                self._launch_use_fit = (
+                    launched_fit if launched_fit is not None else True
+                )
+
                 # /props readback backstop (#6164); runs post-health so the
                 # query hits the new server, not the freshly allocated port.
                 self._reconcile_effective_ctx_with_server()
@@ -4525,6 +4537,7 @@ class LlamaCppBackend:
                     launch_ctx = self._launch_context_length,
                     use_fit = bool(self._launch_use_fit),
                     n_parallel = self._launch_n_parallel or 1,
+                    kv_unified = self._launch_kv_unified,
                 )
 
                 # Commit caller intent only after _healthy=True so a failed start
@@ -5005,6 +5018,7 @@ class LlamaCppBackend:
             self._effective_context_length = None
             self._launch_context_length = None
             self._launch_use_fit = None
+            self._launch_kv_unified = False
             self._launch_n_parallel = None
             self._requested_context_length = None
             self._max_context_length = None

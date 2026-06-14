@@ -69,6 +69,13 @@ finally:
         sys.modules.pop(_name, None)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_llama_cpp_import_cache():
+    """Drop cached llama_cpp so later tests re-import real httpx/loggers."""
+    yield
+    sys.modules.pop("core.inference.llama_cpp", None)
+
+
 def _backend(**kwargs):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = kwargs.get("port", 48507)
@@ -78,6 +85,7 @@ def _backend(**kwargs):
     inst._requested_context_length = kwargs.get("requested_context_length")
     inst._launch_use_fit = kwargs.get("launch_use_fit")
     inst._launch_n_parallel = kwargs.get("launch_n_parallel")
+    inst._launch_kv_unified = kwargs.get("launch_kv_unified", False)
     inst._requested_n_ctx = kwargs.get("requested_n_ctx", 0)
     return inst
 
@@ -139,6 +147,18 @@ class TestApplyRuntimeContextProbe:
         )
         assert inst._effective_context_length == 1024
         assert inst.requested_context_length == 2048
+
+    def test_kv_unified_parallel_uses_full_launch_ctx(self):
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            4096,
+            launch_ctx = 8192,
+            use_fit = True,
+            n_parallel = 4,
+            kv_unified = True,
+        )
+        assert inst._effective_context_length == 4096
+        assert inst.requested_context_length == 8192
 
     def test_no_warning_without_fit(self):
         inst = _backend()
