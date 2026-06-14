@@ -37,6 +37,42 @@ from utils.paths import outputs_root
 logger = get_logger(__name__)
 
 
+def _coerce_seed(value, default = 3407) -> int:
+    """Normalize None / non-int to `default` (transformers.set_seed(None) raises)."""
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_optional_bool(value, default: bool) -> bool:
+    """Treat explicit None as `default` instead of `bool(None) == False`."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off", ""):
+            return False
+    return bool(value)
+
+
+def _coerce_optional_nonneg_float(name: str, value):
+    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
+    if coerced < 0:
+        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
+    return coerced
+
+
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
@@ -256,7 +292,17 @@ class TrainingBackend:
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
             "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "random_seed": kwargs.get("random_seed", 3407),
+            "max_grad_value": _coerce_optional_nonneg_float(
+                "max_grad_value", kwargs.get("max_grad_value")
+            ),
+            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
+            ),
+            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+                kwargs.get("cast_norm_output_to_input_dtype"), True
+            ),
+            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
+            "random_seed": _coerce_seed(kwargs.get("random_seed")),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
             "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
