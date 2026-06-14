@@ -429,7 +429,11 @@ def test_bypass_env_hf_token_resolves_outside_real_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(real_cache))
     env = _build_bypass_env(str(workdir))
     token_path = subprocess.run(
-        [sys.executable, "-c", "import huggingface_hub.constants as c; print(c.HF_TOKEN_PATH)"],
+        [
+            sys.executable,
+            "-c",
+            "import huggingface_hub.constants as c; print(c.HF_TOKEN_PATH)",
+        ],
         env = env,
         capture_output = True,
         text = True,
