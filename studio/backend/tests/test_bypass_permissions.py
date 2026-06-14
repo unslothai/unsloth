@@ -444,9 +444,9 @@ def test_bypass_env_repoints_windows_profile_vars(monkeypatch, tmp_path):
 def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_path):
     # Only repoint Windows profile vars that were actually set (no pollution on
     # Linux/macOS where they are absent).
-    monkeypatch.delenv("USERPROFILE", raising=False)
-    monkeypatch.delenv("APPDATA", raising=False)
-    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising = False)
+    monkeypatch.delenv("APPDATA", raising = False)
+    monkeypatch.delenv("LOCALAPPDATA", raising = False)
     env = _build_bypass_env(str(tmp_path))
     assert "USERPROFILE" not in env
     assert "APPDATA" not in env
