@@ -53,12 +53,12 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   ArrowTurnBackwardIcon,
   Edit03Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -911,7 +911,7 @@ export function ChatSettingsPanel({
                     >
                       <SelectTrigger
                         animateRadius={false}
-                        icon={ArrowDown01Icon}
+                        icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
                         className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
@@ -951,7 +951,7 @@ export function ChatSettingsPanel({
                     >
                       <SelectTrigger
                         animateRadius={false}
-                        icon={ArrowDown01Icon}
+                        icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
                         className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
@@ -1172,7 +1172,7 @@ export function ChatSettingsPanel({
                         aria-hidden="true"
                       >
                         <HugeiconsIcon
-                          icon={ArrowDown01Icon}
+                          icon={ChevronDownStandardIcon}
                           className="size-3.5"
                           strokeWidth={2}
                         />
@@ -1547,10 +1547,7 @@ export function ChatSettingsPanel({
           setSystemPromptEditorOpen(nextOpen);
         }}
       >
-        <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
-          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-        >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit System Prompt</DialogTitle>
             <DialogDescription>
@@ -1827,10 +1824,7 @@ function ChatTemplateFields() {
         </div>
       </div>
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-3xl"
-          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-        >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit Chat Template</DialogTitle>
             <DialogDescription>

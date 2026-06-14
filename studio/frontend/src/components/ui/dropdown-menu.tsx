@@ -5,8 +5,8 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function DropdownMenu({
@@ -184,7 +184,7 @@ function DropdownMenuSeparator({
   return (
     <DropdownMenuPrimitive.Separator
       data-slot="dropdown-menu-separator"
-      className={cn("bg-border/50 -mx-1 my-1 h-px", className)}
+      className={cn("bg-border/50 mx-1 my-1 h-px", className)}
       {...props}
     />
   );
@@ -232,8 +232,8 @@ function DropdownMenuSubTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        strokeWidth={2}
+        icon={ChevronRightStandardIcon}
+        strokeWidth={1.5}
         className="ml-auto size-[12px]"
       />
     </DropdownMenuPrimitive.SubTrigger>
