@@ -3850,9 +3850,7 @@ class LlamaCppBackend:
                                 total_mib = (model_size + kv) / (1024 * 1024)
                                 # 1-GPU pin must also hold the graph buffer (multi-GPU only).
                                 reserve_mib = (
-                                    _graph_reserve_mib
-                                    if (n_gpus == 1 and len(ranked) > 1)
-                                    else 0.0
+                                    _graph_reserve_mib if (n_gpus == 1 and len(ranked) > 1) else 0.0
                                 )
                                 if total_mib + reserve_mib <= pool_mib * pin_fraction:
                                     effective_ctx = capped

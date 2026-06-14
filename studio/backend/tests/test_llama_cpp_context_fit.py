@@ -201,9 +201,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                reserve_mib = (
-                    _graph_reserve_mib if (n_gpus == 1 and len(ranked) > 1) else 0.0
-                )
+                reserve_mib = _graph_reserve_mib if (n_gpus == 1 and len(ranked) > 1) else 0.0
                 if total_mib + reserve_mib <= pool_mib * pin_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
