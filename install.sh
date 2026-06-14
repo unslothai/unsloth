@@ -174,8 +174,18 @@ run_install_cmd_retry() {
     _ricr_label="$1"
     # Sanitize overrides; a non-positive-integer value falls back to the default
     # of 3 (a typo must not silently disable retries). Set =1 to disable retry.
-    case "$UNSLOTH_INSTALL_RETRIES" in ''|*[!0-9]*|0) _ricr_max=3 ;; *) _ricr_max=$UNSLOTH_INSTALL_RETRIES ;; esac
-    case "$UNSLOTH_INSTALL_RETRY_DELAY" in ''|*[!0-9]*) _ricr_delay=3 ;; *) _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY ;; esac
+    # The length guard runs BEFORE the numeric test so an oversized all-digit
+    # value (e.g. a fat-fingered "99999999999999999999") cannot overflow the
+    # shell integer range and make `[ -ge ]` error out mid-loop; such values fall
+    # back to the default instead. Bounds: 1..100 retries, 0..3600s base delay.
+    case "$UNSLOTH_INSTALL_RETRIES" in
+        ''|*[!0-9]*|0) _ricr_max=3 ;;
+        *) if [ "${#UNSLOTH_INSTALL_RETRIES}" -le 3 ] && [ "$UNSLOTH_INSTALL_RETRIES" -ge 1 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRIES" -le 100 ] 2>/dev/null; then _ricr_max=$UNSLOTH_INSTALL_RETRIES; else _ricr_max=3; fi ;;
+    esac
+    case "$UNSLOTH_INSTALL_RETRY_DELAY" in
+        ''|*[!0-9]*) _ricr_delay=3 ;;
+        *) if [ "${#UNSLOTH_INSTALL_RETRY_DELAY}" -le 4 ] && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -ge 0 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -le 3600 ] 2>/dev/null; then _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY; else _ricr_delay=3; fi ;;
+    esac
     _ricr_attempt=1
     while :; do
         # why: "&& return 0" (not "if ...; then"): $? after a non-taken if is 0

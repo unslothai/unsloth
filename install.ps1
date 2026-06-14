@@ -494,13 +494,19 @@ function Install-UnslothStudio {
         )
         # Sanitize overrides; a non-positive-integer value falls back to the
         # default of 3 (a typo must not silently disable retries). Set =1 to disable.
+        # Use [int]::TryParse with bounds rather than a bare [int] cast so an
+        # oversized all-digit value (e.g. "99999999999999999999") falls back to
+        # the default instead of throwing an Int32 overflow under
+        # $ErrorActionPreference = "Stop". Bounds: 1..100 retries, 0..3600s delay.
         $maxAttempts = 3
-        if ($env:UNSLOTH_INSTALL_RETRIES -match '^[0-9]+$' -and [int]$env:UNSLOTH_INSTALL_RETRIES -ge 1) {
-            $maxAttempts = [int]$env:UNSLOTH_INSTALL_RETRIES
+        $parsedAttempts = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRIES, [ref]$parsedAttempts) -and $parsedAttempts -ge 1 -and $parsedAttempts -le 100) {
+            $maxAttempts = $parsedAttempts
         }
         $delay = 3
-        if ($env:UNSLOTH_INSTALL_RETRY_DELAY -match '^[0-9]+$') {
-            $delay = [int]$env:UNSLOTH_INSTALL_RETRY_DELAY
+        $parsedDelay = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRY_DELAY, [ref]$parsedDelay) -and $parsedDelay -ge 0 -and $parsedDelay -le 3600) {
+            $delay = $parsedDelay
         }
         $attempt = 1
         while ($true) {
