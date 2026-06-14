@@ -546,7 +546,33 @@ _CTX_FIT_VRAM_FRACTION = 0.90
 # estimate. Applied to BOTH the ctx-fit budget and the GPU pin thresholds --
 # tightening only the fit lets a load whose weights land between the two
 # fractions pin without any room for the drafter.
+# Fallback only: used when GGUF dims are too sparse to size the MTP overhead in
+# bytes (see _estimate_mtp_overhead_bytes). When the dims are known we reserve a
+# byte-accurate, context- and n_max-aware amount instead -- a flat fraction of
+# total VRAM under-reserves at long context (the draft KV grows with ctx) on
+# small cards and over-reserves on large ones.
 _MTP_VRAM_RESERVE_FRAC = 0.05
+
+# Byte-accurate MTP draft reserve, calibrated on unsloth/Qwen3.6-27B-MTP-GGUF
+# (UD-Q2_K_XL) with llama.cpp b9625 on a B200, --flash-attn on. Measured
+# overhead(ctx, n_max) ~= 4.72e-3*ctx + 158.5*n_max + 88 MiB (RMS 14 MiB). The
+# two terms are physical: (1) the MTP head keeps its OWN attention KV cache that
+# grows with context; (2) speculative verification holds a compute buffer that
+# grows with --spec-draft-n-max. Both are expressed in GGUF dims so they
+# generalize past this one model:
+#   draft KV  = SAFETY * nextn_predict_layers * n_kv * (k_len + v_len) * 2(f16) * n_ctx
+#   verify    = VERIFY_BYTES_PER_EMBD * n_embd * spec_draft_n_max
+#   fixed     = base draft graph
+# Measured draft KV slope was 1.21x one f16 attention layer/token (nextn=1); the
+# 1.25 safety rounds it up. The verify term measured 158.5 MiB / n_max at
+# n_embd=5120 == 32 KiB per embedding-unit per n_max. The chosen constants
+# over-predict every calibration point by 28-90 MiB (reserve a bit, never OOM).
+# Draft KV uses f16: llama.cpp's MTP draft context defaults to an f16 KV cache,
+# independent of the main --cache-type-k/v.
+_MTP_DRAFT_KV_SAFETY = 1.25
+_MTP_DRAFT_KV_F16_BPE = 2
+_MTP_VERIFY_BYTES_PER_EMBD = 32768
+_MTP_FIXED_OVERHEAD_BYTES = 128 * 1024**2
 
 
 def _auto_mode_drops_mtp(
@@ -577,6 +603,66 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
         if flag in ("--spec-type", "--spec-default"):
             return True
     return False
+
+
+def _extra_args_requests_mtp(extra_args: Optional[Iterable[str]]) -> bool:
+    """User explicitly enabled MTP via extras, e.g. ``--spec-type draft-mtp`` or
+    a chain like ``--spec-type ngram-mod,draft-mtp``. Studio suppresses its own
+    spec emission in this case (``_extra_args_set_spec_type``), but the load
+    still runs MTP, so the VRAM-fit budget must still reserve for it."""
+    if not extra_args:
+        return False
+    args = [str(a) for a in extra_args]
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag != "--spec-type":
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        pieces = [p.strip().lower() for p in value.split(",")]
+        if any(p in ("mtp", "draft-mtp") for p in pieces):
+            return True
+    return False
+
+
+def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """Last user-supplied draft-depth value from extras, else None. Accepts the
+    current ``--spec-draft-n-max`` and the legacy ``--draft-max`` alias (older
+    llama.cpp builds; still probed/emitted by _build_ngram_mod_flags). Lets the
+    MTP budget use the effective draft depth even when the first-class
+    ``spec_draft_n_max`` field is unset."""
+    if not extra_args:
+        return None
+    args = [str(a) for a in extra_args]
+    found: Optional[int] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag not in ("--spec-draft-n-max", "--draft-max"):
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            found = int(value)
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def _extra_args_mtp_draft_path(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Last user-supplied separate MTP drafter path from extras, else None.
+    The drafter GGUF (``--model-draft`` / ``--spec-draft-model`` / ``-md``) loads
+    onto the GPU, so its weights must be reserved when the user wires MTP through
+    extras instead of the first-class drafter path."""
+    if not extra_args:
+        return None
+    args = [str(a) for a in extra_args]
+    found: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag not in ("--model-draft", "--spec-draft-model", "-md"):
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if value and not value.startswith("-"):
+            found = value
+    return found
 
 
 def _build_ngram_mod_flags(
@@ -1990,6 +2076,58 @@ class LlamaCppBackend:
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
         return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
+    def _mtp_draft_kv_bytes(self, n_ctx: int) -> Optional[int]:
+        """VRAM the MTP head's own (draft) KV cache needs at ``n_ctx``.
+
+        The MTP head is a standard attention block (``nextn_predict_layers`` of
+        them), so its draft context keeps a normal KV cache that grows with
+        ``n_ctx`` -- unlike this model's mostly-Mamba main stack whose KV is
+        small. llama.cpp's MTP draft context defaults to f16 KV regardless of
+        the main ``--cache-type-k/v``. Returns ``None`` when the attention dims
+        needed to size it are missing (caller falls back to the flat fraction).
+        """
+        nextn = self._nextn_predict_layers or 0
+        n_kv = self._n_kv_heads or self._n_heads
+        k_len = self._kv_key_length
+        v_len = self._kv_value_length
+        if not (nextn and n_kv and k_len and v_len) or n_ctx <= 0:
+            return None
+        per_token = nextn * n_kv * (k_len + v_len) * _MTP_DRAFT_KV_F16_BPE
+        return int(_MTP_DRAFT_KV_SAFETY * per_token * n_ctx)
+
+    def _mtp_verify_bytes(self, spec_draft_n_max: int) -> int:
+        """VRAM the speculative-verification compute buffer needs.
+
+        Grows with ``--spec-draft-n-max`` (more candidate tokens verified per
+        step), not with context. Sized per embedding-unit so it generalizes;
+        plus a fixed base for the draft graph. Falls back to the fixed term
+        alone when the embedding length is unknown.
+        """
+        n_embd = self._embedding_length or 0
+        n_max = max(1, int(spec_draft_n_max or 1))
+        return int(_MTP_VERIFY_BYTES_PER_EMBD * n_embd * n_max) + _MTP_FIXED_OVERHEAD_BYTES
+
+    def _estimate_mtp_overhead_bytes(
+        self,
+        n_ctx: int,
+        *,
+        spec_draft_n_max: int,
+        draft_weights_bytes: int = 0,
+    ) -> Optional[int]:
+        """Total extra VRAM the MTP draft path needs at ``n_ctx``.
+
+        ``draft KV (grows with ctx) + verify buffer (grows with n_max) +
+        separate-drafter weights``. Returns ``None`` when the draft KV can't be
+        sized from GGUF dims so the caller keeps the legacy flat-fraction
+        reserve. ``draft_weights_bytes`` is the separate-drafter file size
+        (Gemma); 0 for an embedded head whose weights are already in the main
+        GGUF size.
+        """
+        draft_kv = self._mtp_draft_kv_bytes(n_ctx)
+        if draft_kv is None:
+            return None
+        return draft_kv + self._mtp_verify_bytes(spec_draft_n_max) + max(0, draft_weights_bytes)
+
     def _fit_context_to_vram(
         self,
         requested_ctx: int,
@@ -2004,6 +2142,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
+        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         budget_frac: Optional[float] = None,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
@@ -2038,17 +2177,26 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP engaged: carve the drafter's reserve out of the fit budget. Callers
-        # can override outright (tensor-parallel mode passes a fatter margin), so
-        # only compute a default when none was supplied.
+        # MTP engaged: carve the drafter's reserve out of the fit budget. When a
+        # byte-accurate, context-aware overhead is available (mtp_overhead_fn) it
+        # supersedes the flat fraction -- the draft KV grows with ctx, so the
+        # reserve must be evaluated per candidate context inside the search, not
+        # as a one-shot fraction of total VRAM. The flat fraction stays as the
+        # fallback when GGUF dims are too sparse to size the draft KV. Callers can
+        # still override the fraction outright (tensor-parallel passes a fatter
+        # margin), so only compute a default when none was supplied.
         if budget_frac is None:
-            budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if mtp_engaged else 0.0)
+            flat_mtp = mtp_engaged and mtp_overhead_fn is None
+            budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
+        def _mtp_at(ctx: int) -> int:
+            return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
+
         # Already fits?
         kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv, **kv_kwargs)
-        if model_footprint + kv <= budget_bytes:
+        if model_footprint + kv + _mtp_at(requested_ctx) <= budget_bytes:
             return requested_ctx
 
         # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
@@ -2061,7 +2209,7 @@ class LlamaCppBackend:
             )
             return requested_ctx
 
-        # Binary search for max context that fits
+        # Binary search for max context that fits (KV + MTP draft reserve at that ctx)
         remaining = budget_bytes - model_footprint
         effective_min = min(min_ctx, requested_ctx)
         lo, hi = effective_min, requested_ctx
@@ -2069,7 +2217,7 @@ class LlamaCppBackend:
         while lo <= hi:
             mid = (lo + hi) // 2
             kv = self._estimate_kv_cache_bytes(mid, cache_type_kv, **kv_kwargs)
-            if kv <= remaining:
+            if kv + _mtp_at(mid) <= remaining:
                 best = mid
                 lo = mid + 1
             else:
@@ -3170,6 +3318,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         n_parallel: int = 1,
         mtp_engaged: bool = False,
+        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         max_target_ctx: Optional[int] = None,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
@@ -3212,19 +3361,45 @@ class LlamaCppBackend:
         free_by_idx = {idx: free for idx, free in usable_gpus}
         pool_mib = sum(free_by_idx.values())
         kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
-        if mtp_engaged:
-            # MTP keeps a draft model + its own KV cache on GPU.
+        # MTP keeps a draft model + its own KV cache + verify buffer on GPU. Use
+        # the byte-accurate, context-aware reserve when available; else the legacy
+        # flat 2 GiB. The byte-accurate term is subtracted per candidate context
+        # inside _fit_ctx (the draft KV grows with ctx), not once here.
+        if mtp_engaged and mtp_overhead_fn is None:
             kv_budget_b -= 2 * 1024**3
 
+        def _mtp_at(ctx: int) -> int:
+            return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
+
         def _fit_ctx(ctx: int) -> int:
-            # Largest context whose KV fits the pooled budget. Floors small, but
-            # never raises an explicit ctx above what was asked.
+            # Largest context whose KV (+ MTP draft reserve) fits the pooled
+            # budget. Floors small, but never raises an explicit ctx above asked.
             if self._can_estimate_kv() and ctx > 0:
                 ctx_floor = min(2048, ctx)
                 if kv_budget_b <= 0:
                     # Weights + buffers exceed the pool -> floor; the load then
                     # falls back to layer split.
                     return ctx_floor
+                if mtp_overhead_fn is not None:
+                    # Combined consumer kv(ctx)+mtp(ctx) is not a single linear
+                    # term (verify buffer is fixed, draft KV scales), so binary
+                    # search instead of the linear interpolation below.
+                    def _consumer(c: int) -> int:
+                        return self._estimate_kv_cache_bytes(
+                            c, cache_type_kv, n_parallel = n_parallel
+                        ) + _mtp_at(c)
+
+                    if _consumer(ctx) <= kv_budget_b:
+                        return ctx
+                    lo, hi, best = ctx_floor, ctx, ctx_floor
+                    while lo <= hi:
+                        mid = (lo + hi) // 2
+                        if _consumer(mid) <= kv_budget_b:
+                            best = mid
+                            lo = mid + 1
+                        else:
+                            hi = mid - 1
+                    return best
                 kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel)
                 if kv_at <= kv_budget_b:
                     return ctx
@@ -3245,7 +3420,14 @@ class LlamaCppBackend:
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )
-        even_share_mib = (model_size + kv_bytes) / len(gpu_indices) / (1024 * 1024)
+        # The MTP draft reserve also has to fit the even split, else an uneven
+        # pair gets tensor_split=None (even) while the smaller GPU can't host its
+        # share. Mirror the pooled budget: byte-accurate when available, else the
+        # legacy flat 2 GiB that kv_budget_b used above.
+        mtp_bytes = _mtp_at(effective_ctx) if effective_ctx > 0 else 0
+        if mtp_engaged and mtp_overhead_fn is None:
+            mtp_bytes = 2 * 1024**3
+        even_share_mib = (model_size + kv_bytes + mtp_bytes) / len(gpu_indices) / (1024 * 1024)
         tensor_split: Optional[list[int]] = None
         if even_share_mib > (min_free_mib - reserve_mib):
             adj = [max(0, int(free_by_idx[i] - reserve_mib)) for i in gpu_indices]
@@ -3671,21 +3853,89 @@ class LlamaCppBackend:
                         and _mtp_size_for_fit < _MTP_MIN_SIZE_B
                         and not bool(mtp_draft_path)
                     )
+                    # A user --spec-type that names mtp in extras runs MTP even
+                    # though Studio suppresses its own emission, so it must still
+                    # reserve VRAM (the original gap behind this fix).
+                    _user_mtp_via_extras = _extra_args_requests_mtp(extra_args)
+                    # Mirror _build_speculative_flags so the budget never reserves
+                    # for MTP that the launch resolver will not emit: MTP needs a
+                    # head/drafter (forced mtp on a plain GGUF falls back to
+                    # --spec-default) and a binary that supports --spec-type mtp
+                    # (older builds fall back, "binary_no_mtp").
+                    _mtp_model_for_fit = bool(
+                        self._nextn_predict_layers
+                        or _is_mtp_model_name(model_identifier, model_path)
+                        or bool(mtp_draft_path)
+                    )
+                    _mtp_binary_ok = True
+                    if not _user_mtp_via_extras:
+                        try:
+                            _mtp_binary_ok = bool(
+                                (self.probe_server_capabilities(binary) or {}).get("mtp_token")
+                            )
+                        except Exception:
+                            _mtp_binary_ok = False
                     _mtp_will_engage = bool(
-                        not _extra_args_set_spec_type(extra_args)
-                        and (
-                            _mtp_effective in ("mtp", "mtp+ngram")
-                            or (
-                                _mtp_effective == "auto"
-                                and (
-                                    bool(self._nextn_predict_layers)
-                                    or _is_mtp_model_name(model_identifier, model_path)
-                                    or bool(mtp_draft_path)
-                                )
-                                and not _mtp_sub_3b_for_fit
+                        _user_mtp_via_extras
+                        or (
+                            not _extra_args_set_spec_type(extra_args)
+                            and _mtp_binary_ok
+                            and _mtp_model_for_fit
+                            and (
+                                _mtp_effective in ("mtp", "mtp+ngram")
+                                or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
                             )
                         )
                     )
+
+                    # Effective draft depth for the budget. Extras are appended
+                    # last at launch (last-wins), so a --spec-draft-n-max /
+                    # --draft-max there overrides the first-class field; then the
+                    # platform default from _build_speculative_flags (2 GPU/3 CPU).
+                    _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
+                    _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
+                    if _mtp_eff_n_max is None:
+                        _mtp_eff_n_max = 2 if gpus else 3
+                    # Separate drafter (Gemma, or a user --model-draft in extras)
+                    # weights live on GPU too; an embedded head (Qwen) is already
+                    # inside model_size.
+                    _mtp_draft_for_budget = mtp_draft_path or _extra_args_mtp_draft_path(extra_args)
+                    _mtp_draft_weights = 0
+                    if _mtp_draft_for_budget:
+                        try:
+                            _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
+                        except Exception:
+                            _mtp_draft_weights = 0
+
+                    # Byte-accurate, context-aware MTP reserve when GGUF dims allow
+                    # it; else None -> the flat _MTP_VRAM_RESERVE_FRAC fallback.
+                    mtp_overhead_fn: Optional[Callable[[int], int]] = None
+                    if _mtp_will_engage:
+                        _probe_ctx = self._context_length or (
+                            effective_ctx if effective_ctx > 0 else 4096
+                        )
+                        if (
+                            self._estimate_mtp_overhead_bytes(
+                                _probe_ctx,
+                                spec_draft_n_max = _mtp_eff_n_max,
+                                draft_weights_bytes = _mtp_draft_weights,
+                            )
+                            is not None
+                        ):
+                            # Small closure capturing this load's draft depth +
+                            # drafter weights; ctx varies per fit candidate.
+                            def mtp_overhead_fn(
+                                ctx: int,
+                                _n: int = _mtp_eff_n_max,
+                                _w: int = _mtp_draft_weights,
+                            ) -> int:
+                                v = self._estimate_mtp_overhead_bytes(
+                                    ctx, spec_draft_n_max = _n, draft_weights_bytes = _w
+                                )
+                                return v if v is not None else 0
+
+                    def _mtp_bytes(ctx: int) -> int:
+                        return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
 
                     # Auto-cap context to fit GPU VRAM and select GPUs. Two
                     # policies by whether the user set n_ctx:
@@ -3700,9 +3950,16 @@ class LlamaCppBackend:
                     explicit_ctx = requested_ctx > 0
                     # MTP draft model lives outside the main estimates; carve
                     # its reserve out of every fit budget and pin threshold so
-                    # a load can't pin into the drafter's headroom.
-                    _mtp_reserve = _MTP_VRAM_RESERVE_FRAC if _mtp_will_engage else 0.0
-                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _mtp_reserve
+                    # a load can't pin into the drafter's headroom. With a
+                    # byte-accurate overhead (mtp_overhead_fn) the reserve is
+                    # added to the totals per candidate context instead, so the
+                    # flat fraction applies only as the dims-unavailable fallback.
+                    _flat_mtp_reserve = (
+                        _MTP_VRAM_RESERVE_FRAC
+                        if (_mtp_will_engage and mtp_overhead_fn is None)
+                        else 0.0
+                    )
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
                     # Tensor mode allocates a compute-graph buffer on every
                     # participating GPU, so a GPU with less free VRAM than that
@@ -3756,6 +4013,7 @@ class LlamaCppBackend:
                             cache_type_kv = cache_type_kv,
                             n_parallel = n_parallel,
                             mtp_engaged = _mtp_will_engage,
+                            mtp_overhead_fn = mtp_overhead_fn,
                             # Report the UI ceiling from native ctx, not the
                             # explicit small request.
                             max_target_ctx = self._context_length or target_ctx,
@@ -3779,12 +4037,15 @@ class LlamaCppBackend:
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
+                                    mtp_overhead_fn = mtp_overhead_fn,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * (_CTX_FIT_VRAM_FRACTION - _mtp_reserve):
+                                total_mib = (model_size + kv + _mtp_bytes(capped)) / (1024 * 1024)
+                                if total_mib <= pool_mib * (
+                                    _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                ):
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
@@ -3798,8 +4059,12 @@ class LlamaCppBackend:
                             # Honor the requested context verbatim. If it fits,
                             # pin GPUs and skip --fit; else ship -c <ctx> --fit
                             # on and let llama-server flex -ngl (CPU offload).
-                            requested_total = model_size + self._estimate_kv_cache_bytes(
-                                effective_ctx, cache_type_kv, n_parallel = n_parallel
+                            requested_total = (
+                                model_size
+                                + self._estimate_kv_cache_bytes(
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _mtp_bytes(effective_ctx)
                             )
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total, gpus, usable_fraction = _pin_fraction
@@ -3820,11 +4085,12 @@ class LlamaCppBackend:
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
+                                    mtp_overhead_fn = mtp_overhead_fn,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                total_mib = (model_size + kv) / (1024 * 1024)
+                                total_mib = (model_size + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if total_mib <= pool_mib * pin_fraction:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
@@ -3844,7 +4110,9 @@ class LlamaCppBackend:
                                             cache_type_kv,
                                             n_parallel = n_parallel,
                                         )
-                                        total_mib = (model_size + kv) / (1024 * 1024)
+                                        total_mib = (
+                                            model_size + kv + _mtp_bytes(effective_ctx)
+                                        ) / (1024 * 1024)
                                         if total_mib <= pool_mib * pin_fraction:
                                             gpu_indices = sorted(idx for idx, _ in subset)
                                             use_fit = False
@@ -3857,13 +4125,33 @@ class LlamaCppBackend:
                             "Falling back to file-size-only GPU selection",
                             model_size_gb = round(model_size / (1024**3), 2),
                         )
+                        # Add the byte-accurate MTP reserve here too when it is
+                        # available; otherwise _pin_fraction carries the flat
+                        # fallback (the two are mutually exclusive by design).
+                        _fs_total = model_size + _mtp_bytes(
+                            self._context_length or effective_ctx or 4096
+                        )
                         gpu_indices, use_fit = self._select_gpus(
-                            model_size, gpus, usable_fraction = _pin_fraction
+                            _fs_total, gpus, usable_fraction = _pin_fraction
                         )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+
+                    # MTP reserve at the final context, for the logs below. Spells
+                    # out why a context was reduced for the "110k selected then
+                    # OOM mid-generation" class of reports.
+                    _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
+                    if _mtp_will_engage:
+                        _mtp_note = (
+                            f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
+                            f"(draft KV @ {effective_ctx} + verify n_max={_mtp_eff_n_max}"
+                            + (", flat-frac fallback" if mtp_overhead_fn is None else "")
+                            + "), "
+                        )
+                    else:
+                        _mtp_note = ""
 
                     if effective_ctx < original_ctx:
                         kv_est = self._estimate_kv_cache_bytes(
@@ -3872,7 +4160,9 @@ class LlamaCppBackend:
                         logger.info(
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                             f"(model: {model_size / (1024**3):.1f} GB, "
-                            f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                            f"est. KV cache: {kv_est / (1024**3):.1f} GB, "
+                            f"{_mtp_note}".rstrip(", ")
+                            + ")"
                         )
 
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
@@ -3885,6 +4175,7 @@ class LlamaCppBackend:
                         f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
                         f"{mmproj_note}"
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                        f"{_mtp_note}"
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
