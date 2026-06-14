@@ -41,6 +41,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
 _signal_crash = LlamaCppBackend._is_signal_crash
+_flash_off = LlamaCppBackend._with_flash_attn_off
 
 # Real abort captured loading gemma-4 on a 3-day-old prebuilt (build b9496).
 _GEMMA4_OLD_LLAMACPP_OUT = (
@@ -185,6 +186,33 @@ class TestStripMmprojArgs:
         assert cmd[-1] == "/p/mm.gguf"  # input untouched
 
 
+class TestFlashAttnOff:
+    """_with_flash_attn_off is the least-destructive recovery rung: flip
+    '--flash-attn on' to 'off' (keeps vision + MTP), or None when there is
+    nothing to disable."""
+
+    def test_flips_on_to_off_keeping_vision_and_mtp(self):
+        out = _flash_off(_VISION_CMD)
+        assert out is not None
+        # FA disabled, every other capability (mmproj, MTP, ctx) preserved.
+        i = out.index("--flash-attn")
+        assert out[i + 1] == "off"
+        assert "--mmproj" in out and "--spec-default" in out
+        assert len(out) == len(_VISION_CMD)
+
+    def test_none_when_already_off(self):
+        assert _flash_off(["llama-server", "--flash-attn", "off", "-c", "4096"]) is None
+
+    def test_none_when_no_flash_attn(self):
+        assert _flash_off(["llama-server", "-m", "/m.gguf", "-c", "4096"]) is None
+
+    def test_returns_new_list_input_untouched(self):
+        cmd = ["llama-server", "--flash-attn", "on"]
+        out = _flash_off(cmd)
+        assert out == ["llama-server", "--flash-attn", "off"]
+        assert cmd[-1] == "on"  # input not mutated
+
+
 class TestRetryContract:
     """The two helpers compose into the load_model retry decision."""
 
@@ -213,3 +241,18 @@ class TestRetryContract:
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
         # Clean non-zero exit (bad path, port bind) is not a hard crash; stay message-based.
         assert (_detect(_MISSING_OUT) or _signal_crash(1)) is False
+
+    def test_signal_crash_tries_flash_attn_off_before_dropping_vision(self):
+        # Ladder order: a hard fault retries FA-off FIRST (keeps vision + MTP);
+        # only if THAT is None/fails do we fall back to stripping --mmproj.
+        assert _signal_crash(-11) is True
+        fa_retry = _flash_off(_VISION_CMD)
+        assert fa_retry is not None
+        assert "--mmproj" in fa_retry  # vision preserved at this rung
+        # Last resort still available and strictly more destructive.
+        text_only = _strip(fa_retry)
+        assert "--mmproj" not in text_only
+
+    def test_external_kill_skips_flash_attn_retry(self):
+        # SIGKILL (-9, OOM killer) is not a program fault: no FA-off retry.
+        assert _signal_crash(-9) is False

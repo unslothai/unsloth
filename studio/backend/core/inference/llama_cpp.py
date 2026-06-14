@@ -3287,6 +3287,23 @@ class LlamaCppBackend:
         return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
 
     @staticmethod
+    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd with '--flash-attn on' flipped to 'off', or None when flash
+        attention is already off / absent (nothing to retry). Flash-attention
+        kernels hard-crash at startup on some ROCm/GPU builds (often in the
+        vision tower); disabling it keeps vision and MTP, so it is the least
+        destructive recovery rung -- tried before dropping either.
+        """
+        out = list(cmd)
+        for i in range(len(out) - 1):
+            if out[i] == "--flash-attn":
+                if out[i + 1] == "off":
+                    return None
+                out[i + 1] = "off"
+                return out
+        return None
+
+    @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
         Every other flag is preserved; a no-op when --mmproj is absent.
@@ -4368,6 +4385,29 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+
+                # Flash-attention kernels hard-crash at startup on some ROCm/GPU
+                # builds (frequently inside the vision tower). Disabling FA keeps
+                # both vision and MTP, so retry that way before dropping either.
+                # Only on a hard fault with FA on; a cancel/unload stops respawn.
+                if not healthy and not self._cancel_event.is_set():
+                    _fa_rc = self._process.poll() if self._process is not None else None
+                    _fa_cmd = (
+                        self._with_flash_attn_off(_last_spawn_cmd)
+                        if self._is_signal_crash(_fa_rc)
+                        else None
+                    )
+                    if _fa_cmd is not None:
+                        logger.warning(
+                            "llama-server hard-crashed at startup (exit %s) with "
+                            "flash attention on; retrying once with --flash-attn "
+                            "off (keeps vision and MTP).",
+                            _fa_rc,
+                        )
+                        self._kill_process()
+                        cmd = _fa_cmd
+                        healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
+
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
