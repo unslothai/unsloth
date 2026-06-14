@@ -1135,6 +1135,25 @@ async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   }
 }
 
+/**
+ * Prefer a user-picked or UI-initiated load over adopting a CLI/API model.
+ * Returns true when the caller should stop waiting for server adoption.
+ */
+async function yieldToUserModelLoad(
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  const hasUserCheckpoint = () =>
+    !!useChatRuntimeStore.getState().params.checkpoint;
+  if (hasUserCheckpoint()) {
+    return true;
+  }
+  if (!useChatRuntimeStore.getState().modelLoading) {
+    return false;
+  }
+  await waitForModelReady(abortSignal);
+  return hasUserCheckpoint();
+}
+
 async function serverLoadEvidence(): Promise<boolean> {
   try {
     const progress = await getLoadProgress();
@@ -1166,6 +1185,9 @@ async function serverLoadEvidence(): Promise<boolean> {
 async function adoptInFlightServerLoad(
   abortSignal?: AbortSignal,
 ): Promise<boolean> {
+  if (await yieldToUserModelLoad(abortSignal)) {
+    return true;
+  }
   if (await tryAdoptServerActiveModel()) {
     return true;
   }
@@ -1181,14 +1203,26 @@ async function adoptInFlightServerLoad(
     if (abortSignal?.aborted) {
       throw new Error("Aborted");
     }
+    if (await yieldToUserModelLoad(abortSignal)) {
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
+    if (await yieldToUserModelLoad(abortSignal)) {
+      return true;
+    }
     if (await tryAdoptServerActiveModel()) {
       return true;
     }
     sawEvidence = await serverLoadEvidence();
     if (!sawEvidence) {
+      if (await yieldToUserModelLoad(abortSignal)) {
+        return true;
+      }
       return await tryAdoptServerActiveModel();
     }
+  }
+  if (await yieldToUserModelLoad(abortSignal)) {
+    return true;
   }
   return await tryAdoptServerActiveModel();
 }
