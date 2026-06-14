@@ -2028,6 +2028,24 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
+# Recognise a directory that an earlier Studio install created before the
+# ownership marker existed (installs from before the marker / prebuilt metadata
+# landed wrote neither). Adopt such a directory when there is positive evidence
+# it belongs to an established Studio home:
+#   - the directory carries Studio's prebuilt-llama.cpp metadata, or
+#   - $StudioHome already holds Studio's CLI shim or studio.conf from a prior
+#     run. install.ps1 writes both only AFTER it invokes setup.ps1, so a fresh
+#     install into a dirty custom home (the case the guard protects) does not
+#     have them yet and is still rejected. Mirrors install.ps1's env-mode
+#     sentinels, minus the venv marker (install.ps1 writes that before setup.ps1,
+#     so it cannot tell a prior install apart from a fresh one).
+function Test-StudioOwnedAdoptable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) { return $true }
+    return $false
+}
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -2035,6 +2053,10 @@ function Assert-StudioOwnedOrAbsent {
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
     if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+        if (Test-StudioOwnedAdoptable $Path) {
+            Mark-StudioOwned $Path
+            return
+        }
         Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1

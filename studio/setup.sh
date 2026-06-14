@@ -439,11 +439,33 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
+# Recognise a directory that an earlier Studio install created before the
+# ownership marker existed (installs from before the marker / prebuilt metadata
+# landed wrote neither). Adopt such a directory -- backfill the marker and
+# proceed -- when there is positive evidence it belongs to an established Studio
+# home:
+#   - the directory carries Studio's prebuilt-llama.cpp metadata, or
+#   - $STUDIO_HOME already holds Studio's CLI shim or studio.conf from a prior
+#     run. install.sh writes both only AFTER it invokes setup.sh, so a fresh
+#     install into a dirty custom home (the case the guard protects) does not
+#     have them yet and is still rejected. Mirrors install.sh's env-mode venv
+#     sentinels, minus the venv marker (install.sh writes that before setup.sh,
+#     so it cannot tell a prior install apart from a fresh one).
+_studio_owned_adoptable() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    [ -f "$STUDIO_HOME/bin/unsloth" ] && return 0
+    [ -f "$STUDIO_HOME/share/studio.conf" ] && return 0
+    return 1
+}
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     [ -d "$_aso_dir" ] || return 0
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        if _studio_owned_adoptable "$_aso_dir"; then
+            : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            return 0
+        fi
         echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
