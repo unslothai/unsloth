@@ -803,7 +803,11 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        _reaped = self._kill_orphaned_servers()
+        if _reaped:
+            # Reaped VRAM frees lazily; arm the settle wait so the first load
+            # waits before ranking GPUs by free memory.
+            self._last_kill_monotonic = time.monotonic()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -1685,6 +1689,12 @@ class LlamaCppBackend:
     # buffers; 0.90 dropped 91-94% fits to CPU offload (#5106).
     _GPU_PIN_VRAM_FRACTION = 0.95
 
+    # Compute-graph/logits buffer (~1-2 GB) a single pinned card holds on top of
+    # weights+KV, which selection omits. Reserved only when another GPU/split
+    # exists (len(gpus) > 1); single-GPU hosts keep the bare 0.95 pin. mmproj is
+    # already in model_size (#5825), so only the graph buffer is added here.
+    _SINGLE_GPU_GRAPH_RESERVE_MIB = 2048
+
     # Per-GPU compute-graph buffer to reserve in tensor mode (MiB). This is the
     # logits buffer (n_batch x vocab) + activation scratch that llama.cpp sizes
     # via graph_reserve -- it is roughly EQUAL on every device (not proportional
@@ -1771,6 +1781,7 @@ class LlamaCppBackend:
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
         usable_fraction: Optional[float] = None,
+        graph_reserve_bytes: int = 0,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -1778,6 +1789,8 @@ class LlamaCppBackend:
         ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
         headroom for compute buffers, CUDA context, and other runtime
         overhead; callers lower it when MTP reserves VRAM for a draft model.
+        ``graph_reserve_bytes`` is the extra compute-graph buffer a single
+        pinned card needs; enforced only on multi-GPU hosts.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -1794,17 +1807,20 @@ class LlamaCppBackend:
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
-        # Try 1 GPU at the usable-VRAM threshold.
-        if ranked[0][1] * usable_fraction >= model_size_mib:
+        # Try 1 GPU. Multi-GPU hosts also require room for the graph buffer
+        # model_size_bytes omits, so a ~95% cram defers to a split instead.
+        reserve_mib = (graph_reserve_bytes / (1024 * 1024)) if len(ranked) > 1 else 0.0
+        if ranked[0][1] * usable_fraction >= model_size_mib + reserve_mib:
             return [ranked[0][0]], False
 
-        # Try N GPUs (accumulate free memory from most-free)
+        # Accumulate from most-free. The 1-GPU pin already failed, so only
+        # accept >= 2 GPUs here; else we re-pin the lone card without the reserve.
         cumulative = 0
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
             cumulative += free_mib * usable_fraction
-            if cumulative >= model_size_mib:
+            if len(selected) >= 2 and cumulative >= model_size_mib:
                 return sorted(selected), False
 
         # Too large even for all GPUs; let --fit handle it
@@ -3704,6 +3720,10 @@ class LlamaCppBackend:
                     _mtp_reserve = _MTP_VRAM_RESERVE_FRAC if _mtp_will_engage else 0.0
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _mtp_reserve
 
+                    # Graph-buffer reserve for a single pinned card (multi-GPU only).
+                    _graph_reserve_mib = float(self._SINGLE_GPU_GRAPH_RESERVE_MIB)
+                    _graph_reserve_bytes = self._SINGLE_GPU_GRAPH_RESERVE_MIB * 1024 * 1024
+
                     # Tensor mode allocates a compute-graph buffer on every
                     # participating GPU, so a GPU with less free VRAM than that
                     # reserve can't host it and would OOM at load. Drop those
@@ -3802,7 +3822,10 @@ class LlamaCppBackend:
                                 effective_ctx, cache_type_kv, n_parallel = n_parallel
                             )
                             gpu_indices, use_fit = self._select_gpus(
-                                requested_total, gpus, usable_fraction = _pin_fraction
+                                requested_total,
+                                gpus,
+                                usable_fraction = _pin_fraction,
+                                graph_reserve_bytes = _graph_reserve_bytes,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
@@ -3825,7 +3848,13 @@ class LlamaCppBackend:
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * pin_fraction:
+                                # 1-GPU pin must also hold the graph buffer (multi-GPU only).
+                                reserve_mib = (
+                                    _graph_reserve_mib
+                                    if (n_gpus == 1 and len(ranked) > 1)
+                                    else 0.0
+                                )
+                                if total_mib + reserve_mib <= pool_mib * pin_fraction:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
@@ -3845,7 +3874,12 @@ class LlamaCppBackend:
                                             n_parallel = n_parallel,
                                         )
                                         total_mib = (model_size + kv) / (1024 * 1024)
-                                        if total_mib <= pool_mib * pin_fraction:
+                                        reserve_mib = (
+                                            _graph_reserve_mib
+                                            if (n_gpus == 1 and len(ranked) > 1)
+                                            else 0.0
+                                        )
+                                        if total_mib + reserve_mib <= pool_mib * pin_fraction:
                                             gpu_indices = sorted(idx for idx, _ in subset)
                                             use_fit = False
                                             break
@@ -3858,7 +3892,10 @@ class LlamaCppBackend:
                             model_size_gb = round(model_size / (1024**3), 2),
                         )
                         gpu_indices, use_fit = self._select_gpus(
-                            model_size, gpus, usable_fraction = _pin_fraction
+                            model_size,
+                            gpus,
+                            usable_fraction = _pin_fraction,
+                            graph_reserve_bytes = _graph_reserve_bytes,
                         )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
@@ -5013,7 +5050,7 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
-    def _kill_orphaned_servers():
+    def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
@@ -5025,7 +5062,11 @@ class LlamaCppBackend:
         Uses psutil for cross-platform support (Linux, macOS, Windows);
         falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         absent.
+
+        Returns the count of processes killed; callers arm the VRAM-settle
+        wait on a positive count.
         """
+        killed = 0
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -5117,6 +5158,7 @@ class LlamaCppBackend:
                             continue
 
                         proc.kill()
+                        killed += 1
                         logger.info(
                             f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
@@ -5129,7 +5171,7 @@ class LlamaCppBackend:
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
                 if sys.platform != "linux":
-                    return
+                    return killed
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -5138,7 +5180,7 @@ class LlamaCppBackend:
                     env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
-                    return
+                    return killed
 
                 for line in result.stdout.strip().splitlines():
                     parts = line.strip().split(None, 1)
@@ -5169,6 +5211,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        killed += 1
                         logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
@@ -5176,6 +5219,7 @@ class LlamaCppBackend:
                         pass
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
+        return killed
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""

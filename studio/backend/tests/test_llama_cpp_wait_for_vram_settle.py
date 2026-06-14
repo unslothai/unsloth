@@ -315,3 +315,75 @@ def test_helper_is_static_method_callable_off_class():
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(max_wait = 0.1, interval = 0.05),
         )
+
+
+# ---------------------------------------------------------------------------
+# Startup orphan-reaper arms the settle clock (the "wrong card after restart"
+# root cause: reaped VRAM frees lazily, so the first load must wait).
+# ---------------------------------------------------------------------------
+
+
+def test_kill_orphaned_servers_returns_count():
+    """The reaper reports how many owned orphans it killed, so __init__ can
+    arm the settle wait. Only Studio-owned llama-server procs count."""
+    import os
+
+    mypid = os.getpid()
+    fake_path = "/tmp/unsloth-test-llama/llama-server"
+    killed: list[int] = []
+
+    class _FakeProc:
+        def __init__(self, pid, name, exe):
+            self.info = {"pid": pid, "name": name, "exe": exe}
+
+        def kill(self):
+            killed.append(self.info["pid"])
+
+    owned = _FakeProc(mypid + 1, "llama-server", fake_path)  # exact-path match
+    foreign = _FakeProc(mypid + 2, "llama-server", "/usr/bin/llama-server")
+    unrelated = _FakeProc(mypid + 3, "python3", "/usr/bin/python3")
+
+    fake_psutil = _types.ModuleType("psutil")
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (Exception,), {})
+    fake_psutil.process_iter = lambda attrs = None: [owned, foreign, unrelated]
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}), patch.dict(
+        os.environ, {"LLAMA_SERVER_PATH": fake_path}
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+    assert n == 1, "only the Studio-owned orphan should be counted"
+    assert killed == [mypid + 1]
+
+    # No owned orphans -> zero, so __init__ leaves the cold-start sentinel.
+    fake_psutil.process_iter = lambda attrs = None: [foreign, unrelated]
+    killed.clear()
+    with patch.dict(sys.modules, {"psutil": fake_psutil}), patch.dict(
+        os.environ, {"LLAMA_SERVER_PATH": fake_path}
+    ):
+        assert LlamaCppBackend._kill_orphaned_servers() == 0
+    assert killed == []
+
+
+def test_startup_reaper_arms_settle_timestamp():
+    """__init__ arms ``_last_kill_monotonic`` when the startup reaper kills an
+    orphan (so the first load_model waits for VRAM to settle), and leaves the
+    0.0 cold-start sentinel when nothing was reaped."""
+    with patch.object(
+        LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 1)
+    ):
+        before = time.monotonic()
+        backend = LlamaCppBackend()
+        after = time.monotonic()
+    assert before <= backend._last_kill_monotonic <= after, (
+        "a positive reap count must arm the settle clock"
+    )
+
+    with patch.object(
+        LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
+    ):
+        backend_cold = LlamaCppBackend()
+    assert backend_cold._last_kill_monotonic == 0.0, (
+        "no reap must leave the cold-start sentinel so the wait is skipped"
+    )
