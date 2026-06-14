@@ -2925,11 +2925,14 @@ async def openai_chat_completions(
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
-                # Rebuild gguf_messages with updated system prompt
-                gguf_messages = []
-                if system_prompt:
-                    gguf_messages.append({"role": "system", "content": system_prompt})
-                gguf_messages.extend(chat_messages)
+                # Rebuild gguf_messages with the nudged system prompt while
+                # keeping the already-normalized history. gguf_messages came from
+                # _openai_messages_for_gguf_chat, which drops empty assistant
+                # sentinels and coalesces orphaned consecutive user turns;
+                # rebuilding from the raw chat_messages here would reintroduce
+                # those adjacent user turns and 400 a strict GGUF template in the
+                # tool path (#5980).
+                gguf_messages = _gguf_messages_with_system(gguf_messages, system_prompt)
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -5781,6 +5784,24 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
             out[-1] = prev
             continue
         out.append(m)
+    return out
+
+
+def _gguf_messages_with_system(messages: list[dict], system_prompt: str) -> list[dict]:
+    """Return ``messages`` with ``system_prompt`` as the single leading system turn.
+
+    Used by the GGUF tool path to re-inject a tool-use system nudge without
+    re-deriving the conversation: any existing system turn is dropped and the
+    already-normalized non-system turns are kept verbatim. Those turns were
+    produced by :func:`_openai_messages_for_gguf_chat` (empty assistant
+    sentinels dropped + orphaned consecutive user turns coalesced), so a strict
+    chat template never sees adjacent user turns in the tool loop (#5980).
+    """
+    history = [m for m in messages if m.get("role") != "system"]
+    out: list[dict] = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
+    out.extend(history)
     return out
 
 

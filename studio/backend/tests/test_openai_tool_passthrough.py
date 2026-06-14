@@ -578,6 +578,7 @@ class TestFriendlyErrorChatTemplate:
 from routes.inference import (  # noqa: E402
     _coalesce_consecutive_user_turns,
     _drop_empty_assistant_sentinels,
+    _gguf_messages_with_system,
     _openai_messages_for_gguf_chat,
     _openai_messages_for_passthrough,
 )
@@ -773,6 +774,69 @@ class TestCoalesceConsecutiveUserTurns:
         roles = [m["role"] for m in out]
         assert roles == ["system", "user"]
         assert out[1]["content"] == "hi\n\nagain"
+
+
+class TestGgufMessagesWithSystem:
+    def test_replaces_existing_system_and_keeps_history(self):
+        msgs = [
+            {"role": "system", "content": "old"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        out = _gguf_messages_with_system(msgs, "new nudge")
+        assert out == [
+            {"role": "system", "content": "new nudge"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
+    def test_empty_system_prompt_prepends_nothing(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        out = _gguf_messages_with_system(msgs, "")
+        assert out == [{"role": "user", "content": "hi"}]
+
+    def test_does_not_reintroduce_adjacent_user_turns(self):
+        # History already coalesced to a single user turn must stay alternating.
+        msgs = [{"role": "user", "content": "hi\n\nagain"}]
+        out = _gguf_messages_with_system(msgs, "nudge")
+        roles = [m["role"] for m in out]
+        assert roles == ["system", "user"]
+
+    def test_tool_path_repro_stays_alternating_after_empty_turn(self):
+        """Regression for the tool-loop gap (#5980): the GGUF tool path injects a
+        system nudge by rebuilding messages. Feeding the normalized history
+        through _gguf_messages_with_system must keep it strictly alternating so a
+        strict template (Gemma 3) is not handed two consecutive user turns."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        out = _gguf_messages_with_system(normalized, "You have access to tools.")
+        roles = [m["role"] for m in out]
+        assert roles == ["system", "user"]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+        assert out[1]["content"] == "hi\n\nagain"
+
+    def test_tool_path_repro_with_bare_assistant_sentinel(self):
+        # Stop-button sentinel: bare {"role":"assistant"} (content=None) must not
+        # leave two consecutive user turns reaching the tool path either.
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant"),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        out = _gguf_messages_with_system(normalized, "nudge")
+        roles = [m["role"] for m in out]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
 
 
 class TestGgufVisionMessages:
