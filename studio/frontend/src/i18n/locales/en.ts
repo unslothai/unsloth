@@ -290,6 +290,8 @@ export const en = {
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",
+      exampleCurlAdvanced: "curl + advanced",
+      examplePythonAdvanced: "Python + advanced",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       cloudflareTunnel: "Cloudflare Tunnel",

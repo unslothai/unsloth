@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createCodePlugin } from "@/components/assistant-ui/code-plugin";
+import {
+  unslothDarkTheme,
+  unslothLightTheme,
+} from "@/components/assistant-ui/code-themes";
 import { Switch } from "@/components/ui/switch";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
@@ -12,22 +17,35 @@ import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
+import { Streamdown } from "streamdown";
 
 // Example type (what to call the API with) and OS axis (curl quoting differs;
 // Python is byte-identical across OSes so its OS row is hidden).
-type ExampleType = "curl" | "python" | "curlTools" | "pythonTools";
+type ExampleType =
+  | "curl"
+  | "python"
+  | "curlTools"
+  | "pythonTools"
+  | "curlAdvanced"
+  | "pythonAdvanced";
 type Os = "unix" | "windows";
+// plain = bare call; tools = server-side tools; advanced = sampling + thinking + tools.
+type Variant = "plain" | "tools" | "advanced";
 
-const TYPE_TABS: { id: ExampleType; label: string; i18n?: boolean }[] = [
+const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "curl", label: "curl" },
   { id: "python", label: "Python" },
-  { id: "curlTools", label: "curl + tools", i18n: true },
-  { id: "pythonTools", label: "Python + tools", i18n: true },
+  { id: "curlTools", label: "curl + tools" },
+  { id: "pythonTools", label: "Python + tools" },
+  { id: "curlAdvanced", label: "curl + advanced" },
+  { id: "pythonAdvanced", label: "Python + advanced" },
 ];
 
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
   pythonTools: "settings.apiKeys.examplePythonTools",
+  curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
+  pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
 };
 
 // curl-based examples carry the OS dimension; Python does not.
@@ -36,12 +54,25 @@ const OS_AWARE: Record<ExampleType, boolean> = {
   python: false,
   curlTools: true,
   pythonTools: false,
+  curlAdvanced: true,
+  pythonAdvanced: false,
 };
+
+const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
 
 const PROMPT = "Can Unsloth Studio do API calling?";
 // render_html / search_knowledge_base are intentionally omitted from the
 // examples; web_search + python + terminal are the reliable built-ins.
 const TOOLS = ["web_search", "python", "terminal"];
+// Sampling/thinking knobs surfaced by the "+ advanced" examples.
+const ADV = {
+  temperature: 0.7,
+  top_p: 0.8,
+  top_k: 20,
+  min_p: 0.05,
+  repetition_penalty: 1.1,
+  max_tokens: 1024,
+} as const;
 
 const DOC_LINKS = [
   {
@@ -76,14 +107,52 @@ const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
 const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
+// Shared body fields (after model/messages, before stream) per variant.
+function bodyExtraLines(variant: Variant, indent: string): string[] {
+  const lines: string[] = [];
+  if (variant === "advanced") {
+    lines.push(`${indent}"temperature": ${ADV.temperature},`);
+    lines.push(`${indent}"top_p": ${ADV.top_p},`);
+    lines.push(`${indent}"top_k": ${ADV.top_k},`);
+    lines.push(`${indent}"min_p": ${ADV.min_p},`);
+    lines.push(`${indent}"repetition_penalty": ${ADV.repetition_penalty},`);
+    lines.push(`${indent}"max_tokens": ${ADV.max_tokens},`);
+    lines.push(`${indent}"enable_thinking": true,`);
+  }
+  if (variant !== "plain") {
+    lines.push(`${indent}"enable_tools": true,`);
+    lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
+  }
+  return lines;
+}
+
+function curlBodyPretty(model: string, variant: Variant): string {
+  const lines = [
+    `    "model": ${j(model)},`,
+    `    "messages": [{"role": "user", "content": ${j(PROMPT)}}],`,
+    ...bodyExtraLines(variant, "    "),
+    `    "stream": true`,
+  ];
+  return `{\n${lines.join("\n")}\n  }`;
+}
+
 // Compact one-line JSON for the Windows body file (PowerShell mangles inline
 // double quotes passed to curl.exe, so the body is written to disk instead).
-function winBody(model: string, tools: boolean): string {
+function winBody(model: string, variant: Variant): string {
   const body: Record<string, unknown> = {
     model,
     messages: [{ role: "user", content: PROMPT }],
   };
-  if (tools) {
+  if (variant === "advanced") {
+    body.temperature = ADV.temperature;
+    body.top_p = ADV.top_p;
+    body.top_k = ADV.top_k;
+    body.min_p = ADV.min_p;
+    body.repetition_penalty = ADV.repetition_penalty;
+    body.max_tokens = ADV.max_tokens;
+    body.enable_thinking = true;
+  }
+  if (variant !== "plain") {
     body.enable_tools = true;
     body.enabled_tools = TOOLS;
   }
@@ -95,22 +164,12 @@ function curlUnix(
   base: string,
   key: string,
   model: string,
-  tools: boolean,
+  variant: Variant,
 ): string {
-  const toolsLines = tools
-    ? `
-    "enable_tools": true,
-    "enabled_tools": [${toolsJson}],`
-    : "";
-  const body = `{
-    "model": ${j(model)},
-    "messages": [{"role": "user", "content": ${j(PROMPT)}}],${toolsLines}
-    "stream": true
-  }`;
   return `curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
-  -d '${shSingle(body)}'`;
+  -d '${shSingle(curlBodyPretty(model, variant))}'`;
 }
 
 // Windows: PowerShell. curl is aliased to Invoke-WebRequest, so call curl.exe;
@@ -119,9 +178,9 @@ function curlWindows(
   base: string,
   key: string,
   model: string,
-  tools: boolean,
+  variant: Variant,
 ): string {
-  return `$body = '${psSingle(winBody(model, tools))}'
+  return `$body = '${psSingle(winBody(model, variant))}'
 Set-Content -Path body.json -Value $body -Encoding ascii
 curl.exe ${base}/v1/chat/completions \`
   -H "Authorization: Bearer ${key}" \`
@@ -133,24 +192,42 @@ function pythonSnippet(
   base: string,
   key: string,
   model: string,
-  tools: boolean,
+  variant: Variant,
 ): string {
-  // enable_tools / enabled_tools are Unsloth extensions, not standard OpenAI
-  // fields, so the client forwards them through extra_body.
-  const toolsArg = tools
+  // temperature/top_p/max_tokens are standard OpenAI args; the rest are
+  // Unsloth extensions the client forwards through extra_body.
+  const named =
+    variant === "advanced"
+      ? `
+    temperature=${ADV.temperature},
+    top_p=${ADV.top_p},
+    max_tokens=${ADV.max_tokens},`
+      : "";
+  const extra: string[] = [];
+  if (variant === "advanced") {
+    extra.push(`        "top_k": ${ADV.top_k},`);
+    extra.push(`        "min_p": ${ADV.min_p},`);
+    extra.push(`        "repetition_penalty": ${ADV.repetition_penalty},`);
+    extra.push(`        "enable_thinking": True,`);
+  }
+  if (variant !== "plain") {
+    extra.push(`        "enable_tools": True,`);
+    extra.push(`        "enabled_tools": [${toolsJson}],`);
+  }
+  const extraBody = extra.length
     ? `
     extra_body={
-        "enable_tools": True,
-        "enabled_tools": [${toolsJson}],
+${extra.join("\n")}
     },`
     : "";
   // With tools, the stream interleaves tool-lifecycle events that carry no
   // choices, so guard chunk.choices before indexing it.
-  const loop = tools
-    ? `for chunk in response:
+  const loop =
+    variant !== "plain"
+      ? `for chunk in response:
     if chunk.choices:
         print(chunk.choices[0].delta.content or "", end="")`
-    : `for chunk in response:
+      : `for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")`;
   return `from openai import OpenAI
 
@@ -161,7 +238,7 @@ client = OpenAI(
 
 response = client.chat.completions.create(
     model=${j(model)},
-    messages=[{"role": "user", "content": ${j(PROMPT)}}],${toolsArg}
+    messages=[{"role": "user", "content": ${j(PROMPT)}}],${named}${extraBody}
     stream=True,
 )
 ${loop}`;
@@ -175,10 +252,12 @@ function buildSnippets(
 ): Record<ExampleType, string> {
   const curl = os === "windows" ? curlWindows : curlUnix;
   return {
-    curl: curl(base, key, model, false),
-    python: pythonSnippet(base, key, model, false),
-    curlTools: curl(base, key, model, true),
-    pythonTools: pythonSnippet(base, key, model, true),
+    curl: curl(base, key, model, "plain"),
+    python: pythonSnippet(base, key, model, "plain"),
+    curlTools: curl(base, key, model, "tools"),
+    pythonTools: pythonSnippet(base, key, model, "tools"),
+    curlAdvanced: curl(base, key, model, "advanced"),
+    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
   };
 }
 
@@ -222,6 +301,40 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
+// shiki highlighting via the app's shared code plugin + themes (same as chat).
+const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
+  typeof unslothLightTheme,
+  typeof unslothDarkTheme,
+];
+const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
+
+function HighlightedCode({
+  code,
+  language,
+}: {
+  code: string;
+  language: string;
+}) {
+  // Fence the snippet so Streamdown's shiki plugin highlights it; content
+  // inside a code fence is never interpreted as markdown.
+  const markdown = useMemo(
+    () => `\`\`\`${language}\n${code}\n\`\`\``,
+    [code, language],
+  );
+  return (
+    <div className="max-w-full overflow-x-auto p-3 pr-16 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0">
+      <Streamdown
+        mode="static"
+        plugins={{ code: codePlugin }}
+        controls={{ code: false }}
+        shikiTheme={SHIKI_THEMES}
+      >
+        {markdown}
+      </Streamdown>
+    </div>
+  );
+}
+
 export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -258,6 +371,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   );
 
   const osAware = OS_AWARE[lang];
+  const shikiLang = CURL_TYPES.has(lang)
+    ? os === "windows"
+      ? "powershell"
+      : "bash"
+    : "python";
 
   const handleCopy = async () => {
     if (await copyToClipboard(snippets[lang])) {
@@ -297,24 +415,27 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 {t("settings.apiKeys.cloudflareTunnel")}
               </span>
             </div>
-            {useTunnel ? (
-              <button
-                type="button"
-                onClick={handleCopyUrl}
-                className="flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title={cloudflareUrl}
-                aria-label={t("settings.apiKeys.copyTunnelUrl")}
-              >
-                <span className="truncate font-mono">{cloudflareUrl}</span>
-                <HugeiconsIcon
-                  icon={copiedUrl ? Tick02Icon : Copy01Icon}
-                  className={cn(
-                    "size-3.5 shrink-0",
-                    copiedUrl && "text-emerald-600",
-                  )}
-                />
-              </button>
-            ) : null}
+            {/* Always rendered (dimmed when off) so toggling never changes the
+                row height and shifts the code block below. */}
+            <button
+              type="button"
+              onClick={handleCopyUrl}
+              className={cn(
+                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                !useTunnel && "opacity-50",
+              )}
+              title={cloudflareUrl}
+              aria-label={t("settings.apiKeys.copyTunnelUrl")}
+            >
+              <span className="truncate font-mono">{cloudflareUrl}</span>
+              <HugeiconsIcon
+                icon={copiedUrl ? Tick02Icon : Copy01Icon}
+                className={cn(
+                  "size-3.5 shrink-0",
+                  copiedUrl && "text-emerald-600",
+                )}
+              />
+            </button>
           </div>
         ) : null}
         <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
@@ -384,9 +505,14 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             />
             {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
           </button>
-          <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-[11px] leading-relaxed text-foreground">
-            {snippets[lang]}
-          </pre>
+          {/* key on the snippet so Streamdown remounts and re-highlights when
+              only a substring (e.g. the base URL) changes; its block memo
+              otherwise keeps the stale render. */}
+          <HighlightedCode
+            key={snippets[lang]}
+            code={snippets[lang]}
+            language={shikiLang}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>

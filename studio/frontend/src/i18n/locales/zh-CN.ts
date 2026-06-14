@@ -263,6 +263,8 @@ export const zhCN = {
       usageTools: "工具",
       exampleCurlTools: "curl + 工具",
       examplePythonTools: "Python + 工具",
+      exampleCurlAdvanced: "curl + 高级",
+      examplePythonAdvanced: "Python + 高级",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       cloudflareTunnel: "Cloudflare 隧道",
