@@ -890,6 +890,12 @@ def run_server(
     if secure:
         host = "127.0.0.1"
 
+    # Network-reachable launches (0.0.0.0 bind or --secure tunnel) force
+    # server-side tools off by default so a public endpoint can't run code via a
+    # client's enable_tools. `unsloth studio run` overrides this afterward with
+    # its resolved/operator-confirmed policy.
+    _apply_default_tool_policy(host, secure)
+
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
@@ -1198,9 +1204,6 @@ if __name__ == "__main__":
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
-
-    # Plain/direct network launches force server-side tools off by default.
-    _apply_default_tool_policy(args.host, args.secure)
 
     kwargs = dict(
         host = args.host,
