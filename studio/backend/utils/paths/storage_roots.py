@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
@@ -382,6 +383,23 @@ def resolve_under_root(
     candidate = root / cleaned
     _assert_contained(candidate, root)
     return candidate
+
+
+def default_run_dir_name(model_name: str) -> str:
+    # Folder-safe run name for an auto-created output dir. Repo ids keep their
+    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
+    # collapse to their final component so an absolute source can't escape
+    # outputs_root. Length-capped to stay under the filesystem name limit.
+    raw = str(model_name or "").strip()
+    is_path = (
+        "\\" in raw
+        or raw.startswith(("/", "~", "."))
+        or os.path.isabs(raw)
+        or (len(raw) >= 2 and raw[1] == ":")
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-")
+    return base or "model"
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
