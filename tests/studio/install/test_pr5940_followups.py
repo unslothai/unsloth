@@ -273,6 +273,47 @@ def test_amd_smi_opt_out_overrides_hip_sdk():
     )
 
 
+def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
+    # The AMD torch wheel ships hipInfo.exe inside the venv (Scripts/), and the
+    # bnb fix prepends that dir to PATH. That venv-internal hipInfo is NOT a HIP
+    # SDK and must NOT re-open the amd-smi gate -- otherwise amd-smi pops the
+    # DiskPart UAC mid-install on Strix Halo boxes with no real HIP SDK (the bug
+    # snapcast3r/UBER6 hit: arch came from the GPU-name table, hipInfo could not
+    # run, so the probe fell through to `amd-smi list`).
+    venv_root = tmp_path / "venv"
+    venv_scripts = venv_root / "Scripts"
+    venv_scripts.mkdir(parents = True)
+    venv_hipinfo = venv_scripts / "hipInfo.exe"
+    venv_hipinfo.write_text("")
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(venv_root)),
+        patch.object(
+            prebuilt.shutil,
+            "which",
+            side_effect = lambda name: str(venv_hipinfo) if name == "hipinfo" else None,
+        ),
+        patch.dict(prebuilt.os.environ, {}, clear = True),
+    ):
+        assert prebuilt._amd_smi_allowed() is False
+
+
+def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
+    # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so
+    # HIP-SDK Windows users keep amd-smi (no regression for the venv-exclusion).
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
+        patch.object(
+            prebuilt.shutil,
+            "which",
+            side_effect = lambda name: r"C:\hipsdk\bin\hipinfo.exe" if name == "hipinfo" else None,
+        ),
+        patch.dict(prebuilt.os.environ, {}, clear = True),
+    ):
+        assert prebuilt._amd_smi_allowed() is True
+
+
 def test_ps_installers_gate_amd_smi_on_windows():
     # Both PowerShell installers must gate amd-smi behind HIP-SDK presence + the
     # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().

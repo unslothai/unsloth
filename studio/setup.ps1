@@ -2260,9 +2260,12 @@ if ($script:UnslothVerbose) {
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
 # Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
-# the auto-generated filenames are extremely long. Use a short cache directory.
-$TorchCacheDir = "C:\tc"
-if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+# the auto-generated filenames are extremely long. Keep the cache directory
+# under the user's Studio home (NOT the C:\ drive root) -- long paths are already
+# enabled above, and Python opts into them, so deep inductor paths still fit
+# without polluting the system drive.
+$TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+if (-not (Test-Path -LiteralPath $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
@@ -2360,6 +2363,7 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }
 
@@ -2413,20 +2417,14 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
-$VenvScriptsDir = Join-Path $VenvDir "Scripts"
-$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
-if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
-    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
-    if (Test-Path -LiteralPath $StaleUnslothExe) {
-        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
-    }
-    try {
-        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
-    } catch {
-        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
-    }
-}
+# No unsloth.exe rename needed. The base-package upgrade routes through pip on
+# Windows (install_python_stack maps --upgrade-package -> pip), and pip tolerates
+# a running/locked console-script .exe: it moves the old unsloth.exe aside, then
+# writes the new one. uv could not -- it aborts trying to delete the locked .exe --
+# which is why this used to rename unsloth.exe out of the way first; but renaming
+# the running uv-trampoline launcher itself failed with a sharing violation
+# (WinError 32), so the trick never actually worked and only emitted a scary
+# warning on every Windows install/update.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -2437,28 +2435,6 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
-    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
-    # stale-but-working copy in .deleteme.
-    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
-        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
-        if (-not $needRestore) {
-            try {
-                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
-            } catch { $needRestore = $true }
-        }
-        if ($needRestore) {
-            try {
-                if (Test-Path -LiteralPath $RunningUnslothExe) {
-                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
-                }
-                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
-                substep "restored unsloth.exe after failed install"
-            } catch {
-                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
-            }
-        }
-    }
     exit 1
 }
 

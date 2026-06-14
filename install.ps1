@@ -1866,10 +1866,13 @@ shell.Run cmd, 0, False
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # Known AMD arch: install.ps1 lays down CPU PyTorch as a base, then
-            # setup.ps1 swaps in AMD's bundled-runtime GPU ROCm wheels (no HIP SDK).
-            substep "Installing CPU PyTorch as a base -- Studio setup installs GPU ROCm" "Cyan"
-            substep "wheels for $ROCmGfxArch next (bundled runtime; HIP SDK not required)." "Cyan"
+            # CPU PyTorch is only a temporary base: ROCm could not be probe-verified
+            # at bootstrap (arch was name-inferred), so install a light CPU base now;
+            # setup.ps1's own detection replaces it with GPU ROCm wheels next, so the
+            # final install IS GPU-accelerated.
+            substep "Installing CPU PyTorch now as a temporary base." "Cyan"
+            substep "Studio setup replaces it with GPU ROCm wheels for $ROCmGfxArch next" "Cyan"
+            substep "(bundled runtime; HIP SDK not required) -- the final install is GPU-accelerated." "Cyan"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm) {
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"

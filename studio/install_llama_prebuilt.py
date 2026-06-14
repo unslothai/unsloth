@@ -54,6 +54,21 @@ if platform.system() == "Windows":
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 
 
+def _path_inside_venv(path: str) -> bool:
+    """True if ``path`` lives inside the active virtual environment (sys.prefix).
+
+    The AMD torch wheel ships hipInfo.exe inside the venv (Scripts/ and
+    _rocm_sdk_core/bin/), and the bnb fix prepends the venv Scripts dir to PATH.
+    That venv-internal hipInfo is NOT a HIP SDK and must not be mistaken for one
+    (see _amd_smi_allowed)."""
+    try:
+        _root = os.path.abspath(sys.prefix)
+        return os.path.commonpath([os.path.abspath(path), _root]) == _root
+    except (ValueError, OSError):
+        # Different drive / unresolvable -> treat as outside the venv.
+        return False
+
+
 def _amd_smi_allowed() -> bool:
     """Whether it is safe to spawn amd-smi here.
 
@@ -70,7 +85,12 @@ def _amd_smi_allowed() -> bool:
         return True
     if flag in ("0", "false", "no", "off"):
         return False
-    if shutil.which("hipinfo"):
+    # A genuine HIP SDK registers amd-smi's runtime so it runs un-elevated;
+    # hipinfo-on-PATH is the proxy. But ignore the venv-internal hipInfo.exe the
+    # AMD torch wheel ships (which the bnb fix puts on PATH) -- it is not a HIP
+    # SDK and does NOT stop amd-smi from popping the DiskPart UAC.
+    _hip = shutil.which("hipinfo")
+    if _hip and not _path_inside_venv(_hip):
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         _root = os.environ.get(_var)
