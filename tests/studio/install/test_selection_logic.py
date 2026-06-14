@@ -4029,3 +4029,94 @@ class TestCudaDriverToolkitMismatchMessage:
         output = self._run_bash(script)
         assert "NONE" in output
         assert "FOUND" not in output
+
+
+class TestExactSourceAssetUrl:
+    """exact_source_asset_url resolves the published source-commit release asset
+    for mix builds even when the manifest omits the top-level repo/release_tag.
+
+    A mix build's merge commit is never pushed, so its codeload/archive URLs
+    404; the ``llama.cpp-source-commit-<sha>.tar.gz`` asset is the only durable
+    copy. If the asset URL resolves empty, hydration falls through to the 404-ing
+    commit archive and the whole prebuilt install fails to a source build.
+    """
+
+    COMMIT = "c4fca6de" + "a" * 32  # 40-char sha
+    INSTALL_TAG = "b9616-mix-17e50db"
+
+    def _artifact(self, *, repo):
+        name = exact_source_archive_logical_name(self.COMMIT)
+        return ApprovedArtifactHash(
+            asset_name = name,
+            sha256 = "c" * 64,
+            repo = repo,
+            kind = "exact-source",
+        )
+
+    def _checksums(self, *, repo, release_tag):
+        return ApprovedReleaseChecksums(
+            repo = repo,
+            release_tag = release_tag,
+            upstream_tag = "b9616",
+            source_repo = "unslothai/llama.cpp",
+            source_commit = self.COMMIT,
+            artifacts = {},
+        )
+
+    def _expected(self, repo, tag):
+        return (
+            f"https://github.com/{repo}/releases/download/"
+            f"{tag}/{exact_source_archive_logical_name(self.COMMIT)}"
+        )
+
+    def test_uses_manifest_repo_and_tag_when_present(self):
+        checksums = self._checksums(repo = "unslothai/llama.cpp", release_tag = self.INSTALL_TAG)
+        url = INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+            checksums, "unslothai/llama.cpp", self._artifact(repo = None), True, "ignored-tag"
+        )
+        assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+    def test_falls_back_to_install_tag_when_manifest_tag_missing(self):
+        # Regression: an empty manifest release_tag must not drop the asset URL.
+        # Before the fix this returned None and hydration 404'd on the merge commit.
+        checksums = self._checksums(repo = "unslothai/llama.cpp", release_tag = "")
+        url = INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+            checksums, "unslothai/llama.cpp", self._artifact(repo = None), True, self.INSTALL_TAG
+        )
+        assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+    def test_falls_back_to_source_repo_when_manifest_repo_missing(self):
+        checksums = self._checksums(repo = "", release_tag = self.INSTALL_TAG)
+        url = INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+            checksums, "unslothai/llama.cpp", self._artifact(repo = None), True, self.INSTALL_TAG
+        )
+        assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+    def test_prefers_artifact_repo_over_manifest_repo(self):
+        checksums = self._checksums(repo = "unslothai/checksums-only", release_tag = self.INSTALL_TAG)
+        url = INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+            checksums,
+            "unslothai/llama.cpp",
+            self._artifact(repo = "unslothai/llama.cpp"),
+            True,
+            self.INSTALL_TAG,
+        )
+        assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+    def test_returns_none_for_non_exact_source(self):
+        checksums = self._checksums(repo = "unslothai/llama.cpp", release_tag = self.INSTALL_TAG)
+        assert (
+            INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+                checksums, UPSTREAM_REPO, None, False, self.INSTALL_TAG
+            )
+            is None
+        )
+
+    def test_returns_none_without_source_archive(self):
+        checksums = self._checksums(repo = "unslothai/llama.cpp", release_tag = self.INSTALL_TAG)
+        assert (
+            INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+                checksums, "unslothai/llama.cpp", None, True, self.INSTALL_TAG
+            )
+            is None
+        )
