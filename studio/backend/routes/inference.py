@@ -5309,15 +5309,72 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
-def _responses_tool_output_text(output: Union[str, list]) -> str:
+def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]:
     """Return Chat Completions-safe content for a Responses tool result."""
     if isinstance(output, str):
         return output if output.strip() else "(no output)"
 
-    if output:
+    if not output:
+        return "(no output)"
+
+    text_parts: list[str] = []
+    chat_parts: list = []
+    has_multimodal = False
+    for part in output:
+        if not isinstance(part, dict):
+            return json.dumps(output)
+        part_type = part.get("type")
+        if part_type in ("input_text", "output_text", "text"):
+            text = part.get("text")
+            if text is None:
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output text parts require a text field.",
+                )
+            text = str(text)
+            text_parts.append(text)
+            chat_parts.append(TextContentPart(type = "text", text = text))
+            continue
+        if part_type == "input_image":
+            image_url = part.get("image_url")
+            if not isinstance(image_url, str) or not image_url:
+                if part.get("file_id"):
+                    _raise_unsupported_openai_parameter(
+                        "input",
+                        "Responses function_call_output.output input_image parts with file_id are not supported by the local adapter. Use image_url instead.",
+                    )
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image parts require an image_url string.",
+                )
+            detail = part.get("detail", "auto")
+            if detail is None:
+                detail = "auto"
+            if detail not in ("auto", "low", "high", "original"):
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image detail must be auto, low, high, or original.",
+                )
+            chat_parts.append(
+                ImageContentPart(
+                    type = "image_url",
+                    image_url = ImageUrl(url = image_url, detail = detail),
+                )
+            )
+            has_multimodal = True
+            continue
+        if part_type == "input_file":
+            _raise_unsupported_openai_parameter(
+                "input",
+                "Responses function_call_output.output input_file parts are not supported by the local adapter.",
+            )
         return json.dumps(output)
 
-    return "(no output)"
+    if has_multimodal:
+        return chat_parts
+
+    text = "\n".join(text_parts)
+    return text if text.strip() else "(no output)"
 
 
 _RESPONSES_THINK_OPEN = "<think>"
@@ -5521,10 +5578,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
-            # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output and keep empty outputs from
-            # tripping the stricter ChatMessage role validator.
-            output = _responses_tool_output_text(item.output)
+            # Flatten pure text arrays for broad template compatibility, and
+            # forward image URL outputs as real multimodal parts for vision models.
+            output = _responses_tool_output_content(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",
