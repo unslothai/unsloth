@@ -284,7 +284,7 @@ async def start_training(
                 resident = summarize_resident_chat()
                 if not resident["any"]:
                     return
-                if resident.get("hf_loading"):
+                if resident.get("loading"):
                     # An in-flight load's final footprint can't be sized, so free
                     # it rather than risk both OOMing as the load completes.
                     freed = free_chat_models_for_training(reason = "chat model still loading")

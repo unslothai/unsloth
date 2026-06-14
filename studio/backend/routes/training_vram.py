@@ -41,8 +41,8 @@ def summarize_resident_chat() -> Dict[str, Any]:
     VRAM at that point). Never raises.
     """
     hf_name: Optional[str] = None
-    hf_loading: bool = False
     gguf_name: Optional[str] = None
+    loading: bool = False
 
     try:
         from core.inference import get_inference_backend
@@ -54,10 +54,12 @@ def summarize_resident_chat() -> Dict[str, Any]:
         # CUDA context and is intentionally NOT treated as resident.
         if inf.active_model_name or inf.loading_models:
             hf_name = inf.active_model_name or next(iter(inf.loading_models), None)
-            # An in-flight load (no active model yet) is still allocating, so its
-            # final footprint can't be sized -- flag it so the caller frees it
-            # instead of trying to keep it alongside training.
-            hf_loading = not inf.active_model_name and bool(inf.loading_models)
+            # ANY non-empty loading_models means a load is in flight -- including
+            # a replacement load that arrives while the previous model is still
+            # active (load_model adds to loading_models before clearing the old
+            # active_model_name). Its final footprint can't be sized, so flag it.
+            if inf.loading_models:
+                loading = True
     except Exception as e:
         logger.warning("Could not inspect inference backend: %s", e)
 
@@ -70,13 +72,17 @@ def summarize_resident_chat() -> Dict[str, Any]:
         # holds no VRAM, so it is NOT a GPU resident and must not be torn down.
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             gguf_name = llama.model_identifier or "gguf"
+            # Active but not yet healthy means the server is still mmaping /
+            # offloading layers -- size unknown, so treat it as in-flight.
+            if not getattr(llama, "is_loaded", False):
+                loading = True
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
     return {
         "hf": hf_name,
-        "hf_loading": hf_loading,
         "gguf": gguf_name,
+        "loading": loading,
         "any": bool(hf_name or gguf_name),
     }
 
