@@ -439,11 +439,33 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
+# Directory-local evidence that Studio itself created "$1". Used to adopt a
+# Studio llama.cpp that predates the .unsloth-studio-owned marker (introduced
+# with custom-home support) or otherwise lost it, without weakening the guard.
+# The evidence must live INSIDE the directory so an unrelated directory the user
+# placed at a Studio-managed path -- even inside an established Studio home -- is
+# never silently adopted and overwritten:
+#   - UNSLOTH_PREBUILT_INFO.json: written by the prebuilt llama.cpp installer
+#     (the default path, and older than the marker), or
+#   - a top-level llama-quantize symlink: written by source builds (a plain
+#     llama.cpp checkout keeps the binary under build/bin, not a root symlink).
+# Sidecar venvs carry no such fingerprint and stay subject to the strict guard;
+# their marker has been written since the guard was introduced, so an
+# established custom install already has it.
+_studio_owned_adoptable() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    [ -L "$1/llama-quantize" ] && return 0
+    return 1
+}
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     [ -d "$_aso_dir" ] || return 0
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        if _studio_owned_adoptable "$_aso_dir"; then
+            : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            return 0
+        fi
         echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
