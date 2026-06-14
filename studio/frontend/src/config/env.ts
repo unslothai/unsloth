@@ -20,6 +20,8 @@ interface PlatformState {
   chatOnly: boolean;
   // Live tunnel URL from /api/health (authed); null if none. Ephemeral -- read live.
   cloudflareUrl: string | null;
+  // Direct host:port base from /api/health (authed); the non-tunnel API base.
+  serverUrl: string | null;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
@@ -40,6 +42,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   chatOnly: localDeviceType === "mac",
   cloudflareUrl: null,
+  serverUrl: null,
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
@@ -68,6 +71,7 @@ export async function fetchDeviceType(options?: {
         device_type?: string;
         chat_only?: boolean;
         cloudflare_url?: string | null;
+        server_url?: string | null;
       };
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
@@ -78,6 +82,7 @@ export async function fetchDeviceType(options?: {
         deviceType,
         chatOnly,
         cloudflareUrl: data.cloudflare_url ?? null,
+        serverUrl: data.server_url ?? null,
         fetched: data.device_type !== undefined,
       });
       return deviceType;

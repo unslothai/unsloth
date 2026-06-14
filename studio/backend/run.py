@@ -1008,6 +1008,13 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    # Direct (non-tunnel) base for the API panel when the tunnel toggle is off;
+    # resolve 0.0.0.0 to the LAN IP, keep an explicit host (incl. secure's loopback).
+    if port and port > 0:
+        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        app.state.server_url = f"http://{_direct_host}:{port}"
+    else:
+        app.state.server_url = None
     app.state.llama_parallel_slots = llama_parallel_slots
 
     # Expose a shutdown callable before the server accepts requests so

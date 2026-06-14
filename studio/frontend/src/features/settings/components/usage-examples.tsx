@@ -226,6 +226,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
   const [lang, setLang] = useState<ExampleType>("curl");
   const [os, setOs] = useState<Os>(
     deviceType === "windows" ? "windows" : "unix",
@@ -244,9 +245,12 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // Show the real key while it's still revealed (before "Done"); otherwise the
   // copy-and-replace placeholder.
   const key = apiKey || KEY_PLACEHOLDER;
-  // Toggle on + tunnel up: examples use the public tunnel URL; else the browser origin.
+  // Toggle on + tunnel up: use the public tunnel URL. Off: use the direct
+  // host:port from the backend (the browser origin equals the tunnel URL when
+  // accessed through the tunnel, so origin is only a last-resort fallback).
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const base = useTunnel && cloudflareUrl ? cloudflareUrl : origin;
+  const base =
+    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
 
   const snippets = useMemo(
     () => buildSnippets(base, key, model, os),
@@ -336,18 +340,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               );
             })}
           </div>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copied ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copied && "text-emerald-600")}
-            />
-            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
-          </button>
         </div>
         {osAware ? (
           <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
@@ -379,9 +371,23 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
           </div>
         ) : null}
-        <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-foreground">
-          {snippets[lang]}
-        </pre>
+        <div className="relative min-w-0">
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={t("settings.apiKeys.copySnippet")}
+          >
+            <HugeiconsIcon
+              icon={copied ? Tick02Icon : Copy01Icon}
+              className={cn("size-3.5", copied && "text-emerald-600")}
+            />
+            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
+          </button>
+          <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-[11px] leading-relaxed text-foreground">
+            {snippets[lang]}
+          </pre>
+        </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>
           {DOC_LINKS.map((link) => (
