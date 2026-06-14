@@ -116,15 +116,18 @@ def _drive(
     kv_per_token_bytes = 325_000,
     can_estimate_kv = True,
     extra_args = None,
+    graph_reserve_bytes = 0,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
     Mirrors llama_cpp.py:1137-1296 to assert the built command, without
-    subprocesses or GPU probes.
+    subprocesses or GPU probes. ``graph_reserve_bytes`` mirrors load_model's
+    single-GPU compute-graph reserve, enforced only on multi-GPU hosts.
     """
     inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
     cache_type_kv = None
+    _graph_reserve_mib = graph_reserve_bytes / (1024 * 1024)
 
     def fake_estimate(
         n_ctx_,
@@ -180,7 +183,9 @@ def _drive(
             requested_total = model_size + inst._estimate_kv_cache_bytes(
                 effective_ctx, cache_type_kv
             )
-            gpu_indices, use_fit = inst._select_gpus(requested_total, gpus)
+            gpu_indices, use_fit = inst._select_gpus(
+                requested_total, gpus, graph_reserve_bytes = graph_reserve_bytes
+            )
         else:
             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
@@ -196,7 +201,8 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * pin_fraction:
+                reserve_mib = _graph_reserve_mib if (n_gpus == 1 and len(ranked) > 1) else 0.0
+                if total_mib + reserve_mib <= pool_mib * pin_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
                     use_fit = False
@@ -211,12 +217,17 @@ def _drive(
                         pool_mib = sum(free for _, free in subset)
                         kv = inst._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
                         total_mib = (model_size + kv) / (1024 * 1024)
-                        if total_mib <= pool_mib * pin_fraction:
+                        reserve_mib = (
+                            _graph_reserve_mib if (n_gpus == 1 and len(ranked) > 1) else 0.0
+                        )
+                        if total_mib + reserve_mib <= pool_mib * pin_fraction:
                             gpu_indices = sorted(idx for idx, _ in subset)
                             use_fit = False
                             break
     elif gpus:
-        gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
+        gpu_indices, use_fit = inst._select_gpus(
+            model_size, gpus, graph_reserve_bytes = graph_reserve_bytes
+        )
         if use_fit and not explicit_ctx:
             effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
 
@@ -480,6 +491,97 @@ def test_identical_decision_across_platforms(platform_tag):
     plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag
+
+
+# ---------------------------------------------------------------------------
+# Multi-GPU compute-graph reserve on the single-GPU pin: a too-tight smaller
+# card must defer to a split, not pin at ~95% and hang. Reserve applies only
+# when len(gpus) > 1.
+# ---------------------------------------------------------------------------
+
+# Mirrors load_model: bytes reserved for the compute-graph/logits buffer.
+_GRAPH_RESERVE_BYTES = LlamaCppBackend._SINGLE_GPU_GRAPH_RESERVE_MIB * 1024 * 1024
+
+
+class TestMultiGPUGraphReserve:
+    """5090 (32 GB) + RTX PRO 6000 Blackwell (96 GB) selection."""
+
+    # index 0 = 5090, index 1 = 6000 Pro. 28 GiB = 27 GB Q8 + ~1 GB mmproj.
+    _MODEL_GIB = 28
+    _KV = 25_000
+
+    def test_two_gpu_true_reading_pins_big_card(self):
+        # Settled: the 6000 Pro reports true ~94 GB free, ranks first, pins.
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = self._MODEL_GIB,
+            gpus = [(0, 32_089), (1, 94_000)],
+            kv_per_token_bytes = self._KV,
+            graph_reserve_bytes = _GRAPH_RESERVE_BYTES,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [1]
+
+    def test_two_gpu_small_card_first_rejects_pin_prefers_split(self):
+        # Stale: an orphan still occupies the 6000 Pro (reports ~20 GB), so the
+        # 5090 ranks first. Without the reserve the model crams onto it (the
+        # bug); with it, the 1-GPU pin is rejected and selection splits.
+        gpus = [(0, 32_089), (1, 20_000)]
+
+        buggy = _drive(
+            n_ctx = 0,
+            model_gib = self._MODEL_GIB,
+            gpus = gpus,
+            kv_per_token_bytes = self._KV,
+            graph_reserve_bytes = 0,
+        )
+        assert buggy["gpu_indices"] == [0], "no-reserve path reproduces the cram-onto-5090 bug"
+
+        fixed = _drive(
+            n_ctx = 0,
+            model_gib = self._MODEL_GIB,
+            gpus = gpus,
+            kv_per_token_bytes = self._KV,
+            graph_reserve_bytes = _GRAPH_RESERVE_BYTES,
+        )
+        assert fixed["use_fit"] is False
+        assert fixed["gpu_indices"] == [0, 1], "reserve defers the too-tight card to a split"
+
+    def test_two_gpu_explicit_ctx_rejects_tight_pin(self):
+        # Explicit-ctx calls _select_gpus directly; its accumulation fallback
+        # must not re-pin the lone tight card without the reserve.
+        gpus = [(0, 32_089), (1, 20_000)]
+
+        buggy = _drive(
+            n_ctx = 4096,
+            model_gib = self._MODEL_GIB,
+            gpus = gpus,
+            kv_per_token_bytes = self._KV,
+            graph_reserve_bytes = 0,
+        )
+        assert buggy["gpu_indices"] == [0]
+
+        fixed = _drive(
+            n_ctx = 4096,
+            model_gib = self._MODEL_GIB,
+            gpus = gpus,
+            kv_per_token_bytes = self._KV,
+            graph_reserve_bytes = _GRAPH_RESERVE_BYTES,
+        )
+        assert fixed["use_fit"] is False
+        assert fixed["gpu_indices"] == [0, 1]
+
+    def test_single_gpu_tight_fit_unchanged(self):
+        # Guard: reserve is multi-GPU-only, so a single card at ~94% still pins.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            kv_per_token_bytes = 25_000,
+            graph_reserve_bytes = _GRAPH_RESERVE_BYTES,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
 
 
 # ---------------------------------------------------------------------------
