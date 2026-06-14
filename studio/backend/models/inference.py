@@ -724,6 +724,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
     )
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -1481,6 +1485,10 @@ class AnthropicMessagesRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
     model_config = {"extra": "allow"}
 
 

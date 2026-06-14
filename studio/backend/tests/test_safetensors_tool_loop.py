@@ -172,6 +172,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
