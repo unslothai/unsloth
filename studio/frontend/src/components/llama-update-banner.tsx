@@ -172,13 +172,16 @@ export function LlamaUpdateBanner({
               />
               <div className="min-w-0">
                 <p className="font-heading text-base font-medium text-foreground">
-                  {applying ? "Updating llama.cpp..." : "New llama.cpp version"}
+                  {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status?.installed_tag ?? "unknown"} &rarr;{" "}
                   <span className="font-medium text-foreground">
                     {status?.latest_tag ?? ""}
                   </span>
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                  No restart needed after update
                 </p>
               </div>
             </div>
@@ -203,7 +206,7 @@ export function LlamaUpdateBanner({
                 />
               </div>
             ) : (
-              <div className="mt-4 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+              <div className="mt-2 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                 <Button
                   size="sm"
                   variant="ghost"
