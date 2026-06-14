@@ -199,11 +199,9 @@ class TrainingBackend:
         All kwargs are serialized into a config dict and sent to the worker.
         Returns True if the subprocess started successfully.
 
-        ``before_spawn`` is an optional no-arg callable run once the start
-        guards have passed (so a subprocess will be spawned) but before any GPU
-        work begins. Callers use it to free VRAM (e.g. unload a resident chat
-        model) without tearing it down when the start is refused. Failures in
-        the hook are logged and never block the start.
+        ``before_spawn`` is an optional no-arg callable run once the start guards
+        pass but before GPU work -- used to free VRAM (e.g. unload chat) without
+        tearing it down on a refused start. Hook failures never block the start.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -218,8 +216,7 @@ class TrainingBackend:
                 return False
         self._pump_thread = None
 
-        # Guards passed: a subprocess will be spawned. Safe to free VRAM now
-        # (after this point we only bail on an unexpected spawn exception).
+        # Guards passed: a subprocess will spawn -> safe to free VRAM now.
         if before_spawn is not None:
             try:
                 before_spawn()

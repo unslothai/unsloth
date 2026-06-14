@@ -258,9 +258,8 @@ async def start_training(
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
 
-        # Free GPU memory for training: stop the export subprocess, and unload
-        # the resident chat model unless it can coexist. Runs as a before_spawn
-        # hook so start_training invokes it only AFTER its start guards pass --
+        # Free VRAM for training: stop export, unload chat unless it can coexist.
+        # A before_spawn hook -> runs only after start_training's guards pass, so
         # we never tear down chat/export VRAM for a start that is then refused.
         def _free_vram_for_training() -> None:
             try:
@@ -286,8 +285,7 @@ async def start_training(
                 if not resident["any"]:
                     return
                 if resident.get("loading"):
-                    # An in-flight load's final footprint can't be sized, so free
-                    # it rather than risk both OOMing as the load completes.
+                    # In-flight load can't be sized -> free rather than risk OOM.
                     freed = free_chat_models_for_training(reason = "chat model still loading")
                     logger.info("Freed in-flight chat load for training: %s", freed)
                     return
@@ -320,9 +318,7 @@ async def start_training(
             except Exception as e:
                 logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
-        # start_training spawns a subprocess (non-blocking) and runs the hook
-        # above only once its start guards pass, so VRAM is freed iff a training
-        # subprocess is actually started.
+        # The hook runs only once start guards pass -> VRAM freed iff training starts.
         success = backend.start_training(
             job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
         )

@@ -17,10 +17,8 @@ from unittest.mock import MagicMock, patch
 from utils.hardware import DeviceType
 import utils.hardware.hardware as _hw_module
 
-# Load routes/training_vram.py under a standalone name so importing it does not
-# pull the heavy routes/__init__.py (every API router). The lazy backend imports
-# inside the module resolve by module name at call time, so stubbing
-# core.inference / routes.inference in sys.modules still works.
+# Load training_vram.py standalone so importing it doesn't pull the heavy
+# routes/__init__.py; its lazy backend imports still resolve via sys.modules stubs.
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
     "training_vram_under_test", _BACKEND_ROOT / "routes" / "training_vram.py"
@@ -103,8 +101,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(out["any"])
 
     def test_hf_resident_while_still_loading(self):
-        # active_model_name is None mid-load, but VRAM is already held; flag it
-        # as in-flight so the caller frees it rather than trying to size it.
+        # Mid-load: no active model yet but VRAM is held -> flag in-flight.
         with _patch_backends(
             _fake_inference_backend(active = None, loading = ["unsloth/Qwen3-4B"]),
             _fake_llama_backend(active = False),
@@ -115,8 +112,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(out["any"])
 
     def test_replacement_hf_load_is_in_flight(self):
-        # During a swap the new model is in loading_models while the OLD model is
-        # still active -- any non-empty loading_models is unsafe to keep.
+        # Swap: new model loading while old still active -> unsafe to keep.
         with _patch_backends(
             _fake_inference_backend(active = "unsloth/old", loading = ["unsloth/new"]),
             _fake_llama_backend(active = False),
@@ -146,8 +142,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(out["loading"])
 
     def test_bare_alive_subprocess_without_model_is_not_resident(self):
-        # After an unload the orchestrator subprocess stays alive holding only
-        # the CUDA context (no model) -- must NOT count as a resident chat model.
+        # Bare-alive subprocess (no model, only CUDA context) must NOT count.
         with _patch_backends(
             _fake_inference_backend(active = None, alive = True), _fake_llama_backend(active = False)
         ):
@@ -337,10 +332,8 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["reason"], "estimate_unavailable")
 
     def test_per_gpu_floor_blocks_uneven_explicit_split(self):
-        # free [45, 10], required 40: aggregate usable = 45 + 10*0.85 = 53.5 >=
-        # 40*1.15+4 = 50 (passes), but GPU 1 has only 10 GB free while each GPU
-        # needs min_per_gpu_2 = 25 -> per-GPU floor fails -> unload (the tight GPU
-        # would OOM otherwise).
+        # free [45, 10]: aggregate 53.5 >= 50 passes, but GPU1's 10 < per-GPU
+        # floor 25 -> unload (the tight GPU would OOM).
         devices = [
             {"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 35.0},  # 45 free
             {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},  # 10 free
@@ -371,9 +364,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(keep)
 
     def test_invalid_gpu_ids_keeps_chat_instead_of_unloading(self):
-        # resolve_requested_gpu_ids raising means the request will be rejected
-        # (400) before training runs, so the resident chat model must be left
-        # alone rather than torn down.
+        # resolve raising -> request will 400 before training, so leave chat alone.
         keep, info, _ = self._run(
             required = 5.0,
             devices = [],
