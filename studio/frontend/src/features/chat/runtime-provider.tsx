@@ -609,7 +609,10 @@ function createStudioDbAdapter(
       }
       return {
         remoteId: thread.id,
-        status: thread.archived ? "archived" : "regular",
+        // Always regular: archive state is owned by the app's own controls.
+        // Reporting archived here makes assistant-ui unarchive a chat the
+        // moment it is opened.
+        status: "regular",
         title: thread.title,
       };
     },
@@ -658,8 +661,10 @@ function createStudioDbAdapter(
     },
 
     async unarchive(remoteId: string) {
+      // No-op on archive state: the app owns it via the sidebar menu and the
+      // archived chats settings dialog. assistant-ui calls this when an
+      // archived chat is opened, which must not unarchive it.
       await ensureStoredChatThread(remoteId);
-      await updateStoredChatThread(remoteId, { archived: false });
     },
 
     async delete(remoteId: string) {

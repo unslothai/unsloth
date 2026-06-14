@@ -20,6 +20,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 import {
   type UpdateInstallSource,
   UpdateStudioInstructions,
@@ -43,31 +44,6 @@ function isUpdateInstallSource(value: unknown): value is UpdateInstallSource {
     typeof value === "string" &&
     UPDATE_INSTALL_SOURCES.has(value as UpdateInstallSource)
   );
-}
-
-async function fetchStudioVersions(): Promise<{
-  packageVersion: string | null;
-  studioVersion: string | null;
-}> {
-  try {
-    const token = getAuthToken();
-    const headers = new Headers();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const res = await fetch(apiUrl("/api/health"), { headers });
-    if (!res.ok) {
-      return { packageVersion: null, studioVersion: null };
-    }
-    const data = (await res.json()) as ApiObject;
-    const packageVersion = data.version;
-    const studioVersion = data.studio_version;
-    return {
-      packageVersion:
-        typeof packageVersion === "string" ? packageVersion : null,
-      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-    };
-  } catch {
-    return { packageVersion: null, studioVersion: null };
-  }
 }
 
 async function fetchInstallSource(): Promise<UpdateInstallSource> {
@@ -101,26 +77,12 @@ export function AboutTab() {
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const hw = useHardwareInfo();
   const [shutdownOpen, setShutdownOpen] = useState(false);
-  const [packageVersion, setPackageVersion] = useState("dev");
-  const [studioVersion, setStudioVersion] = useState("dev");
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
   >("loading");
 
   useEffect(() => {
     let canceled = false;
-
-    fetchStudioVersions().then((nextVersions) => {
-      if (canceled) {
-        return;
-      }
-      if (nextVersions.packageVersion) {
-        setPackageVersion(nextVersions.packageVersion);
-      }
-      if (nextVersions.studioVersion) {
-        setStudioVersion(nextVersions.studioVersion);
-      }
-    });
 
     fetchInstallSource().then((nextInstallSource) => {
       if (!canceled) {
@@ -144,25 +106,9 @@ export function AboutTab() {
         </p>
       </header>
 
-      <SettingsSection title="Unsloth">
-        <SettingsRow label={t("settings.about.studioVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {studioVersion}
-          </code>
-        </SettingsRow>
-        <SettingsRow label={t("settings.about.packageVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {packageVersion}
-          </code>
-        </SettingsRow>
-        {hw.llamaCpp ? (
-          <SettingsRow label={t("settings.about.llamaCppVersion")}>
-            <code className="font-mono text-xs text-muted-foreground">
-              {hw.llamaCpp}
-            </code>
-          </SettingsRow>
-        ) : null}
-      </SettingsSection>
+      {/* llama.cpp row lives in the shared version section so it sits with the
+          Unsloth/Package rows; the prop keeps it About-only (General passes none). */}
+      <StudioVersionSection llamaCppVersion={hw.llamaCpp} />
 
       <SettingsSection title={t("settings.about.updates")}>
         <div className="py-2">

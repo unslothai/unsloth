@@ -26,9 +26,9 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
-  ArrowDown01Icon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
@@ -666,7 +666,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
                 <QuantBadge
@@ -713,7 +713,7 @@ export function GgufDownloadCard({
                     </span>
                   )}
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.25}
                   className="ml-0.5 size-3.5 shrink-0"
                 />
@@ -831,7 +831,11 @@ export function GgufDownloadCard({
             </>
           ) : selected?.downloaded ? (
             <>
-              <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+              <HugeiconsIcon
+                icon={PlayIcon}
+                strokeWidth={1.75}
+                className="translate-x-px"
+              />
               Run
             </>
           ) : (

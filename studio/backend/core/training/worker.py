@@ -1687,12 +1687,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         warmup_steps = 5
 
     # ── 5. Build output dir ──
+    # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
+    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+
     output_dir = config.get("output_dir", "")
     if not output_dir:
-        output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
-    # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir
-
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
 
@@ -2450,6 +2450,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resolve_output_dir,
             resolve_tensorboard_dir,
             datasets_root,
+            default_run_dir_name,
         )
 
         import transformers
@@ -2773,7 +2774,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resume_from_checkpoint
         )
         if not output_dir:
-            output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
+            output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -2924,7 +2925,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from datasets import Dataset
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
         from transformers import TrainerCallback
-        from utils.paths import datasets_root, resolve_output_dir
+        from utils.paths import datasets_root, resolve_output_dir, default_run_dir_name
     except ImportError as e:
         event_queue.put(
             {
@@ -3182,7 +3183,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = str(resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}"))
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)

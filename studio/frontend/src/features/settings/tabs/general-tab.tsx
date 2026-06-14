@@ -37,6 +37,7 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -59,6 +60,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
+  "unsloth_chat_preferences",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -251,6 +253,8 @@ export function GeneralTab() {
           {t("settings.general.description")}
         </p>
       </header>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow

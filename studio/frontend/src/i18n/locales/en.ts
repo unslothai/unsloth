@@ -152,6 +152,13 @@ export const en = {
       description: "How your profile appears in Unsloth.",
       changePicture: "Change profile picture",
       displayName: "Display name",
+      nickname: "What should Unsloth call you?",
+      nicknamePlaceholder: "Nickname",
+      nicknameSaved: "Preferred name saved",
+      avatarShape: "Profile picture shape",
+      avatarShapeCircle: "Circle",
+      avatarShapeRounded: "Rounded",
+      chooseSloth: "Or pick a sloth",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:
