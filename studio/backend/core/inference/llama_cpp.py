@@ -4524,9 +4524,7 @@ class LlamaCppBackend:
                 # --fit off retry and pass-through overrides). llama-server
                 # defaults --fit on when the flag is omitted.
                 launched_fit = parse_fit_override(cmd)
-                self._launch_use_fit = (
-                    launched_fit if launched_fit is not None else True
-                )
+                self._launch_use_fit = launched_fit if launched_fit is not None else True
 
                 # /props readback backstop (#6164); runs post-health so the
                 # query hits the new server, not the freshly allocated port.

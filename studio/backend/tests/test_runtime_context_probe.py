@@ -69,7 +69,7 @@ finally:
         sys.modules.pop(_name, None)
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope = "module", autouse = True)
 def _cleanup_llama_cpp_import_cache():
     """Drop cached llama_cpp so later tests re-import real httpx/loggers."""
     yield
