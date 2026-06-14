@@ -439,22 +439,22 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Recognise a directory that an earlier Studio install created before the
-# ownership marker existed (installs from before the marker / prebuilt metadata
-# landed wrote neither). Adopt such a directory -- backfill the marker and
-# proceed -- when there is positive evidence it belongs to an established Studio
-# home:
-#   - the directory carries Studio's prebuilt-llama.cpp metadata, or
-#   - $STUDIO_HOME already holds Studio's CLI shim or studio.conf from a prior
-#     run. install.sh writes both only AFTER it invokes setup.sh, so a fresh
-#     install into a dirty custom home (the case the guard protects) does not
-#     have them yet and is still rejected. Mirrors install.sh's env-mode venv
-#     sentinels, minus the venv marker (install.sh writes that before setup.sh,
-#     so it cannot tell a prior install apart from a fresh one).
+# Directory-local evidence that Studio itself created "$1". Used to adopt a
+# Studio llama.cpp that predates the .unsloth-studio-owned marker (introduced
+# with custom-home support) or otherwise lost it, without weakening the guard.
+# The evidence must live INSIDE the directory so an unrelated directory the user
+# placed at a Studio-managed path -- even inside an established Studio home -- is
+# never silently adopted and overwritten:
+#   - UNSLOTH_PREBUILT_INFO.json: written by the prebuilt llama.cpp installer
+#     (the default path, and older than the marker), or
+#   - a top-level llama-quantize symlink: written by source builds (a plain
+#     llama.cpp checkout keeps the binary under build/bin, not a root symlink).
+# Sidecar venvs carry no such fingerprint and stay subject to the strict guard;
+# their marker has been written since the guard was introduced, so an
+# established custom install already has it.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
-    [ -f "$STUDIO_HOME/bin/unsloth" ] && return 0
-    [ -f "$STUDIO_HOME/share/studio.conf" ] && return 0
+    [ -L "$1/llama-quantize" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
