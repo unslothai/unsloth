@@ -24,13 +24,10 @@ if str(_studio) not in sys.path:
 
 ilp = importlib.import_module("install_llama_prebuilt")
 
-if not hasattr(ilp, "published_repo_for_host") or not hasattr(
-    ilp, "resolve_simple_install_release_plans"
-):
+if not hasattr(ilp, "resolve_simple_install_release_plans"):
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
 
 FORK = ilp.DEFAULT_PUBLISHED_REPO  # unslothai/llama.cpp
-UPSTREAM = ilp.UPSTREAM_REPO  # ggml-org/llama.cpp
 
 
 def _host(**kw):
@@ -54,55 +51,6 @@ def _host(**kw):
     )
     base.update(kw)
     return ilp.HostInfo(**base)
-
-
-def test_published_repo_for_host():
-    # CPU-only Linux (x64 and arm64) -> ggml-org upstream.
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True)) == UPSTREAM
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64"))
-        == UPSTREAM
-    )
-    # GPU Linux -> fork.
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True))
-        == FORK
-    )
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
-    # CPU-only Windows -> ggml-org (setup.ps1: the fork ships no win-cpu bundle).
-    assert (
-        ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
-        == UPSTREAM
-    )
-    # GPU Windows -> fork.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True, has_usable_nvidia = True)
-        )
-        == FORK
-    )
-    # macOS -> fork regardless of GPU (ggml-org macOS bundles need too-new macOS).
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-        )
-        == FORK
-    )
-    # Linux with AMD tooling but no probed GPU -> fork (setup.sh routes on tooling).
-    assert (
-        ilp.published_repo_for_host(
-            _host(is_linux = True, is_x86_64 = True), linux_amd_tooling_present = True
-        )
-        == FORK
-    )
-    # The tooling hint is Linux-only: Windows CPU stays on ggml-org.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True),
-            linux_amd_tooling_present = True,
-        )
-        == UPSTREAM
-    )
 
 
 def _run_resolve(monkeypatch, capsys, plans_or_exc):
@@ -150,11 +98,10 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     assert out["repo"] == FORK
 
 
-def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
-    # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
-    # fork so a HIP source build is not offered an upstream CPU prebuilt.
+def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
+    # CPU-only Linux host (no GPU): the dispatch routes to the fork, which now
+    # ships the CPU prebuilt -- it no longer falls back to ggml-org upstream.
     monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
-    monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
     seen = {}
 
     def _resolver(tag, host, repo, published_release_tag):

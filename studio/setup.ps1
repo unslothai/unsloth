@@ -2642,12 +2642,11 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
-# on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
-# A resolved gfx arch counts as a GPU host even when $HasROCm is false (Adrenalin
-# driver only, no HIP runtime): the fork's per-gfx bundle ships its own runtime,
-# so route there instead of ggml-org / a CPU build.
-$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
+# Every host installs the fork's app-* prebuilts now: GPU Windows (CUDA / ROCm)
+# already did, and the fork now also ships the CPU bundles for Windows x64 and
+# arm64 (windows-cpu / windows-arm64). ggml-org artifacts are no longer used by
+# default. Mirrors setup.sh's routing.
+$HelperReleaseRepo = "unslothai/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }

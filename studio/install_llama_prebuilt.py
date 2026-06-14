@@ -3082,21 +3082,6 @@ def _apply_host_overrides(
     return host
 
 
-def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool = False) -> str:
-    """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
-    fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
-    -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
-    or ROCm) -> the fork. linux_amd_tooling_present mirrors setup.sh routing Linux
-    hosts that expose AMD tooling (rocminfo/amd-smi/hipconfig/hipinfo) to the fork
-    even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
-    if host.is_macos:
-        return DEFAULT_PUBLISHED_REPO
-    has_gpu = (
-        host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
-    )
-    return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
-
-
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
@@ -4037,6 +4022,9 @@ def resolve_release_asset_choice(
             published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
+    elif host.is_windows and host.is_arm64:
+        # Windows arm64 has no GPU prebuilt, so it always takes the CPU bundle.
+        published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
     elif host.is_macos and host.is_x86_64:
@@ -5962,8 +5950,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
-        # GPU host (mirrors the ROCm branch, and Windows NVIDIA).
-        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        # GPU host (mirrors the ROCm branch, and Windows NVIDIA). x64 takes the
+        # linux-cpu bundle, arm64 the linux-arm64 one (manifest install_kinds).
+        kind = "linux-arm64" if host.is_arm64 else "linux-cpu"
+        cpu_choice = published_asset_choice_for_kind(bundle, kind)
         if cpu_choice is not None:
             attempts.append(cpu_choice)
     return attempts
@@ -6829,24 +6819,16 @@ def main() -> int:
         return EXIT_SUCCESS
 
     if args.resolve_prebuilt is not None:
-        # Host-aware "is a prebuilt available" probe, no download. A default repo
-        # means "pick the repo for this host"; PrebuiltFallback == source build.
+        # Host-aware "is a prebuilt available" probe, no download. Every host now
+        # plans against the fork (args.published_repo defaults to it); an explicit
+        # --published-repo overrides. PrebuiltFallback == source build.
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
-        # setup.sh routes Linux hosts with AMD tooling to the fork even when no GPU
-        # is probed; mirror that so a HIP source build is not offered a CPU prebuilt.
-        amd_tooling = host.is_linux and any(
-            shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo")
-        )
-        repo = (
-            published_repo_for_host(host, linux_amd_tooling_present = amd_tooling)
-            if args.published_repo == DEFAULT_PUBLISHED_REPO
-            else args.published_repo
-        )
+        repo = args.published_repo
         try:
             _requested, plans = resolve_simple_install_release_plans(
                 args.resolve_prebuilt, host, repo, args.published_release_tag or ""
