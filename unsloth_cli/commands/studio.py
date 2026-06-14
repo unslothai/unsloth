@@ -1093,6 +1093,13 @@ def run(
     run_mod = _load_run_module()
     run_server = run_mod.run_server
 
+    # Match the route handlers' import path: run.py adds studio/backend/ to
+    # sys.path, so they import as `state.tool_policy`. Set this before
+    # run_server() starts uvicorn; once sockets are bound, routes can be hit.
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
+
     run_kwargs = dict(
         host = host,
         port = port,
@@ -1104,14 +1111,6 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
-
-    # Match the route handlers' import path: run.py adds
-    # studio/backend/ to sys.path, so they import as `state.tool_policy`.
-    # Importing via `studio.backend.state.tool_policy` would cache a
-    # second module object whose flag the gates can't see.
-    from state.tool_policy import set_tool_policy
-
-    set_tool_policy(enable_tools)
 
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
     # slow load); tear the server and its children (llama-server, cloudflared) down
