@@ -129,12 +129,22 @@ def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
     assert seen["host"].has_rocm is False
 
 
-def test_resolve_prebuilt_rocm_tooling_host_not_offered_cpu(monkeypatch, capsys):
-    # A Linux host whose runtime probe could not confirm ROCm (has_rocm False) but
-    # exposes ROCm tooling (e.g. hipconfig) must be treated as ROCm so the probe
-    # does not offer the CPU bundle over a possible HIP source build.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+@pytest.mark.parametrize(
+    "os_kwargs",
+    [
+        {"is_linux": True, "is_x86_64": True},
+        {"system": "Windows", "is_windows": True, "is_x86_64": True, "machine": "AMD64"},
+    ],
+)
+def test_resolve_prebuilt_rocm_tooling_host_not_offered_cpu(monkeypatch, capsys, os_kwargs):
+    # A Linux or Windows host whose runtime probe could not confirm ROCm (has_rocm
+    # False) but exposes ROCm tooling (e.g. hipconfig) must be treated as ROCm so
+    # the probe does not offer the CPU bundle over a possible HIP source build.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(**os_kwargs))
     monkeypatch.setattr(ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None)
-    seen, _out = _run_resolve_capture_host(monkeypatch, capsys)
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert seen["host"].has_rocm is True
+    # The gfx-less ROCm host yields no covered bundle -> the probe reports the
+    # headline promise: no prebuilt available (source build), never a CPU bundle.
+    assert out["prebuilt_available"] is False
