@@ -94,3 +94,23 @@ def test_run_lifespan_shutdown_swallows_clear_errors():
 
     assert term_box["n"] == 1
     assert hw.DEVICE is None
+
+
+def test_run_lifespan_shutdown_does_not_retry_body_runtime_error():
+    """A RuntimeError raised by the callable body (not a dead executor) must run
+    terminate exactly once. The inline fallback is reserved for the case where
+    the work never got scheduled, so a body-side RuntimeError on a healthy
+    executor must not trigger a second inline execution."""
+    term_box, _ = _counter()
+    clear_box, clear = _counter()
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+
+    def _boom():
+        term_box["n"] += 1
+        raise RuntimeError("body failed")
+
+    asyncio.run(run_lifespan_shutdown(_boom, clear, hw))
+
+    assert term_box["n"] == 1, "body RuntimeError must not be retried inline"
+    assert clear_box["n"] == 1, "later cleanup must still run"
+    assert hw.DEVICE is None

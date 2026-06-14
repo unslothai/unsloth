@@ -33,8 +33,15 @@ async def run_lifespan_shutdown(
     others (the original bug: an unguarded ``to_thread`` failure dropped the
     later cleanup and the whole nested-lifespan shutdown).
     """
+    # Schedule and await separately (rather than asyncio.to_thread) so the two
+    # failure modes stay distinct: a dead default executor makes run_in_executor
+    # raise synchronously at submit time, whereas an exception from
+    # terminate_downloads itself only surfaces when the future is awaited. That
+    # way we only retry inline when the work never got scheduled, never when the
+    # body ran and raised (which would double-execute it).
+    loop = asyncio.get_running_loop()
     try:
-        await asyncio.to_thread(terminate_downloads)
+        future = loop.run_in_executor(None, terminate_downloads)
     except RuntimeError:
         # Default executor already gone (teardown race). terminate_downloads is
         # itself best-effort and quick, so run it inline on the loop thread.
@@ -42,8 +49,11 @@ async def run_lifespan_shutdown(
             terminate_downloads()
         except Exception as exc:
             logger.warning("terminate_downloads (inline) failed at shutdown: %s", exc)
-    except Exception as exc:
-        logger.warning("terminate_downloads failed at shutdown: %s", exc)
+    else:
+        try:
+            await future
+        except Exception as exc:
+            logger.warning("terminate_downloads failed at shutdown: %s", exc)
 
     try:
         hw_module.DEVICE = None
