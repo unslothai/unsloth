@@ -273,7 +273,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // inactive pane's scrollTop to 0 and corrupt our mirror. Visibility +
   // pointer-events-none hides it while preserving native scroll state.
   const scrollPaneClassName =
-    "absolute inset-0 min-h-0 overflow-y-auto pb-6 pl-5 pr-3 pt-0 [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:thin]";
+    "absolute inset-0 min-h-0 overflow-y-auto pb-6 pl-4 pr-3 pt-0 [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:thin]";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(

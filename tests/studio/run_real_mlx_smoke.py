@@ -11,9 +11,10 @@ processes (the way real users hit the load path):
     python run_real_mlx_smoke.py reload --format {lora|merged|gguf} --dir D
 
 `train` loads gemma-3-270m-it, applies LoRA, probes pre/post loss+grad,
-overfits one repeated row, generates, saves in lora/merged_16bit/gguf
-(gguf best-effort), and writes train_metrics.json. `reload` reopens each
-saved format in a fresh process and writes <format>_reload_metrics.json.
+overfits one repeated row for 30 deterministic steps (batch 2, accum 3),
+generates, saves in lora/merged_16bit/gguf (gguf best-effort), and writes
+train_metrics.json. `reload` reopens each saved format in a fresh process
+and writes <format>_reload_metrics.json.
 
 GGUF export and LoRA reload fixes land in unslothai/unsloth-zoo#627.
 
@@ -120,10 +121,9 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
+    # Match Studio's text dataset path: Studio passes exactly the formatted
+    # text to the tokenizer and does not append EOS behind the user's back.
     ids = list(tokenizer.encode(text))
-    eos_id = getattr(tokenizer, "eos_token_id", None)
-    if eos_id is not None:
-        ids.append(int(eos_id))
     if len(ids) < 2:
         raise RuntimeError(f"text too short to compute loss: {len(ids)} tokens")
 
@@ -268,10 +268,9 @@ def cmd_train(args) -> int:
             lr_scheduler_type = "constant",
             optim = "adamw",
             weight_decay = 0.0,
-            # Elementwise value clip is cheaper than norm clip on MLX (no
-            # cross-tree reduction) and has a higher 13-seed pass rate at this
-            # fixture (value=1.0 62%, norm=1.0 46%). Pin both: value wins when
-            # both > 0, so disable norm.
+            # Pin the elementwise clip to match the 13-seed-tested fixture
+            # (value=1.0 62% pass, norm=1.0 46%). Zoo's new MLX default is
+            # max_grad_leaf_norm=1.0; explicit value wins, norm disabled.
             max_grad_norm = 0.0,
             max_grad_value = 1.0,
             logging_steps = 1,
@@ -329,9 +328,14 @@ def cmd_train(args) -> int:
     }
     # logging_steps=1 + max_steps=N -> N callbacks; track config so the
     # gate auto-follows if max_steps is bumped again.
+    expected_logged_steps = int(config.max_steps)
     assert (
-        len(losses_per_step) == config.max_steps
-    ), f"expected {config.max_steps} logged steps, got {losses_per_step}"
+        len(losses_per_step) == expected_logged_steps
+    ), f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
+    if "train_steps" in train_result:
+        assert int(train_result["train_steps"]) == expected_logged_steps, (
+            f"expected train_steps={expected_logged_steps}, got " f"{train_result['train_steps']}"
+        )
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
         # the LoRA reaches loss=0 around step ~10 with this fixture +
