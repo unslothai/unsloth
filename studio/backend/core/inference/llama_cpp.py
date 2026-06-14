@@ -697,9 +697,9 @@ class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
     Lifecycle:
-        1. load_model() — start llama-server with the GGUF file
-        2. generate_chat_completion() — proxy to /v1/chat/completions, stream back
-        3. unload_model() — terminate the subprocess
+        1. load_model(): start llama-server with the GGUF file
+        2. generate_chat_completion(): proxy to /v1/chat/completions, stream back
+        3. unload_model(): terminate the subprocess
     """
 
     def __init__(self):
@@ -3280,6 +3280,35 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _is_signal_crash(returncode: Optional[int]) -> bool:
+        """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
+        Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
+        unload) nor a clean exit or still-running (None) process.
+        """
+        if returncode is None:
+            return False
+        if returncode >= 0xC0000000:  # Windows access violation / illegal instruction
+            return True
+        return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
+
+    @staticmethod
+    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd with '--flash-attn on' flipped to 'off', or None when flash
+        attention is already off / absent (nothing to retry). Flash-attention
+        kernels hard-crash at startup on some ROCm/GPU builds (often in the
+        vision tower); disabling it keeps vision and MTP, so it is the least
+        destructive recovery rung -- tried before dropping either.
+        """
+        out = list(cmd)
+        for i in range(len(out) - 1):
+            if out[i] == "--flash-attn":
+                if out[i + 1] == "off":
+                    return None
+                out[i + 1] = "off"
+                return out
+        return None
+
+    @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
         Every other flag is preserved; a no-op when --mmproj is absent.
@@ -4250,6 +4279,9 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
+                # Argv actually launched (post --fit off / MTP); text-only retry strips this.
+                _last_spawn_cmd = list(cmd)
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -4257,6 +4289,7 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
+                    nonlocal _last_spawn_cmd
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -4291,6 +4324,7 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        _last_spawn_cmd = list(run_cmd)
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -4356,6 +4390,29 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+
+                # Flash-attention kernels hard-crash at startup on some ROCm/GPU
+                # builds (frequently inside the vision tower). Disabling FA keeps
+                # both vision and MTP, so retry that way before dropping either.
+                # Only on a hard fault with FA on; a cancel/unload stops respawn.
+                if not healthy and not self._cancel_event.is_set():
+                    _fa_rc = self._process.poll() if self._process is not None else None
+                    _fa_cmd = (
+                        self._with_flash_attn_off(_last_spawn_cmd)
+                        if self._is_signal_crash(_fa_rc)
+                        else None
+                    )
+                    if _fa_cmd is not None:
+                        logger.warning(
+                            "llama-server hard-crashed at startup (exit %s) with "
+                            "flash attention on; retrying once with --flash-attn "
+                            "off (keeps vision and MTP).",
+                            _fa_rc,
+                        )
+                        self._kill_process()
+                        cmd = _fa_cmd
+                        healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
+
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
@@ -4414,21 +4471,29 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
 
-                # A vision GGUF launched with --mmproj can abort when the
-                # installed llama.cpp is too old for the model's projector
-                # ("Unknown projector type"); in that one case retry once
-                # text-only rather than failing the whole load.
+                # A too-old llama.cpp can reject a model's --mmproj projector
+                # (format message or a bare SIGSEGV); retry once text-only.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
+                    # Read the crash code before _kill_process() clears _process.
+                    _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
-                    if launched_with_mmproj and self._is_projector_incompatibility(out):
+                    # Skip if a cancel/unload is pending (mirrors the MTP guard).
+                    if (
+                        launched_with_mmproj
+                        and not self._cancel_event.is_set()
+                        and (
+                            self._is_projector_incompatibility(out)
+                            or self._is_signal_crash(_crash_rc)
+                        )
+                    ):
                         logger.warning(
                             "llama-server could not load this model's vision "
                             "projector (--mmproj). The installed llama.cpp build is "
                             "likely too old for it. Loading text-only for this "
                             "session; run 'unsloth studio update' to enable vision."
                         )
-                        cmd = self._strip_mmproj_args(cmd)
+                        cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         self._is_vision = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
@@ -6776,7 +6841,7 @@ class LlamaCppBackend:
                 try:
                     # llama-server's /apply-template renders tool declarations
                     # into the prompt when ``tools`` is supplied, so pass them
-                    # through — otherwise tool-schema tokens go uncounted.
+                    # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
