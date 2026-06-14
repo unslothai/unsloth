@@ -782,6 +782,7 @@ const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
@@ -805,9 +806,15 @@ const ThreadWelcome: FC<{
               className="size-[44px] -translate-y-[2px]"
             />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {welcome.text}
+              {incognito ? "Temporary chat" : welcome.text}
             </h1>
           </div>
+          {incognito && (
+            <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
+              This chat won't appear in your history and isn't saved. It
+              disappears when you leave.
+            </p>
+          )}
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
         </div>
       </div>
@@ -2089,6 +2096,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -2124,8 +2132,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
-  // Disable Export chat until the thread has content.
+  // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
+  const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -2214,7 +2223,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     ),
     exportChat: (
       <DropdownMenuSub>
-        <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
+        <DropdownMenuSubTrigger disabled={exportDisabled}>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
           Export chat
         </DropdownMenuSubTrigger>
