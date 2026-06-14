@@ -2417,25 +2417,14 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
-# Skip entirely in the install.ps1 flow (SKIP_STUDIO_BASE=1): there the base
-# packages (unsloth + unsloth-zoo) are NOT reinstalled, so unsloth.exe is never
-# rewritten -- and since setup runs *via* unsloth.exe, renaming our own running
-# launcher only fails with a sharing violation (WinError 32). Only the
-# 'studio update' flow (base reinstalled) actually needs the rename.
-$VenvScriptsDir = Join-Path $VenvDir "Scripts"
-$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
-if ($env:SKIP_STUDIO_BASE -ne "1" -and (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf)) {
-    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
-    if (Test-Path -LiteralPath $StaleUnslothExe) {
-        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
-    }
-    try {
-        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
-    } catch {
-        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
-    }
-}
+# No unsloth.exe rename needed. The base-package upgrade routes through pip on
+# Windows (install_python_stack maps --upgrade-package -> pip), and pip tolerates
+# a running/locked console-script .exe: it moves the old unsloth.exe aside, then
+# writes the new one. uv could not -- it aborts trying to delete the locked .exe --
+# which is why this used to rename unsloth.exe out of the way first; but renaming
+# the running uv-trampoline launcher itself failed with a sharing violation
+# (WinError 32), so the trick never actually worked and only emitted a scary
+# warning on every Windows install/update.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -2446,28 +2435,6 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
-    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
-    # stale-but-working copy in .deleteme.
-    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
-        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
-        if (-not $needRestore) {
-            try {
-                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
-            } catch { $needRestore = $true }
-        }
-        if ($needRestore) {
-            try {
-                if (Test-Path -LiteralPath $RunningUnslothExe) {
-                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
-                }
-                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
-                substep "restored unsloth.exe after failed install"
-            } catch {
-                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
-            }
-        }
-    }
     exit 1
 }
 
