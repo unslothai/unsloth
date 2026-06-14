@@ -296,6 +296,7 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
     get_studio_install_source_status,
@@ -463,9 +464,12 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
-    await asyncio.to_thread(terminate_hub_downloads)
-    _hw_module.DEVICE = None
-    clear_unsloth_compiled_cache()
+
+    await run_lifespan_shutdown(
+        terminate_hub_downloads,
+        clear_unsloth_compiled_cache,
+        _hw_module,
+    )
 
 
 app = FastAPI(
