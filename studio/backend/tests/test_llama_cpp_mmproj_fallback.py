@@ -105,10 +105,9 @@ class TestProjectorIncompatibilityDetector:
 
 
 class TestSignalCrashDetector:
-    """_is_signal_crash flags a hard program fault (SIGSEGV/SIGABRT/SIGILL/
-    SIGFPE/SIGBUS or a Windows 0xC0000000+ fault). A clean exit, a hung (None)
-    process, or an external kill (SIGKILL/SIGTERM/SIGINT) must NOT count, so an
-    OOM-killer / unload / supervisor kill is never read as a bad projector."""
+    """_is_signal_crash flags a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS
+    or a Windows 0xC0000000+ fault); not a clean exit, hung (None), or an
+    external kill (SIGKILL/SIGTERM/SIGINT) that an OOM/unload would cause."""
 
     @pytest.mark.parametrize("rc", [-11, -6, -4, -7, -8, 0xC0000005, 0xC000001D])
     def test_program_faults_are_hard_crashes(self, rc):
@@ -203,8 +202,7 @@ class TestRetryContract:
         assert _detect(_OOM_OUT) is False
 
     def test_bare_segfault_with_mmproj_yields_text_only_retry(self):
-        # Field report: a -11 SIGSEGV on --mmproj prints no projector line, so
-        # the decision must fall back via _is_signal_crash, not the message match.
+        # Field report: a -11 SIGSEGV on --mmproj has no projector line; use _is_signal_crash.
         out = ""  # a SIGSEGV produced no projector-format line
         assert _detect(out) is False
         should_retry = _detect(out) or _signal_crash(-11)
@@ -213,6 +211,5 @@ class TestRetryContract:
         assert "--mmproj" not in retry_cmd and "-m" in retry_cmd
 
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
-        # A clean non-zero exit (bad path, port bind) is not a hard crash: keep
-        # the message-based decision so a non-projector failure still raises.
+        # Clean non-zero exit (bad path, port bind) is not a hard crash; stay message-based.
         assert (_detect(_MISSING_OUT) or _signal_crash(1)) is False

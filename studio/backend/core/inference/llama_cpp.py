@@ -3276,11 +3276,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
-        """True only on a hard program fault (clip.cpp-style crash): a POSIX
-        fault signal (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS) or a Windows
-        0xC0000000+ status. NOT SIGKILL/SIGTERM/SIGINT (OOM killer, unload,
-        supervisor) so a resource/lifecycle kill is not read as a bad mmproj.
-        Clean exit and a still-running process (rc None) are False.
+        """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
+        Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
+        unload) nor a clean exit or still-running (None) process.
         """
         if returncode is None:
             return False
@@ -4259,8 +4257,7 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
-                # Argv actually launched (post --fit off / MTP spec slice); a
-                # text-only retry strips --mmproj from this, not the original cmd.
+                # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
@@ -4429,9 +4426,8 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
 
-                # A too-old llama.cpp can reject a model's --mmproj projector,
-                # either with a projector-format message or a bare SIGSEGV.
-                # Retry once text-only instead of failing the whole load.
+                # A too-old llama.cpp can reject a model's --mmproj projector
+                # (format message or a bare SIGSEGV); retry once text-only.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
