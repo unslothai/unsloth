@@ -9,9 +9,9 @@ import {
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Alert02Icon,
-  ArrowDown01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -237,7 +237,7 @@ export function DownloadManagerPanel() {
               className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
             >
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />

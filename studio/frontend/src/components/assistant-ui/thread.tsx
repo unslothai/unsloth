@@ -784,13 +784,14 @@ const ThreadWelcome: FC<{
 }> = ({ hideComposer, threadId }) => {
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
-    // First name only, for a natural greeting; blank falls back to no name.
-    const name = displayName.trim().split(/\s+/)[0] ?? "";
+    // Prefer the nickname; otherwise first name only. Blank falls back to none.
+    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     setWelcome(buildWelcome(new Date().getHours(), name));
-  }, [displayName]);
+  }, [displayName, nickname]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
