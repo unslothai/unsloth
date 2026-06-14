@@ -36,6 +36,7 @@ import json
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -60,7 +61,7 @@ from routes.inference import (
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
     _normalise_responses_input,
-    _responses_tool_output_text,
+    _responses_tool_output_content,
     _responses_non_streaming,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
@@ -435,20 +436,144 @@ class TestNormaliseResponsesInputWithTools:
         assert sum(1 for m in msgs if m.role == "system") == 1
         assert "A" in msgs[0].content and "B" in msgs[0].content
 
-    def test_content_array_output_serialised_to_json_string(self):
+    def test_content_array_text_output_flattens_to_tool_text(self):
         payload = ResponsesRequest(
             input = [
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
-                    "output": [{"type": "output_text", "text": "ok"}],
+                    "output": [{"type": "input_text", "text": "ok"}],
                 }
             ],
         )
         msgs = _normalise_responses_input(payload)
         assert msgs[0].role == "tool"
-        # Content is serialised so llama-server sees a string.
-        assert json.loads(msgs[0].content) == [{"type": "output_text", "text": "ok"}]
+        assert msgs[0].content == "ok"
+
+    def test_content_array_image_output_becomes_multimodal_tool_content(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see image"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,AAA",
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {"type": "text", "text": "see image"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
+            },
+        ]
+
+        chat_req = _build_chat_request(payload, msgs, stream = False)
+        assert chat_req.model_dump(exclude_none = True)["messages"][0]["content"] == [
+            {"type": "text", "text": "see image"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
+            },
+        ]
+
+    def test_content_array_image_output_allows_original_detail(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/screenshot.png",
+                            "detail": "original",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://example.com/screenshot.png",
+                    "detail": "original",
+                },
+            },
+        ]
+
+    def test_content_array_file_id_image_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see image"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_content_array_file_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see file"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_content_array_malformed_image_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [{"type": "input_image", "detail": "high"}],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "image_url" in str(exc.value.detail)
 
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
@@ -541,8 +666,8 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[0].content == "(no output)"
 
     def test_tool_output_serializer_preserves_non_empty_text(self):
-        assert _responses_tool_output_text("done") == "done"
-        assert _responses_tool_output_text("  done  ") == "  done  "
+        assert _responses_tool_output_content("done") == "done"
+        assert _responses_tool_output_content("  done  ") == "  done  "
 
 
 # =====================================================================
