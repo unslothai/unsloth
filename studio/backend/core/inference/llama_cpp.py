@@ -1515,7 +1515,12 @@ class LlamaCppBackend:
         return True
 
     @staticmethod
-    def _pin_child_gpu_env(env: dict, pinned: str, *, force_hip: bool = False) -> None:
+    def _pin_child_gpu_env(
+        env: dict,
+        pinned: str,
+        *,
+        force_hip: bool = False,
+    ) -> None:
         """Narrow a child process to physical GPU IDs.
 
         On ROCm, HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES both filter device
