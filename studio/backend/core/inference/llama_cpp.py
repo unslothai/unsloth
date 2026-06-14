@@ -3385,10 +3385,9 @@ class LlamaCppBackend:
                     # term (verify buffer is fixed, draft KV scales), so binary
                     # search instead of the linear interpolation below.
                     def _consumer(c: int) -> int:
-                        return (
-                            self._estimate_kv_cache_bytes(c, cache_type_kv, n_parallel = n_parallel)
-                            + _mtp_at(c)
-                        )
+                        return self._estimate_kv_cache_bytes(
+                            c, cache_type_kv, n_parallel = n_parallel
+                        ) + _mtp_at(c)
 
                     if _consumer(ctx) <= kv_budget_b:
                         return ctx
@@ -4044,7 +4043,9 @@ class LlamaCppBackend:
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv + _mtp_bytes(capped)) / (1024 * 1024)
-                                if total_mib <= pool_mib * (_CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve):
+                                if total_mib <= pool_mib * (
+                                    _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                ):
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
@@ -4160,7 +4161,8 @@ class LlamaCppBackend:
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                             f"(model: {model_size / (1024**3):.1f} GB, "
                             f"est. KV cache: {kv_est / (1024**3):.1f} GB, "
-                            f"{_mtp_note}".rstrip(", ") + ")"
+                            f"{_mtp_note}".rstrip(", ")
+                            + ")"
                         )
 
                     kv_cache_bytes = self._estimate_kv_cache_bytes(

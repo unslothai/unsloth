@@ -79,14 +79,14 @@ GIB = 1024**3
 
 def _make_backend(
     *,
-    nextn=1,
-    n_kv_heads=4,
-    n_heads=24,
-    kv_key_length=256,
-    kv_value_length=256,
-    embedding_length=5120,
-    n_layers=65,
-    native_ctx=262144,
+    nextn = 1,
+    n_kv_heads = 4,
+    n_heads = 24,
+    kv_key_length = 256,
+    kv_value_length = 256,
+    embedding_length = 5120,
+    n_layers = 65,
+    native_ctx = 262144,
 ):
     """Qwen3.6-27B-MTP-class backend with only the dims the MTP math reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -135,13 +135,13 @@ class TestDraftKvBytes:
         assert b._mtp_draft_kv_bytes(ctx) == expected
 
     def test_scales_with_nextn_predict_layers(self):
-        one = _make_backend(nextn=1)._mtp_draft_kv_bytes(65536)
-        two = _make_backend(nextn=2)._mtp_draft_kv_bytes(65536)
+        one = _make_backend(nextn = 1)._mtp_draft_kv_bytes(65536)
+        two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
     def test_none_when_dims_missing(self):
-        assert _make_backend(nextn=0)._mtp_draft_kv_bytes(65536) is None
-        assert _make_backend(kv_key_length=None)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(kv_key_length = None)._mtp_draft_kv_bytes(65536) is None
         assert _make_backend()._mtp_draft_kv_bytes(0) is None
 
     def test_independent_of_main_cache_type(self):
@@ -165,7 +165,9 @@ class TestVerifyBytes:
         # Per-n_max term is linear after removing the fixed base.
         from core.inference.llama_cpp import _MTP_FIXED_OVERHEAD_BYTES
 
-        assert (v4 - _MTP_FIXED_OVERHEAD_BYTES) == pytest.approx(2 * (v2 - _MTP_FIXED_OVERHEAD_BYTES))
+        assert (v4 - _MTP_FIXED_OVERHEAD_BYTES) == pytest.approx(
+            2 * (v2 - _MTP_FIXED_OVERHEAD_BYTES)
+        )
 
     def test_per_embd_value(self):
         # 32768 bytes * n_embd * n_max + fixed base
@@ -173,14 +175,15 @@ class TestVerifyBytes:
             _MTP_FIXED_OVERHEAD_BYTES,
             _MTP_VERIFY_BYTES_PER_EMBD,
         )
-
-        b = _make_backend(embedding_length=5120)
-        assert b._mtp_verify_bytes(3) == _MTP_VERIFY_BYTES_PER_EMBD * 5120 * 3 + _MTP_FIXED_OVERHEAD_BYTES
+        b = _make_backend(embedding_length = 5120)
+        assert (
+            b._mtp_verify_bytes(3)
+            == _MTP_VERIFY_BYTES_PER_EMBD * 5120 * 3 + _MTP_FIXED_OVERHEAD_BYTES
+        )
 
     def test_fixed_floor_when_embd_unknown(self):
         from core.inference.llama_cpp import _MTP_FIXED_OVERHEAD_BYTES
-
-        b = _make_backend(embedding_length=0)
+        b = _make_backend(embedding_length = 0)
         assert b._mtp_verify_bytes(6) == _MTP_FIXED_OVERHEAD_BYTES
 
 
@@ -191,12 +194,14 @@ class TestVerifyBytes:
 
 class TestOverheadTotal:
     def test_none_when_draft_kv_unsizable(self):
-        assert _make_backend(nextn=0)._estimate_mtp_overhead_bytes(65536, spec_draft_n_max=2) is None
+        assert (
+            _make_backend(nextn = 0)._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2) is None
+        )
 
     def test_includes_separate_drafter_weights(self):
         b = _make_backend()
-        base = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max=2)
-        with_w = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max=2, draft_weights_bytes=GIB)
+        base = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2)
+        with_w = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2, draft_weights_bytes = GIB)
         assert with_w - base == GIB
 
     # (ctx, n_max) -> measured overhead in MiB (B200, b9625, UD-Q2_K_XL).
@@ -214,7 +219,7 @@ class TestOverheadTotal:
     )
     def test_conservative_vs_measured(self, ctx, n_max, measured_mib):
         b = _make_backend()
-        pred_mib = b._estimate_mtp_overhead_bytes(ctx, spec_draft_n_max=n_max) / MIB
+        pred_mib = b._estimate_mtp_overhead_bytes(ctx, spec_draft_n_max = n_max) / MIB
         # Never under-reserve; never waste more than ~150 MiB over measured.
         assert measured_mib <= pred_mib <= measured_mib + 150
 
@@ -225,10 +230,10 @@ class TestOverheadTotal:
 
 
 class TestFitContextWithMtp:
-    def _fit_backend(self, kv_per_token=325_000):
+    def _fit_backend(self, kv_per_token = 325_000):
         b = _make_backend()
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else n * kv_per_token)
+        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else n * kv_per_token)
         return b
 
     def test_overhead_fn_lowers_context(self):
@@ -240,7 +245,7 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max=2) or 0,
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0,
         )
         assert 0 < with_mtp < without
 
@@ -248,12 +253,16 @@ class TestFitContextWithMtp:
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
         n2 = b._fit_context_to_vram(
-            131072, avail_mib, model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max=2) or 0,
+            131072,
+            avail_mib,
+            model,
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0,
         )
         n6 = b._fit_context_to_vram(
-            131072, avail_mib, model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max=6) or 0,
+            131072,
+            avail_mib,
+            model,
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 6) or 0,
         )
         assert 0 < n6 <= n2
 
@@ -262,15 +271,17 @@ class TestFitContextWithMtp:
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
         a = b._fit_context_to_vram(131072, avail_mib, model)
-        bb = b._fit_context_to_vram(131072, avail_mib, model, mtp_engaged=False, mtp_overhead_fn=None)
+        bb = b._fit_context_to_vram(
+            131072, avail_mib, model, mtp_engaged = False, mtp_overhead_fn = None
+        )
         assert a == bb
 
     def test_chosen_context_actually_fits_budget(self):
         # The returned ctx must satisfy weights + KV + MTP <= 90% budget.
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
-        fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max=2) or 0  # noqa: E731
-        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn=fn)
+        fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0  # noqa: E731
+        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn = fn)
         budget = avail_mib * MIB * 0.90
         assert model + b._estimate_kv_cache_bytes(ctx) + fn(ctx) <= budget
 
@@ -345,12 +356,14 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
     b = _make_backend()
     b._can_estimate_kv = lambda: True
     # Real-ish hybrid KV slope so KV grows with ctx like the actual model.
-    b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else int(n * 66_000))
+    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else int(n * 66_000))
     avail_mib = 24_000
     model = int(17.9 * GIB)  # UD-Q4_K_XL weights
     no_mtp = b._fit_context_to_vram(262144, avail_mib, model)
     with_mtp = b._fit_context_to_vram(
-        262144, avail_mib, model,
-        mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max=6) or 0,
+        262144,
+        avail_mib,
+        model,
+        mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 6) or 0,
     )
     assert 0 < with_mtp < no_mtp
