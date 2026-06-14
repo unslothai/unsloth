@@ -329,9 +329,14 @@ def cmd_train(args) -> int:
     }
     # logging_steps=1 + max_steps=N -> N callbacks; track config so the
     # gate auto-follows if max_steps is bumped again.
+    expected_logged_steps = int(config.max_steps)
     assert (
-        len(losses_per_step) == config.max_steps
-    ), f"expected {config.max_steps} logged steps, got {losses_per_step}"
+        len(losses_per_step) == expected_logged_steps
+    ), f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
+    if "train_steps" in train_result:
+        assert int(train_result["train_steps"]) == expected_logged_steps, (
+            f"expected train_steps={expected_logged_steps}, got " f"{train_result['train_steps']}"
+        )
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
         # the LoRA reaches loss=0 around step ~10 with this fixture +

@@ -267,7 +267,10 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
+        # vLLM <= 0.18 logs "Starting vLLM API server on ..."; 0.19 renamed it
+        # to "Starting vLLM server on ...". Accept both, with the optional
+        # server index some versions insert before "on".
+        ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
@@ -282,12 +285,25 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            ready_regex = None,
+            # vLLM >= 0.19 emits "Starting vLLM API server ... on ..." (and
+            # the uvicorn startup lines) through the logging module, which
+            # writes to STDERR. Watching stdout alone makes a healthy server
+            # look like a startup timeout, after which we kill it.
+            ready_regex = ready_re,
             text = False,
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
-        ready = self.stdout_capture.wait_for_ready(timeout = timeout)
+        ready = False
+        deadline = time.monotonic() + (timeout or 1200)
+        while time.monotonic() < deadline:
+            if self.stdout_capture.wait_for_ready(timeout = 1) or self.stderr_capture.wait_for_ready(
+                timeout = 0
+            ):
+                ready = True
+                break
+            if self.vllm_process.poll() is not None:
+                break
         if not ready:
             if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
                 print("Stdout stream ended before readiness message detected.")
