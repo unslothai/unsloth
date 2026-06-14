@@ -68,6 +68,11 @@ async function fetchStatus(
   }
 }
 
+// Update probes force a refresh so a newly published build is not masked by the
+// backend's 24h release cache (the banner would otherwise lag up to a day). The
+// job-progress poll below stays cached; it only reads local job state.
+const recheckStatus = () => fetchStatus(true);
+
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
 }
@@ -161,13 +166,13 @@ export function useLlamaUpdateCheck({
     let canceled = false;
 
     const firstTimer = setTimeout(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, FIRST_CHECK_DELAY_MS);
 
     const reminder = setInterval(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, REMINDER_INTERVAL_MS);
@@ -194,7 +199,7 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      fetchStatus().then(surfaceIfAvailable);
+      recheckStatus().then(surfaceIfAvailable);
     }, SNOOZE_DELAY_MS);
   }, [surfaceIfAvailable]);
 

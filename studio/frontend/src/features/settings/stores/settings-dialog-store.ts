@@ -20,9 +20,22 @@ interface SettingsDialogState {
   // previous-focus capture, leaving focus on <body> after close. We restore
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
+  // Set when something asks to jump straight to the archived chats list (the
+  // archive toast). ChatTab consumes it to open the dialog, then clears it.
+  archivedChatsRequested: boolean;
   openDialog: (tab?: SettingsTab) => void;
+  openArchivedChats: () => void;
+  consumeArchivedChatsRequest: () => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
+}
+
+function captureOpener(): HTMLElement | null {
+  return typeof document !== "undefined" &&
+    document.activeElement instanceof HTMLElement &&
+    document.activeElement !== document.body
+    ? document.activeElement
+    : null;
 }
 
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
@@ -53,17 +66,21 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),
   opener: null,
+  archivedChatsRequested: false,
   openDialog: (tab) =>
     set((state) => ({
       open: true,
       activeTab: tab ?? state.activeTab,
-      opener:
-        typeof document !== "undefined" &&
-        document.activeElement instanceof HTMLElement &&
-        document.activeElement !== document.body
-          ? document.activeElement
-          : null,
+      opener: captureOpener(),
     })),
+  openArchivedChats: () =>
+    set({
+      open: true,
+      activeTab: "chat",
+      archivedChatsRequested: true,
+      opener: captureOpener(),
+    }),
+  consumeArchivedChatsRequest: () => set({ archivedChatsRequested: false }),
   // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
   // pass after `open: false` lands, so the opener must still be readable
   // from the store at that point. The next openDialog() overwrites it.
