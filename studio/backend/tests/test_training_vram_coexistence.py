@@ -63,8 +63,10 @@ def _fake_llama_backend(
     # A healthy active server is loaded; pass loaded=False for a mid-start one.
     is_loaded = active if loaded is None else loaded
     llama = SimpleNamespace(
-        is_active = active, is_loaded = is_loaded,
-        model_identifier = identifier, _gpu_offload_active = gpu_offload,
+        is_active = active,
+        is_loaded = is_loaded,
+        model_identifier = identifier,
+        _gpu_offload_active = gpu_offload,
     )
     llama.unload_model = MagicMock()
     return llama
