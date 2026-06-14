@@ -2611,6 +2611,59 @@ class TestDirectLinuxNvidiaCpuGate:
         assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
+class TestLinuxPublishedAttemptsNvidiaCpuGate:
+    """Live fork-manifest path (_linux_published_attempts): an NVIDIA host whose
+    CUDA selection finds nothing must NOT be handed the manifest's CPU bundle --
+    the attempt list stays empty so the caller source-builds with CUDA instead of
+    silently installing a CPU-only binary on a GPU host. CPU-only hosts still get
+    the CPU bundle. Mirrors the ROCm policy and TestDirectLinuxNvidiaCpuGate (the
+    latter covers direct_linux_release_plan, which is off the live path, this the
+    live path)."""
+
+    def _cpu_only_bundle(self):
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
+
+    def test_nvidia_host_without_cuda_line_gets_no_cpu_attempt(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert attempts == []
+
+    def test_cpu_host_gets_cpu_attempt(self):
+        host = make_host(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+
 # ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
 # ===========================================================================
