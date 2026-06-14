@@ -261,36 +261,70 @@ async def start_training(
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
 
-        # Free GPU memory: shut down any running inference/export subprocesses
-        # before training (they'd compete for VRAM otherwise).
-        try:
-            from core.inference import get_inference_backend
-            inf_backend = get_inference_backend()
-            if inf_backend.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for training",
-                    inf_backend.active_model_name,
+        # Free VRAM for training: stop export, unload chat unless it can coexist.
+        # A before_spawn hook -> runs only after start_training's guards pass, so
+        # we never tear down chat/export VRAM for a start that is then refused.
+        def _free_vram_for_training() -> None:
+            try:
+                from core.export import get_export_backend
+                exp_backend = get_export_backend()
+                if exp_backend.current_checkpoint:
+                    logger.info("Shutting down export subprocess to free GPU memory for training")
+                    exp_backend._shutdown_subprocess()
+                    exp_backend.current_checkpoint = None
+                    exp_backend.is_vision = False
+                    exp_backend.is_peft = False
+            except Exception as e:
+                logger.warning("Could not shut down export subprocess: %s", e)
+
+            try:
+                from routes.training_vram import (
+                    can_keep_chat_during_training,
+                    free_chat_models_for_training,
+                    summarize_resident_chat,
                 )
-                inf_backend._shutdown_subprocess()
-                inf_backend.active_model_name = None
-                inf_backend.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
 
-        try:
-            from core.export import get_export_backend
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info("Shutting down export subprocess to free GPU memory for training")
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+                resident = summarize_resident_chat()
+                if not resident["any"]:
+                    return
+                if resident.get("loading"):
+                    # In-flight load can't be sized -> free rather than risk OOM.
+                    freed = free_chat_models_for_training(reason = "chat model still loading")
+                    logger.info("Freed in-flight chat load for training: %s", freed)
+                    return
+                keep, info = can_keep_chat_during_training(
+                    model_name = training_kwargs["model_name"],
+                    hf_token = training_kwargs["hf_token"],
+                    training_type = training_kwargs["training_type"],
+                    load_in_4bit = training_kwargs["load_in_4bit"],
+                    batch_size = training_kwargs["batch_size"],
+                    max_seq_length = training_kwargs["max_seq_length"],
+                    lora_rank = training_kwargs["lora_r"],
+                    target_modules = training_kwargs["target_modules"],
+                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                    optimizer = training_kwargs["optim"],
+                    gpu_ids = training_kwargs["gpu_ids"],
+                )
+                if keep:
+                    logger.info(
+                        "Keeping chat model(s) loaded during training "
+                        "(free ~%s GB, needs ~%s GB): %s",
+                        info.get("usable_gb"),
+                        info.get("required_gb"),
+                        resident,
+                    )
+                else:
+                    freed = free_chat_models_for_training(
+                        reason = "insufficient VRAM to run training alongside chat",
+                    )
+                    logger.info("Freed chat model(s) for training: %s", freed)
+            except Exception as e:
+                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
-        # start_training spawns a subprocess (non-blocking).
-        success = backend.start_training(job_id = job_id, **training_kwargs)
+        # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        success = backend.start_training(
+            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+        )
 
         if not success:
             progress_error = backend.trainer.training_progress.error
