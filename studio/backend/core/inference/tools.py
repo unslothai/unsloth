@@ -524,10 +524,10 @@ RENDER_HTML_TOOL = {
     "function": {
         "name": "render_html",
         "description": (
-            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Render a self-contained HTML/CSS/JavaScript canvas for the user. "
             "Call this at most once per assistant response unless the user "
             "explicitly asks for changes in that response. Future user requests "
-            "for new artifacts may call render_html once. Put the entire document "
+            "for new canvases may call render_html once. Put the entire document "
             "in code, including any CSS in <style> tags and JavaScript in <script> tags."
         ),
         "parameters": {
@@ -539,7 +539,7 @@ RENDER_HTML_TOOL = {
                 },
                 "title": {
                     "type": "string",
-                    "description": "Short display title for the artifact.",
+                    "description": "Short display title for the canvas.",
                 },
             },
             "required": ["code"],
@@ -705,14 +705,14 @@ def _render_html_result(arguments: dict) -> str:
     if isinstance(title, str) and title.strip():
         safe_title = title.strip()[:120]
         return (
-            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            f"Rendered HTML canvas: {safe_title}. Do not call render_html "
             "again in this response unless the user asks for changes. For a later "
-            "user request for a new artifact, call render_html once."
+            "user request for a new canvas, call render_html once."
         )
     return (
-        "Rendered HTML artifact. Do not call render_html again in this response "
+        "Rendered HTML canvas. Do not call render_html again in this response "
         "unless the user asks for changes. For a later user request for a new "
-        "artifact, call render_html once."
+        "canvas, call render_html once."
     )
 
 

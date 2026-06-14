@@ -954,7 +954,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
               configurable: true,
             });
           } catch {
-            // Leave the sandbox failure contained in the artifact if the
+            // Leave the sandbox failure contained in the canvas if the
             // browser refuses to shadow the Web Storage accessor.
           }
         };
@@ -986,7 +986,7 @@ async def artifact_preview_frame(
     allow_network: bool = False,
     token: Optional[str] = None,
 ):
-    """Serve the opaque sandbox shell used for client-side HTML artifacts."""
+    """Serve the opaque sandbox shell used for client-side HTML canvases."""
 
     if allow_network:
         auth_header = request.headers.get("authorization")
@@ -1195,12 +1195,12 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
-# where the artifact tool is actually present in the tool schema; otherwise
+# where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
 # the fenced-HTML fallback prompt.
 _TOOL_BASE_NUDGE = (
     "Tools are available when they materially improve the answer. Use an enabled "
-    "tool for current facts, calculations, code execution, or artifacts when it "
+    "tool for current facts, calculations, code execution, or canvases when it "
     "materially helps; otherwise answer normally and follow the user's requested "
     "format."
 )
@@ -1216,11 +1216,11 @@ _TOOL_CODE_TIP = (
     "and analyze information from tool results."
 )
 _TOOL_ARTIFACT_TIP = (
-    "For HTML, CSS, or JavaScript artifact requests, call render_html once when "
+    "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
     "argument. After render_html succeeds, do not call it again in the same "
     "response unless the user asks for changes. Future user requests for new "
-    "artifacts may call render_html once."
+    "canvases may call render_html once."
 )
 
 
