@@ -3,15 +3,16 @@
 
 """
 start_training()'s before_spawn hook must run iff a training subprocess is
-actually spawned -- i.e. only after the start guards (no live subprocess, no
-lingering pump thread) pass. This protects the chat-VRAM unload from firing for
-a start that is then refused.
+actually spawned -- i.e. only after ALL synchronous validation (start guards,
+config build, GPU-selection) passes. This protects the chat-VRAM unload from
+firing for a start that is then refused (e.g. invalid gpu_ids -> 400).
 """
 
 import unittest
 from unittest.mock import MagicMock, patch
 
 from core.training.training import TrainingBackend
+from utils.hardware import DeviceType
 
 
 class _DummyProcess:
@@ -76,6 +77,30 @@ class TestBeforeSpawnHook(unittest.TestCase):
         ok = _start(backend, hook)
         self.assertTrue(ok)  # training still starts despite a hook error
         hook.assert_called_once()
+
+    def test_hook_skipped_when_gpu_selection_rejects(self):
+        # Invalid gpu_ids raise in prepare_gpu_selection (before the spawn), so the
+        # hook must NOT run -- a refused start frees no chat/export VRAM.
+        backend = TrainingBackend()
+        hook = MagicMock()
+        with (
+            patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                side_effect = ValueError("Invalid gpu_ids [99]"),
+            ),
+            patch("core.training.training._CTX.Process") as process_mock,
+        ):
+            with self.assertRaisesRegex(ValueError, "Invalid gpu_ids"):
+                backend.start_training(
+                    job_id = "before-spawn-test",
+                    before_spawn = hook,
+                    model_name = "unsloth/test",
+                    training_type = "LoRA/QLoRA",
+                    gpu_ids = [99],
+                )
+        hook.assert_not_called()
+        process_mock.assert_not_called()
 
 
 if __name__ == "__main__":

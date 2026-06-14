@@ -235,8 +235,9 @@ class TrainingBackend:
         All kwargs are serialized into a config dict and sent to the worker.
         Returns True if the subprocess started successfully.
 
-        ``before_spawn`` is an optional no-arg callable run once the start guards
-        pass but before GPU work -- used to free VRAM (e.g. unload chat) without
+        ``before_spawn`` is an optional no-arg callable run after ALL synchronous
+        validation (start guards, config build, GPU selection) passes, immediately
+        before the worker spawns -- used to free VRAM (e.g. unload chat) without
         tearing it down on a refused start. Hook failures never block the start.
         """
         with self._lock:
@@ -251,13 +252,6 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
-
-        # Guards passed: a subprocess will spawn -> safe to free VRAM now.
-        if before_spawn is not None:
-            try:
-                before_spawn()
-            except Exception:
-                logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
         # Build config dict for the subprocess
         config = {
@@ -374,6 +368,16 @@ class TrainingBackend:
                     },
                     daemon = True,
                 )
+
+                # All synchronous validation (config build, GPU selection) and
+                # process construction passed, so the worker is about to spawn --
+                # only now free VRAM, so a refused start never tears down chat/export.
+                if before_spawn is not None:
+                    try:
+                        before_spawn()
+                    except Exception:
+                        logger.warning("before_spawn hook failed; continuing", exc_info = True)
+
                 proc.start()
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
