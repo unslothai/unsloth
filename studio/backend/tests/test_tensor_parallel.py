@@ -262,6 +262,26 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
 
 
+def test_mtp_is_disabled_under_tensor_parallel():
+    # MTP-draft + --split-mode tensor + flash-attn crashes the CUDA FA kernel at
+    # decode, which the startup /health probe can't catch. load_model must drop
+    # MTP for the tensor attempt -- before the VRAM planner (so no drafter memory
+    # is reserved) and before the spec-flag build (so no --model-draft is emitted).
+    src = _load_model_source()
+    gate = src.find("if tensor_parallel and _mtp_will_engage:")
+    plan = src.find("self._plan_tensor_parallel(")
+    build = src.find("self._build_speculative_flags(")
+    assert gate != -1, "load_model must gate MTP off under tensor parallelism"
+    assert 0 <= gate < plan, "the MTP gate must precede the VRAM planner"
+    assert gate < build, "the MTP gate must precede the speculative-flag build"
+    # Forces the spec mode off (ngram kept for mtp+ngram) and clears the engage
+    # flag the planner reads, then surfaces the reason for the UI.
+    body = src[gate:plan]
+    assert 'speculative_type = (' in body and '"off"' in body and '"ngram"' in body
+    assert "_mtp_will_engage = False" in body
+    assert 'self._spec_fallback_reason = "tensor_parallel"' in src
+
+
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
 
 

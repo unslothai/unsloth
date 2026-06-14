@@ -3580,6 +3580,9 @@ class LlamaCppBackend:
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
+                # Set when MTP is dropped for a tensor attempt (see the tensor-mode
+                # MTP gate below); surfaced afterwards as a spec fallback reason.
+                _tensor_disabled_mtp = False
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). The layer-split
@@ -3733,6 +3736,24 @@ class LlamaCppBackend:
                         # Studio's flags, so it would still reach llama-server and
                         # fail here; strip it so the downgrade actually applies.
                         extra_args = strip_split_mode_only(extra_args)
+
+                    # MTP-draft speculative decoding crashes the CUDA flash-attn
+                    # kernel under --split-mode tensor at decode, which the startup
+                    # health probe can't catch. Drop it for the tensor attempt
+                    # (ngram needs no draft model, so it stays); the layer-split
+                    # fallback re-runs with tensor_parallel False and restores MTP.
+                    # See llama.cpp common_speculative_impl_draft_mtp.
+                    if tensor_parallel and _mtp_will_engage:
+                        speculative_type = (
+                            "ngram" if _mtp_canonical == "mtp+ngram" else "off"
+                        )
+                        _mtp_will_engage = False
+                        _tensor_disabled_mtp = True
+                        logger.info(
+                            "Tensor parallelism active; disabling MTP speculative "
+                            "decoding (spec mode now %s).",
+                            speculative_type,
+                        )
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation: use all usable GPUs, weight
@@ -4015,6 +4036,10 @@ class LlamaCppBackend:
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
+                if _tensor_disabled_mtp:
+                    # _build_speculative_flags cleared the reason; record why MTP
+                    # is off so the UI explains it (not a stale-binary prompt).
+                    self._spec_fallback_reason = "tensor_parallel"
 
                 # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
