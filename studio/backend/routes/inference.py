@@ -2333,6 +2333,21 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
+        # GGUF load in flight (HF download, subprocess warm-up, health wait).
+        if llama_backend._serial_load_lock.locked() and not llama_backend.is_loaded:
+            _loading_id = llama_backend._model_identifier or ""
+            return InferenceStatusResponse(
+                active_model = None,
+                model_identifier = None,
+                is_gguf = True,
+                loading = [_loading_id] if _loading_id else ["(loading)"],
+                loaded = [],
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
