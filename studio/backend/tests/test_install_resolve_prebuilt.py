@@ -141,7 +141,9 @@ def test_resolve_prebuilt_rocm_tooling_host_not_offered_cpu(monkeypatch, capsys,
     # False) but exposes ROCm tooling (e.g. hipconfig) must be treated as ROCm so
     # the probe does not offer the CPU bundle over a possible HIP source build.
     monkeypatch.setattr(ilp, "detect_host", lambda: _host(**os_kwargs))
-    monkeypatch.setattr(ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None)
+    monkeypatch.setattr(
+        ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None
+    )
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert seen["host"].has_rocm is True
