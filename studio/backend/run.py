@@ -840,6 +840,19 @@ def _cloudflare_tunnel_should_start(
     return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
 
 
+def _apply_default_tool_policy(host: str, secure: bool) -> None:
+    """Force server-side tools off when the launch is network-reachable (0.0.0.0
+    bind or --secure tunnel). The plain `unsloth studio` launcher and direct
+    `python run.py` never resolve a tool policy, so without this a public endpoint
+    would honor a client's `enable_tools: true` and run code. `unsloth studio run`
+    installs its own resolved policy and does not go through this entrypoint."""
+    if not (secure or host == "0.0.0.0"):
+        return
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(False)
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -1185,6 +1198,9 @@ if __name__ == "__main__":
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
+
+    # Plain/direct network launches force server-side tools off by default.
+    _apply_default_tool_policy(args.host, args.secure)
 
     kwargs = dict(
         host = args.host,

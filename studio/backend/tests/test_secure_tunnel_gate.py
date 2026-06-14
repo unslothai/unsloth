@@ -64,6 +64,25 @@ def test_run_server_accepts_secure_kwarg():
     assert inspect.signature(run.run_server).parameters["secure"].default is False
 
 
+def test_plain_network_launch_forces_tools_off():
+    # Plain/direct launches must force server-side tools off when network-reachable
+    # (0.0.0.0 or --secure) so a public endpoint can't run code via enable_tools.
+    import run
+    from state.tool_policy import get_tool_policy, reset_tool_policy
+
+    reset_tool_policy()
+    run._apply_default_tool_policy("127.0.0.1", False)
+    assert get_tool_policy() is None  # loopback: untouched (per-request honored)
+
+    run._apply_default_tool_policy("0.0.0.0", False)
+    assert get_tool_policy() is False  # network bind: forced off
+
+    reset_tool_policy()
+    run._apply_default_tool_policy("127.0.0.1", True)  # --secure (public tunnel)
+    assert get_tool_policy() is False
+    reset_tool_policy()
+
+
 def test_run_server_rejects_secure_without_cloudflare():
     # Direct backend callers (not just the CLI) must reject the contradictory
     # combo before binding anything.
