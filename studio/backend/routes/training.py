@@ -281,6 +281,7 @@ async def start_training(
                     free_chat_models_for_training,
                     summarize_resident_chat,
                 )
+
                 resident = summarize_resident_chat()
                 if not resident["any"]:
                     return

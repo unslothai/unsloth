@@ -55,8 +55,13 @@ def _fake_inference_backend(
     return inf
 
 
-def _fake_llama_backend(*, active = False, identifier = "model.gguf", gpu_offload = None,
-                        loaded = None):
+def _fake_llama_backend(
+    *,
+    active = False,
+    identifier = "model.gguf",
+    gpu_offload = None,
+    loaded = None,
+):
     # A healthy active server is loaded; pass loaded=False for a mid-start one.
     is_loaded = active if loaded is None else loaded
     llama = SimpleNamespace(
