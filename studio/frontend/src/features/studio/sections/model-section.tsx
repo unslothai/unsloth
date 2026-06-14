@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionCard } from "@/components/section-card";
+import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import {
   Combobox,
   ComboboxContent,
@@ -34,6 +35,13 @@ import {
   applyPriorityOrdering,
 } from "@/config/training";
 import {
+  type ScanFolderInfo,
+  addScanFolder,
+  listRecommendedFolders,
+  listScanFolders,
+  removeScanFolder,
+} from "@/features/chat/api/chat-api";
+import {
   type LocalModelInfo,
   listLocalModels,
   useTrainingConfigStore,
@@ -54,16 +62,21 @@ import {
 } from "@/lib/vram";
 import type { TrainingMethod } from "@/types/training";
 import {
+  Add01Icon,
+  Cancel01Icon,
   ChipIcon,
+  Folder02Icon,
   FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { translate, useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 
 const METHOD_DOTS: Record<string, string> = {
   qlora: "bg-emerald-400",
@@ -78,6 +91,8 @@ const DARK_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] [&_[data-slot=select-item]]:text-white/80 dark:[&_[data-slot=select-item]]:text-slate-900 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
 const DARK_COMBOBOX_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
+
+let _scanFoldersCache: ScanFolderInfo[] = [];
 
 export function ModelSection() {
   const t = useT();
@@ -118,9 +133,19 @@ export function ModelSection() {
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
   const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
+  const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
+  const [scanFolders, setScanFolders] =
+    useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const [folderInput, setFolderInput] = useState("");
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [showFolderInput, setShowFolderInput] = useState(false);
+  const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
+  const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const localModelManagementRef = useRef<HTMLDivElement>(null);
 
   function handleModelSelect(id: string | null) {
     selectingRef.current = true;
@@ -141,27 +166,102 @@ export function ModelSection() {
     setSelectedModel(next);
   }
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void listLocalModels(controller.signal)
+  const refreshLocalModelsList = useCallback((signal?: AbortSignal) => {
+    return listLocalModels(signal)
       .then((models) => {
-        if (controller.signal.aborted) return;
+        if (signal?.aborted) return;
         setLocalModels(models);
+        setLocalModelsError(null);
       })
       .catch((error) => {
-        if (controller.signal.aborted) return;
+        if (signal?.aborted) return;
         setLocalModelsError(
           error instanceof Error
             ? error.message
             : translate("studio.model.failedToLoadLocalModels"),
         );
+      });
+  }, []);
+
+  const refreshScanFolders = useCallback((signal?: AbortSignal) => {
+    listScanFolders(signal)
+      .then((folders) => {
+        if (signal?.aborted) return;
+        _scanFoldersCache = folders;
+        setScanFolders(folders);
       })
+      .catch(() => {});
+  }, []);
+
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
+    if (!trimmed || folderLoading) return;
+    setFolderError(null);
+    setFolderLoading(true);
+    const fromBrowser = overridePath !== undefined;
+    try {
+      const created = await addScanFolder(trimmed);
+      const next = _scanFoldersCache.some(
+        (folder) => folder.id === created.id || folder.path === created.path,
+      )
+        ? _scanFoldersCache
+        : [..._scanFoldersCache, created];
+      _scanFoldersCache = next;
+      setScanFolders(next);
+      setFolderInput("");
+      setShowFolderInput(false);
+      void refreshLocalModelsList();
+      void refreshScanFolders();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
+    } finally {
+      setFolderLoading(false);
+    }
+  }, [folderInput, folderLoading, refreshLocalModelsList, refreshScanFolders]);
+
+  const handleRemoveFolder = useCallback(async (id: number) => {
+    try {
+      await removeScanFolder(id);
+      const next = _scanFoldersCache.filter((folder) => folder.id !== id);
+      _scanFoldersCache = next;
+      setScanFolders(next);
+      void refreshScanFolders();
+      void refreshLocalModelsList();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to remove folder",
+      );
+      void refreshScanFolders();
+    }
+  }, [refreshLocalModelsList, refreshScanFolders]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshLocalModelsList(controller.signal)
       .finally(() => {
         if (controller.signal.aborted) return;
         setIsLoadingLocalModels(false);
       });
     return () => controller.abort();
-  }, []);
+  }, [refreshLocalModelsList]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    refreshScanFolders(controller.signal);
+    listRecommendedFolders(controller.signal)
+      .then((folders) => {
+        if (controller.signal.aborted) return;
+        setRecommendedFolders(folders);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [refreshScanFolders]);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -317,7 +417,16 @@ export function ModelSection() {
                       : "./models/my-model"
                   }
                   className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
-                  onBlur={() => applyLocalModel(localModelInput)}
+                  onBlur={(event) => {
+                    const nextTarget = event.relatedTarget;
+                    if (
+                      nextTarget instanceof Node &&
+                      localModelManagementRef.current?.contains(nextTarget)
+                    ) {
+                      return;
+                    }
+                    applyLocalModel(localModelInput);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
                     event.preventDefault();
@@ -343,6 +452,185 @@ export function ModelSection() {
                   ) : (
                     <ComboboxEmpty>{t("studio.model.noLocalModelsFound")}</ComboboxEmpty>
                   )}
+                  <div ref={localModelManagementRef}>
+                    <div className="flex items-center gap-1 px-2.5 py-1.5">
+                      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        <HugeiconsIcon icon={Folder02Icon} className="size-3" />
+                        {t("studio.model.customFolders")}
+                      </span>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          aria-label={
+                            showFolderInput
+                              ? "Cancel adding folder"
+                              : "Add scan folder by path"
+                          }
+                          title={
+                            showFolderInput ? "Cancel" : "Add by typing a path"
+                          }
+                          onClick={() => {
+                            setShowFolderInput((open) => {
+                              if (open) {
+                                setFolderInput("");
+                                setFolderError(null);
+                              }
+                              return !open;
+                            });
+                          }}
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                            className="size-3"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Browse for a folder on the server"
+                          title="Browse folders on the server"
+                          onClick={() => setShowFolderBrowser(true)}
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
+                        >
+                          <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
+                        </button>
+                      </div>
+                      <div className="ml-auto">
+                        <button
+                          type="button"
+                          aria-label={
+                            customFoldersCollapsed
+                              ? "Expand custom folders"
+                              : "Collapse custom folders"
+                          }
+                          title={customFoldersCollapsed ? "Expand" : "Collapse"}
+                          onClick={() => setCustomFoldersCollapsed((v) => !v)}
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
+                        >
+                          {customFoldersCollapsed ? (
+                            <ChevronRightIcon className="size-3" />
+                          ) : (
+                            <ChevronDownIcon className="size-3" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {!customFoldersCollapsed &&
+                      scanFolders.map((folder) => (
+                        <div
+                          key={folder.id}
+                          className="group flex items-center gap-1.5 px-2.5 py-0.5"
+                        >
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            className="size-3 shrink-0 text-muted-foreground/40"
+                          />
+                          <span
+                            className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
+                            title={folder.path}
+                          >
+                            {folder.path}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFolder(folder.id)}
+                            aria-label={`Remove folder ${folder.path}`}
+                            className="shrink-0 rounded p-1 text-background/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive dark:text-foreground/70"
+                          >
+                            <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                          </button>
+                        </div>
+                      ))}
+
+                    {!customFoldersCollapsed && (() => {
+                      const registered = new Set(
+                        scanFolders.map((folder) => folder.path),
+                      );
+                      const unregistered = recommendedFolders.filter(
+                        (path) => !registered.has(path),
+                      );
+                      if (unregistered.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
+                          {unregistered.map((path) => (
+                            <button
+                              key={path}
+                              type="button"
+                              onClick={() => void handleAddFolder(path)}
+                              disabled={folderLoading}
+                              title={`Add ${path}`}
+                              className="rounded-full border border-dashed border-background/20 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-background/40 hover:bg-background/10 hover:text-background disabled:opacity-40 dark:hover:border-foreground/30 dark:hover:bg-accent dark:hover:text-foreground"
+                            >
+                              <span className="text-[11px] font-semibold">+</span>{" "}
+                              {path.length > 30 ? `...${path.slice(-27)}` : path}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {!customFoldersCollapsed && showFolderInput && (
+                      <div className="px-2.5 pb-1 pt-0.5">
+                        <div className="flex items-center gap-1">
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            className="size-3 shrink-0 text-muted-foreground/40"
+                          />
+                          <input
+                            value={folderInput}
+                            onChange={(event) => {
+                              setFolderInput(event.target.value);
+                              setFolderError(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void handleAddFolder();
+                              }
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setShowFolderInput(false);
+                                setFolderInput("");
+                                setFolderError(null);
+                              }
+                            }}
+                            placeholder="/path/to/models"
+                            className="h-6 min-w-0 flex-1 rounded border border-background/20 bg-transparent px-1.5 font-mono text-[10px] text-background outline-none placeholder:text-muted-foreground/40 focus:border-background/40 dark:border-border/50 dark:focus:border-foreground/20"
+                            disabled={folderLoading}
+                            autoFocus={true}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowFolderBrowser(true)}
+                            disabled={folderLoading}
+                            aria-label="Browse for folder"
+                            title="Browse folders on the server"
+                            className="flex h-6 shrink-0 items-center justify-center rounded border border-background/20 px-1.5 text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent dark:hover:text-foreground"
+                          >
+                            <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleAddFolder();
+                            }}
+                            disabled={folderLoading || !folderInput.trim()}
+                            className="h-6 shrink-0 rounded border border-background/20 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-background/10 hover:text-background disabled:opacity-40 dark:border-border/50 dark:hover:bg-accent"
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {folderError && (
+                          <p className="px-0.5 pt-0.5 text-[10px] text-destructive">
+                            {folderError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <ComboboxList className="p-1">
                     {(id: string) => {
                       const model = localMetaById.get(id);
@@ -378,6 +666,16 @@ export function ModelSection() {
                   </ComboboxList>
                 </ComboboxContent>
               </Combobox>
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  void handleAddFolder(picked);
+                }}
+              />
             </div>
             {isLoadingLocalModels ? (
               <p className="text-[10px] text-muted-foreground">
