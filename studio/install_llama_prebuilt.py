@@ -5950,10 +5950,13 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
-        # GPU host (mirrors the ROCm branch, and Windows NVIDIA). x64 takes the
-        # linux-cpu bundle, arm64 the linux-arm64 one (manifest install_kinds).
-        kind = "linux-arm64" if host.is_arm64 else "linux-cpu"
-        cpu_choice = published_asset_choice_for_kind(bundle, kind)
+        # GPU host (mirrors the ROCm branch, and Windows NVIDIA). Only x86_64 and
+        # arm64 have a CPU bundle; any other Linux arch (ppc64le, riscv64, s390x)
+        # has none, so leave attempts empty and source-build rather than hand it
+        # the x86_64 linux-cpu binary (the Linux preflight checks libraries, not
+        # ELF arch, so a wrong-arch binary would not be caught).
+        kind = "linux-cpu" if host.is_x86_64 else "linux-arm64" if host.is_arm64 else None
+        cpu_choice = published_asset_choice_for_kind(bundle, kind) if kind else None
         if cpu_choice is not None:
             attempts.append(cpu_choice)
     return attempts
@@ -6828,6 +6831,21 @@ def main() -> int:
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
+        # This probe carries no --rocm-gfx, so a Linux host that exposes ROCm
+        # tooling but whose runtime probe could not enumerate a GPU (detect_host
+        # leaves has_rocm False) would look CPU-only and be offered the CPU
+        # bundle -- on a box running a HIP source build that is a silent
+        # GPU->CPU downgrade. Treat the presence of ROCm tooling as a hint and
+        # mark the host ROCm so the probe reports "no prebuilt" (ROCm-or-source)
+        # rather than the CPU bundle.
+        if (
+            host.is_linux
+            and not host.has_usable_nvidia
+            and not host.has_rocm
+            and not args.cpu_fallback
+            and any(shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo"))
+        ):
+            host = _apply_host_overrides(host, override_has_rocm = True)
         repo = args.published_repo
         try:
             _requested, plans = resolve_simple_install_release_plans(

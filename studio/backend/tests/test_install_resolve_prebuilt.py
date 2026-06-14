@@ -98,14 +98,13 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     assert out["repo"] == FORK
 
 
-def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
-    # CPU-only Linux host (no GPU): the dispatch routes to the fork, which now
-    # ships the CPU prebuilt -- it no longer falls back to ggml-org upstream.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+def _run_resolve_capture_host(monkeypatch, capsys):
+    """Drive --resolve-prebuilt and return the host the resolver was handed."""
     seen = {}
 
     def _resolver(tag, host, repo, published_release_tag):
         seen["repo"] = repo
+        seen["host"] = host
         raise ilp.PrebuiltFallback("no asset")
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
@@ -116,5 +115,26 @@ def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return seen, out
+
+
+def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
+    # CPU-only Linux host (no GPU, no ROCm tooling): the dispatch routes to the
+    # fork, which now ships the CPU prebuilt, and the host is left CPU-only.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(ilp.shutil, "which", lambda tool: None)
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert out["repo"] == FORK
+    assert seen["host"].has_rocm is False
+
+
+def test_resolve_prebuilt_rocm_tooling_host_not_offered_cpu(monkeypatch, capsys):
+    # A Linux host whose runtime probe could not confirm ROCm (has_rocm False) but
+    # exposes ROCm tooling (e.g. hipconfig) must be treated as ROCm so the probe
+    # does not offer the CPU bundle over a possible HIP source build.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None)
+    seen, _out = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["repo"] == FORK
+    assert seen["host"].has_rocm is True

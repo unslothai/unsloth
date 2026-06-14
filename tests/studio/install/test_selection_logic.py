@@ -1830,6 +1830,59 @@ class TestResolveInstallAttempts:
         assert attempts[0].install_kind == install_kind
         assert attempts[0].source_label == "published"
 
+    def test_cpu_only_unsupported_arch_source_builds(self, monkeypatch):
+        # A CPU-only Linux host that is neither x86_64 nor arm64 (ppc64le,
+        # riscv64, s390x) has no compatible CPU bundle. It must source-build, not
+        # receive the x86_64 linux-cpu binary (the Linux preflight checks libs,
+        # not ELF arch, so a wrong-arch binary would slip through).
+        host = make_host(
+            machine = "ppc64le",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        assert not host.is_x86_64 and not host.is_arm64
+        x64_asset = "app-b9625-linux-x64-cpu.tar.gz"
+        release = make_release(
+            [
+                make_artifact(
+                    x64_asset,
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = "linux-cpu-x64",
+                    rank = 1000,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9625",
+            assets = {x64_asset: f"https://published.example/{x64_asset}"},
+        )
+        checksums = make_checksums_with_source(
+            [x64_asset],
+            release_tag = release.release_tag,
+            upstream_tag = "b9625",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
+            resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
+
     def test_macos_prefers_published_asset(self, monkeypatch):
         host = make_host(
             system = "Darwin",

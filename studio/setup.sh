@@ -987,7 +987,7 @@ _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 # nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
 # Honour it here so the --rocm-gfx forwarding below still sees it
 # (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
-if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+if [ "${_setup_nvidia_usable:-}" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
     _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
 fi
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
