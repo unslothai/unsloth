@@ -232,29 +232,12 @@ export function UpdateStudioInstructions({
                   transition={fadeTransition}
                 >
                   <CopyableCommand
-                    command={updateCmd}
-                    copyLabel={t("settings.about.update.localUpdateCommand")}
-                  />
-                </motion.div>
-              </AnimatePresence>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {t("settings.about.update.localInstallerFallback")}
-              </p>
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={`local-fallback-${shell}`}
-                  initial={fadeInitial}
-                  animate={fadeAnimate}
-                  exit={fadeExit}
-                  transition={fadeTransition}
-                >
-                  <CopyableCommand
                     command={
                       windows
                         ? STUDIO_LOCAL_FALLBACK_WINDOWS_CMD
                         : STUDIO_LOCAL_FALLBACK_UNIX_CMD
                     }
-                    copyLabel={t("settings.about.update.localInstallerCommand")}
+                    copyLabel={t("settings.about.update.localUpdateCommand")}
                   />
                 </motion.div>
               </AnimatePresence>

@@ -307,8 +307,6 @@ export const en = {
           "Pull latest changes from your Unsloth repo checkout, then update Studio locally:",
         gitPullCommand: "git pull command",
         localUpdateCommand: "local update command",
-        localInstallerFallback:
-          "If the Studio update command is unavailable, run the local installer from that checkout:",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
           "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",

@@ -10,7 +10,9 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 
 const STUDIO_UPDATE_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
 const STUDIO_UPDATE_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
-const STUDIO_UPDATE_COPY_CMD = `${STUDIO_UPDATE_UNIX_CMD}\n${STUDIO_UPDATE_WINDOWS_CMD}`;
+// Match "windows" (every Windows UA carries "Windows NT") rather than "win",
+// which also matches "Darwin" and would mis-detect macOS as Windows.
+const WINDOWS_UA_RE = /windows/i;
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -38,7 +40,15 @@ export function WebUpdateBanner({
   }
 
   async function handleCopyCommand() {
-    if (!(await copyToClipboard(STUDIO_UPDATE_COPY_CMD))) {
+    // Copy only the command for the user's OS: pasting both (Unix + PowerShell)
+    // into a single terminal runs the wrong one and errors out.
+    const isWindows =
+      typeof navigator !== "undefined" &&
+      WINDOWS_UA_RE.test(navigator.userAgent || "");
+    const command = isWindows
+      ? STUDIO_UPDATE_WINDOWS_CMD
+      : STUDIO_UPDATE_UNIX_CMD;
+    if (!(await copyToClipboard(command))) {
       return;
     }
     setCopiedVersion(status?.latestVersion ?? null);

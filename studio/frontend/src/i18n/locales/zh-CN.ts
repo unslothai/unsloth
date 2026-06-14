@@ -288,8 +288,6 @@ export const zhCN = {
           "从你的 Unsloth 仓库 checkout 拉取最新变更，然后本地更新 Studio：",
         gitPullCommand: "git pull 命令",
         localUpdateCommand: "本地更新命令",
-        localInstallerFallback:
-          "如果 Studio 更新命令不可用，请从该 checkout 运行本地安装器：",
         localInstallerCommand: "本地安装器命令",
         sourceInstallDetected:
           "这看起来是源码或 VCS 包安装。请从最初使用的本地路径或 Git URL 重新安装。",
