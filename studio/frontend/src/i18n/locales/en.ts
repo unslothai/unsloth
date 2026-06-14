@@ -294,7 +294,9 @@ export const en = {
       examplePythonAdvanced: "Python + advanced",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
-      cloudflareTunnel: "Cloudflare Tunnel",
+      secureHttps: "Secure HTTPS",
+      secureHttpsHint:
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",

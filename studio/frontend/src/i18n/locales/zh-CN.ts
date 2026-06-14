@@ -267,7 +267,9 @@ export const zhCN = {
       examplePythonAdvanced: "Python + 高级",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
-      cloudflareTunnel: "Cloudflare 隧道",
+      secureHttps: "安全 HTTPS",
+      secureHttpsHint:
+        "0.0.0.0 端口仍可被全网访问。如需完全安全，请使用 --secure 启动 Unsloth Studio，仅暴露此 HTTPS 链接。",
       copyTunnelUrl: "复制隧道链接",
       copySnippet: "复制代码片段",
       copy: "复制",

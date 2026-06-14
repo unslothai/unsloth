@@ -7,6 +7,11 @@ import {
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
@@ -14,7 +19,11 @@ import type { TranslationKey } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowUpRight01Icon,
+  Copy01Icon,
+  InformationCircleIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
@@ -340,6 +349,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const secure = usePlatformStore((s) => s.secure);
   const [lang, setLang] = useState<ExampleType>("curl");
   const [os, setOs] = useState<Os>(
     deviceType === "windows" ? "windows" : "unix",
@@ -409,11 +419,32 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 size="sm"
                 checked={useTunnel}
                 onCheckedChange={handleToggleTunnel}
-                aria-label={t("settings.apiKeys.cloudflareTunnel")}
+                aria-label={t("settings.apiKeys.secureHttps")}
               />
               <span className="text-[11px] font-medium text-foreground">
-                {t("settings.apiKeys.cloudflareTunnel")}
+                {t("settings.apiKeys.secureHttps")}
               </span>
+              {/* Only when not launched with --secure: the raw 0.0.0.0 port is
+                  still globally reachable, so point the user at --secure. */}
+              {!secure ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("settings.apiKeys.secureHttpsHint")}
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3.5"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[260px] text-[11px] leading-snug">
+                    {t("settings.apiKeys.secureHttpsHint")}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
             </div>
             {/* Always rendered (dimmed when off) so toggling never changes the
                 row height and shifts the code block below. */}

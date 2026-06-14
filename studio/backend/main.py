@@ -879,6 +879,9 @@ async def health_check(request: Request):
         # Direct host:port base the API panel shows when the tunnel toggle is off
         # (the browser origin equals the tunnel URL when accessed via the tunnel).
         "server_url": getattr(request.app.state, "server_url", None),
+        # Whether launched with --secure (loopback bind, tunnel-only). When false
+        # on a 0.0.0.0 bind the raw port is network-reachable; the panel hints it.
+        "secure": bool(getattr(request.app.state, "secure", False)),
     }
 
 

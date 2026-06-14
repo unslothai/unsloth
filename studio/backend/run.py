@@ -1015,6 +1015,9 @@ def run_server(
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
+    # Secure mode binds loopback and exposes only the tunnel; the API panel uses
+    # this to hint that a non-secure raw port is network-reachable.
+    app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
     # Expose a shutdown callable before the server accepts requests so

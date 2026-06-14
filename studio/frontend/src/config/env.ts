@@ -22,6 +22,8 @@ interface PlatformState {
   cloudflareUrl: string | null;
   // Direct host:port base from /api/health (authed); the non-tunnel API base.
   serverUrl: string | null;
+  // Whether the server was launched with --secure (loopback-only + tunnel).
+  secure: boolean;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
@@ -43,6 +45,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnly: localDeviceType === "mac",
   cloudflareUrl: null,
   serverUrl: null,
+  secure: false,
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
@@ -72,6 +75,7 @@ export async function fetchDeviceType(options?: {
         chat_only?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
+        secure?: boolean;
       };
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
@@ -83,6 +87,7 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
+        secure: data.secure ?? false,
         fetched: data.device_type !== undefined,
       });
       return deviceType;
