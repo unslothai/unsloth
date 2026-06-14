@@ -389,6 +389,43 @@ _BYPASS_ENV_SECRET_MARKERS = (
 # URL values regardless of the variable's name.
 _URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
 
+# Names that hold no secret value but point SDKs at the operator's real
+# home/cache/config (cached tokens, cred files), defeating the HOME repoint.
+# Startup always sets HF_HOME (-> $HF_HOME/token), so this is the live leak.
+# Dropped in bypass mode so tools fall back to the empty repointed HOME.
+_BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
+    {
+        # HF cache roots (token lives under $HF_HOME/token)
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_XET_CACHE",
+        "TRANSFORMERS_CACHE",
+        "HF_DATASETS_CACHE",
+        "HF_ASSETS_CACHE",
+        # XDG base dirs (resolved before $HOME)
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        # explicit cred/config file pointers honoured before $HOME
+        "NETRC",
+        "BOTO_CONFIG",
+        "PIP_CONFIG_FILE",
+        "CLOUDSDK_CONFIG",
+        "KAGGLE_CONFIG_DIR",
+        "DOCKER_CONFIG",
+        "WANDB_DIR",
+        "WANDB_CONFIG_DIR",
+        "WANDB_CACHE_DIR",
+        # Windows: HOMEDRIVE+HOMEPATH compose a home that bypasses HOME
+        "HOMEDRIVE",
+        "HOMEPATH",
+    }
+)
+# Windows profile dirs SDKs read creds under; repointed (not dropped) since
+# callers expect them present.
+_BYPASS_ENV_WINDOWS_PROFILE_VARS = ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
+
 
 def _is_secret_env_name(name: str) -> bool:
     """True if an env var name looks like it carries a credential."""
@@ -398,6 +435,11 @@ def _is_secret_env_name(name: str) -> bool:
     if any(upper.startswith(p) for p in _BYPASS_ENV_SECRET_PREFIXES):
         return True
     return any(marker in upper for marker in _BYPASS_ENV_SECRET_MARKERS)
+
+
+def _is_cred_location_env_name(name: str) -> bool:
+    """True for vars that point SDKs at the real home/cache/config (cached creds)."""
+    return name.upper() in _BYPASS_ENV_CRED_LOCATION_NAMES
 
 
 def _is_secret_env_value(value: str) -> bool:
@@ -420,7 +462,9 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     env = {
         k: v
         for k, v in os.environ.items()
-        if not _is_secret_env_name(k) and not _is_secret_env_value(v)
+        if not _is_secret_env_name(k)
+        and not _is_secret_env_value(v)
+        and not _is_cred_location_env_name(k)
     }
     env["HOME"] = workdir
     env["TMPDIR"] = workdir
@@ -428,6 +472,11 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
+    # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
+    for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
+        if var in os.environ:
+            env[var] = workdir
     return env
 
 

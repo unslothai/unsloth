@@ -23,6 +23,7 @@ from core.inference.tools import (
     _bash_exec,
     _build_bypass_env,
     _build_safe_env,
+    _is_cred_location_env_name,
     _is_secret_env_name,
     _is_secret_env_value,
     _python_exec,
@@ -358,6 +359,98 @@ def test_bypass_env_repoints_all_temp_vars(monkeypatch, tmp_path):
     assert env["TMPDIR"] == str(tmp_path)
     assert env["TEMP"] == str(tmp_path)
     assert env["TMP"] == str(tmp_path)
+
+
+# ── credential-location redirect vars are dropped (regression) ──────────
+# Vars that point SDKs at the real home/cache/config (cached tokens), e.g.
+# HF_HOME which startup always sets -> the live leak the HOME repoint missed.
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_XET_CACHE",
+        "TRANSFORMERS_CACHE",
+        "HF_DATASETS_CACHE",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "NETRC",
+        "BOTO_CONFIG",
+        "PIP_CONFIG_FILE",
+        "CLOUDSDK_CONFIG",
+        "KAGGLE_CONFIG_DIR",
+        "DOCKER_CONFIG",
+        "WANDB_DIR",
+        "WANDB_CONFIG_DIR",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    ],
+)
+def test_cred_location_names_are_flagged(name):
+    assert _is_cred_location_env_name(name) is True
+
+
+@pytest.mark.parametrize("name", ["PATH", "HOME", "LANG", "PWD", "MY_VAR"])
+def test_benign_names_not_flagged_as_cred_location(name):
+    assert _is_cred_location_env_name(name) is False
+
+
+def test_bypass_env_drops_hf_home_so_cached_token_unreachable(monkeypatch, tmp_path):
+    # The live leak: startup sets HF_HOME at the real cache, whose $HF_HOME/token
+    # holds the operator's token. Repointing HOME does not stop huggingface_hub
+    # from reading $HF_HOME/token, so HF_HOME must be dropped in bypass mode.
+    real_cache = tmp_path / "real_hf_cache"
+    real_cache.mkdir()
+    (real_cache / "token").write_text("hf_cachedOperatorToken")
+    monkeypatch.setenv("HF_HOME", str(real_cache))
+    monkeypatch.setenv("HF_HUB_CACHE", str(real_cache / "hub"))
+    env = _build_bypass_env(str(tmp_path))
+    assert "HF_HOME" not in env  # dropped -> HF falls back to $HOME/.cache (empty)
+    assert "HF_HUB_CACHE" not in env
+
+
+def test_bypass_env_drops_credential_config_path_vars(monkeypatch, tmp_path):
+    # NETRC / BOTO_CONFIG / PIP_CONFIG_FILE point clients at real credential
+    # files before $HOME, so they must not survive into the bypassed child.
+    monkeypatch.setenv("NETRC", "/home/op/.netrc")
+    monkeypatch.setenv("BOTO_CONFIG", "/home/op/.boto")
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/home/op/.pip/pip.conf")
+    env = _build_bypass_env(str(tmp_path))
+    assert "NETRC" not in env
+    assert "BOTO_CONFIG" not in env
+    assert "PIP_CONFIG_FILE" not in env
+
+
+def test_bypass_env_repoints_windows_profile_vars(monkeypatch, tmp_path):
+    # On Windows, SDKs read cached creds under USERPROFILE/APPDATA/LOCALAPPDATA,
+    # not $HOME. Set ones are repointed at the workdir; HOMEDRIVE/HOMEPATH drop.
+    monkeypatch.setenv("USERPROFILE", "/host/profile")
+    monkeypatch.setenv("APPDATA", "/host/profile/AppData/Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", "/host/profile/AppData/Local")
+    monkeypatch.setenv("HOMEDRIVE", "C:")
+    monkeypatch.setenv("HOMEPATH", "\\Users\\op")
+    env = _build_bypass_env(str(tmp_path))
+    assert env["USERPROFILE"] == str(tmp_path)
+    assert env["APPDATA"] == str(tmp_path)
+    assert env["LOCALAPPDATA"] == str(tmp_path)
+    assert "HOMEDRIVE" not in env
+    assert "HOMEPATH" not in env
+
+
+def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_path):
+    # Only repoint Windows profile vars that were actually set (no pollution on
+    # Linux/macOS where they are absent).
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    env = _build_bypass_env(str(tmp_path))
+    assert "USERPROFILE" not in env
+    assert "APPDATA" not in env
+    assert "LOCALAPPDATA" not in env
 
 
 # ── parent /proc env-leak hardening (regression) ────────────────────
