@@ -15,6 +15,7 @@ import asyncio
 import random
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from .sandbox import build_sandbox_argv, sandbox_available
 
 logger = get_logger(__name__)
 
@@ -106,8 +108,18 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "rsync",
         "eval",
         "source",
+        # POSIX dot: `.` is a synonym for `source` and was missed by the
+        # original blocklist. `. ./evil.sh` would otherwise execute the
+        # script in the current shell context.
+        ".",
     }
 )
+# macOS-only escape vectors. `open URL` uses LaunchServices to spawn a
+# browser outside the sandbox (bypasses network-deny). `security` reads
+# Keychain credentials. `osascript` evaluates AppleScript with the
+# user's normal privileges. On Linux, `open` is an xdg-open alternatives
+# wrapper that legitimate scripts use, so we do not block it there.
+_BLOCKED_COMMANDS_MACOS = frozenset({"open", "security", "osascript"})
 _BLOCKED_COMMANDS_WIN = frozenset(
     {
         "rmdir",
@@ -118,11 +130,23 @@ _BLOCKED_COMMANDS_WIN = frozenset(
         "pwsh",
     }
 )
-_BLOCKED_COMMANDS = (
-    _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
-    if sys.platform == "win32"
-    else _BLOCKED_COMMANDS_COMMON
-)
+
+
+def _compute_blocked_commands(platform: str) -> frozenset[str]:
+    """Return the platform-appropriate blocklist union.
+
+    Broken out as a function so unit tests can exercise all three
+    platform branches on any host without monkeypatching the module
+    constant, which the rest of the module captures at import time.
+    """
+    if platform == "win32":
+        return _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
+    if platform == "darwin":
+        return _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_MACOS
+    return _BLOCKED_COMMANDS_COMMON
+
+
+_BLOCKED_COMMANDS = _compute_blocked_commands(sys.platform)
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -151,6 +175,41 @@ _COMMAND_PREFIXES = frozenset(
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# find primaries that mutate the filesystem WITHOUT invoking a separate
+# command. -delete unlinks matched paths in place; -fprint / -fprintf /
+# -fls write output to arbitrary host paths. None of them appear in
+# _FIND_EXEC_FLAGS so the nested-command scanner misses them; we flag
+# the `find` invocation itself when any of these are present.
+_FIND_DESTRUCTIVE_FLAGS = frozenset({"-delete", "-fprint", "-fprintf", "-fls"})
+# Shells whose `-c <code>` argument is itself code to scan. Without
+# recursion, `bash -c 'rm -rf /'` would bypass the blocklist because
+# only `bash` (not blocked) is at command position.
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+_SHELLS_WIN = frozenset({"cmd", "cmd.exe"})
+# Language interpreters whose `-c <code>` / `-e <code>` argument runs
+# arbitrary code in that language. `python -c "import os; os.system('rm')"`
+# from the bash tool would bypass the Python AST gate (only the python
+# tool entry point invokes it). awk and gawk take the script positionally.
+_LANG_INTERPRETERS_DASH_C_E = frozenset({"python", "python2", "python3", "perl", "ruby", "node"})
+_LANG_INTERPRETERS_POSITIONAL = frozenset({"awk", "gawk", "mawk", "nawk"})
+# Quick danger-pattern scan for code passed to a language interpreter.
+# The bash-blocklist regex matches at shell separator boundaries and so
+# does not see `rm` inside `os.system("rm")`. These patterns catch the
+# usual LLM bypass shapes regardless of language: anything that invokes
+# the OS, spawns subprocesses, evaluates code, or imports a runtime
+# module from a string. False-positive surface is acceptable in
+# interpreter-code context.
+_INTERP_DANGER_RE = re.compile(
+    r"(?:^|\W)(?:"
+    r"os\.system|os\.popen|os\.exec[vlpe]+|os\.spawn[a-z]+|"
+    r"subprocess\.(?:run|Popen|call|check_call|check_output|getoutput|getstatusoutput)|"
+    r"system\s*\(|exec\s*\(|popen\s*\(|spawn\s*\(|"
+    r"__import__|importlib|"
+    r"eval\s*\(|compile\s*\(|"
+    r"child_process|execSync|execFileSync|spawnSync|"
+    r"Kernel\.|`[^`]*`"
+    r")"
+)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -220,11 +279,46 @@ def _find_blocked_commands(command: str) -> set[str]:
         prefix_pending = False
 
     # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    # `find ... -delete` / `-fprint*` mutate the filesystem in place.
     for i, tok in enumerate(tokens):
         if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
             base = _token_basename(tokens[i + 1])
             if base in _BLOCKED_COMMANDS:
                 blocked.add(base)
+        if tok in _FIND_DESTRUCTIVE_FLAGS:
+            # Surface as a synthetic "find" entry; flagging the bare flag
+            # would be cryptic to the LLM operator. The find invocation
+            # itself is the thing being refused.
+            blocked.add("find")
+            break
+
+    # Pipe-to-shell bypass: `echo 'rm -rf /' | sh` and friends. The
+    # shell appears at command position but is NOT itself blocked
+    # (so `bash -c 'ls'` still works) — the bypass is that the
+    # blocklist never sees the rm because it lives inside the quoted
+    # echo argument. When we see a pipe-or-redirect immediately
+    # followed by a shell or interpreter, scan ALL preceding tokens
+    # for blocked commands hiding in their string-literal arguments.
+    _PIPE_OR_REDIR = frozenset({"|", "<"})
+    for i, tok in enumerate(tokens):
+        if tok not in _PIPE_OR_REDIR or i + 1 >= len(tokens):
+            continue
+        # Walk forward past flags to find the actual interpreter token.
+        j = i + 1
+        while j < len(tokens) and tokens[j].startswith("-"):
+            j += 1
+        if j >= len(tokens):
+            continue
+        nxt_base = _token_basename(tokens[j])
+        if nxt_base not in _SHELLS and nxt_base not in _LANG_INTERPRETERS_DASH_C_E:
+            continue
+        # Re-scan every preceding token's contents as if it were a
+        # shell command. Quoted args that contained `rm` etc. were a
+        # single token to shlex; recursing splits them back out.
+        for prev in tokens[:i]:
+            if prev in _SHELL_SEPARATORS:
+                continue
+            blocked |= _find_blocked_commands(prev)
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
@@ -239,22 +333,28 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
-    # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
-    # on a -c/-/c flag, look back for a shell name (skipping flags) and
-    # recursively scan the nested command string.
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    # Nested shell invocations (bash -c 'sudo whoami',
+    #    bash -lc '...', bash --login -c '...', cmd /c '...') AND
+    #    nested language interpreters (python -c '...', perl -e '...',
+    #    node -e '...', ruby -e '...'). When a -c/-e or /c flag is
+    #    found, look backwards for the interpreter binary (skipping
+    #    intermediate flags like --login, -l, -x) and recursively scan
+    #    the nested code string for blocked commands. Without this,
+    #    `python -c "import os; os.system('rm -rf /')"` from the bash
+    #    tool would bypass both the bash blocklist (only `python` is at
+    #    command position) and the Python AST gate (which only runs on
+    #    the python tool entry point).
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
-        # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
-        is_unix_c = tok_lower == "-c" or (
+        # Match -c / -e exactly, or combined flags ending in c (e.g. -lc, -xc).
+        # -e is python/perl/node/ruby's "eval this string" flag.
+        is_unix_c = tok_lower in ("-c", "-e") or (
             tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
         )
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
-        # Look back past flags for the shell binary. Windows flags and absolute
-        # paths both start with /, so only skip short /X flags (not /bin/bash).
+        # Look backwards past any flags to find the interpreter binary.
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
@@ -264,11 +364,50 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
+            elif is_unix_c and prev_base in _LANG_INTERPRETERS_DASH_C_E:
+                blocked |= _find_blocked_commands(tokens[i + 1])
+                if _INTERP_DANGER_RE.search(tokens[i + 1]):
+                    blocked.add(prev_base)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
 
+    # awk / gawk / mawk / nawk take their script as the first positional
+    # argument (`awk 'BEGIN{system("rm")}'`). Scan that script.
+    for i, token in enumerate(tokens):
+        base = _token_basename(token)
+        if base not in _LANG_INTERPRETERS_POSITIONAL:
+            continue
+        # Find the next non-flag positional after the interpreter.
+        for j in range(i + 1, len(tokens)):
+            nxt = tokens[j]
+            if nxt.startswith("-"):
+                continue
+            if nxt in _SHELL_SEPARATORS:
+                break
+            blocked |= _find_blocked_commands(nxt)
+            if _INTERP_DANGER_RE.search(nxt):
+                blocked.add(base)
+            break
+
     return blocked
+
+
+def _normalized_sys_executable() -> str:
+    """Return ``sys.executable`` with redundant ``..`` segments collapsed.
+
+    Studio is sometimes launched as ``../.venv/bin/python``, which puts
+    a literal ``..`` in ``sys.executable``. ``_linux_bwrap_argv``
+    bind-mounts only the realpath chain of the interpreter plus the
+    venv tree, so the bwrap child cannot resolve the unresolved parent
+    segment and fails with ``execvp ... No such file or directory``.
+    ``abspath(normpath(...))`` collapses ``..`` while preserving the
+    venv launcher path. ``realpath`` would resolve ``bin/python`` to
+    the base interpreter outside the venv root, which the bind set does
+    not cover, so the venv site-packages would not be visible inside
+    the sandbox.
+    """
+    return os.path.abspath(os.path.normpath(sys.executable))
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:
@@ -279,9 +418,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
     points at the sandbox workdir so SDKs can't read the operator's cached creds.
     """
-    # Start from the running interpreter's dir so 'python'/'pip' resolve to the
-    # same environment the Studio server runs in.
-    exe_dir = os.path.dirname(sys.executable)
+    # Start with the directory containing the running Python interpreter
+    # so that subprocess calls to 'python', 'pip', etc. resolve to the
+    # same environment the Studio server is running in.
+    exe_dir = os.path.dirname(_normalized_sys_executable())
     path_entries = [exe_dir] if exe_dir else []
 
     # If a virtualenv is active, include its bin/Scripts directory.
@@ -316,9 +456,17 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec():
-    """Best-effort sandbox setup for sandboxed subprocesses (modules are
-    resolved at import time so the forked child runs no imports)."""
+def _sandbox_preexec_impl(apply_no_new_privs: bool, apply_nproc: bool = True):
+    """Best-effort sandbox setup for sandboxed subprocesses.
+
+    Modules are resolved at import time so the forked child runs no imports.
+    ``apply_nproc`` is False on the bwrap path because the cap is per-real-UID
+    and bwrap must fork its own helper before unshare; on a busy multi-tenant
+    box where the user already has many processes, applying NPROC=10000 to
+    the parent can deny bwrap that fork with EAGAIN ("Resource temporarily
+    unavailable"). bwrap reapplies its own per-namespace limits to the
+    inner payload, so the inner tool is still bounded.
+    """
     try:
         os.setsid()
     except OSError:
@@ -330,10 +478,11 @@ def _sandbox_preexec():
         pass
 
     if _libc is not None:
-        try:
-            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
-        except (OSError, AttributeError):
-            pass
+        if apply_no_new_privs:
+            try:
+                _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            except (OSError, AttributeError):
+                pass
 
         try:
             _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
@@ -346,11 +495,12 @@ def _sandbox_preexec():
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
@@ -377,11 +527,129 @@ def _sandbox_preexec():
             pass
 
 
+def _sandbox_preexec():
+    _sandbox_preexec_impl(apply_no_new_privs = True)
+
+
+def _sandbox_preexec_for_bwrap():
+    # Setuid bwrap can't acquire helper privileges with NNP set pre-execve.
+    # bwrap reapplies NNP to the inner payload, so the child still runs NNP=1.
+    # NPROC is also skipped because the cap is per-real-UID and would block
+    # bwrap's own helper fork on busy multi-tenant hosts; bwrap enforces
+    # per-namespace process limits on the inner payload instead.
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
+
+
+# Sentinel returned by tool entry points when the operator asked for
+# strict sandboxing and the OS primitive cannot be applied. Surfaces as
+# the tool output so the LLM (and the user) see why the call refused.
+_SANDBOX_REQUIRED_UNAVAILABLE_MSG = (
+    "Execution blocked: UNSLOTH_STUDIO_SANDBOX_STRICT=1 is set but the OS "
+    "sandbox is unavailable. Install / enable bubblewrap on Linux "
+    "(apt install bubblewrap, ensure unprivileged user namespaces are "
+    "permitted) or sandbox-exec on macOS, or unset "
+    "UNSLOTH_STUDIO_SANDBOX_STRICT to allow unsandboxed execution."
+)
+
+
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _strict_sandbox_required() -> bool:
+    """True iff the operator wants tool execution to fail closed.
+
+    Opt-in: default is the original fail-open behavior so installs
+    without bubblewrap (locked-down kernels, nested containers, hosts
+    without bwrap) keep working. Operators who care about the security
+    boundary set UNSLOTH_STUDIO_SANDBOX_STRICT=1. Accepts the usual
+    case-insensitive truthy values (1 / true / yes / on).
+    """
+    value = os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip().lower()
+    return value in _TRUTHY_ENV_VALUES
+
+
+_RESOLVED_BASH_PATH: str | None = None
+
+
+_MACOS_BASH_ALLOWED_PREFIXES = (
+    "/opt/homebrew/",
+    "/usr/local/",
+    "/bin/",
+    "/usr/bin/",
+)
+
+
+def _resolve_bash_path() -> str:
+    """Return the bash binary the tool subprocess should exec.
+
+    Both platforms must return a path that is reachable inside the
+    sandbox the tool subprocess will run under, so we prefer canonical
+    locations first and only fall back to ``PATH`` when they are
+    missing.
+
+    macOS: try Homebrew bash (Intel + Apple Silicon) then ``/bin/bash``
+    then ``/usr/bin/bash``. ``shutil.which("bash")`` is accepted only if
+    it lives under a prefix the Seatbelt profile allows; otherwise a
+    Nix/MacPorts bash at ``/nix/store/...`` or ``/opt/local/bin/bash``
+    would be returned and every ``bash_exec`` would fail with
+    ``Operation not permitted`` before the command runs.
+
+    Linux and other Unix: try ``/bin/bash`` then ``/usr/bin/bash``.
+    These canonical paths are inside the ``/usr`` and ``/bin`` ro-binds
+    that ``_linux_bwrap_argv`` sets up. ``shutil.which`` on Nix/NixOS
+    can resolve to ``/run/current-system/sw/bin/bash`` or
+    ``~/.nix-profile/bin/bash``, neither of which is bind-mounted; only
+    fall back to PATH lookup if neither canonical path exists.
+    """
+    global _RESOLVED_BASH_PATH
+    if _RESOLVED_BASH_PATH is not None:
+        return _RESOLVED_BASH_PATH
+
+    def _usable(path: str) -> bool:
+        # os.path.exists returns True for broken symlinks; os.access(X_OK)
+        # rejects them. We also realpath() to defend against a Homebrew
+        # tap installing bash as a symlink into a path the Seatbelt
+        # profile does not allow, even though Homebrew installs real
+        # binaries in practice.
+        return os.path.exists(path) and os.access(path, os.X_OK) and not os.path.isdir(path)
+
+    if sys.platform == "darwin":
+        for path in (
+            "/opt/homebrew/bin/bash",
+            "/usr/local/bin/bash",
+            "/bin/bash",
+            "/usr/bin/bash",
+        ):
+            if _usable(path) and os.path.realpath(path).startswith(_MACOS_BASH_ALLOWED_PREFIXES):
+                _RESOLVED_BASH_PATH = path
+                return path
+        candidate = shutil.which("bash")
+        if (
+            candidate
+            and _usable(candidate)
+            and candidate.startswith(_MACOS_BASH_ALLOWED_PREFIXES)
+            and os.path.realpath(candidate).startswith(_MACOS_BASH_ALLOWED_PREFIXES)
+        ):
+            _RESOLVED_BASH_PATH = candidate
+            return candidate
+    else:
+        for path in ("/bin/bash", "/usr/bin/bash"):
+            if _usable(path):
+                _RESOLVED_BASH_PATH = path
+                return path
+        candidate = shutil.which("bash")
+        if candidate and _usable(candidate):
+            _RESOLVED_BASH_PATH = candidate
+            return candidate
+    _RESOLVED_BASH_PATH = "bash"
+    return _RESOLVED_BASH_PATH
+
+
 def _get_shell_cmd(command: str) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
         return ["cmd", "/c", command]
-    return ["bash", "-c", command]
+    return [_resolve_bash_path(), "-c", command]
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -450,7 +718,9 @@ def _get_workdir(session_id: str | None = None) -> str:
             os.chmod(workdir, 0o700)
         except OSError:
             pass
-        _workdirs[key] = workdir
+        # bwrap binds the realpath; cache the same value so tmp_path resolves
+        # inside the sandbox when $HOME or a parent is a symlink.
+        _workdirs[key] = os.path.realpath(workdir)
     return _workdirs[key]
 
 
@@ -2223,12 +2493,19 @@ def _cancel_watcher(
     cancel_event,
     poll_interval = 0.2,
 ):
-    """Daemon thread that kills a process when cancel_event is set."""
+    """Daemon thread that kills a process when cancel_event is set.
+
+    Callers always pass a non-None cancel_event (see _python_exec /
+    _bash_exec); the early-return makes the contract explicit and
+    removes the dead None-branch wait().
+    """
+    if cancel_event is None:
+        return
     while proc.poll() is None:
-        if cancel_event is not None and cancel_event.is_set():
+        if cancel_event.is_set():
             _kill_process_tree(proc)
             return
-        cancel_event.wait(poll_interval) if cancel_event else None
+        cancel_event.wait(poll_interval)
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
@@ -2278,12 +2555,29 @@ def _python_exec(
             cwd = workdir,
             env = safe_env,
         )
+
+        inner_argv = [_normalized_sys_executable(), tmp_path]
+        sandboxed = sandbox_available()
+        # Strict mode covers every platform: an operator who explicitly asked
+        # for fail-closed should not get an unsandboxed shell on Windows or a
+        # future OS just because the sandbox primitive does not exist there.
+        if not sandboxed and _strict_sandbox_required():
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+        if sandboxed:
+            argv = build_sandbox_argv(inner_argv, workdir)
+        else:
+            argv = inner_argv
+
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _sandbox_preexec_for_bwrap
+                if sandboxed and sys.platform == "linux"
+                else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
@@ -2331,8 +2625,13 @@ def _python_exec(
 
         return result
 
-    except Exception as e:
-        return f"Execution error: {e}"
+    except Exception:
+        # Full traceback to the server log; only the exception type
+        # reaches the LLM. The exception message itself often contains
+        # the full bwrap argv (workdir absolute path, bind list) which
+        # would otherwise leak the host filesystem layout to the model.
+        logger.exception("python tool execution failed")
+        return "Execution error: see server logs."
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -2366,13 +2665,29 @@ def _bash_exec(
             cwd = workdir,
             env = safe_env,
         )
+
+        inner_argv = _get_shell_cmd(command)
+        sandboxed = sandbox_available()
+        # Strict mode covers every platform: an operator who explicitly asked
+        # for fail-closed should not get an unsandboxed shell on Windows or a
+        # future OS just because the sandbox primitive does not exist there.
+        if not sandboxed and _strict_sandbox_required():
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+        if sandboxed:
+            argv = build_sandbox_argv(inner_argv, workdir)
+        else:
+            argv = inner_argv
+
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _sandbox_preexec_for_bwrap
+                if sandboxed and sys.platform == "linux"
+                else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
-
+        proc = subprocess.Popen(argv, **popen_kwargs)
         if cancel_event is not None:
             watcher = threading.Thread(
                 target = _cancel_watcher, args = (proc, cancel_event), daemon = True
@@ -2397,5 +2712,8 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         return _truncate(result) if result.strip() else "(no output)"
 
-    except Exception as e:
-        return f"Execution error: {e}"
+    except Exception:
+        # See note above: don't leak the bwrap argv / workdir path to
+        # the LLM via Exception formatting.
+        logger.exception("bash tool execution failed")
+        return "Execution error: see server logs."
