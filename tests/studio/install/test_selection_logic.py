@@ -1744,9 +1744,21 @@ class TestResolveInstallAttempts:
             # CPU-only Linux x64 -> fork linux-cpu (was ggml-org ubuntu-x64).
             ("Linux", "x86_64", "app-b9625-linux-x64-cpu.tar.gz", "linux-cpu", "linux-cpu-x64"),
             # CPU-only Linux arm64 -> fork linux-arm64 (was ggml-org ubuntu-arm64).
-            ("Linux", "aarch64", "app-b9625-linux-arm64-cpu.tar.gz", "linux-arm64", "linux-cpu-arm64"),
+            (
+                "Linux",
+                "aarch64",
+                "app-b9625-linux-arm64-cpu.tar.gz",
+                "linux-arm64",
+                "linux-cpu-arm64",
+            ),
             # CPU-only Windows arm64 -> fork windows-arm64 (was ggml-org win-cpu-arm64).
-            ("Windows", "arm64", "app-b9625-windows-arm64-cpu.zip", "windows-arm64", "windows-cpu-arm64"),
+            (
+                "Windows",
+                "arm64",
+                "app-b9625-windows-arm64-cpu.zip",
+                "windows-arm64",
+                "windows-cpu-arm64",
+            ),
         ],
     )
     def test_cpu_host_prefers_published_fork_asset(

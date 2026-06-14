@@ -3282,11 +3282,11 @@ class TestRocmGfxForwarding:
     @pytest.mark.parametrize(
         "machine, nvidia_usable, setup_gfx, env_gfx",
         [
-            ("x86_64", False, "", ""),          # plain CPU host (used to take ggml-org)
-            ("aarch64", False, "", ""),         # plain CPU arm64 host (used to take ggml-org)
-            ("x86_64", False, "gfx1100", ""),   # name-inferred gfx
-            ("x86_64", False, "", "gfx1100"),   # env-forwarded gfx
-            ("x86_64", True, "", ""),           # usable NVIDIA
+            ("x86_64", False, "", ""),  # plain CPU host (used to take ggml-org)
+            ("aarch64", False, "", ""),  # plain CPU arm64 host (used to take ggml-org)
+            ("x86_64", False, "gfx1100", ""),  # name-inferred gfx
+            ("x86_64", False, "", "gfx1100"),  # env-forwarded gfx
+            ("x86_64", True, "", ""),  # usable NVIDIA
         ],
     )
     def test_setup_sh_routing_block_always_resolves_to_fork(
@@ -3311,11 +3311,7 @@ class TestRocmGfxForwarding:
             pytest.skip("pwsh not available")
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         line = next(
-            (
-                ln
-                for ln in source.splitlines()
-                if ln.strip().startswith("$HelperReleaseRepo =")
-            ),
+            (ln for ln in source.splitlines() if ln.strip().startswith("$HelperReleaseRepo =")),
             None,
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
