@@ -254,7 +254,7 @@ def load_chat_backend(
     return ChatBackend("unsloth", backend)
 
 
-def find_studio_server(timeout: float = 0.4) -> Optional[str]:
+def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     try:

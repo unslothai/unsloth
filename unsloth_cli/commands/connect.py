@@ -90,24 +90,56 @@ def _key_cache_path() -> Path:
     return auth_root() / "agent_api_key.json"
 
 
+def _cached_keys(cache: Path) -> list:
+    try:
+        data = json.loads(cache.read_text())
+    except Exception:
+        return []
+    keys = [k for k in data.get("keys", []) if isinstance(k, str)]
+    legacy = data.get("key")  # pre-multi-key cache format
+    if isinstance(legacy, str) and legacy not in keys:
+        keys.append(legacy)
+    return keys
+
+
+def _remember_key(cache: Path, key: str) -> None:
+    existing = _cached_keys(cache)
+    keys = ([key] + [k for k in existing if k != key])[:8]
+    if keys == existing:
+        return
+    try:
+        cache.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        # O_CREAT with 0o600 so the keys are never world-readable, even briefly.
+        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"keys": keys}) + "\n")
+    except OSError:
+        pass  # worst case the next launch mints another key
+
+
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
+    cache = _key_cache_path()
     if explicit:
+        _remember_key(cache, explicit)
         return explicit
 
-    cache = _key_cache_path()
-    try:
-        key = json.loads(cache.read_text())["key"]
-        _http_json("GET", f"{base}/v1/models", key)
+    # Keys are per-server, so when switching between Studios (local one day,
+    # an SSH-tunnelled remote the next) the right key is whichever validates.
+    for key in _cached_keys(cache):
+        try:
+            _http_json("GET", f"{base}/v1/models", key)
+        except Exception:
+            continue
+        _remember_key(cache, key)
         return key
-    except Exception:
-        pass
 
     token = _studio_token()
     if token is None:
         _fail(
             "Couldn't authenticate with the Studio server automatically (it may be "
             "remote, or running as a different OS user). Create an API key in "
-            "Studio → Settings → API and pass it with --api-key."
+            "Studio → Settings → API and pass it once with --api-key; it is "
+            "remembered for next time."
         )
     key = _http_json(
         "POST",
@@ -116,14 +148,7 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         {"name": "Coding agents (unsloth connect)"},
         error = "Couldn't create an API key",
     )["key"]
-    try:
-        cache.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
-        # O_CREAT with 0o600 so the key is never world-readable, even briefly.
-        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(json.dumps({"key": key}) + "\n")
-    except OSError:
-        pass  # worst case the next launch mints another key
+    _remember_key(cache, key)
     return key
 
 
@@ -211,6 +236,29 @@ def ensure_claude_attribution_header() -> None:
         )
         return
     typer.echo(f"Disabled Claude Code's attribution header in {path} (it breaks KV-cache reuse).")
+
+
+_DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
+
+
+def _claude_cache_flags() -> list:
+    # The flag moves per-machine context (cwd, env info, git status) out of
+    # the system prompt, where it changes every session and defeats llama.cpp
+    # prefix caching. As of 2.1.175 it only takes effect in print mode (`-p`
+    # passed through ctx.args); interactive sessions accept and ignore it.
+    # Claude Code < 2.1.98 aborts on the unknown flag, so check the version
+    # first; no local binary means a --no-launch printout for another machine.
+    executable = shutil.which("claude")
+    if executable is None:
+        return [_DYNAMIC_SECTIONS_FLAG]
+    try:
+        result = subprocess.run(
+            [executable, "--version"], capture_output = True, text = True, timeout = 10
+        )
+        version = tuple(int(part) for part in result.stdout.split()[0].split("."))
+    except Exception:
+        return []
+    return [_DYNAMIC_SECTIONS_FLAG] if version >= (2, 1, 98) else []
 
 
 def codex_home() -> Path:
@@ -305,7 +353,7 @@ def claude(
         None,
         "--api-key",
         envvar = "UNSLOTH_API_KEY",
-        help = "Studio API key; minted and cached automatically when omitted.",
+        help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
     ),
     launch: bool = typer.Option(
         True,
@@ -319,8 +367,17 @@ def claude(
     model_id = _resolve_model(base, key, model)["id"]
     ensure_claude_attribution_header()
 
-    env = {"ANTHROPIC_BASE_URL": base, "ANTHROPIC_AUTH_TOKEN": key, "ANTHROPIC_MODEL": model_id}
-    command = ["claude", "--model", model_id, *ctx.args]
+    env = {
+        "ANTHROPIC_BASE_URL": base,
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": model_id,
+        # Update checks, beta features, and other background requests either
+        # stall against a local server or evict the conversation from
+        # llama-server's KV-cache slots, so turn off everything nonessential.
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    }
+    command = ["claude", "--model", model_id, *_claude_cache_flags(), *ctx.args]
     typer.echo(f"Studio {base} · model {model_id}")
     if not launch:
         _print_env(env, command)
@@ -346,7 +403,7 @@ def codex(
         None,
         "--api-key",
         envvar = "UNSLOTH_API_KEY",
-        help = "Studio API key; minted and cached automatically when omitted.",
+        help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
     ),
     launch: bool = typer.Option(
         True,

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -62,6 +64,30 @@ def test_claude_settings_bad_json_left_alone(claude_settings, capsys):
     connect.ensure_claude_attribution_header()
     assert claude_settings.read_text() == "{not json"
     assert "couldn't parse" in capsys.readouterr().err
+
+
+def _fake_claude(monkeypatch, version_output: str) -> None:
+    monkeypatch.setattr(connect.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(
+        connect.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout = version_output),
+    )
+
+
+def test_cache_flags_passed_to_supported_claude(monkeypatch):
+    _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
+    assert connect._claude_cache_flags() == ["--exclude-dynamic-system-prompt-sections"]
+
+
+def test_cache_flags_skipped_on_old_claude(monkeypatch):
+    _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
+    assert connect._claude_cache_flags() == []
+
+
+def test_cache_flags_skipped_on_unparseable_version(monkeypatch):
+    _fake_claude(monkeypatch, "weird build string\n")
+    assert connect._claude_cache_flags() == []
 
 
 def _parse_toml(text: str) -> dict:
@@ -149,6 +175,8 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
     monkeypatch.setattr(connect, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(connect, "_http_json", http_json)
     monkeypatch.setattr(connect, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
+    # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
+    monkeypatch.setattr(connect.shutil, "which", lambda _: None)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     return calls
@@ -160,7 +188,9 @@ def test_connect_claude_no_launch(fake_studio, claude_settings):
     assert f"export ANTHROPIC_BASE_URL={BASE}" in result.output
     assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
     assert f"export ANTHROPIC_MODEL={MODEL['id']}" in result.output
-    assert f"claude --model {MODEL['id']}" in result.output
+    assert "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result.output
+    assert "export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1" in result.output
+    assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     settings = json.loads(claude_settings.read_text())
     assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
 
@@ -180,7 +210,49 @@ def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
-    assert cached["key"] == "sk-unsloth-feedfacefeedface"
+    assert cached["keys"] == ["sk-unsloth-feedfacefeedface"]
+
+
+def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
+    CliRunner().invoke(
+        connect.connect_app,
+        ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
+    )
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    assert mints == []
+
+
+def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, monkeypatch):
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"keys": ["sk-unsloth-stale", "sk-unsloth-feedfacefeedface"]}))
+    inner = connect._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/v1/models") and token == "sk-unsloth-stale":
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(connect, "_http_json", http_json)
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    assert mints == []
+    # The working key moves to the front so the next run tries it first.
+    cached = json.loads(cache.read_text())
+    assert cached["keys"] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
+
+
+def test_connect_reads_legacy_single_key_cache(fake_studio, tmp_path):
+    (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-oldformat" in result.output
+    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    assert mints == []
 
 
 def test_connect_model_flag_loads_on_server(fake_studio):
