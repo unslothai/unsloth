@@ -25,6 +25,7 @@ _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
 parse_ctx_override = _lsa.parse_ctx_override
+parse_fit_override = _lsa.parse_fit_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
@@ -511,6 +512,25 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+def test_parse_fit_override_absent():
+    assert parse_fit_override(None) is None
+    assert parse_fit_override(["--threads", "12"]) is None
+
+
+def test_parse_fit_override_last_wins():
+    assert parse_fit_override(["--fit", "on"]) is True
+    assert parse_fit_override(["-fit", "off"]) is False
+    assert parse_fit_override(["--fit=off"]) is False
+    assert parse_fit_override(["--fit", "on", "--fit", "off"]) is False
+    assert parse_fit_override(["--fit", "off", "-fit", "on"]) is True
+
+
+def test_parse_fit_override_ignores_bare_and_unknown():
+    assert parse_fit_override(["--fit"]) is None
+    assert parse_fit_override(["--fit", "--threads"]) is None
+    assert parse_fit_override(["--fit", "maybe"]) is None
 
 
 # ── --split-mode (Tensor Parallelism toggle) ─────────────────────────

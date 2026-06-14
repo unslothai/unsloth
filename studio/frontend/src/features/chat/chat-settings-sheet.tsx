@@ -522,6 +522,11 @@ export function ChatSettingsPanel({
   );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufLaunchContextLength = useChatRuntimeStore(
+    (s) => s.ggufLaunchContextLength,
+  );
+  const ggufSettingsContextLength =
+    ggufLaunchContextLength ?? ggufContextLength;
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
@@ -550,8 +555,9 @@ export function ChatSettingsPanel({
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
-  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
-  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
+  const ctxDisplayValue = customContextLength ?? ggufSettingsContextLength ?? "";
+  const ctxMaxValue =
+    ggufNativeContextLength ?? ggufSettingsContextLength ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
@@ -847,14 +853,14 @@ export function ChatSettingsPanel({
                       value={
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 0)
+                          : (ggufSettingsContextLength ?? 0)
                       }
                       min={128}
                       max={ctxMaxValue ?? undefined}
                       step={1}
                       onChange={(v) => {
                         setCustomContextLength(
-                          v === (ggufContextLength ?? 0) ? null : v,
+                          v === (ggufSettingsContextLength ?? 0) ? null : v,
                         );
                       }}
                       ariaLabel="Context Length"
@@ -869,14 +875,16 @@ export function ChatSettingsPanel({
                       Math.min(
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
+                          : (ggufSettingsContextLength ?? 4096),
                         ctxMaxValue ?? 4096,
                       ),
                     ]}
                     onValueChange={([v]) => {
                       const snapped = Math.round(v);
                       setCustomContextLength(
-                        snapped === (ggufContextLength ?? 0) ? null : snapped,
+                        snapped === (ggufSettingsContextLength ?? 0)
+                          ? null
+                          : snapped,
                       );
                     }}
                     className="panel-slider"

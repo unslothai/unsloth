@@ -299,6 +299,7 @@ export function resolveLoadMaxSeqLength({
   ggufVariant,
   customContextLength,
   ggufContextLength,
+  ggufLaunchContextLength,
   currentCheckpoint,
   activeGgufVariant,
   maxSeqLength,
@@ -308,6 +309,7 @@ export function resolveLoadMaxSeqLength({
   ggufVariant?: string | null;
   customContextLength: number | null;
   ggufContextLength: number | null;
+  ggufLaunchContextLength: number | null;
   currentCheckpoint: string;
   activeGgufVariant?: string | null;
   maxSeqLength: number;
@@ -327,6 +329,10 @@ export function resolveLoadMaxSeqLength({
     return 0;
   }
   if (isReloadingCurrentGguf) {
+    // max_seq_length is total -c; context_length from the API is per-slot.
+    if (ggufLaunchContextLength != null && ggufLaunchContextLength > 0) {
+      return ggufLaunchContextLength;
+    }
     return ggufContextLength ?? 0;
   }
   if (isGgufLoad) {

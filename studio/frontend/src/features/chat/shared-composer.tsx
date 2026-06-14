@@ -64,9 +64,12 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
+  getExternalProviderApiKey,
+  isCustomProviderType,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import { isGeminiCustomOpenAICompatBase } from "./provider-capabilities";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
@@ -74,7 +77,12 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
+  CHAT_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   type ReasoningEffort,
+  loadOptionalBool,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -85,6 +93,7 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
+  providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -926,6 +935,127 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        const external = parseExternalModelId(sel.id);
+        if (external) {
+          const externalStore = useExternalProvidersStore.getState();
+          if (!externalStore.connectionsEnabled) {
+            throw new Error(
+              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
+            );
+          }
+          const provider = externalStore.providers.find(
+            (p) => p.id === external.providerId,
+          );
+          if (!provider) {
+            throw new Error(
+              "Connection not found. Open Settings -> Connections and add it again.",
+            );
+          }
+
+          const apiKey = getExternalProviderApiKey(provider.id).trim();
+          const providerIsCustom = isCustomProviderType(provider.providerType);
+          const providerIsGeminiCustomBase =
+            provider.providerType === "gemini" &&
+            isGeminiCustomOpenAICompatBase(provider.baseUrl);
+          if (!apiKey && !providerIsCustom && !providerIsGeminiCustomBase) {
+            throw new Error(
+              "Missing API key for selected connection. Open Settings → Connections and set the API key again.",
+            );
+          }
+
+          const reasoningCaps = getExternalReasoningCapabilities(
+            provider.providerType,
+            external.modelId,
+            {
+              isReasoningProvider: provider.isReasoningModel === true,
+              baseUrl: provider.baseUrl ?? null,
+            },
+          );
+          const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+            provider.providerType,
+            external.modelId,
+            provider.baseUrl,
+          );
+          const supportsBuiltinCodeExecution =
+            providerSupportsBuiltinCodeExecution(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinImageGeneration =
+            providerSupportsBuiltinImageGeneration(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+            provider.providerType,
+          );
+          const isKimi = provider.providerType === "kimi";
+          const searchOnByDefault =
+            supportsBuiltinWebSearch &&
+            (provider.providerType === "anthropic" ||
+              provider.providerType === "openai");
+          const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+          const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+          const storedImageToolsEnabled = loadOptionalBool(CHAT_IMAGE_TOOLS_ENABLED_KEY);
+          const storedWebFetchToolsEnabled = loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
+          const nextToolsEnabled = supportsBuiltinWebSearch
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
+          const currentStore = useChatRuntimeStore.getState();
+          currentStore.setCheckpoint(sel.id, null);
+          useChatRuntimeStore.setState({
+            activeGgufVariant: null,
+            ggufContextLength: null,
+            ggufMaxContextLength: null,
+            ggufNativeContextLength: null,
+            ggufRequestedContextLength: null,
+            ggufLaunchContextLength: null,
+            activeNativePathToken: null,
+            supportsReasoning: reasoningCaps.supportsReasoning,
+            reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+            reasoningStyle: reasoningCaps.reasoningStyle,
+            supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+            reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
+            reasoningEffort: reasoningCaps.supportsReasoning
+              ? reasoningCaps.reasoningEffortLevels.includes("high")
+                ? "high"
+                : reasoningCaps.reasoningEffortLevels[
+                    reasoningCaps.reasoningEffortLevels.length - 1
+                  ]
+              : currentStore.reasoningEffort,
+            reasoningEnabled: reasoningCaps.supportsReasoning
+              ? reasoningCaps.supportsReasoningOff
+                ? isKimi
+                  ? true
+                  : currentStore.reasoningEnabled
+                : true
+              : currentStore.reasoningEnabled,
+            supportsPreserveThinking: false,
+            supportsTools: false,
+            supportsBuiltinWebSearch,
+            supportsBuiltinCodeExecution,
+            supportsBuiltinImageGeneration,
+            supportsBuiltinWebFetch,
+            toolsEnabled: nextToolsEnabled,
+            codeToolsEnabled: supportsBuiltinCodeExecution
+              ? (storedCodeToolsEnabled ?? false)
+              : false,
+            imageToolsEnabled: supportsBuiltinImageGeneration
+              ? (storedImageToolsEnabled ?? false)
+              : false,
+            webFetchToolsEnabled: supportsBuiltinWebFetch
+              ? (storedWebFetchToolsEnabled ?? false)
+              : false,
+            loadedIsMultimodal:
+              providerTypeSupportsVision(provider.providerType) === true,
+          });
+          return "external";
+        }
+
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
