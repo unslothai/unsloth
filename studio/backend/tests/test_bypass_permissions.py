@@ -413,6 +413,31 @@ def test_bypass_env_drops_hf_home_so_cached_token_unreachable(monkeypatch, tmp_p
     assert "HF_HUB_CACHE" not in env
 
 
+def test_bypass_env_hf_token_resolves_outside_real_cache(monkeypatch, tmp_path):
+    # End-to-end: even when HF_HOME and XDG_CACHE_HOME both point at the real
+    # cache, the bypass env must make huggingface_hub resolve the token under the
+    # workdir (guards the XDG fallback chain, not just "HF_HOME absent").
+    pytest.importorskip("huggingface_hub")
+    import subprocess
+
+    real_cache = tmp_path / "real_hf"
+    real_cache.mkdir()
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    monkeypatch.setenv("HF_HOME", str(real_cache))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(real_cache))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(real_cache))
+    env = _build_bypass_env(str(workdir))
+    token_path = subprocess.run(
+        [sys.executable, "-c", "import huggingface_hub.constants as c; print(c.HF_TOKEN_PATH)"],
+        env = env,
+        capture_output = True,
+        text = True,
+    ).stdout.strip()
+    assert str(real_cache) not in token_path  # never the operator's cache
+    assert token_path.startswith(str(workdir))  # resolved under the sandbox
+
+
 def test_bypass_env_drops_credential_config_path_vars(monkeypatch, tmp_path):
     # NETRC / BOTO_CONFIG / PIP_CONFIG_FILE point clients at real credential
     # files before $HOME, so they must not survive into the bypassed child.
