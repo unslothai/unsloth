@@ -17,6 +17,7 @@ the heavy backend import graph so it can be unit-tested in isolation.
 """
 
 import asyncio
+import contextvars
 from typing import Callable
 
 import structlog
@@ -40,13 +41,18 @@ async def run_lifespan_shutdown(
     # way we only retry inline when the work never got scheduled, never when the
     # body ran and raised (which would double-execute it).
     loop = asyncio.get_running_loop()
+    # Copy the current context so terminate_downloads runs with the same
+    # contextvars asyncio.to_thread would have given it (exact parity with the
+    # previous implementation). The only intended behaviour change is the inline
+    # fallback below, taken when scheduling onto a dead executor fails.
+    ctx = contextvars.copy_context()
     try:
-        future = loop.run_in_executor(None, terminate_downloads)
+        future = loop.run_in_executor(None, ctx.run, terminate_downloads)
     except RuntimeError:
         # Default executor already gone (teardown race). terminate_downloads is
         # itself best-effort and quick, so run it inline on the loop thread.
         try:
-            terminate_downloads()
+            ctx.run(terminate_downloads)
         except Exception as exc:
             logger.warning("terminate_downloads (inline) failed at shutdown: %s", exc)
     else:

@@ -18,6 +18,7 @@ so these tests need only ``structlog`` — no torch / unsloth / fastapi install.
 """
 
 import asyncio
+import contextvars
 import types
 
 from utils.lifespan_shutdown import run_lifespan_shutdown
@@ -113,4 +114,24 @@ def test_run_lifespan_shutdown_does_not_retry_body_runtime_error():
 
     assert term_box["n"] == 1, "body RuntimeError must not be retried inline"
     assert clear_box["n"] == 1, "later cleanup must still run"
+    assert hw.DEVICE is None
+
+
+def test_run_lifespan_shutdown_preserves_contextvars():
+    """terminate_downloads runs inside a copy of the caller's context, matching
+    the previous asyncio.to_thread behaviour (which copied contextvars). Without
+    that parity the worker thread would see an empty context."""
+    cv = contextvars.ContextVar("unsloth_test_cv")
+    cv.set("bound-value")
+    seen = []
+    clear_box, clear = _counter()
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+
+    def terminate():
+        seen.append(cv.get("UNSET"))
+
+    asyncio.run(run_lifespan_shutdown(terminate, clear, hw))
+
+    assert seen == ["bound-value"], "terminate must run with the caller's contextvars"
+    assert clear_box["n"] == 1
     assert hw.DEVICE is None
