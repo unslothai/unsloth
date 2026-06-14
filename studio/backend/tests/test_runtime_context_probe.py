@@ -170,6 +170,31 @@ class TestApplyRuntimeContextProbe:
         )
         assert inst.requested_context_length is None
 
+    def test_caps_runtime_above_launch_expectation(self):
+        """Server may round up n_ctx; Studio must not inflate above the launch cap."""
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            4096,
+            launch_ctx = 8192,
+            use_fit = False,
+            n_parallel = 4,
+        )
+        assert inst._effective_context_length == 2048
+        assert inst.requested_context_length is None
+
+    def test_caps_kv_unified_above_launch_ctx(self):
+        """With --kv-unified, cap to the full launch -c, not per-slot."""
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            16384,
+            launch_ctx = 8192,
+            use_fit = False,
+            n_parallel = 4,
+            kv_unified = True,
+        )
+        assert inst._effective_context_length == 8192
+        assert inst.requested_context_length is None
+
     def test_failed_probe_clears_stale_requested_context(self):
         # A reload can replace the server without unload_model; a probe
         # that then fails must not report the previous load's reduction.

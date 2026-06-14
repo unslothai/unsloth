@@ -77,7 +77,12 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
+  CHAT_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   type ReasoningEffort,
+  loadOptionalBool,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -986,6 +991,20 @@ export function SharedComposer({
           const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
             provider.providerType,
           );
+          const isKimi = provider.providerType === "kimi";
+          const searchOnByDefault =
+            supportsBuiltinWebSearch &&
+            (provider.providerType === "anthropic" ||
+              provider.providerType === "openai");
+          const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+          const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+          const storedImageToolsEnabled = loadOptionalBool(CHAT_IMAGE_TOOLS_ENABLED_KEY);
+          const storedWebFetchToolsEnabled = loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
+          const nextToolsEnabled = supportsBuiltinWebSearch
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
           const currentStore = useChatRuntimeStore.getState();
           currentStore.setCheckpoint(sel.id, null);
           useChatRuntimeStore.setState({
@@ -1001,12 +1020,36 @@ export function SharedComposer({
             reasoningStyle: reasoningCaps.reasoningStyle,
             supportsReasoningOff: reasoningCaps.supportsReasoningOff,
             reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
+            reasoningEffort: reasoningCaps.supportsReasoning
+              ? reasoningCaps.reasoningEffortLevels.includes("high")
+                ? "high"
+                : reasoningCaps.reasoningEffortLevels[
+                    reasoningCaps.reasoningEffortLevels.length - 1
+                  ]
+              : currentStore.reasoningEffort,
+            reasoningEnabled: reasoningCaps.supportsReasoning
+              ? reasoningCaps.supportsReasoningOff
+                ? isKimi
+                  ? true
+                  : currentStore.reasoningEnabled
+                : true
+              : currentStore.reasoningEnabled,
             supportsPreserveThinking: false,
             supportsTools: false,
             supportsBuiltinWebSearch,
             supportsBuiltinCodeExecution,
             supportsBuiltinImageGeneration,
             supportsBuiltinWebFetch,
+            toolsEnabled: nextToolsEnabled,
+            codeToolsEnabled: supportsBuiltinCodeExecution
+              ? (storedCodeToolsEnabled ?? false)
+              : false,
+            imageToolsEnabled: supportsBuiltinImageGeneration
+              ? (storedImageToolsEnabled ?? false)
+              : false,
+            webFetchToolsEnabled: supportsBuiltinWebFetch
+              ? (storedWebFetchToolsEnabled ?? false)
+              : false,
             loadedIsMultimodal:
               providerTypeSupportsVision(provider.providerType) === true,
           });

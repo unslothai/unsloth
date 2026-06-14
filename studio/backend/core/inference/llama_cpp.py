@@ -917,28 +917,29 @@ class LlamaCppBackend:
         if runtime_ctx is None or runtime_ctx <= 0:
             return
 
-        self._effective_context_length = runtime_ctx
-
-        if launch_ctx is None or launch_ctx <= 0:
-            return
-
-        # With --kv-unified, parallel slots share one KV pool sized to the
-        # full launch -c; only the non-unified split uses -c / --parallel.
-        if kv_unified and slots > 1:
-            expected_per_slot = launch_ctx
+        if launch_ctx is not None and launch_ctx > 0:
+            # With --kv-unified, parallel slots share one KV pool sized to the
+            # full launch -c; only the non-unified split uses -c / --parallel.
+            if kv_unified and slots > 1:
+                expected_per_slot = launch_ctx
+            else:
+                expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
+            # Never advertise more context than the user requested; the server
+            # may round up, but Studio must not inflate above the launch cap.
+            self._effective_context_length = min(runtime_ctx, expected_per_slot)
+            if use_fit and runtime_ctx < expected_per_slot:
+                logger.warning(
+                    "llama-server per-slot context (%s) is below the launch "
+                    "expectation (%s from -c %s / --parallel %s); --fit likely "
+                    "reduced n_ctx",
+                    runtime_ctx,
+                    expected_per_slot,
+                    launch_ctx,
+                    slots,
+                )
+                self._requested_context_length = expected_per_slot
         else:
-            expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
-        if use_fit and runtime_ctx < expected_per_slot:
-            logger.warning(
-                "llama-server per-slot context (%s) is below the launch "
-                "expectation (%s from -c %s / --parallel %s); --fit likely "
-                "reduced n_ctx",
-                runtime_ctx,
-                expected_per_slot,
-                launch_ctx,
-                slots,
-            )
-            self._requested_context_length = expected_per_slot
+            self._effective_context_length = runtime_ctx
 
     @property
     def max_context_length(self) -> Optional[int]:
@@ -2696,6 +2697,13 @@ class LlamaCppBackend:
                 self._hf_variant = None
         else:
             self._hf_variant = None
+        # Clear llama-server context fields so a prior --fit reduction or
+        # launch -c does not leak into the diffusion LoadResponse.
+        self._requested_context_length = None
+        self._launch_context_length = None
+        self._launch_use_fit = None
+        self._launch_kv_unified = False
+        self._launch_n_parallel = None
         # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
