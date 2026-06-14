@@ -85,6 +85,13 @@ def test_mlx_studio_rejects_unknown_scheduler():
         _normalize_mlx_studio_scheduler("linear_typo")
 
 
+def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text()
+
+    assert "tokenizer = tokenizer" in source
+    assert "processor = tokenizer if is_vlm else None" not in source
+
+
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
     assert _mlx_vlm_max_resized_size(1000, 500, 512) == (512, 256)
     assert _mlx_vlm_max_resized_size(500, 1000, 512) == (256, 512)
