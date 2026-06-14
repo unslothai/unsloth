@@ -6831,22 +6831,6 @@ def main() -> int:
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
-        # This probe carries no --rocm-gfx, so a Linux or Windows host that exposes
-        # ROCm tooling but whose runtime probe could not enumerate a GPU
-        # (detect_host leaves has_rocm False) would look CPU-only and be offered the
-        # CPU bundle -- on a box running a HIP source build that is a silent
-        # GPU->CPU downgrade. Treat the presence of ROCm tooling as a hint and mark
-        # the host ROCm: no hash-approved fork ROCm bundle covers a gfx-less host, so
-        # the resolver reports "no prebuilt" and the host source-builds instead of
-        # taking the CPU bundle. macOS has no ROCm.
-        if (
-            (host.is_linux or host.is_windows)
-            and not host.has_usable_nvidia
-            and not host.has_rocm
-            and not args.cpu_fallback
-            and any(shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo"))
-        ):
-            host = _apply_host_overrides(host, override_has_rocm = True)
         repo = args.published_repo
         try:
             _requested, plans = resolve_simple_install_release_plans(
