@@ -66,6 +66,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3-next",  # Qwen3-Next and variants
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
     "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
+    "glm-ocr",  # GLM-OCR (GlmOcrForConditionalGeneration, transformers 5.x)
 )
 
 # Lowercase substrings for models that require transformers 5.10.x (checked first).
@@ -103,6 +104,15 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "gemma4",
 }
 
+# Architecture classes / model_type values that require transformers 5.3.0.
+# Checked via config.json (local or HuggingFace).
+_TRANSFORMERS_530_ARCHITECTURES: set[str] = {
+    "GlmOcrForConditionalGeneration",
+}
+_TRANSFORMERS_530_MODEL_TYPES: set[str] = {
+    "glm_ocr",
+}
+
 # Tokenizer classes that only exist in transformers>=5.x.
 _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
@@ -115,6 +125,7 @@ _tokenizer_class_cache: dict[str, bool] = {}
 _config_json_cache: dict[str, dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
+_config_needs_530_cache: dict[str, bool] = {}
 
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
@@ -379,6 +390,14 @@ def _config_needs_510(cfg: dict) -> bool:
     )
 
 
+def _config_needs_530(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_530_ARCHITECTURES,
+        _TRANSFORMERS_530_MODEL_TYPES,
+    )
+
+
 def _check_config_needs_550(model_name: str) -> bool:
     """True if ``config.json`` has architectures/model_type needing transformers
     5.5.0 (e.g. Gemma 4).
@@ -430,6 +449,34 @@ def _check_config_needs_510(model_name: str) -> bool:
     return result
 
 
+def _check_config_needs_530(model_name: str) -> bool:
+    """True if ``config.json`` has architectures/model_type needing transformers
+    5.3.0 (e.g. GLM-OCR).
+
+    Checks locally first, else fetches from HuggingFace. Cached in
+    ``_config_needs_530_cache``. Returns False on any error (fail-open to lower tier).
+    """
+    if model_name in _config_needs_530_cache:
+        return _config_needs_530_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
+        _config_needs_530_cache[model_name] = False
+        return False
+
+    result = _config_needs_530(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_530_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_530_cache[model_name] = result
+    return result
+
+
 def get_transformers_tier(model_name: str) -> str:
     """Return the transformers tier required for *model_name*.
 
@@ -452,6 +499,8 @@ def get_transformers_tier(model_name: str) -> str:
             return "510"
         if cfg is not None and _config_needs_550(cfg):
             return "550"
+        if cfg is not None and _config_needs_530(cfg):
+            return "530"
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
@@ -473,6 +522,8 @@ def get_transformers_tier(model_name: str) -> str:
         return "510"
     if _check_config_needs_550(model_name):
         return "550"
+    if _check_config_needs_530(model_name):
+        return "530"
     if _check_tokenizer_config_needs_v5(model_name):
         return "530"
 

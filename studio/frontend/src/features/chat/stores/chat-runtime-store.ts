@@ -3,6 +3,7 @@
 
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { invalidateDocumentSupportCache } from "../api/chat-api";
 import {
   type ChatPresetSource,
   type Preset,
@@ -24,6 +25,13 @@ import {
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
+const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
+const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+const DOC_EXTRACT_KEY = "unsloth_chat_doc_extract";
+const DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 3;
+const DEFAULT_EXTRACT_CONCURRENCY = 2;
+const MAX_EXTRACT_CONCURRENCY = 8;
+
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
@@ -130,6 +138,98 @@ function loadRagNumber(
   }
 }
 
+/**
+ * OCR model presets in the Document Extraction settings. "default" follows
+ * the loaded chat VLM (else no override); "none" disables the override;
+ * "custom" is a user-supplied HF id or local path (`customOcrModelId`).
+ */
+export type OcrModelPresetId =
+  | "deepseek-ocr"
+  | "deepseek-ocr-2"
+  | "glm-ocr"
+  | "paddleocr-vl";
+export type OcrModelSelection =
+  | OcrModelPresetId
+  | "custom"
+  | "default"
+  | "none";
+
+/**
+ * Transient state of the temporary OCR-model swap during extraction. In the
+ * store (not localStorage) so settings sheet, composer, and header share it.
+ */
+export type OcrPhase =
+  | "idle"
+  | "validating"
+  | "unloading"
+  | "loading_ocr"
+  | "extracting"
+  | "restoring"
+  | "error";
+
+export interface DocExtractSettings {
+  /** Global on/off for document-drop extraction. */
+  enabled: boolean;
+  /** Caption extracted visual payloads using the currently loaded vision model. */
+  describeImages: boolean;
+  /** Render full-page visual payloads for scanned PDFs without a text layer. */
+  useVlmOcr: boolean;
+  /** Upper bound on figure/page references listed per document. */
+  maxFigures: number;
+  /** Upper bound on extracted image bytes sent with a document. */
+  maxVisualPayloads: number;
+  /** Approx chars/4 token budget injected into the outgoing message. */
+  tokenBudget: number;
+  /** Selected OCR model: "default" follows the loaded VLM, "none" disables
+   * the override, a preset id loads it, "custom" reads customOcrModelId. */
+  ocrModel: OcrModelSelection;
+  /** HF id or absolute local path used when `ocrModel === "custom"`. */
+  customOcrModelId: string;
+  /** GGUF variant filename for custom OCR repos that ship GGUF; null otherwise. */
+  customOcrGgufVariant: string | null;
+  /** Client cap on parallel /chat/extract-document requests, mirroring the
+   * backend _EXTRACT_SEMAPHORE so multi-drops queue instead of 503ing. */
+  extractConcurrency: number;
+}
+
+export const DEFAULT_DOC_EXTRACT: DocExtractSettings = {
+  enabled: true,
+  describeImages: true,
+  useVlmOcr: false,
+  maxFigures: 40,
+  maxVisualPayloads: DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
+  tokenBudget: 8000,
+  ocrModel: "default",
+  customOcrModelId: "",
+  customOcrGgufVariant: null,
+  extractConcurrency: DEFAULT_EXTRACT_CONCURRENCY,
+};
+
+function clampExtractConcurrency(value: unknown): number {
+  const n =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : DEFAULT_EXTRACT_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_EXTRACT_CONCURRENCY, n));
+}
+
+const VALID_OCR_SELECTIONS: ReadonlySet<OcrModelSelection> = new Set([
+  "default",
+  "none",
+  "custom",
+  "deepseek-ocr",
+  "deepseek-ocr-2",
+  "glm-ocr",
+  "paddleocr-vl",
+]);
+
+function asOcrSelection(value: unknown): OcrModelSelection {
+  return typeof value === "string" &&
+    VALID_OCR_SELECTIONS.has(value as OcrModelSelection)
+    ? (value as OcrModelSelection)
+    : DEFAULT_DOC_EXTRACT.ocrModel;
+}
+
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings omits `checkpoint`
 // because the local-model side is mirrored by the backend's
@@ -147,7 +247,6 @@ function loadLastExternalCheckpoint(): string | null {
     return null;
   }
 }
-
 function saveLastExternalCheckpoint(value: string | null): void {
   if (typeof window === "undefined") return;
   try {
@@ -188,6 +287,7 @@ export type ReasoningEffort =
   | "max"
   | "xhigh";
 
+let hasShownStoragePersistenceWarning = false;
 let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
 let activePresetMutationVersion = 0;
@@ -306,12 +406,21 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   };
 }
 
-function saveBool(key: string, value: boolean): void {
-  if (!canUseStorage()) return;
+function warnStoragePersistence(): void {
+  if (hasShownStoragePersistenceWarning) return;
+  hasShownStoragePersistenceWarning = true;
+  toast.warning("Chat settings could not be persisted", {
+    description: "Your changes apply now, but may reset after refresh.",
+  });
+}
+
+function saveBool(key: string, value: boolean): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(key, value ? "true" : "false");
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 
@@ -324,12 +433,80 @@ function loadString(key: string, fallback: string): string {
   }
 }
 
-function saveString(key: string, value: string): void {
-  if (!canUseStorage()) return;
+function saveString(key: string, value: string): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
-    // ignore
+    return false;
+  }
+}
+
+function asFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asNonNegativeInteger(value: unknown, fallback: number): number {
+  return Math.max(0, Math.round(asFiniteNumber(value, fallback)));
+}
+
+function asString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function loadDocExtract(): DocExtractSettings {
+  if (!canUseStorage()) return DEFAULT_DOC_EXTRACT;
+  try {
+    const raw = localStorage.getItem(DOC_EXTRACT_KEY);
+    if (!raw) return DEFAULT_DOC_EXTRACT;
+    const parsed = JSON.parse(raw) as Partial<DocExtractSettings>;
+    return {
+      enabled: asBoolean(parsed.enabled, DEFAULT_DOC_EXTRACT.enabled),
+      describeImages: asBoolean(
+        parsed.describeImages,
+        DEFAULT_DOC_EXTRACT.describeImages,
+      ),
+      useVlmOcr: asBoolean(parsed.useVlmOcr, DEFAULT_DOC_EXTRACT.useVlmOcr),
+      maxFigures: asNonNegativeInteger(
+        parsed.maxFigures,
+        DEFAULT_DOC_EXTRACT.maxFigures,
+      ),
+      maxVisualPayloads: asNonNegativeInteger(
+        parsed.maxVisualPayloads,
+        DEFAULT_DOC_EXTRACT.maxVisualPayloads,
+      ),
+      tokenBudget: asNonNegativeInteger(
+        parsed.tokenBudget,
+        DEFAULT_DOC_EXTRACT.tokenBudget,
+      ),
+      ocrModel: asOcrSelection(parsed.ocrModel),
+      customOcrModelId: asString(
+        parsed.customOcrModelId,
+        DEFAULT_DOC_EXTRACT.customOcrModelId,
+      ),
+      customOcrGgufVariant:
+        typeof parsed.customOcrGgufVariant === "string"
+          ? parsed.customOcrGgufVariant
+          : DEFAULT_DOC_EXTRACT.customOcrGgufVariant,
+      extractConcurrency: clampExtractConcurrency(parsed.extractConcurrency),
+    };
+  } catch {
+    return DEFAULT_DOC_EXTRACT;
+  }
+}
+
+function saveDocExtract(value: DocExtractSettings): boolean {
+  if (!canUseStorage()) return false;
+  try {
+    localStorage.setItem(DOC_EXTRACT_KEY, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -558,6 +735,10 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  docExtract: DocExtractSettings;
+  ocrPhase: OcrPhase;
+  setDocExtract: (value: Partial<DocExtractSettings>) => void;
+  setOcrPhase: (phase: OcrPhase) => void;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -918,6 +1099,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  docExtract: loadDocExtract(),
+  ocrPhase: "idle",
+  setDocExtract: (value) =>
+    set((state) => {
+      const merged = { ...state.docExtract, ...value };
+      const next: DocExtractSettings = {
+        ...merged,
+        extractConcurrency: clampExtractConcurrency(merged.extractConcurrency),
+      };
+      if (!saveDocExtract(next)) {
+        warnStoragePersistence();
+      }
+      return { docExtract: next };
+    }),
+  setOcrPhase: (ocrPhase) => set({ ocrPhase }),
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1024,13 +1220,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { autoTitle };
     }),
   setHfToken: (hfToken) => {
-    saveString(HF_TOKEN_KEY, hfToken);
+    if (!saveString(HF_TOKEN_KEY, hfToken)) {
+      warnStoragePersistence();
+    }
     set({ hfToken });
     notifyHfTokenChanged(hfToken);
   },
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
+      invalidateDocumentSupportCache();
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
       // stale persisted local id would race the freshly-loaded model. See
@@ -1073,6 +1272,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
+    invalidateDocumentSupportCache();
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.

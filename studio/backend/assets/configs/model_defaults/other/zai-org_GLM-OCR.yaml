@@ -1,0 +1,22 @@
+# Model defaults for zai-org/GLM-OCR
+# GLM family OCR vision model with model_type "glm_ocr". Used by Studio chat
+# as a temporary OCR model swap during scanned-PDF extraction.
+
+model:
+  identifier: zai-org/GLM-OCR
+  display_name: GLM-OCR
+  is_vision: true
+  is_ocr: true
+
+training:
+  trust_remote_code: true
+  max_seq_length: 8192
+  packing: false
+
+inference:
+  trust_remote_code: true
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  min_p: 0.0
+  default_max_seq_length: 8192

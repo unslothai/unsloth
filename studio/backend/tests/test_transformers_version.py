@@ -32,10 +32,12 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _check_config_needs_530,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
     _config_needs_550_cache,
+    _config_needs_530_cache,
     needs_transformers_5,
     get_transformers_tier,
 )
@@ -370,6 +372,7 @@ class TestGetTransformersTier:
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
+        _config_needs_530_cache.clear()
 
     def test_gemma4_substring_returns_550(self):
         assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
@@ -482,6 +485,43 @@ class TestGetTransformersTier:
         ):
             assert get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
 
+    def test_glm_ocr_substring_returns_530(self):
+        assert get_transformers_tier("unsloth/GLM-OCR") == "530"
+
+    def test_glm_ocr_gguf_substring_returns_530(self):
+        assert get_transformers_tier("unsloth/GLM-OCR-GGUF") == "530"
+
+    def test_glm_ocr_config_json_returns_530(self, tmp_path: Path):
+        """Local checkpoint with GlmOcr architecture → 530 (no name substring)."""
+        cfg = {
+            "architectures": ["GlmOcrForConditionalGeneration"],
+            "model_type": "glm_ocr",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "530"
+
+    def test_glm_ocr_remote_config_returns_530(self):
+        """Remote id without a name substring resolves to 530 via config.json."""
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "architectures": ["GlmOcrForConditionalGeneration"],
+                        "model_type": "glm_ocr",
+                    }
+                ).encode()
+
+        with patch("urllib.request.urlopen", return_value = _Response()):
+            assert get_transformers_tier("org/no-fast-substring-ocr") == "530"
+
     def test_llama_returns_default(self):
         with (
             patch(
@@ -490,6 +530,10 @@ class TestGetTransformersTier:
             ),
             patch(
                 "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_530",
                 return_value = False,
             ),
             patch(

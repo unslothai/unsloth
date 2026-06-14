@@ -52,6 +52,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import {
+  AttachmentChipRoot,
+  AttachmentChipTitle,
+  attachmentChipTokens,
+} from "@/features/chat/components/attachment-chip-primitives";
+import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
@@ -69,6 +74,7 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { isDocumentAttachment } from "@/features/chat/types";
 import {
   PLUS_MENU_ORDER,
   composerDraftKey,
@@ -253,10 +259,22 @@ export const Thread: FC<{
   // bottom while the user scrolls up (see the hook for the full explanation).
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
-  const isComposerAttachPending = useAuiState(({ threads }) =>
+  const composerThreadMismatch = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
+  const composerHasBlockingAttachment = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) =>
+        attachment.status.type === "running" ||
+        (isDocumentAttachment(attachment) &&
+          attachment.status.type === "incomplete"),
+    ),
+  );
+  const composerSendDisabled =
+    composerThreadMismatch || composerHasBlockingAttachment;
+
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
@@ -540,7 +558,7 @@ export const Thread: FC<{
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
-                disabled={isComposerAttachPending}
+                disabled={composerSendDisabled}
                 threadId={threadId}
                 onHeightChange={setComposerHeight}
               />
@@ -849,18 +867,18 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+      <AttachmentChipRoot className="min-h-11 items-center py-1.5">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-        <span className="max-w-48 truncate">{audioName}</span>
+        <AttachmentChipTitle>{audioName}</AttachmentChipTitle>
         <button
           type="button"
           onClick={clearPendingAudio}
-          className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+          className={attachmentChipTokens.remove}
           aria-label="Remove audio"
         >
-          <XIcon className="size-3" />
+          <XIcon className="size-3" aria-hidden="true" />
         </button>
-      </div>
+      </AttachmentChipRoot>
     </div>
   );
 };
@@ -1264,7 +1282,7 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled}
+      aria-disabled={disabled || !hasSendableContent}
       onSubmit={handleSubmit}
     >
       {isTauri ? (
@@ -1972,7 +1990,7 @@ const ToolStatusDisplay: FC = () => {
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
+      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary motion-reduce:animate-none">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
         <span className="tabular-nums opacity-60">{elapsed}s</span>

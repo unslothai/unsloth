@@ -82,6 +82,7 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
             "repo_id": "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -103,6 +104,7 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
             "repo_id": "Org/Model-Without-Suffix",
             "size_bytes": 7_000,
             "cache_path": str(repo.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -155,6 +157,7 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
             "repo_id": "org/dupe",
             "size_bytes": 6_000,
             "cache_path": str(larger.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -184,6 +187,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "repo_id": "Org/SharedBlobRepo",
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -233,6 +237,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
             "repo_id": "Org/MixedRepo",
             "size_bytes": 5_000,
             "cache_path": str(mixed.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -259,6 +264,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
             "repo_id": "Org/PartialDownload",
             "size_bytes": 5_000,
             "cache_path": str(partial.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -294,6 +300,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
             "repo_id": "Org/Healthy",
             "size_bytes": 5_000,
             "cache_path": str(healthy.repo_path),
+            "has_mmproj": False,
         }
     ]
 
@@ -369,6 +376,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "repo_id": "Org/VisionGguf",
             "size_bytes": 5_000,
             "cache_path": str(vision_repo.repo_path),
+            "has_mmproj": True,
         }
     ]
 
@@ -422,6 +430,7 @@ def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_pat
             "repo_id": "Org/Active",
             "size_bytes": 5_000,
             "cache_path": str(tmp_path / "active"),
+            "has_mmproj": False,
         }
     ]
 

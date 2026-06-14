@@ -22,7 +22,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -31,19 +30,22 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { getCachedDocumentSupport } from "./api/chat-api";
+import { db } from "./db";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import { createDocumentExtractionRunner } from "./hooks/use-document-extraction";
+import type { DocumentExtractionRunner } from "./hooks/use-document-extraction";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
@@ -53,7 +55,14 @@ import {
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import {
+  DocumentExtractionLostError,
+  isDocumentAttachment,
+  type DocumentPendingAttachment,
+  type MessageRecord,
+  type ModelType,
+  type ThreadRecord,
+} from "./types";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -65,12 +74,57 @@ import {
   saveStoredChatThread,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
-import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import {
+  isChatThreadDeleted,
+  markChatThreadDeleted,
+} from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
+import {
+  DOC_ACCEPT,
+  MAX_DOC_SIZE,
+  TEXT_ONLY_DOCUMENT_VISUAL_POLICY,
+  buildDocumentMessageParts,
+  classifyDocumentExtractionError,
+  documentExtractionRetryCount,
+  documentParserUnavailableReason,
+  documentVisualPayloads,
+  normalizeExtractedDocument,
+  resolveCurrentDocumentVisualPolicy,
+} from "./utils/document-extraction";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+
+const DEFAULT_SUGGESTIONS = [
+  {
+    title: "Summarize a PDF and list the key takeaways",
+    label: "Summarize a PDF",
+    prompt: "Summarize this PDF and list the key takeaways.",
+  },
+  {
+    title: "How do you fine-tune an audio model with Unsloth?",
+    label: "Audio fine-tuning",
+    prompt: "How do you fine-tune an audio model with Unsloth?",
+  },
+  {
+    title:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
+    label: "Weather dashboard",
+    prompt:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
+  },
+  {
+    title: "Solve the integral of x·sin(x), and verify it",
+    label: "Integral",
+    prompt: "Solve the integral of x·sin(x), and verify it step by step",
+  },
+  {
+    title: "Draw an SVG of a cute sloth & show the code",
+    label: "SVG sloth",
+    prompt: "Draw an SVG of a cute sloth & show the code",
+  },
+];
 
 type TitleResponse = {
   choices?: Array<{
@@ -160,151 +214,242 @@ class VisionImageAdapter implements AttachmentAdapter {
   }
 }
 
-class PDFAttachmentAdapter implements AttachmentAdapter {
-  accept = "application/pdf";
+class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
+  accept = DOC_ACCEPT;
+  private runners = new Map<string, DocumentExtractionRunner>();
 
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
-      id: crypto.randomUUID(),
+  async *add({
+    file,
+  }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    if (file.size > MAX_DOC_SIZE) {
+      throw new Error("Document size exceeds 100MB limit");
+    }
+    const initial = useChatRuntimeStore.getState().docExtract;
+    if (!initial.enabled) {
+      throw new Error("Document extraction is disabled in Chat settings");
+    }
+    let unavailableReason: string | null = null;
+    try {
+      unavailableReason = documentParserUnavailableReason(
+        file,
+        await getCachedDocumentSupport(),
+      );
+    } catch {
+      // Let the extraction request surface the authoritative backend error.
+    }
+    if (unavailableReason) {
+      throw new Error(unavailableReason);
+    }
+
+    const id = crypto.randomUUID();
+    const base: Omit<DocumentPendingAttachment, "status"> = {
+      id,
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
+      sizeBytes: file.size,
+      extractedAt: Date.now(),
+    };
+
+    const retryCount = documentExtractionRetryCount(file);
+
+    // Initial running state; NDJSON reports server-side parse/caption
+    // progress, not browser upload progress.
+    const initial0: DocumentPendingAttachment = {
+      ...base,
+      retryCount,
+      status: { type: "running", reason: "uploading", progress: Number.NaN },
+    };
+    yield initial0;
+
+    const runner = createDocumentExtractionRunner();
+    this.runners.set(id, runner);
+
+    let lastProgress = 0;
+
+    // Progress from stream events: parsing -> 0.10, captioning -> 0.20-1.00
+    // from current/total. Upload progress is no longer reported.
+    type ProgressResolver = { resolve: (v: number) => void };
+    const progressQueue: number[] = [];
+    let progressResolver: ProgressResolver | null = null;
+
+    function publishProgress(value: number): void {
+      if (value <= lastProgress) return;
+      lastProgress = value;
+      if (progressResolver) {
+        const r = progressResolver;
+        progressResolver = null;
+        r.resolve(value);
+      } else {
+        progressQueue.push(value);
+      }
+    }
+
+    function onParseStart(): void {
+      publishProgress(0.1);
+    }
+
+    function onCaptionProgress({
+      current,
+      total,
+    }: {
+      current: number;
+      total: number;
+    }): void {
+      if (total <= 0) return;
+      const fraction = Math.max(0, Math.min(1, current / total));
+      publishProgress(0.2 + fraction * 0.8);
+    }
+
+    // Start extraction in background; we'll race it with progress yields
+    let extractionDone = false;
+    let extractionError: unknown = null;
+    let extractionResult: Awaited<
+      ReturnType<DocumentExtractionRunner["run"]>
+    > | null = null;
+
+    const extractionPromise = runner
+      .run(file, { onParseStart, onCaptionProgress })
+      .then((doc) => {
+        extractionResult = doc;
+      })
+      .catch((err) => {
+        extractionError = err;
+      })
+      .finally(() => {
+        extractionDone = true;
+        // Unblock any pending progress waiter
+        if (progressResolver) {
+          progressResolver.resolve(lastProgress);
+          progressResolver = null;
+        }
+      });
+
+    // Yield progress updates until extraction finishes
+    while (!extractionDone) {
+      let nextProgress: number;
+      if (progressQueue.length > 0) {
+        nextProgress = progressQueue.shift()!;
+      } else {
+        // Wait for either a progress event or extraction completion
+        nextProgress = await new Promise<number>((resolve) => {
+          progressResolver = { resolve };
+        });
+      }
+      if (nextProgress > lastProgress || nextProgress === lastProgress) {
+        lastProgress = nextProgress;
+      }
+      if (!extractionDone) {
+        const mid: DocumentPendingAttachment = {
+          ...base,
+          retryCount,
+          status: {
+            type: "running",
+            reason: "uploading",
+            progress: lastProgress,
+          },
+        };
+        yield mid;
+      }
+    }
+
+    // Await the promise to ensure microtasks have settled
+    await extractionPromise;
+
+    // Handle abort silently
+    if (
+      extractionError instanceof DOMException &&
+      extractionError.name === "AbortError"
+    ) {
+      this.runners.delete(id);
+      return;
+    }
+
+    // Keep failed documents visible in the composer instead of letting
+    // assistant-ui discard the pending attachment after an exception.
+    if (extractionError !== null) {
+      this.runners.delete(id);
+      const { code, message } = classifyDocumentExtractionError(extractionError);
+      const failedAttachment: DocumentPendingAttachment = {
+        ...base,
+        retryCount,
+        errorCode: code,
+        errorMessage: message,
+        status: { type: "incomplete", reason: "error" },
+      };
+      yield failedAttachment;
+      return;
+    }
+
+    const document = normalizeExtractedDocument(extractionResult!);
+    const filename = document.filename || file.name;
+    const current = useChatRuntimeStore.getState().docExtract;
+    const visualPolicy = await resolveCurrentDocumentVisualPolicy();
+    const { parts, truncated } = buildDocumentMessageParts(
+      { filename, document },
+      current.tokenBudget,
+      visualPolicy,
+      current.maxVisualPayloads,
+    );
+    const sentImageIndexes = documentVisualPayloads(
+      document,
+      current.maxVisualPayloads,
+      visualPolicy,
+    ).map((payload) => payload.index);
+
+    this.runners.delete(id);
+
+    const complete: DocumentPendingAttachment = {
+      ...base,
+      id,
+      name: filename,
+      content: parts,
+      document,
+      sizeBytes: file.size,
+      extractedAt: Date.now(),
+      truncated,
+      sentImageIndexes,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
+    yield complete;
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
-      status: { type: "complete" },
-    };
+    if (isDocumentAttachment(attachment) && attachment.document) {
+      const document = normalizeExtractedDocument(attachment.document);
+      const filename = document.filename || attachment.name;
+      const current = useChatRuntimeStore.getState().docExtract;
+      const visualPolicy = await resolveCurrentDocumentVisualPolicy();
+      const { parts, truncated } = buildDocumentMessageParts(
+        { filename, document },
+        current.tokenBudget,
+        visualPolicy,
+        current.maxVisualPayloads,
+      );
+      const sentImageIndexes = documentVisualPayloads(
+        document,
+        current.maxVisualPayloads,
+        visualPolicy,
+      ).map((payload) => payload.index);
+      return {
+        ...attachment,
+        name: filename,
+        content: parts,
+        document,
+        truncated,
+        sentImageIndexes,
+        status: { type: "complete" },
+      } as CompleteAttachment;
+    }
+    // Content missing — extraction was lost; do not re-extract
+    throw new DocumentExtractionLostError();
   }
 
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class TextAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for source files, so also match by extension
-  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
-  // config and other plain-text formats; html keeps its own adapter below.
-  accept = [
-    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
-    "application/json,application/xml,image/svg+xml",
-    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
-    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
-    ".css,.scss,.sass,.less,.svg",
-    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
-    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
-    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
-    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
-  ].join(",");
-
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    };
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await attachment.file.text();
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "text",
-          text: `<attachment name=${attachment.name}>\n${text}\n</attachment>`,
-        },
-      ],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class HtmlAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/html";
-
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    };
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const html = await attachment.file.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    for (const el of doc.querySelectorAll("script, style")) el.remove();
-    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "text", text: `[HTML: ${attachment.name}]\n${text}` }],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class DocxAttachmentAdapter implements AttachmentAdapter {
-  accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    });
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
+  remove(attachment: CompleteAttachment | PendingAttachment): Promise<void> {
+    const runner = this.runners.get(attachment.id);
+    runner?.abort();
+    this.runners.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -494,7 +639,40 @@ function cloneContent(
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
+  return Array.isArray(content)
+    ? sanitizePersistedContent(JSON.parse(JSON.stringify(content)))
+    : [];
+}
+
+function sanitizePersistedContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  if (!Array.isArray(content)) {
+    return content;
+  }
+  const sanitized: typeof content = [];
+  let skipNextDocumentImage = false;
+  for (const part of content) {
+    if (
+      part.type === "text" &&
+      /^Visual inputs attached below:/i.test(part.text)
+    ) {
+      skipNextDocumentImage = false;
+      continue;
+    }
+    if (
+      part.type === "text" &&
+      /^Visual input \[Image #\d+\] from /i.test(part.text)
+    ) {
+      skipNextDocumentImage = true;
+      continue;
+    }
+    if (skipNextDocumentImage && part.type === "image") {
+      skipNextDocumentImage = false;
+      continue;
+    }
+    skipNextDocumentImage = false;
+    sanitized.push(part);
+  }
+  return sanitized;
 }
 
 function cloneAttachments(
@@ -503,7 +681,48 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  const cloned = JSON.parse(JSON.stringify(attachments)) as CompleteAttachment[];
+  return cloned.map(sanitizePersistedAttachment);
+}
+
+function stripDocumentVisualData(
+  document: NonNullable<DocumentPendingAttachment["document"]>,
+): NonNullable<DocumentPendingAttachment["document"]> {
+  const normalized = normalizeExtractedDocument(document);
+  return {
+    ...normalized,
+    image_input_available: false,
+    figures: normalized.figures.map((figure) => ({
+      ...figure,
+      image_base64: null,
+    })),
+  };
+}
+
+function sanitizePersistedAttachment(
+  attachment: CompleteAttachment,
+): CompleteAttachment {
+  if (!isDocumentAttachment(attachment) || !attachment.document) {
+    return attachment;
+  }
+
+  const document = stripDocumentVisualData(attachment.document);
+  const filename = document.filename || attachment.name;
+  const { parts, truncated } = buildDocumentMessageParts(
+    { filename, document },
+    Number.MAX_SAFE_INTEGER,
+    TEXT_ONLY_DOCUMENT_VISUAL_POLICY,
+    0,
+  );
+  const sanitized = {
+    ...attachment,
+    name: filename,
+    document,
+    content: parts,
+    truncated: attachment.truncated ?? truncated,
+  } as CompleteAttachment & { file?: unknown };
+  delete sanitized.file;
+  return sanitized;
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -990,10 +1209,7 @@ function useStudioRuntimeAdapters(
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
         new AudioAttachmentAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
+        new DocumentExtractionAttachmentAdapter(),
         new OpenDocumentAttachmentAdapter(),
       ]),
     [],

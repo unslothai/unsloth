@@ -14,6 +14,9 @@ export interface InferenceParams {
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
+  /** Whether the chat model was loaded with load_in_4bit; snapshotted so
+   *  OCR restore round-trips the original quantization. */
+  loadIn4Bit?: boolean;
   /**
    * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at 6x Opus
    * pricing. Default false.
@@ -34,6 +37,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   systemPrompt: "",
   checkpoint: "",
   trustRemoteCode: false,
+  loadIn4Bit: true,
   fastMode: false,
 };
 

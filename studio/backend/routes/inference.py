@@ -9,9 +9,11 @@ import os
 import sys
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+from pydantic import ValidationError
 from typing import Any, Optional, Union
 import json
 import httpx
@@ -610,6 +612,7 @@ try:
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
+        get_llama_cpp_backend,
     )
     from core.inference.llama_server_args import (
         resolve_tensor_parallel,
@@ -622,6 +625,7 @@ try:
     from utils.models.model_config import (
         detect_mtp_file,
         load_model_defaults,
+        requires_trust_remote_code,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -644,6 +648,7 @@ except ImportError:
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
+        get_llama_cpp_backend,
     )
     from core.inference.llama_server_args import (
         resolve_tensor_parallel,
@@ -656,6 +661,7 @@ except ImportError:
     from utils.models.model_config import (
         detect_mtp_file,
         load_model_defaults,
+        requires_trust_remote_code,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -857,10 +863,14 @@ from models.inference import (
     AnthropicUsage,
     CreateOpenAIContainerBody,
     DeleteOpenAIContainerBody,
+    DocumentSupportResponse,
+    ExtractDocumentResponse,
+    ExtractedFigureModel,
     ListOpenAIContainersResponse,
     OpenAIContainerRequest,
     OpenAIContainerSummary,
 )
+from dataclasses import asdict as _asdict
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
     anthropic_tools_to_openai,
@@ -1478,12 +1488,9 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server)
-_llama_cpp_backend = LlamaCppBackend()
-
-
-def get_llama_cpp_backend() -> LlamaCppBackend:
-    return _llama_cpp_backend
+# The llama-server singleton lives in core.inference.llama_cpp;
+# get_llama_cpp_backend is imported above and re-exported so external callers
+# keep resolving to the one instance load/list/delete/shutdown consult.
 
 
 @router.post("/load", response_model = LoadResponse)
@@ -1598,6 +1605,7 @@ async def load_model(
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
+                    cache_type_kv = llama_backend.cache_type_kv,
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
@@ -1648,6 +1656,22 @@ async def load_model(
                     chat_template = _chat_template,
                 )
 
+        model_defaults = load_model_defaults(request.model_path)
+        defaults_require_trust_remote_code = requires_trust_remote_code(model_defaults)
+        if defaults_require_trust_remote_code and not request.trust_remote_code:
+            display_name = (
+                model_defaults.get("model", {}).get("display_name")
+                or request.model_path.split("/")[-1]
+                or request.model_path
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Model '{display_name}' requires trust_remote_code to be enabled. "
+                    "Please enable 'Trust remote code' in Chat Settings and try again."
+                ),
+            )
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
@@ -1656,6 +1680,7 @@ async def load_model(
                 model_id = model_identifier,
                 hf_token = request.hf_token,
                 gguf_variant = request.gguf_variant,
+                trust_remote_code = request.trust_remote_code,
             )
 
         if not config:
@@ -2088,10 +2113,35 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
+        if not native_grant_backed:
+            model_defaults = load_model_defaults(request.model_path)
+            default_model_config = model_defaults.get("model", {})
+            defaults_require_trust_remote_code = requires_trust_remote_code(model_defaults)
+            if defaults_require_trust_remote_code and not request.trust_remote_code:
+                display_name = (
+                    default_model_config.get("display_name")
+                    or request.model_path.split("/")[-1]
+                    or request.model_path
+                )
+                return ValidateModelResponse(
+                    valid = True,
+                    message = (
+                        "Model identifier is valid, but this model requires "
+                        "trust_remote_code before probing or loading."
+                    ),
+                    identifier = request.model_path,
+                    display_name = display_name,
+                    is_gguf = False,
+                    is_lora = False,
+                    is_vision = bool(default_model_config.get("is_vision", False)),
+                    requires_trust_remote_code = True,
+                )
+
         config = ModelConfig.from_identifier(
             model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
+            trust_remote_code = request.trust_remote_code,
         )
 
         if not config:
@@ -2189,10 +2239,14 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     A cancel_id arriving before its stream registers is stashed briefly and
     replayed on registration. Returns {"cancelled": N}.
     """
+    # The cancel body is a tiny identifier dict; cap the read so a client
+    # cannot make this endpoint buffer megabytes.
     try:
-        body = await request.json()
+        body = await _read_json_body_limited(request, max_bytes = 64 * 1024)
         if not isinstance(body, dict):
             body = {}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.debug("Failed to parse cancel request body: %s", e)
         body = {}
@@ -2232,7 +2286,9 @@ async def confirm_tool_call(
 
 @router.post("/generate/stream")
 async def generate_stream(
-    request: GenerateRequest, current_subject: str = Depends(get_current_subject)
+    fastapi_request: Request,
+    request: GenerateRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Generate a chat response with Server-Sent Events (SSE) streaming.
@@ -2277,9 +2333,21 @@ async def generate_stream(
                 log = logger,
             )
 
+    cancel_event = threading.Event()
+    completion_id = f"legacy-{uuid.uuid4().hex[:12]}"
+    _tracker = _TrackedCancel(
+        cancel_event,
+        request.cancel_id,
+        request.session_id,
+        completion_id,
+    )
+    _tracker.__enter__()
+
     async def stream():
+        _DONE = object()
         try:
-            for chunk in backend.generate_chat_response(
+            yield f"data: {json.dumps({'completion_id': completion_id})}\n\n"
+            gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
                 image = image,
@@ -2288,7 +2356,19 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
-            ):
+                cancel_event = cancel_event,
+            )
+            while True:
+                if cancel_event.is_set():
+                    backend.reset_generation_state()
+                    break
+                if await fastapi_request.is_disconnected():
+                    cancel_event.set()
+                    backend.reset_generation_state()
+                    return
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -2296,6 +2376,9 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+        finally:
+            cancel_event.set()
+            _tracker.__exit__(None, None, None)
 
     return StreamingResponse(
         stream(),
@@ -2609,6 +2692,119 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
     return waveform.squeeze(0).numpy()
 
 
+_OPENAI_CHAT_MAX_IMAGES = 256
+_OPENAI_CHAT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_OPENAI_CHAT_MAX_IMAGE_PIXELS = 40_000_000
+_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS = ((_OPENAI_CHAT_MAX_IMAGE_BYTES + 2) // 3) * 4 + 1024
+
+
+def _convert_openai_image_b64_to_png_b64(image_b64: str) -> str:
+    if len(image_b64) > _OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS:
+        raise HTTPException(
+            status_code = 413,
+            detail = "Image payload exceeds the 20 MB decoded-image limit.",
+        )
+
+    try:
+        import base64 as _b64
+        from io import BytesIO as _BytesIO
+        from PIL import Image as _Image
+
+        raw = _b64.b64decode(image_b64, validate = True)
+        if len(raw) > _OPENAI_CHAT_MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status_code = 413,
+                detail = "Image payload exceeds the 20 MB decoded-image limit.",
+            )
+        with _Image.open(_BytesIO(raw)) as img:
+            width, height = img.size
+            if width * height > _OPENAI_CHAT_MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = "Image dimensions exceed the 40 MP limit.",
+                )
+            converted = img.convert("RGB")
+            buf = _BytesIO()
+            converted.save(buf, format = "PNG")
+        png = buf.getvalue()
+        if len(png) > _OPENAI_CHAT_MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status_code = 413,
+                detail = "Converted image payload exceeds the 20 MB limit.",
+            )
+        return _b64.b64encode(png).decode("ascii")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code = 400, detail = f"Failed to process image: {e}") from e
+
+
+def _decode_guarded_chat_image(image_b64: str):
+    """Decode one chat image through the shared byte/pixel guards into a PIL image."""
+    import base64 as _b64
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+
+    png_b64 = _convert_openai_image_b64_to_png_b64(image_b64)
+    return _Image.open(_BytesIO(_b64.b64decode(png_b64, validate = True)))
+
+
+def _data_url_base64_payload(url: str) -> str:
+    try:
+        header, b64data = url.split(",", 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 400, detail = "Image data URL is missing base64 payload."
+        ) from exc
+    if ";base64" not in header.lower():
+        raise HTTPException(status_code = 400, detail = "Image data URL must be base64 encoded.")
+    return b64data
+
+
+def _normalize_openai_message_images(
+    openai_messages: list[dict], *, is_vision: bool, not_vision_detail: str
+) -> bool:
+    """Apply image count/size/pixel guards and normalize data URLs to PNG."""
+    has_image = False
+    image_count = 0
+
+    for msg in openai_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+
+            has_image = True
+            image_count += 1
+            if image_count > _OPENAI_CHAT_MAX_IMAGES:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = f"Too many images provided; maximum is {_OPENAI_CHAT_MAX_IMAGES}.",
+                )
+            if not is_vision:
+                raise HTTPException(status_code = 400, detail = not_vision_detail)
+
+            image_url = part.get("image_url") or {}
+            if not isinstance(image_url, dict):
+                raise HTTPException(status_code = 400, detail = "Invalid image_url content part.")
+            url = image_url.get("url", "")
+            if not isinstance(url, str):
+                raise HTTPException(status_code = 400, detail = "Invalid image_url URL.")
+            if not url.startswith("data:"):
+                # Remote URLs are counted but cannot be byte/pixel checked here.
+                continue
+
+            b64data = _data_url_base64_payload(url)
+            png_b64 = _convert_openai_image_b64_to_png_b64(b64data)
+            normalized = dict(image_url)
+            normalized["url"] = f"data:image/png;base64,{png_b64}"
+            part["image_url"] = normalized
+
+    return has_image
+
+
 # Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
 # cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
 # bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
@@ -2775,21 +2971,14 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
-def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
-    """
-    Parse OpenAI-format messages into components the inference backend expects.
-
-    Handles both plain-string ``content`` and multimodal content-part arrays
-    (``[{type: "text", ...}, {type: "image_url", ...}]``).
-
-    Returns:
-        system_prompt:  System message text (empty string if none).
-        chat_messages:  Non-system messages with content flattened to strings.
-        image_base64:   Base64 of the *first* image found, or ``None``.
+def _extract_content_parts(messages: list) -> tuple[str, list[dict], list[str]]:
+    """Parse OpenAI-format messages (plain-string or content-part arrays) into
+    ``(system_prompt, chat_messages, image_base64s)``: system text (or ""),
+    non-system messages flattened to strings, and image data in request order.
     """
     system_parts: list[str] = []
     chat_messages: list[dict] = []
-    first_image_b64: Optional[str] = None
+    image_b64s: list[str] = []
 
     for msg in messages:
         # ── System / developer messages → extract as system_prompt ────────
@@ -2811,17 +3000,18 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             for part in msg.content:
                 if part.type == "text":
                     text_parts.append(part.text)
-                elif part.type == "image_url" and first_image_b64 is None:
+                elif part.type == "image_url":
                     url = part.image_url.url
                     if url.startswith("data:"):
                         # data:image/png;base64,<DATA> -> extract <DATA>
-                        first_image_b64 = url.split(",", 1)[1] if "," in url else None
+                        if "," in url:
+                            image_b64s.append(url.split(",", 1)[1])
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
             combined_text = "\n".join(text_parts) if text_parts else ""
             chat_messages.append({"role": msg.role, "content": combined_text})
 
-    return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
+    return "\n\n".join(p for p in system_parts if p), chat_messages, image_b64s
 
 
 # ── External provider proxy ──────────────────────────────────────
@@ -3466,10 +3656,20 @@ async def delete_openai_container(
 
 @router.post("/chat/completions")
 async def openai_chat_completions(
-    payload: ChatCompletionRequest,
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ):
+    body = await _read_json_body_limited(
+        request,
+        max_bytes = _OPENAI_CHAT_BODY_MAX_BYTES,
+    )
+    try:
+        payload = ChatCompletionRequest.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code = 422, detail = exc.errors()) from exc
+    return await _openai_chat_completions_impl(payload, request)
+
+
+async def _openai_chat_completions_impl(payload: ChatCompletionRequest, request: Request):
     """
     OpenAI-compatible chat completions endpoint.
 
@@ -3794,7 +3994,7 @@ async def openai_chat_completions(
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
-    system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    system_prompt, chat_messages, extracted_image_b64s = _extract_content_parts(payload.messages)
 
     if not chat_messages:
         raise HTTPException(
@@ -4339,24 +4539,25 @@ async def openai_chat_completions(
     # ── Standard Unsloth path ─────────────────────────────────
 
     # Decode image (from content parts OR legacy field)
-    image_b64 = extracted_image_b64 or payload.image_base64
+    image_b64 = extracted_image_b64s[0] if extracted_image_b64s else payload.image_base64
     image = None
 
     if image_b64:
         try:
-            import base64
-            from PIL import Image
-            from io import BytesIO
-
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Image provided but current model is text-only. Load a vision model.",
                 )
+            if len(extracted_image_b64s) > _OPENAI_CHAT_MAX_IMAGES:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = f"Too many images provided; maximum is {_OPENAI_CHAT_MAX_IMAGES}.",
+                )
 
-            image_data = base64.b64decode(image_b64)
-            image = Image.open(BytesIO(image_data))
+            # Same byte/pixel guards as the GGUF and Anthropic image paths.
+            image = _decode_guarded_chat_image(image_b64)
             image = backend.resize_image(image)
 
         except HTTPException:
@@ -5097,7 +5298,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await request.json()
+    body = await _read_json_body_limited(request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES)
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
@@ -5213,7 +5414,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await request.json()
+    body = await _read_json_body_limited(request, max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
@@ -5735,7 +5936,7 @@ async def _responses_non_streaming(
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
-    result = await openai_chat_completions(chat_req, request)
+    result = await _openai_chat_completions_impl(chat_req, request)
 
     # openai_chat_completions returns a JSONResponse for non-streaming.
     if isinstance(result, JSONResponse):
@@ -6558,45 +6759,11 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
     when images are present but the active model isn't a vision model, or when
     an image cannot be decoded.
     """
-    from PIL import Image
-
-    has_image = False
-    for msg in openai_messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if part.get("type") != "image_url":
-                continue
-
-            has_image = True
-            if not is_vision:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Image provided but current GGUF model does not support vision.",
-                )
-
-            url = (part.get("image_url") or {}).get("url", "")
-            if not url.startswith("data:"):
-                # Remote URLs are forwarded as-is; llama-server will
-                # fetch (or fail) per its own support matrix.
-                continue
-
-            try:
-                _, b64data = url.split(",", 1)
-                raw = base64.b64decode(b64data)
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format = "PNG")
-                png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Failed to process image.",
-                )
-            part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
-
-    return has_image
+    return _normalize_openai_message_images(
+        openai_messages,
+        is_vision = is_vision,
+        not_vision_detail = "Image provided but current GGUF model does not support vision.",
+    )
 
 
 @router.post("/messages/count_tokens")
@@ -7796,60 +7963,43 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _openai_messages_for_passthrough(payload) -> list[dict]:
+def _openai_messages_for_passthrough(payload, *, is_vision: bool = True) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
 
-    ``payload.messages`` are dumped through Pydantic (dropping unset optional
-    fields), so they're already standard OpenAI format -- including
-    ``role="tool"`` tool-result messages and assistant messages carrying
-    structured ``tool_calls``. Content-parts images already in the list are
-    left untouched.
-
-    When a client uses Studio's legacy ``image_base64`` top-level field, the
-    image is re-encoded to PNG (llama-server's stb_image has limited format
-    support) and spliced into the last user message as an OpenAI ``image_url``
-    content part so vision + function-calling requests work transparently.
+    Pydantic dumps already give standard OpenAI format (role="tool" results,
+    structured tool_calls); content-part images are counted, bounded, and
+    normalized to PNG. A legacy top-level ``image_base64`` is re-encoded to
+    PNG (llama-server's stb_image is picky) and spliced into the last user
+    message so vision + function-calling requests work transparently.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64:
-        return messages
+    if payload.image_base64:
+        data_url = f"data:image/unknown;base64,{payload.image_base64}"
+        image_part = {"type": "image_url", "image_url": {"url": data_url}}
 
-    try:
-        import base64 as _b64
-        from io import BytesIO as _BytesIO
-        from PIL import Image as _Image
-
-        raw = _b64.b64decode(payload.image_base64)
-        img = _Image.open(_BytesIO(raw)).convert("RGB")
-        buf = _BytesIO()
-        img.save(buf, format = "PNG")
-        png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to process image.",
-        )
-
-    data_url = f"data:image/png;base64,{png_b64}"
-    image_part = {"type": "image_url", "image_url": {"url": data_url}}
-
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        existing = msg.get("content")
-        if isinstance(existing, str):
-            msg["content"] = [{"type": "text", "text": existing}, image_part]
-        elif isinstance(existing, list):
-            existing.append(image_part)
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            existing = msg.get("content")
+            if isinstance(existing, str):
+                msg["content"] = [{"type": "text", "text": existing}, image_part]
+            elif isinstance(existing, list):
+                existing.append(image_part)
+            else:
+                msg["content"] = [image_part]
+            break
         else:
-            msg["content"] = [image_part]
-        break
-    else:
-        messages.append({"role": "user", "content": [image_part]})
+            messages.append({"role": "user", "content": [image_part]})
+
+    _normalize_openai_message_images(
+        messages,
+        is_vision = is_vision,
+        not_vision_detail = "Image provided but current GGUF model does not support vision.",
+    )
 
     return messages
 
@@ -7913,6 +8063,8 @@ def _build_openai_passthrough_body(
     payload,
     backend_ctx = None,
     llama_backend = None,
+    *,
+    is_vision: bool = True,
 ) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
@@ -7920,7 +8072,7 @@ def _build_openai_passthrough_body(
     extensions (``enable_tools``, ``enabled_tools``, ``session_id``, ...) never
     leak to the backend.
     """
-    messages = _openai_messages_for_passthrough(payload)
+    messages = _openai_messages_for_passthrough(payload, is_vision = is_vision)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
@@ -7972,7 +8124,10 @@ async def _openai_passthrough_stream(
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
-        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        payload,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+        is_vision = llama_backend.is_vision,
     )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
@@ -8149,7 +8304,10 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
-        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        payload,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+        is_vision = llama_backend.is_vision,
     )
 
     _truncate_budget = (
@@ -8242,3 +8400,793 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     if not changed:
         return Response(content = resp.content, media_type = "application/json")
     return JSONResponse(content = data)
+
+
+# ---------------------------------------------------------------------- #
+# Chat document extraction (PyMuPDF4LLM + optional VLM image description)#
+# ---------------------------------------------------------------------- #
+
+try:
+    from core.chat import (
+        DOCUMENT_EXTRACTION_AVAILABLE as _DOCUMENT_EXTRACTION_AVAILABLE,
+        DEFAULT_DOCUMENT_VISUAL_PAYLOADS as _DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
+        DocumentExtractionBusy as _DocumentExtractionBusy,
+        DocumentExtractionCancelled as _DocumentExtractionCancelled,
+        DocumentExtractionEncrypted as _DocumentExtractionEncrypted,
+        DocumentExtractionTimeout as _DocumentExtractionTimeout,
+        DocumentExtractionUnavailable as _DocumentExtractionUnavailable,
+        _EXTRACT_CONCURRENCY as _DOCUMENT_EXTRACT_CONCURRENCY,
+        MAX_DOCUMENT_VISUAL_PAYLOADS as _MAX_DOCUMENT_VISUAL_PAYLOADS,
+        SUPPORTED_MIME_TYPES as _DOC_MIME_OK,
+        SUPPORTED_SUFFIXES as _DOC_SUFFIX_OK,
+        VlmCapability as _VlmCapability,
+        _EXTRACT_SEMAPHORE,
+        _drain_future_exception as _drain_doc_future_exception,
+        detect_loaded_vlm as _detect_loaded_vlm,
+        document_parser_support as _document_parser_support,
+        document_parser_unavailable_reasons as _document_parser_unavailable_reasons,
+        extract_document as _extract_document,
+        extract_self_base_url as _extract_self_base_url,
+    )
+except ImportError:  # pragma: no cover - package always installed alongside
+    _DOCUMENT_EXTRACTION_AVAILABLE = False
+    _DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 0
+    _DOCUMENT_EXTRACT_CONCURRENCY = 1
+    _MAX_DOCUMENT_VISUAL_PAYLOADS = 0
+    _DOC_MIME_OK = frozenset()
+    _DOC_SUFFIX_OK = frozenset()
+    _detect_loaded_vlm = None  # type: ignore[assignment]
+    _extract_document = None  # type: ignore[assignment]
+    _extract_self_base_url = None  # type: ignore[assignment]
+    _document_parser_support = lambda: {}  # type: ignore[assignment]
+    _document_parser_unavailable_reasons = lambda: {}  # type: ignore[assignment]
+    _VlmCapability = None  # type: ignore[assignment]
+    _drain_doc_future_exception = lambda _f: None  # type: ignore[assignment]
+
+    class _DocumentExtractionUnavailable(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class _DocumentExtractionTimeout(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class _DocumentExtractionBusy(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class _DocumentExtractionCancelled(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class _DocumentExtractionEncrypted(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    _EXTRACT_SEMAPHORE = threading.BoundedSemaphore(1)
+
+
+_EXTRACT_MAX_BYTES = 100 * 1024 * 1024
+_EXTRACT_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+_EXTRACT_READ_CHUNK_BYTES = 64 * 1024
+_EXTRACT_MAX_PAGES_INLINE = 200
+_EXTRACT_TOKEN_BUDGET_DEFAULT = 8000
+_EXTRACT_TOKEN_BUDGET_MIN = 0
+
+# Caught together by the extract endpoint; dispatched to a status/detail below.
+_DOC_EXTRACTION_HTTP_ERRORS = (
+    _DocumentExtractionUnavailable,
+    _DocumentExtractionTimeout,
+    _DocumentExtractionBusy,
+    _DocumentExtractionCancelled,
+    _DocumentExtractionEncrypted,
+    ValueError,
+)
+
+
+def _doc_exc_to_status_detail(exc: BaseException) -> tuple[int, str]:
+    """Map an extraction failure to (status, detail); shared by the JSON and NDJSON paths."""
+    if isinstance(exc, _DocumentExtractionUnavailable):
+        return 501, str(exc)
+    if isinstance(exc, _DocumentExtractionTimeout):
+        return 504, "Document parsing timed out after 120s before image captioning"
+    if isinstance(exc, _DocumentExtractionBusy):
+        return 503, "Document extraction is busy"
+    if isinstance(exc, _DocumentExtractionCancelled):
+        return 499, "Client closed request"
+    if isinstance(exc, _DocumentExtractionEncrypted):
+        return 422, str(exc)
+    detail = str(exc)  # ValueError
+    return (415 if detail.lower().startswith("unsupported file type") else 400), detail
+
+
+def _ndjson_error(status_code: int, detail: str) -> str:
+    return json.dumps({"stage": "error", "status_code": status_code, "detail": detail}) + "\n"
+
+
+def _page_limit_detail(page_count: int) -> str:
+    return (
+        f"Document has {page_count} pages; inline extraction "
+        f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
+        f"documents or reduce the page range."
+    )
+
+
+async def _drain_cancelled_extraction(cancel_event, extraction_task) -> None:
+    """Signal cancel, give the worker 10s to unwind, then force-cancel into the 499 path."""
+    cancel_event.set()
+    with suppress(
+        _DocumentExtractionCancelled,
+        asyncio.CancelledError,
+        asyncio.TimeoutError,
+    ):
+        await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
+    if not extraction_task.done():
+        extraction_task.cancel()
+    raise _DocumentExtractionCancelled("document extraction was cancelled")
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_HTML_MIME_TYPES = {"text/html"}
+_DATA_MIME_TYPES = {
+    "application/json",
+    "application/x-ndjson",
+    "application/xml",
+    "application/yaml",
+    "text/csv",
+    "text/xml",
+    "text/yaml",
+}
+_CODE_MIME_TYPES = {
+    "application/javascript",
+    "text/css",
+    "text/javascript",
+}
+_DATA_SUFFIXES = {".csv", ".json", ".jsonl", ".yaml", ".yml", ".xml"}
+_CODE_SUFFIXES = {
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".sql",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".css",
+    ".scss",
+}
+
+
+async def _wait_for_document_request_disconnect(
+    fastapi_request: Request, cancel_event: threading.Event
+) -> bool:
+    while not cancel_event.is_set():
+        if await fastapi_request.is_disconnected():
+            cancel_event.set()
+            return True
+        await asyncio.sleep(0.2)
+    return False
+
+
+def _extract_ext(filename: str) -> str:
+    return os.path.splitext(filename or "")[1].lower()
+
+
+def _is_supported_upload(filename: str, content_type: str) -> bool:
+    if (content_type or "").split(";")[0].strip().lower() in _DOC_MIME_OK:
+        return True
+    return _extract_ext(filename) in _DOC_SUFFIX_OK
+
+
+def _document_upload_format(filename: str, content_type: str) -> Optional[str]:
+    mime = (content_type or "").split(";")[0].strip().lower()
+    ext = _extract_ext(filename)
+    if mime == "application/pdf" or ext == ".pdf":
+        return "pdf"
+    if mime == _DOCX_MIME or ext == ".docx":
+        return "docx"
+    if mime in _HTML_MIME_TYPES or ext in {".html", ".htm"}:
+        return "html"
+    if mime in _DATA_MIME_TYPES or ext in _DATA_SUFFIXES:
+        return "data"
+    if mime in _CODE_MIME_TYPES or ext in _CODE_SUFFIXES:
+        return "code"
+    if mime.startswith("text/") or ext in {".md", ".txt", ".log"}:
+        return "text"
+    return None
+
+
+def _raise_if_document_parser_unavailable(filename: str, content_type: str) -> None:
+    format_key = _document_upload_format(filename, content_type)
+    if format_key is None:
+        return
+    support = _document_parser_support()
+    if support.get(format_key, True):
+        return
+    reason = _document_parser_unavailable_reasons().get(
+        format_key,
+        f"{format_key.upper()} extraction is not available on this server.",
+    )
+    raise HTTPException(status_code = 501, detail = reason)
+
+
+def _document_caption_authorization_header(
+    capability: Any, llama_backend: Any, studio_authorization_header: Optional[str]
+) -> Optional[str]:
+    if getattr(capability, "source", None) != "gguf":
+        return studio_authorization_header
+    api_key = getattr(llama_backend, "api_key", None) or getattr(llama_backend, "_api_key", None)
+    return f"Bearer {api_key}" if api_key else None
+
+
+_FORM_TRUE = {"1", "true", "yes", "on"}
+_FORM_FALSE = {"0", "false", "no", "off"}
+
+
+def _parse_bool_form(
+    value: Any,
+    *,
+    default: bool,
+    field: str = "value",
+) -> bool:
+    if value is None:
+        return default
+    norm = str(value).strip().lower()
+    if not norm:
+        return default
+    if norm in _FORM_TRUE:
+        return True
+    if norm in _FORM_FALSE:
+        return False
+    raise HTTPException(
+        status_code = 400,
+        detail = f"Invalid boolean value for {field}: {value!r}",
+    )
+
+
+def _parse_int_form(
+    value: Any,
+    *,
+    default: int,
+    lo: int,
+    hi: Optional[int] = None,
+) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(lo, parsed)
+    return min(parsed, hi) if hi is not None else parsed
+
+
+def _reject_oversized_content_length(request: Request) -> None:
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return
+    try:
+        total = int(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Invalid Content-Length header",
+        )
+    max_request_bytes = _EXTRACT_MAX_BYTES + _EXTRACT_MULTIPART_OVERHEAD_BYTES
+    if total > max_request_bytes:
+        raise HTTPException(
+            status_code = 413,
+            detail = (f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"),
+        )
+
+
+async def _iter_request_body_limited(request: Request, *, max_bytes: int):
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code = 413,
+                detail = (f"Request exceeds the {_EXTRACT_MAX_BYTES // (1024*1024)} MB file limit"),
+            )
+        yield chunk
+
+
+async def _read_multipart_form_limited(request: Request, *, max_bytes: int):
+    from starlette.formparsers import MultiPartException, MultiPartParser
+    try:
+        parser = MultiPartParser(
+            request.headers,
+            _iter_request_body_limited(request, max_bytes = max_bytes),
+        )
+        return await parser.parse()
+    except HTTPException:
+        raise
+    except MultiPartException as exc:
+        raise HTTPException(status_code = 400, detail = exc.message) from exc
+
+
+# Cap on /completions and /embeddings JSON bodies: small proxy payloads, so
+# 10 MB is generous while still bounding buffering on spoofed Content-Length.
+_OPENAI_PROXY_BODY_MAX_BYTES = 10 * 1024 * 1024
+# Chat-completions also carries multimodal data URLs: bounded, but large
+# enough that document extraction's visual budget reaches the per-image
+# guards instead of being rejected by the JSON body reader first.
+_OPENAI_CHAT_BODY_IMAGE_SLOTS = max(
+    1,
+    min(
+        _OPENAI_CHAT_MAX_IMAGES,
+        _MAX_DOCUMENT_VISUAL_PAYLOADS or _DEFAULT_DOCUMENT_VISUAL_PAYLOADS or 1,
+    ),
+)
+_OPENAI_CHAT_BODY_MAX_BYTES = max(
+    32 * 1024 * 1024,
+    (_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS * _OPENAI_CHAT_BODY_IMAGE_SLOTS) + (2 * 1024 * 1024),
+)
+
+
+async def _read_json_body_limited(request: Request, *, max_bytes: int) -> Any:
+    """Stream the body, enforce a hard byte cap mid-stream, then parse JSON,
+    so a spoofed Content-Length cannot force unbounded buffering."""
+    total = 0
+    chunks: list[bytes] = []
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code = 413,
+                detail = f"Request body exceeds the {max_bytes // (1024 * 1024)} MB limit",
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code = 400, detail = f"Invalid JSON body: {exc.msg}")
+
+
+async def _read_upload_limited(upload: Any, *, max_bytes: int) -> bytes:
+    buf = bytearray()
+    while True:
+        chunk = await upload.read(_EXTRACT_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code = 413,
+                detail = f"File exceeds the {max_bytes // (1024*1024)} MB limit",
+            )
+    return bytes(buf)
+
+
+def _is_pdf_upload(filename: str, content_type: str) -> bool:
+    mime = (content_type or "").split(";")[0].strip().lower()
+    return mime == "application/pdf" or _extract_ext(filename) == ".pdf"
+
+
+def _preflight_pdf_page_count(file_bytes: bytes, filename: str, content_type: str) -> Optional[int]:
+    if not _is_pdf_upload(filename, content_type):
+        return None
+
+    pypdf_error: Optional[BaseException] = None
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_bytes), strict = False)
+        # Many PDFs report is_encrypted=True with only a null user password
+        # (Acrobat-distilled docs, the Orimi test PDF). Try the empty password
+        # first; PyMuPDF's needs_pass is the real signal in the fallback.
+        if getattr(reader, "is_encrypted", False):
+            try:
+                if reader.decrypt("") == 0:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "Encrypted PDFs are not supported for inline extraction",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                # decrypt failed (corrupt /Encrypt, unknown algorithm); fall
+                # through to PyMuPDF rather than declaring it encrypted.
+                raise RuntimeError("pypdf decrypt probe failed")
+        return len(reader.pages)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        pypdf_error = exc
+        logger.warning(
+            "pypdf page-count preflight failed for %s; trying PyMuPDF fallback",
+            filename,
+        )
+
+    try:
+        import pymupdf as _pymupdf  # type: ignore
+        doc = _pymupdf.open(stream = file_bytes, filetype = "pdf")
+        try:
+            # needs_pass is True only when a password is actually required;
+            # is_encrypted also flags the null-password case that opens fine.
+            # Refuse only on needs_pass.
+            if getattr(doc, "needs_pass", False):
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "Encrypted PDFs are not supported for inline extraction",
+                )
+            return len(doc)
+        finally:
+            doc.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if pypdf_error is not None:
+            logger.warning(
+                "PyMuPDF page-count fallback also failed for %s: %s",
+                filename,
+                exc,
+            )
+        else:
+            logger.exception("PDF page-count preflight failed for %s", filename)
+        raise HTTPException(
+            status_code = 400,
+            detail = "Unable to read PDF page count before extraction",
+        ) from exc
+
+
+def _truncate_markdown_to_token_budget(
+    markdown: str, *, token_budget: int, original_tokens_est: int
+) -> tuple[str, int, Optional[str]]:
+    char_budget = max(_EXTRACT_TOKEN_BUDGET_MIN, token_budget) * 4
+    if len(markdown) <= char_budget:
+        return markdown, original_tokens_est, None
+
+    clipped = markdown[:char_budget]
+    clipped = _re.sub(r"\s+\S*$", "", clipped).rstrip() or markdown[:char_budget].rstrip()
+    clipped += f"\n\n[... truncated; original was ~{original_tokens_est} tokens ...]"
+    warning = (
+        f"Extracted markdown was truncated to {token_budget} tokens "
+        f"(original was ~{original_tokens_est} tokens)."
+    )
+    return clipped, max(0, len(clipped) // 4), warning
+
+
+@studio_router.get("/chat/document-support", response_model = DocumentSupportResponse)
+async def document_support_endpoint(
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
+):
+    """Whether document extraction + per-figure captions are available.
+
+    Polled on settings mount and model change; when ``vlm.is_vlm`` is false
+    the UI disables the describe toggle and shows ``vlm.reason`` as tooltip.
+    """
+    if _extract_document is None or _detect_loaded_vlm is None:
+        return DocumentSupportResponse(
+            extraction_available = False,
+            max_visual_payloads = 0,
+            max_extract_concurrency = 1,
+            format_support = {},
+            unavailable_formats = {},
+            vlm = {
+                "is_vlm": False,
+                "endpoint_url": None,
+                "model_name": None,
+                "source": "none",
+                "reason": "document extraction backend is not installed",
+            },
+        )
+
+    self_base_url = _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
+    try:
+        cap = _detect_loaded_vlm(
+            self_base_url,
+            llama_backend = get_llama_cpp_backend(),
+        )
+    except Exception as exc:
+        logger.exception("Document support VLM probe failed")
+        if _VlmCapability is not None:
+            cap = _VlmCapability.none(f"document support probe failed: {type(exc).__name__}")
+        else:  # pragma: no cover - only when core.chat import fallback is active
+            cap = None
+    return DocumentSupportResponse(
+        extraction_available = True,
+        max_visual_payloads = _MAX_DOCUMENT_VISUAL_PAYLOADS,
+        max_extract_concurrency = _DOCUMENT_EXTRACT_CONCURRENCY,
+        format_support = _document_parser_support(),
+        unavailable_formats = _document_parser_unavailable_reasons(),
+        vlm = cap.to_dict()
+        if cap is not None
+        else {
+            "is_vlm": False,
+            "endpoint_url": None,
+            "model_name": None,
+            "source": "none",
+            "reason": "document support probe failed",
+        },
+    )
+
+
+@studio_router.post("/chat/extract-document")
+async def extract_document_endpoint(
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
+):
+    """Upload a PDF / DOCX / HTML / MD / text file; stream NDJSON progress
+    events plus a final layout-aware Markdown payload.
+
+    Pre-stream validation errors return standard HTTP 4xx/5xx; after that the
+    final line is ``{"stage":"result"|"error", ...}``. Documents over 200
+    pages are rejected with 413 until the background-job path lands.
+    """
+    if _extract_document is None:
+        raise HTTPException(
+            status_code = 501,
+            detail = (
+                "document extraction backend is not installed. Re-run Studio "
+                "setup to install the parser dependencies."
+            ),
+        )
+
+    _reject_oversized_content_length(fastapi_request)
+
+    try:
+        try:
+            form = await _read_multipart_form_limited(
+                fastapi_request,
+                max_bytes = _EXTRACT_MAX_BYTES + _EXTRACT_MULTIPART_OVERHEAD_BYTES,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Invalid multipart document extraction payload")
+            raise HTTPException(status_code = 400, detail = "Invalid multipart payload")
+
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(status_code = 400, detail = "Missing 'file' field")
+
+        filename = getattr(upload, "filename", None) or "upload"
+        content_type = getattr(upload, "content_type", "") or ""
+        if not _is_supported_upload(filename, content_type):
+            raise HTTPException(
+                status_code = 415,
+                detail = f"Unsupported file type: {filename} ({content_type})",
+            )
+        _raise_if_document_parser_unavailable(filename, content_type)
+
+        file_bytes = await _read_upload_limited(upload, max_bytes = _EXTRACT_MAX_BYTES)
+        if not file_bytes:
+            raise HTTPException(status_code = 400, detail = "Uploaded file is empty")
+
+        preflight_page_count = _preflight_pdf_page_count(file_bytes, filename, content_type)
+        if preflight_page_count is not None and preflight_page_count > _EXTRACT_MAX_PAGES_INLINE:
+            raise HTTPException(
+                status_code = 413,
+                detail = _page_limit_detail(preflight_page_count),
+            )
+
+        describe_images = _parse_bool_form(
+            form.get("describe_images"), default = False, field = "describe_images"
+        )
+        use_vlm_ocr = _parse_bool_form(form.get("use_vlm_ocr"), default = False, field = "use_vlm_ocr")
+        max_figures = _parse_int_form(
+            form.get("max_figures"),
+            default = 40,
+            lo = 0,
+        )
+        max_visual_payloads = _parse_int_form(
+            form.get("max_visual_payloads"),
+            default = _DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
+            lo = 0,
+            hi = _MAX_DOCUMENT_VISUAL_PAYLOADS,
+        )
+        token_budget = _parse_int_form(
+            form.get("token_budget"),
+            default = _EXTRACT_TOKEN_BUDGET_DEFAULT,
+            lo = 0,
+        )
+
+        self_base_url = _extract_self_base_url(fastapi_request) if _extract_self_base_url else None
+        llama_backend = get_llama_cpp_backend()
+        capability = (
+            _detect_loaded_vlm(
+                self_base_url,
+                llama_backend = llama_backend,
+            )
+            if _detect_loaded_vlm
+            else None
+        )
+        caption_authorization_header = _document_caption_authorization_header(
+            capability,
+            llama_backend,
+            fastapi_request.headers.get("authorization"),
+        )
+
+        if await fastapi_request.is_disconnected():
+            raise HTTPException(status_code = 499, detail = "Client closed request")
+
+        accept_header = (fastapi_request.headers.get("accept", "") or "").lower()
+        wants_stream = "application/x-ndjson" in accept_header
+
+        def _build_response_payload(result: Any) -> ExtractDocumentResponse:
+            markdown_, tokens_est_, truncate_warning_ = _truncate_markdown_to_token_budget(
+                result.markdown,
+                token_budget = token_budget,
+                original_tokens_est = result.tokens_est,
+            )
+            warnings_ = list(result.warnings)
+            if truncate_warning_:
+                warnings_.append(truncate_warning_)
+            return ExtractDocumentResponse(
+                filename = filename,
+                markdown = markdown_,
+                page_count = result.page_count,
+                tokens_est = tokens_est_,
+                truncated = truncate_warning_ is not None,
+                figures = [ExtractedFigureModel(**_asdict(f)) for f in result.figures],
+                describe_skipped_reason = result.describe_skipped_reason,
+                vlm_source = result.vlm_source,
+                vlm_model = result.vlm_model,
+                image_input_available = getattr(result, "image_input_available", False),
+                warnings = warnings_,
+            )
+
+        def _spawn_extraction(cancel_event, progress_cb = None) -> asyncio.Task:
+            extra = {"progress_cb": progress_cb} if progress_cb is not None else {}
+            return asyncio.create_task(
+                _extract_document(
+                    file_bytes,
+                    filename,
+                    content_type = content_type,
+                    describe_images = describe_images,
+                    use_vlm_ocr = use_vlm_ocr,
+                    max_figures = max_figures,
+                    max_visual_payloads = max_visual_payloads,
+                    capability = capability,
+                    self_base_url = self_base_url,
+                    authorization_header = caption_authorization_header,
+                    cancel_event = cancel_event,
+                    **extra,
+                )
+            )
+
+        if not wants_stream:
+            # ---- Legacy JSON path (no progress events) -----------------
+            cancel_event = threading.Event()
+            extraction_task = _spawn_extraction(cancel_event)
+            disconnect_task = asyncio.create_task(
+                _wait_for_document_request_disconnect(fastapi_request, cancel_event)
+            )
+            try:
+                done, _pending = await asyncio.wait(
+                    {extraction_task, disconnect_task},
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if (
+                    extraction_task not in done
+                    and disconnect_task in done
+                    and disconnect_task.result()
+                ):
+                    await _drain_cancelled_extraction(cancel_event, extraction_task)
+                result = await extraction_task
+            except _DOC_EXTRACTION_HTTP_ERRORS as exc:
+                status_code, detail = _doc_exc_to_status_detail(exc)
+                raise HTTPException(status_code = status_code, detail = detail)
+            except Exception:
+                logger.exception("Document extraction failed for %s", filename)
+                raise HTTPException(status_code = 500, detail = "Extraction failed")
+            finally:
+                cancel_event.set()
+                disconnect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await disconnect_task
+
+            if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = _page_limit_detail(result.page_count),
+                )
+            return _build_response_payload(result)
+
+        # ---- Streaming NDJSON path (Accept: application/x-ndjson) ------
+        progress_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _progress_cb(event: dict) -> None:
+            await progress_queue.put(dict(event))
+
+        async def _ndjson_stream():
+            cancel_event = threading.Event()
+            extraction_task = _spawn_extraction(cancel_event, _progress_cb)
+            # Drain the task's exception so a busy/cancel race doesn't log
+            # "Future exception was never retrieved" on early exit.
+            extraction_task.add_done_callback(_drain_doc_future_exception)
+            disconnect_task = asyncio.create_task(
+                _wait_for_document_request_disconnect(fastapi_request, cancel_event)
+            )
+            try:
+                extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
+                extract_wait.add_done_callback(_drain_doc_future_exception)
+                while True:
+                    queue_get = asyncio.ensure_future(progress_queue.get())
+                    queue_get.add_done_callback(_drain_doc_future_exception)
+                    done, _pending = await asyncio.wait(
+                        {queue_get, extract_wait, disconnect_task},
+                        return_when = asyncio.FIRST_COMPLETED,
+                    )
+                    if queue_get in done:
+                        event = queue_get.result()
+                        yield json.dumps(event) + "\n"
+                    else:
+                        queue_get.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await queue_get
+
+                    if disconnect_task in done and disconnect_task.result():
+                        await _drain_cancelled_extraction(cancel_event, extraction_task)
+
+                    # The shield wrapper can finish (cancelled) before the real
+                    # task; .result() in that window raises InvalidStateError,
+                    # so wait on the task itself.
+                    if extraction_task.done():
+                        # Drain any remaining progress events before result.
+                        while not progress_queue.empty():
+                            try:
+                                event = progress_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            yield json.dumps(event) + "\n"
+                        result = extraction_task.result()
+                        break
+                    if extract_wait in done:
+                        # Wrapper done, task still running: re-arm a fresh
+                        # shielded future and loop.
+                        extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
+                        extract_wait.add_done_callback(_drain_doc_future_exception)
+
+                if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
+                    yield _ndjson_error(413, _page_limit_detail(result.page_count))
+                    return
+
+                response = _build_response_payload(result)
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "result",
+                            "data": response.model_dump(mode = "json"),
+                        }
+                    )
+                    + "\n"
+                )
+            except _DOC_EXTRACTION_HTTP_ERRORS as exc:
+                status_code, detail = _doc_exc_to_status_detail(exc)
+                yield _ndjson_error(status_code, detail)
+            except Exception:
+                logger.exception("Document extraction failed for %s", filename)
+                yield _ndjson_error(500, "Extraction failed")
+            finally:
+                cancel_event.set()
+                disconnect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await disconnect_task
+
+        return StreamingResponse(
+            _ndjson_stream(),
+            media_type = "application/x-ndjson",
+        )
+    finally:
+        # _EXTRACT_SEMAPHORE is owned by _run_extract_process_sync; a busy
+        # semaphore becomes DocumentExtractionBusy -> in-stream error above.
+        pass

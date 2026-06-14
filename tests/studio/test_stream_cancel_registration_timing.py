@@ -37,6 +37,20 @@ def _collect_async_functions(tree: ast.AST):
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
 
+def _find_chat_impl_fn(tree: ast.AST):
+    """Return ``_openai_chat_completions_impl`` (the wrapper delegates to it) when
+    present, else the wrapper, so guards never vacuously pass."""
+    top = None
+    for n in ast.walk(tree):
+        if isinstance(n, ast.AsyncFunctionDef) and n.name in {
+            "openai_chat_completions",
+            "_openai_chat_completions_impl",
+        }:
+            if top is None or n.name == "_openai_chat_completions_impl":
+                top = n
+    return top
+
+
 def _has_tracker_enter_call(node: ast.AST) -> bool:
     for sub in ast.walk(node):
         if not isinstance(sub, ast.Call):
@@ -91,11 +105,7 @@ def test_no_tracker_enter_inside_async_generators():
 
 
 def test_tracker_enter_exists_in_sync_body_of_chat_completions():
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+    top = _find_chat_impl_fn(_TREE)
     assert top is not None, "openai_chat_completions handler missing"
     count = 0
     for sub in ast.walk(top):
@@ -141,11 +151,9 @@ def test_async_generators_cleanup_tracker_in_finally():
 
 
 def test_streaming_responses_have_no_background_task():
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+    # Streaming bodies live in _openai_chat_completions_impl; walk the impl
+    # so this guard does not vacuously pass.
+    top = _find_chat_impl_fn(_TREE)
     assert top is not None
     for sub in ast.walk(top):
         if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
@@ -442,12 +450,10 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     # The Unsloth cancel branch must call backend.reset_generation_state() to
     # flush GPU/KV-cache state, else a cancel-via-POST leaves the subprocess
     # dirty for the next request.
+    # stream_chunks is nested inside _openai_chat_completions_impl; search
+    # the impl so the test survives the wrapper split.
     fn = None
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+    top = _find_chat_impl_fn(_TREE)
     assert top is not None
     for n in ast.walk(top):
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "stream_chunks":

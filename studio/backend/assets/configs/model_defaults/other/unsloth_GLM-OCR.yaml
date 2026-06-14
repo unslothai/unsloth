@@ -1,0 +1,21 @@
+# Model defaults for unsloth/GLM-OCR
+# Native-transformers mirror of GLM-OCR (model_type "glm_ocr", no custom
+# code). Used by Studio chat as a temporary OCR model swap during
+# scanned-PDF extraction.
+
+model:
+  identifier: unsloth/GLM-OCR
+  display_name: GLM-OCR
+  is_vision: true
+  is_ocr: true
+
+training:
+  max_seq_length: 8192
+  packing: false
+
+inference:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  min_p: 0.0
+  default_max_seq_length: 8192

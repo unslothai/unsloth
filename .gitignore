@@ -235,3 +235,9 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+/.omc
+/studio/frontend/.omc
+/.codex
+/studio/.omc
+/studio/backend/.omc
+*.patch

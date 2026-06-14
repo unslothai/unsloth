@@ -704,17 +704,24 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
+  visionOnly = false,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
+  /** OCR picker: scope hub search to vision models and hide local entries
+   *  whose vision capability is unknown (mmproj-less caches, LM Studio,
+   *  custom folders). The orchestrator still validates at selection time. */
+  visionOnly?: boolean;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
-  const { results, isLoading, isLoadingMore, fetchMore } =
-    useHfModelSearch(debouncedQuery);
+  const { results, isLoading, isLoadingMore, fetchMore } = useHfModelSearch(
+    debouncedQuery,
+    visionOnly ? { task: "image-text-to-text" } : undefined,
+  );
 
   // Lowercased repo ids confirmed GGUF by the store or HF search.
   // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
@@ -966,16 +973,24 @@ export function HubModelPicker({
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
   // downloaded model the user is searching for stays visible.
+  // visionOnly (OCR picker) keeps only known vision-capable local entries:
+  // GGUF repos with an mmproj adapter. Safetensors/LM Studio/folder caches
+  // carry no capability metadata, so they are hidden rather than mislisted.
   const visibleCachedGguf = useMemo(() => {
-    if (!showHfSection) return sortedCachedGguf;
+    let list = sortedCachedGguf;
+    if (visionOnly) list = list.filter((c) => c.has_mmproj);
+    if (!showHfSection) return list;
     const q = normalizeForSearch(debouncedQuery.trim());
-    return sortedCachedGguf.filter((c) => normalizeForSearch(c.repo_id).includes(q));
-  }, [sortedCachedGguf, showHfSection, debouncedQuery]);
+    return list.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+  }, [sortedCachedGguf, showHfSection, debouncedQuery, visionOnly]);
   const visibleCachedModels = useMemo(() => {
+    if (visionOnly) return [];
     if (!showHfSection) return sortedCachedModels;
     const q = normalizeForSearch(debouncedQuery.trim());
     return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
-  }, [sortedCachedModels, showHfSection, debouncedQuery]);
+  }, [sortedCachedModels, showHfSection, debouncedQuery, visionOnly]);
+  const visibleLmStudioModels = visionOnly ? [] : lmStudioModels;
+  const visibleCustomFolderModels = visionOnly ? [] : customFolderModels;
 
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
   // logic must use this (not visibleCachedModels) or the picker can go blank.
@@ -1049,7 +1064,7 @@ export function HubModelPicker({
 
     if (chatOnly) {
       keys.push(
-        ...lmStudioModels.map((model) =>
+        ...visibleLmStudioModels.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
         ),
       );
@@ -1057,7 +1072,7 @@ export function HubModelPicker({
 
     if (!customFoldersCollapsed) {
       keys.push(
-        ...customFolderModels.map((model) =>
+        ...visibleCustomFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
         ),
       );
@@ -1083,6 +1098,7 @@ export function HubModelPicker({
     lmStudioModels,
     recommendedCollapsed,
     showHfSection,
+    visionOnly,
     visibleCachedGguf,
     visibleCachedModelRows,
     visibleRecommendedIds,
@@ -1353,10 +1369,10 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
+          {!showHfSection && chatOnly && visibleLmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
-              {lmStudioModels.map((m) => {
+              {visibleLmStudioModels.map((m) => {
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 const optionKey = makeModelOptionKey("lm-studio", m.id);
                 return (
@@ -1417,7 +1433,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection ? (
+          {!showHfSection && !visionOnly ? (
             <>
               <div className="flex items-center gap-1 px-2.5 py-1.5">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1568,7 +1584,7 @@ export function HubModelPicker({
 
 
               {/* Models from custom folders */}
-              {!customFoldersCollapsed && customFolderModels.map((m) => {
+              {!customFoldersCollapsed && visibleCustomFolderModels.map((m) => {
                 const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf =
                   isGgufFile ||

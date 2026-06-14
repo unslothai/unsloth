@@ -72,6 +72,9 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import { db } from "../db";
+import { isTemporaryOcrModelBusy } from "../utils/ocr-model-lock";
+import { DOCUMENT_TRUST_BOUNDARY } from "../utils/document-extraction";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -523,6 +526,12 @@ function collectImageParts(
   }
 
   return parts;
+}
+
+function messageHasDocumentContext(message: RunMessage): boolean {
+  return collectTextParts(message).some((text) =>
+    /<document(?:\s|>)/i.test(text),
+  );
 }
 
 function normalizeOpenAIReasoningItem(
@@ -1001,6 +1010,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
         }
       }
     }
+    return undefined;
   }
 
   return undefined;
@@ -1124,7 +1134,10 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
         reject(new Error("Aborted"));
         return;
       }
-      if (!useChatRuntimeStore.getState().modelLoading) {
+      if (
+        !useChatRuntimeStore.getState().modelLoading &&
+        !isTemporaryOcrModelBusy()
+      ) {
         resolve();
         return;
       }
@@ -1502,8 +1515,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       };
 
-      // Wait for in-progress model load before inferring.
-      if (runtime.modelLoading) {
+      // Wait for in-progress model load (or a temporary OCR swap) before inferring.
+      if (runtime.modelLoading || isTemporaryOcrModelBusy()) {
         toast.info("Waiting for model to finish loading…");
         try {
           await waitForModelReady(abortSignal);
@@ -1691,6 +1704,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         survivingMessages.push(message);
       }
 
+      const hasDocumentContext = survivingMessages.some(
+        messageHasDocumentContext,
+      );
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
@@ -1737,6 +1753,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
           : "",
         safeSystemPrompt.trim(),
+        hasDocumentContext ? DOCUMENT_TRUST_BOUNDARY : "",
       ]
         .filter(Boolean)
         .join("\n\n");

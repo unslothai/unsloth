@@ -22,6 +22,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { setExtractionBackendLimit } from "../utils/extraction-queue";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
@@ -72,6 +73,7 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
 
 export async function loadModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<LoadModelResponse> {
   const response = await authFetch("/api/inference/load", {
     method: "POST",
@@ -81,12 +83,14 @@ export async function loadModel(
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<ValidateModelResponse> {
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
@@ -96,16 +100,22 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      trust_remote_code: payload.trust_remote_code ?? false,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
-export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
+export async function unloadModel(
+  payload: UnloadModelRequest,
+  signal?: AbortSignal,
+): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    ...(signal ? { signal } : {}),
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -139,6 +149,8 @@ export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
+  /** Repo ships an mmproj vision adapter (known vision-capable). */
+  has_mmproj?: boolean;
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
@@ -794,4 +806,267 @@ export async function generateAudio(
   }
 
   return (await response.json()) as AudioGenerationResponse;
+}
+
+/** Options accepted by {@link extractDocument}. */
+export interface ExtractDocumentOptions {
+  describeImages?: boolean;
+  /** Render full-page visual payloads for scanned PDFs when a vision model is loaded. */
+  useVlmOcr?: boolean;
+  /** Maximum figure/page references to list in extracted document text. */
+  maxFigures?: number;
+  /** Maximum extracted image payloads to keep for vision-capable sends. */
+  maxVisualPayloads?: number;
+  tokenBudget?: number;
+}
+
+/** Streamed progress events emitted by the extraction endpoint. */
+export type ExtractDocumentProgressEvent =
+  | { stage: "parsing" }
+  | { stage: "done" }
+  | {
+      stage: "captioning";
+      current: number;
+      total: number;
+      page: number | null;
+      total_pages: number;
+    };
+
+/**
+ * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive layout-aware
+ * Markdown plus optional vision-model figure captions; 501 means the
+ * extraction extras are not installed server-side. Streams NDJSON progress
+ * events (`onProgress`) before a final `result`/`error` line; an aborted
+ * `AbortSignal` rejects with an "AbortError" DOMException.
+ */
+export function extractDocument(
+  file: File,
+  options: ExtractDocumentOptions = {},
+  signal?: AbortSignal,
+  onProgress?: (event: ExtractDocumentProgressEvent) => void,
+): Promise<import("../types").ExtractedDocument> {
+  const buildForm = (): FormData => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (options.describeImages !== undefined) {
+      form.append("describe_images", options.describeImages ? "true" : "false");
+    }
+    if (options.useVlmOcr !== undefined) {
+      form.append("use_vlm_ocr", options.useVlmOcr ? "true" : "false");
+    }
+    if (options.maxFigures !== undefined) {
+      form.append("max_figures", String(options.maxFigures));
+    }
+    if (options.maxVisualPayloads !== undefined) {
+      form.append("max_visual_payloads", String(options.maxVisualPayloads));
+    }
+    if (options.tokenBudget !== undefined) {
+      form.append("token_budget", String(options.tokenBudget));
+    }
+    return form;
+  };
+
+  type StreamOutcome =
+    | {
+        kind: "result";
+        data: import("../types").ExtractedDocument;
+      }
+    | {
+        kind: "error";
+        status: number;
+        detail: string;
+      }
+    | {
+        kind: "http-error";
+        status: number;
+        body: unknown;
+      };
+
+  const sendOnce = async (): Promise<StreamOutcome> => {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const response = await authFetch("/api/inference/chat/extract-document", {
+      method: "POST",
+      headers: {
+        Accept: "application/x-ndjson",
+      },
+      body: buildForm(),
+      signal,
+    });
+
+    if (!response.ok) {
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return { kind: "http-error", status: response.status, body };
+    }
+
+    if (!response.body) {
+      throw new Error("Response stream unavailable");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const handleLine = (line: string): StreamOutcome | null => {
+      if (!line) return null;
+      let event: { stage?: string; [key: string]: unknown };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return null;
+      }
+      if (event.stage === "result") {
+        return {
+          kind: "result",
+          data: event.data as import("../types").ExtractedDocument,
+        };
+      }
+      if (event.stage === "error") {
+        return {
+          kind: "error",
+          status:
+            typeof event.status_code === "number" ? event.status_code : 500,
+          detail:
+            typeof event.detail === "string" ? event.detail : "Extraction failed",
+        };
+      }
+      onProgress?.(event as ExtractDocumentProgressEvent);
+      return null;
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          const outcome = handleLine(line);
+          if (outcome) return outcome;
+          nl = buffer.indexOf("\n");
+        }
+      }
+      const tail = buffer.trim();
+      if (tail) {
+        const outcome = handleLine(tail);
+        if (outcome) return outcome;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore — already closed
+      }
+    }
+    throw new Error("Extraction stream ended without a result");
+  };
+
+  return (async () => {
+    let outcome: StreamOutcome;
+    try {
+      outcome = await sendOnce();
+    } catch (err) {
+      if (
+        err instanceof DOMException &&
+        (err.name === "AbortError" || err.message === "Aborted")
+      ) {
+        throw err;
+      }
+      throw err;
+    }
+    if (outcome.kind === "result") {
+      return outcome.data;
+    }
+    if (outcome.kind === "error") {
+      throw new Error(outcome.detail);
+    }
+    throw new Error(parseErrorText(outcome.status, outcome.body));
+  })();
+}
+
+/**
+ * Probe server document-extraction support and the loaded model's vision
+ * capability; polled by Chat settings to drive the "describe figures" toggle.
+ */
+export async function getDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const response = await authFetch("/api/inference/chat/document-support", {
+    signal,
+  });
+  return parseJsonOrThrow<import("../types").DocumentSupport>(response);
+}
+
+const DOCUMENT_SUPPORT_TTL_MS = 30_000;
+let documentSupportCache: {
+  value: import("../types").DocumentSupport;
+  expiresAt: number;
+} | null = null;
+let documentSupportInflight: Promise<
+  import("../types").DocumentSupport
+> | null = null;
+let documentSupportCacheGeneration = 0;
+
+function rememberDocumentSupport(
+  value: import("../types").DocumentSupport,
+  generation: number,
+): void {
+  if (generation === documentSupportCacheGeneration) {
+    documentSupportCache = {
+      value,
+      expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
+    };
+    setExtractionBackendLimit(value.max_extract_concurrency);
+  }
+}
+
+export function invalidateDocumentSupportCache(): void {
+  documentSupportCacheGeneration += 1;
+  documentSupportCache = null;
+  documentSupportInflight = null;
+  setExtractionBackendLimit(null);
+}
+
+export async function getCachedDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const now = Date.now();
+  if (documentSupportCache && documentSupportCache.expiresAt > now) {
+    setExtractionBackendLimit(documentSupportCache.value.max_extract_concurrency);
+    return documentSupportCache.value;
+  }
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  if (signal) {
+    const generation = documentSupportCacheGeneration;
+    const value = await getDocumentSupport(signal);
+    if (!signal.aborted && generation === documentSupportCacheGeneration) {
+      rememberDocumentSupport(value, generation);
+    }
+    return value;
+  }
+  if (!documentSupportInflight) {
+    const generation = documentSupportCacheGeneration;
+    documentSupportInflight = getDocumentSupport()
+      .then((value) => {
+        rememberDocumentSupport(value, generation);
+        return value;
+      })
+      .finally(() => {
+        if (generation === documentSupportCacheGeneration) {
+          documentSupportInflight = null;
+        }
+      });
+  }
+  return documentSupportInflight;
 }

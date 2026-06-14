@@ -92,10 +92,21 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/** Ask the backend whether a model is a vision model (GET /api/models/check-vision/{model_name}). */
-export async function checkVisionModel(modelName: string): Promise<boolean> {
-  const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/check-vision/${encoded}`);
+/** Check vision capability via POST /api/models/check-vision so HF tokens never enter URLs. */
+export async function checkVisionModel(
+  modelName: string,
+  hfToken?: string,
+  trustRemoteCode = false,
+): Promise<boolean> {
+  const response = await authFetch("/api/models/check-vision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_name: modelName,
+      hf_token: hfToken || null,
+      trust_remote_code: trustRemoteCode,
+    }),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-vision
     return false;
@@ -122,10 +133,18 @@ export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
   hfToken?: string,
+  trustRemoteCode = false,
 ): Promise<ModelConfigResponse> {
-  const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const response = await authFetch("/api/models/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_name: modelName,
+      hf_token: hfToken || null,
+      trust_remote_code: trustRemoteCode,
+    }),
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

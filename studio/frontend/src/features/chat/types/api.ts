@@ -229,7 +229,10 @@ export type OpenAIImageGenerationCallContentPart = {
 
 export type OpenAIMessageContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } }
+  | {
+      type: "image_url";
+      image_url: { url: string; detail?: "auto" | "low" | "high" };
+    }
   | OpenAIReasoningContentPart
   | OpenAIImageGenerationCallContentPart;
 

@@ -1,0 +1,4 @@
+- User requested checking PR `https://github.com/unslothai/unsloth/pull/5351`.
+- User directive: `fix merge conflicts as well`.
+- User noted context: `unsloth studio recently added RAG as well so look at that`.
+- PENDING: inspect PR `https://github.com/unslothai/unsloth/pull/5351`, resolve merge conflicts, and account for recent Unsloth Studio RAG changes.

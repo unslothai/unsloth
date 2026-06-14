@@ -170,7 +170,10 @@ class ExportBackend:
             model_id = base_model or checkpoint_path
 
             self._audio_type = detect_audio_type(model_id)
-            self.is_vision = not self._audio_type and is_vision_model(model_id)
+            self.is_vision = not self._audio_type and is_vision_model(
+                model_id,
+                trust_remote_code = trust_remote_code,
+            )
 
             if self._audio_type == "csm":
                 from unsloth import FastModel

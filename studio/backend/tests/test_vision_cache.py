@@ -59,7 +59,11 @@ class TestVisionCacheHitMiss:
         """Two calls for the same model invoke the uncached fn once."""
         assert is_vision_model("org/my-vlm") is True
         assert is_vision_model("org/my-vlm") is True
-        mock_uncached.assert_called_once_with("org/my-vlm", None)
+        mock_uncached.assert_called_once_with(
+            "org/my-vlm",
+            None,
+            trust_remote_code = False,
+        )
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
     def test_different_models_each_detected(self, mock_uncached):
@@ -85,7 +89,7 @@ class TestVisionCacheStoresFalse:
         assert is_vision_model("org/text-only") is False
         assert is_vision_model("org/text-only") is False
         mock_uncached.assert_called_once()
-        assert _vision_detection_cache[("org/text-only", None)] is False
+        assert _vision_detection_cache[("org/text-only", None, False)] is False
 
 
 # Subprocess path (transformers 5.x) caching
@@ -106,7 +110,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
 
         mock_subprocess.assert_called_once()
-        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
+        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None, False)] is True
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)

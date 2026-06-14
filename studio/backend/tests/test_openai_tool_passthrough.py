@@ -5,8 +5,10 @@
 
 import os
 import sys
+import base64
 import asyncio
 import json
+from io import BytesIO
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -16,6 +18,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from PIL import Image
 
 from models.inference import (
     ChatCompletionRequest,
@@ -27,6 +30,7 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
+import routes.inference as route
 from routes.inference import (
     _build_chat_request,
     _build_openai_passthrough_body,
@@ -35,6 +39,7 @@ from routes.inference import (
     _effective_max_tokens,
     _extract_content_parts,
     _friendly_error,
+    _openai_chat_completions_impl,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
@@ -595,6 +600,80 @@ class TestChatCompletionRequestToolFields:
         assert req.messages[2].tool_call_id == "call_1"
 
 
+def _png_data_url() -> str:
+    img = Image.new("RGB", (2, 2), (0, 255, 0))
+    buf = BytesIO()
+    img.save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+class TestOpenAIPassthroughImageSafety:
+    def test_standard_path_image_decode_uses_size_guard(self, monkeypatch):
+        """The standard-path decode helper shares the GGUF/Anthropic byte/pixel guards."""
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS", 8)
+        with pytest.raises(HTTPException) as exc:
+            route._decode_guarded_chat_image("A" * 100)
+        assert exc.value.status_code == 413
+
+    def test_standard_path_image_decode_returns_pil_image(self):
+        png_b64 = _png_data_url().split(",", 1)[1]
+        image = route._decode_guarded_chat_image(png_b64)
+        assert image.size == (2, 2)
+
+    def test_rejects_too_many_content_part_images(self, monkeypatch):
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGES", 1)
+        data_url = _png_data_url()
+        req = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = True)
+
+        assert exc.value.status_code == 413
+
+    def test_rejects_passthrough_image_when_model_is_text_only(self):
+        req = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": _png_data_url()}},
+                    ],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = False)
+
+        assert exc.value.status_code == 400
+
+    def test_top_level_image_uses_size_guard(self, monkeypatch):
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BYTES", 1)
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS", 10_000)
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "see image"}],
+            image_base64 = _png_data_url().split(",", 1)[1],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = True)
+
+        assert exc.value.status_code == 413
+
+
 # =====================================================================
 # anthropic_tool_choice_to_openai — pure translation helper
 # =====================================================================
@@ -899,7 +978,7 @@ class TestOpenAICompatibilityHelpers:
 
         assert system_prompt == "original system\n\ndeveloper rules"
         assert chat_messages == [{"role": "user", "content": "hi"}]
-        assert image_b64 is None
+        assert image_b64 == []
 
 
 # =====================================================================
@@ -1224,9 +1303,7 @@ class TestGgufVisionToolRouting:
             ],
         )
 
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         self._consume_response(response)
 
         assert "kwargs" in captured
@@ -1267,9 +1344,7 @@ class TestGgufVisionToolRouting:
             messages = [{"role": "user", "content": "search once"}],
         )
 
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
@@ -1303,13 +1378,7 @@ class TestGgufVisionToolRouting:
         )
 
         with pytest.raises(HTTPException) as exc:
-            self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
-            )
+            self._drive(_openai_chat_completions_impl(payload, self._Request()))
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
 
@@ -1345,9 +1414,7 @@ class TestGgufVisionToolRouting:
             ],
         )
 
-        self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
+        self._drive(_openai_chat_completions_impl(payload, self._Request()))
 
         assert captured["messages"] == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
@@ -1395,9 +1462,7 @@ class TestGgufVisionToolRouting:
             seed = seed,
         )
 
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
+        response = self._drive(_openai_chat_completions_impl(payload, self._Request()))
         body = json.loads(response.body)
 
         assert seen_seeds == expected
