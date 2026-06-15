@@ -3774,10 +3774,7 @@ async def openai_chat_completions(
     # OpenAI compat), so payload.model is only a fallback label here.
     monitor_id = None
 
-    async def _monitored_generate_audio(
-        model_label: str,
-        context_length: Optional[int] = None,
-    ):
+    async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
         tts_monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(

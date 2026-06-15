@@ -1522,7 +1522,11 @@ class TestApiMonitorAudioInput:
                     }
                 }
 
-            async def fake_generate_audio(_payload, _request, current_subject = None):
+            async def fake_generate_audio(
+                _payload,
+                _request,
+                current_subject = None,
+            ):
                 return inf_mod.JSONResponse(
                     content = {
                         "choices": [
@@ -1576,7 +1580,11 @@ class TestApiMonitorAudioInput:
         async def _run():
             import routes.inference as inf_mod
 
-            async def fake_generate_audio(_payload, _request, current_subject = None):
+            async def fake_generate_audio(
+                _payload,
+                _request,
+                current_subject = None,
+            ):
                 return inf_mod.JSONResponse(
                     content = {
                         "choices": [
