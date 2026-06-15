@@ -150,15 +150,19 @@ def run(args):
     # Save model
     if args.save_model:
         # If args.quantization is a list, save once per quantization method
-        if args.save_gguf:
+        # Enter the GGUF branch when saving *or* pushing GGUF, so --push_gguf
+        # works even when --save_gguf is omitted (the local save is guarded
+        # separately below).
+        if args.save_gguf or args.push_gguf:
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:
-                    print(f"Saving model with quantization method: {quantization_method}")
-                    model.save_pretrained_gguf(
-                        args.save_path,
-                        tokenizer,
-                        quantization_method = quantization_method,
-                    )
+                    if args.save_gguf:
+                        print(f"Saving model with quantization method: {quantization_method}")
+                        model.save_pretrained_gguf(
+                            args.save_path,
+                            tokenizer,
+                            quantization_method = quantization_method,
+                        )
                     if args.push_model or args.push_gguf:
                         model.push_to_hub_gguf(
                             args.hub_path,
@@ -167,12 +171,13 @@ def run(args):
                             token = args.hub_token,
                         )
             else:
-                print(f"Saving model with quantization method: {args.quantization}")
-                model.save_pretrained_gguf(
-                    args.save_path,
-                    tokenizer,
-                    quantization_method = args.quantization,
-                )
+                if args.save_gguf:
+                    print(f"Saving model with quantization method: {args.quantization}")
+                    model.save_pretrained_gguf(
+                        args.save_path,
+                        tokenizer,
+                        quantization_method = args.quantization,
+                    )
                 if args.push_model or args.push_gguf:
                     model.push_to_hub_gguf(
                         args.hub_path,
