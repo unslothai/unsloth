@@ -1194,6 +1194,23 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
         return
 
 
+async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
+    """Close ``resp`` on client disconnect; sets ``cancel_event`` first so
+    the streamer's RemoteProtocolError handler treats it as cancellation.
+    Catches aborts the in-loop /cancel check misses during prefill. #5692.
+    """
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        cancel_event.set()
+        try:
+            await resp.aclose()
+        except Exception as e:
+            logger.debug("Failed to close response on disconnect: %s", e)
+    except asyncio.CancelledError:
+        return
+
+
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
 # where the artifact tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
@@ -2302,7 +2319,7 @@ async def generate_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
         },
     )
 
@@ -3696,7 +3713,7 @@ async def openai_chat_completions(
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
+                        "Connection": "close",
                         "X-Accel-Buffering": "no",
                     },
                 )
@@ -4117,7 +4134,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4260,7 +4277,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4664,7 +4681,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4865,7 +4882,7 @@ async def openai_chat_completions(
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -5120,8 +5137,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
             resp = None
             bytes_iter = None
+            disconnect_event = threading.Event()
+            disconnect_watcher = None
             try:
-                req = client.build_request("POST", target_url, json = body)
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
                 if resp is None:
@@ -5130,10 +5151,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
                     raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, disconnect_event)
+                )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
                 async for chunk in _aiter_llama_stream_items(
                     bytes_iter,
+                    cancel_event = disconnect_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
@@ -5144,19 +5169,33 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
-                if buffer:
+                if not disconnect_event.is_set() and buffer:
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
                         yield out + b"\n\n"
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+                if not disconnect_event.is_set():
+                    logger.error("openai_completions stream error: %s", e)
+                    error_chunk = _openai_stream_error_chunk(e)
+                    yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                    return
             except Exception as e:
+                if disconnect_event.is_set():
+                    return
                 logger.error("openai_completions stream error: %s", e)
                 error_chunk = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                 return
             finally:
+                if disconnect_watcher is not None:
+                    disconnect_watcher.cancel()
+                    try:
+                        await disconnect_watcher
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if bytes_iter is not None:
                     try:
                         await bytes_iter.aclose()
@@ -6063,8 +6102,12 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
+        disconnect_event = threading.Event()
+        disconnect_watcher = None
         try:
-            req = client.build_request("POST", target_url, json = body)
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
@@ -6117,9 +6160,13 @@ async def _responses_stream(
                 )
                 return
 
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, disconnect_event)
+            )
             lines_iter = resp.aiter_lines()
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
+                cancel_event = disconnect_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
@@ -6240,7 +6287,18 @@ async def _responses_stream(
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+            if not disconnect_event.is_set():
+                logger.error("responses stream error: %s", e)
+                status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+                yield _sse(
+                    "response.failed",
+                    _failed_response_payload(e, status_code),
+                )
+                return
         except Exception as e:
+            if disconnect_event.is_set():
+                return
             logger.error("responses stream error: %s", e)
             status_code = 400 if _classify_llama_generation_error(e) is not None else 500
             yield _sse(
@@ -6249,6 +6307,12 @@ async def _responses_stream(
             )
             return
         finally:
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -6263,6 +6327,9 @@ async def _responses_stream(
                 await client.aclose()
             except Exception:
                 pass
+
+        if disconnect_event.is_set():
+            return
 
         final_reasoning, final_visible = extractor.finish()
         if final_reasoning:
@@ -6470,7 +6537,7 @@ async def _responses_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7071,7 +7138,7 @@ async def _anthropic_tool_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7138,7 +7205,7 @@ async def _anthropic_plain_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7472,8 +7539,11 @@ async def _anthropic_passthrough_stream(
         resp = None
         lines_iter = None
         cancel_watcher = None
+        disconnect_watcher = None
         try:
-            req = client.build_request("POST", target_url, json = body)
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             resp = await _send_stream_with_preheader_cancel(
                 client, req, cancel_event, request = request
@@ -7502,11 +7572,12 @@ async def _anthropic_passthrough_stream(
                 )
                 return
 
-            # See _openai_passthrough_stream for rationale: aiter_lines()
-            # blocks during llama-server prefill, so the in-loop cancel
-            # check is unreachable until the first SSE chunk arrives.
-            # The watcher closes `resp` on cancel, raising in aiter_lines.
+            # Watchers unblock aiter_lines() during prefill, before in-loop
+            # cancel/disconnect checks can run.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, cancel_event)
+            )
             lines_iter = resp.aiter_lines()
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
@@ -7555,6 +7626,12 @@ async def _anthropic_passthrough_stream(
                     await cancel_watcher
                 except (asyncio.CancelledError, Exception):
                     pass
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -7579,7 +7656,7 @@ async def _anthropic_passthrough_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7994,7 +8071,9 @@ async def _openai_passthrough_stream(
         )
         while True:
             try:
-                req = client.build_request("POST", target_url, json = body)
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -8064,13 +8143,12 @@ async def _openai_passthrough_stream(
             # save resp.aiter_lines() so the finally block can aclose() it on
             # our task. See that function for full rationale.
             lines_iter = None
-            # During llama-server prefill, `aiter_lines()` blocks until the
-            # first SSE chunk arrives. The in-loop `cancel_event` check can't
-            # fire until then -- the exact proxy/Colab scenario the cancel POST
-            # recovers from. Run a tiny watcher that closes `resp` as soon as
-            # cancel fires, unblocking the iterator with a RemoteProtocolError
-            # caught in the except clause below.
+            # Watchers unblock aiter_lines() during prefill, before in-loop
+            # cancel/disconnect checks can run.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, cancel_event)
+            )
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
@@ -8101,6 +8179,8 @@ async def _openai_passthrough_stream(
                 if not cancel_event.is_set():
                     raise
             except Exception as e:
+                if cancel_event.is_set():
+                    return
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
                 err = _openai_stream_error_chunk(e)
@@ -8109,6 +8189,11 @@ async def _openai_passthrough_stream(
                 cancel_watcher.cancel()
                 try:
                     await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
                 except (asyncio.CancelledError, Exception):
                     pass
                 if lines_iter is not None:
@@ -8131,7 +8216,7 @@ async def _openai_passthrough_stream(
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
