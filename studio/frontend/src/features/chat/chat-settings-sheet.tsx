@@ -1802,12 +1802,13 @@ function BypassPermissionsToggle() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
+              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
               onClick={() => {
                 setBypassPermissions(true);
                 setDialogOpen(false);
               }}
             >
-              I understand, enable
+              I understand
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
