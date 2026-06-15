@@ -311,7 +311,6 @@ with sync_playwright() as p:
         except Exception:
             if allowed_cancel_500:
                 expected_probe_cancel_500s[0] = max(0, expected_probe_cancel_500s[0] - 1)
-            pass
         try:
             expect(send_btn).to_be_visible(timeout = 15_000)
         except Exception:
