@@ -10,12 +10,12 @@ from typing import Callable, Optional
 
 import typer
 
-# Claude Code brand orange — used so the security warning stands out
-# in a crowded terminal.
+# Orange so the security warning stands out in a crowded terminal.
 _PROMPT_FG = (217, 119, 87)
 
-# Loopback aliases. Any other bind address (0.0.0.0, ::, a specific
-# LAN IP, a hostname, ...) is treated as network-reachable.
+# Loopback aliases; any other bind address is treated as network-reachable.
+# Mirrored in studio/backend/utils/host_policy.py (kept separate because the
+# backend is self-contained); keep the two in sync.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
@@ -47,14 +47,11 @@ def resolve_tool_policy(
     """Return the resolved server-side tool policy.
 
     Args:
-        host: The bind address (e.g. "127.0.0.1", "0.0.0.0", or a
-              specific network IP).
-        flag: Tri-state from `--enable-tools/--disable-tools`
-              (None when neither was passed).
-        yes:  True if the operator passed `--yes/-y`.
-        silent: True if the operator passed `--silent/-q`.
-        prompt: Callable used for the network-bind + on confirmation
-                (injected for testability; defaults to ``typer.confirm``).
+        host: The bind address.
+        flag: Tri-state from `--enable-tools/--disable-tools` (None if neither passed).
+        yes: True if `--yes/-y` was passed.
+        silent: True if `--silent/-q` was passed.
+        prompt: Confirmation callable (injected for testability).
 
     Raises:
         typer.Exit: when the operator declines the confirmation.

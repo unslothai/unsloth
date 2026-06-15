@@ -5,8 +5,14 @@
 Pydantic schemas for Training API
 """
 
+import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
+
+
+# ASCII integer, optional single sign. Rejects "++512" and Unicode digits
+# ("５１２") that slip through str.isdigit() + int().
+_INT_RE = re.compile(r"[+-]?[0-9]+")
 
 
 _MAX_BATCH_SIZE = 4096
@@ -18,6 +24,46 @@ _MAX_SEQ_LENGTH = 2_000_000
 _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
+_MIN_VISION_IMAGE_SIZE = 256
+# 2048 is the highest most llms stay stable at
+_MAX_VISION_IMAGE_SIZE = 2048
+
+
+class S3Config(BaseModel):
+    """S3 bucket configuration for loading datasets from AWS S3"""
+
+    # Accept both snake_case and the frontend's camelCase field names.
+    model_config = ConfigDict(populate_by_name = True)
+
+    bucket: str = Field(..., description = "S3 bucket name")
+    region: str = Field("us-east-1", description = "AWS region")
+    prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
+    access_key_id: Optional[str] = Field(
+        None,
+        alias = "accessKeyId",
+        description = "AWS access key ID (optional if using IAM role)",
+    )
+    secret_access_key: Optional[str] = Field(
+        None,
+        alias = "secretAccessKey",
+        description = "AWS secret access key (optional if using IAM role)",
+    )
+    use_iam_role: bool = Field(
+        False,
+        alias = "useIamRole",
+        description = "Use IAM role credentials instead of access keys",
+    )
+
+    @model_validator(mode = "after")
+    def _check_credentials(self) -> "S3Config":
+        # Require either IAM role auth or a full key pair so credentials are
+        # never half-configured.
+        if not self.use_iam_role and not (self.access_key_id and self.secret_access_key):
+            raise ValueError(
+                "s3_config requires either use_iam_role=True or both "
+                "access_key_id and secret_access_key"
+            )
+        return self
 
 
 def _parse_lr(v: Any) -> float:
@@ -31,9 +77,7 @@ def _parse_lr(v: Any) -> float:
     except (TypeError, ValueError):
         raise ValueError(f"learning_rate must be parseable as float (got {v!r})")
     if not (lr > 0.0):
-        raise ValueError(
-            f"learning_rate must be > 0 (got {lr!r}); " "typical range is 1e-6 .. 1e-3"
-        )
+        raise ValueError(f"learning_rate must be > 0 (got {lr!r}); typical range is 1e-6 .. 1e-3")
     if lr >= _MAX_LR_VALUE:
         raise ValueError(
             f"learning_rate must be < 1.0 (got {lr!r}); "
@@ -49,24 +93,24 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
-    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = (
-        Field(
-            ...,
-            description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
-        )
+    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
+        ...,
+        description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description = "Maximum sequence length")
+    vision_image_size: Optional[int] = Field(
+        None,
+        description = "Optional maximum image side length for VLM training. Null uses model default.",
+    )
     trust_remote_code: bool = Field(
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
 
     # Dataset parameters
-    hf_dataset: Optional[str] = Field(
-        None, description = "HuggingFace dataset identifier"
-    )
+    hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")
     local_datasets: List[str] = Field(
         default_factory = list, description = "List of local dataset paths"
     )
@@ -76,12 +120,8 @@ class TrainingStartRequest(BaseModel):
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
-    eval_split: Optional[str] = Field(
-        None, description = "Eval split name. None = auto-detect"
-    )
-    eval_steps: float = Field(
-        0.00, description = "Fraction of total steps between evals (0-1)"
-    )
+    eval_split: Optional[str] = Field(None, description = "Eval split name. None = auto-detect")
+    eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
         None, description = "Inclusive start row index for dataset slicing"
     )
@@ -110,9 +150,7 @@ class TrainingStartRequest(BaseModel):
         if v is None:
             raise ValueError("batch_size is required")
         if v < 1 or v > _MAX_BATCH_SIZE:
-            raise ValueError(
-                f"batch_size must be in [1, {_MAX_BATCH_SIZE}] (got {v!r})"
-            )
+            raise ValueError(f"batch_size must be in [1, {_MAX_BATCH_SIZE}] (got {v!r})")
         return v
 
     @field_validator("gradient_accumulation_steps")
@@ -122,16 +160,14 @@ class TrainingStartRequest(BaseModel):
             return 1
         if v < 1 or v > _MAX_GRAD_ACCUM:
             raise ValueError(
-                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] "
-                f"(got {v!r})"
+                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] " f"(got {v!r})"
             )
         return v
 
     @field_validator("num_epochs")
     @classmethod
     def _check_num_epochs(cls, v: int) -> int:
-        # 0 is a sentinel meaning "use max_steps instead"; the frontend's
-        # steps-vs-epochs toggle sends it.
+        # 0 is a sentinel for "use max_steps instead" (frontend toggle).
         if v is None:
             return 1
         if v < 0 or v > _MAX_EPOCHS:
@@ -145,19 +181,48 @@ class TrainingStartRequest(BaseModel):
         if v is None:
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
-            raise ValueError(
-                f"max_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})"
-            )
+            raise ValueError(f"max_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})")
         return v
 
     @field_validator("max_seq_length")
     @classmethod
     def _check_max_seq_length(cls, v: int) -> int:
         if v is None or v < 1 or v > _MAX_SEQ_LENGTH:
-            raise ValueError(
-                f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})"
-            )
+            raise ValueError(f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})")
         return v
+
+    @field_validator("vision_image_size", mode = "before")
+    @classmethod
+    def _check_vision_image_size(cls, v: Any) -> Optional[int]:
+        # mode="before" sees True/False as bool (not 1/0) for a precise error.
+        if v is None:
+            return v
+        if isinstance(v, bool):
+            raise ValueError("vision_image_size must be an integer or null")
+        if isinstance(v, int):
+            coerced = v
+        elif isinstance(v, str) and _INT_RE.fullmatch(v.strip()):
+            coerced = int(v.strip())
+        elif isinstance(v, float) and v.is_integer():
+            coerced = int(v)
+        else:
+            # numpy ints / Integral subclasses, without a hard numpy import.
+            try:
+                import numbers
+                if isinstance(v, numbers.Integral):
+                    coerced = int(v)
+                elif isinstance(v, numbers.Real) and float(v).is_integer():
+                    coerced = int(v)
+                else:
+                    raise TypeError
+            except Exception:
+                raise ValueError("vision_image_size must be an integer or null")
+        if coerced < _MIN_VISION_IMAGE_SIZE or coerced > _MAX_VISION_IMAGE_SIZE:
+            raise ValueError(
+                f"vision_image_size must be in [{_MIN_VISION_IMAGE_SIZE}, "
+                f"{_MAX_VISION_IMAGE_SIZE}] (got {coerced!r})"
+            )
+        return coerced
 
     @field_validator("warmup_steps")
     @classmethod
@@ -166,8 +231,7 @@ class TrainingStartRequest(BaseModel):
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
             raise ValueError(
-                f"warmup_steps must be a non-negative int <= {_MAX_STEPS} "
-                f"(got {v!r})"
+                f"warmup_steps must be a non-negative int <= {_MAX_STEPS} " f"(got {v!r})"
             )
         return v
 
@@ -203,9 +267,7 @@ class TrainingStartRequest(BaseModel):
         except (TypeError, ValueError):
             raise ValueError(f"weight_decay must be a number (got {v!r})")
         if wd < 0 or wd > 10.0:
-            raise ValueError(
-                f"weight_decay must be in [0, 10] (got {wd!r}); typical 0..0.1"
-            )
+            raise ValueError(f"weight_decay must be in [0, 10] (got {wd!r}); typical 0..0.1")
         return wd
 
     @field_validator("lora_r")
@@ -223,9 +285,7 @@ class TrainingStartRequest(BaseModel):
         if v is None:
             return 16
         if v < 1 or v > _MAX_LORA_ALPHA:
-            raise ValueError(
-                f"lora_alpha must be in [1, {_MAX_LORA_ALPHA}] (got {v!r})"
-            )
+            raise ValueError(f"lora_alpha must be in [1, {_MAX_LORA_ALPHA}] (got {v!r})")
         return v
 
     @field_validator("lora_dropout")
@@ -254,9 +314,7 @@ class TrainingStartRequest(BaseModel):
     num_epochs: int = Field(1, description = "Number of training epochs")
     learning_rate: str = Field("2e-4", description = "Learning rate")
     batch_size: int = Field(1, description = "Batch size")
-    gradient_accumulation_steps: int = Field(
-        1, description = "Gradient accumulation steps"
-    )
+    gradient_accumulation_steps: int = Field(1, description = "Gradient accumulation steps")
     warmup_steps: Optional[int] = Field(None, description = "Warmup steps")
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
@@ -267,7 +325,37 @@ class TrainingStartRequest(BaseModel):
         ge = 0,
         description = "Global gradient norm clipping threshold. Set 0 to disable.",
     )
-    random_seed: int = Field(42, description = "Random seed")
+    max_grad_value: Optional[float] = Field(
+        None,
+        ge = 0,
+        description = (
+            "MLX-only elementwise gradient value clipping threshold. "
+            "If unset, MLX uses its runtime default."
+        ),
+    )
+    max_grad_leaf_norm: Optional[float] = Field(
+        None,
+        ge = 0,
+        description = (
+            "MLX-only proportional per-parameter gradient norm cap. "
+            "Preserves each tensor's gradient direction without global norm "
+            "clipping's memory overhead."
+        ),
+    )
+    cast_norm_output_to_input_dtype: bool = Field(
+        True,
+        description = (
+            "MLX-only: keep norm parameters in fp32 but cast norm outputs "
+            "back to the incoming activation dtype."
+        ),
+    )
+    random_seed: int = Field(
+        3407,
+        description = (
+            "Random seed; matches the Studio backend / MLX worker default "
+            "and unsloth's historical recommended value."
+        ),
+    )
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
@@ -284,31 +372,19 @@ class TrainingStartRequest(BaseModel):
     lora_r: int = Field(16, description = "LoRA rank")
     lora_alpha: int = Field(16, description = "LoRA alpha")
     lora_dropout: float = Field(0.0, description = "LoRA dropout")
-    target_modules: List[str] = Field(
-        default_factory = list, description = "Target modules for LoRA"
-    )
-    gradient_checkpointing: str = Field(
-        "", description = "Gradient checkpointing setting"
-    )
+    target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
+    gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     train_on_completions: bool = Field(False, description = "Train on completions only")
 
     # Vision-specific LoRA parameters
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
-    finetune_language_layers: bool = Field(
-        False, description = "Finetune language layers"
-    )
-    finetune_attention_modules: bool = Field(
-        False, description = "Finetune attention modules"
-    )
+    finetune_language_layers: bool = Field(False, description = "Finetune language layers")
+    finetune_attention_modules: bool = Field(False, description = "Finetune attention modules")
     finetune_mlp_modules: bool = Field(False, description = "Finetune MLP modules")
-    is_dataset_image: bool = Field(
-        False, description = "Whether the dataset contains image data"
-    )
-    is_dataset_audio: bool = Field(
-        False, description = "Whether the dataset contains audio data"
-    )
+    is_dataset_image: bool = Field(False, description = "Whether the dataset contains image data")
+    is_dataset_audio: bool = Field(False, description = "Whether the dataset contains audio data")
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
@@ -329,14 +405,17 @@ class TrainingStartRequest(BaseModel):
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
     )
 
+    # S3 dataset source configuration
+    s3_config: Optional[S3Config] = Field(
+        None,
+        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
+    )
+
     @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
-        # num_epochs and max_steps each accept 0 as a "use the other one"
-        # sentinel. If both resolve to 0 there's nothing to train against.
+        # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
-            raise ValueError(
-                "Either num_epochs or max_steps must be > 0; both cannot be 0."
-            )
+            raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
         return self
 
 
@@ -363,9 +442,7 @@ class TrainingStatus(BaseModel):
         "error",
         "stopped",
     ] = Field(..., description = "Current phase of training pipeline")
-    is_training_running: bool = Field(
-        ..., description = "True if training loop is actively running"
-    )
+    is_training_running: bool = Field(..., description = "True if training loop is actively running")
     eval_enabled: bool = Field(
         False,
         description = "True if evaluation dataset is configured for this training run",
@@ -390,9 +467,7 @@ class TrainingProgress(BaseModel):
     total_steps: int = Field(..., description = "Total training steps")
     loss: Optional[float] = Field(None, description = "Current loss value")
     learning_rate: Optional[float] = Field(None, description = "Current learning rate")
-    progress_percent: float = Field(
-        ..., description = "Progress percentage (0.0 to 100.0)"
-    )
+    progress_percent: float = Field(..., description = "Progress percentage (0.0 to 100.0)")
     epoch: Optional[float] = Field(None, description = "Current epoch")
     elapsed_seconds: Optional[float] = Field(
         None, description = "Time elapsed since training started"
@@ -401,9 +476,7 @@ class TrainingProgress(BaseModel):
     grad_norm: Optional[float] = Field(
         None, description = "L2 norm of gradients, computed before gradient clipping"
     )
-    num_tokens: Optional[int] = Field(
-        None, description = "Total number of tokens processed so far"
-    )
+    num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )

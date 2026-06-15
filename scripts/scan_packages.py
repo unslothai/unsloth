@@ -56,27 +56,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
 # Severity
-# ---------------------------------------------------------------------------
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 
 SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
-# Hard pin-blocks for publicly confirmed malicious PyPI versions.
-# Source: Socket.dev 2026-05-12 disclosure (Mini Shai-Hulud May-12 wave) and
-# earlier Semgrep / Endor reports for the `lightning` entries.
+# Hard pin-blocks for confirmed malicious PyPI versions (Socket.dev 2026-05-12
+# Mini Shai-Hulud wave; earlier Semgrep/Endor reports for `lightning`).
 BLOCKED_PYPI_VERSIONS: dict[str, set[str]] = {
     "guardrails-ai": {"0.10.1"},
     "mistralai": {"2.4.6"},
     "lightning": {"2.6.2", "2.6.3"},
 }
 
-# ---------------------------------------------------------------------------
 # Pattern definitions
-# ---------------------------------------------------------------------------
 
 # Subprocess / OS exec patterns
 RE_SUBPROCESS = re.compile(
@@ -86,8 +81,7 @@ RE_SUBPROCESS = re.compile(
 
 # Encoding / obfuscation
 RE_BASE64 = re.compile(
-    r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b"
-    r"|\bcodecs\s*\.\s*decode\b",
+    r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b|\bcodecs\s*\.\s*decode\b",
 )
 
 # exec / eval
@@ -299,9 +293,7 @@ RE_CRYPTO_THEFT = re.compile(
 RE_PTH_IMPORT = re.compile(r"^\s*import\s+", re.MULTILINE)
 
 # openssl CLI invocations via subprocess (encrypted exfiltration)
-RE_OPENSSL_CLI = re.compile(
-    r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b"
-)
+RE_OPENSSL_CLI = re.compile(r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b")
 
 # Write to /tmp then execute (staged dropper)
 RE_TEMP_EXEC = re.compile(
@@ -315,10 +307,8 @@ RE_C2_POLLING = re.compile(
     re.DOTALL,
 )
 
-# Developer-tool persistence hooks. The PyTorch Lightning 2.6.x compromise
-# planted SessionStart hooks into Claude Code, VS Code tasks, and Cursor
-# settings so the payload re-attached on every editor open. Catches any
-# package writing into a known dev-tool config that supports auto-run.
+# Developer-tool persistence hooks. Lightning 2.6.x planted SessionStart hooks
+# into Claude Code / VS Code / Cursor so the payload re-attached on editor open.
 RE_DEV_TOOL_HIJACK = re.compile(
     r"\.claude/settings\.json"
     r"|\.cursor/.*hooks"
@@ -329,9 +319,8 @@ RE_DEV_TOOL_HIJACK = re.compile(
     r"|\bautomator\b.*\.workflow\b",
 )
 
-# Hard-coded credential / API-token regexes embedded in source. Packages
-# that ship regexes for OTHER people's secrets are nearly always
-# stealers (litellm 1.82.7, elementary-data 0.23.3, Shai-Hulud).
+# Hard-coded credential / API-token regexes embedded in source. Packages that
+# ship regexes for OTHER people's secrets are nearly always stealers.
 RE_TOKEN_REGEX = re.compile(
     r"\bgh[psoru]_[A-Za-z0-9_]{20,}"  # GitHub PAT/OAuth/etc.
     r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
@@ -345,20 +334,16 @@ RE_TOKEN_REGEX = re.compile(
     r"|\bglpat-[0-9A-Za-z_-]{20,}",  # GitLab PAT
 )
 
-# Mini Shai-Hulud May-12 2026 wave indicators. The dropper artifact name
-# `transformers.pyz` is high-confidence (no legit PyPI package ships a `.pyz`
-# named after `transformers`); the host + slogans are CRITICAL.
+# Mini Shai-Hulud May-12 2026 wave indicators. `transformers.pyz` dropper name
+# is high-confidence; the host + slogans are CRITICAL.
 RE_MAY12_IOC = re.compile(
     r"(git-tanstack\.com|/tmp/transformers\.pyz|transformers\.pyz"
     r"|With Love TeamPCP|We've been online over 2 hours)",
     re.IGNORECASE,
 )
 
-# JavaScript-side obfuscation. The npm chalk/debug compromise and the
-# Lightning router_runtime.js use the same minifier-style hex-var name
-# pattern; a bundle full of `_0x1f2e3d` identifiers is a near-universal
-# tell for a malicious npm payload (and very rare in legit minified code
-# that ships in PyPI wheels).
+# JavaScript-side obfuscation. A bundle full of `_0x1f2e3d` hex-var identifiers
+# is a near-universal tell for a malicious npm payload, rare in legit wheels.
 RE_JS_OBFUSCATION = re.compile(
     r"_0x[a-f0-9]{4,6}\s*=\s*function"
     r"|var\s+_0x[a-f0-9]{4,6}\b"
@@ -366,9 +351,8 @@ RE_JS_OBFUSCATION = re.compile(
     r"|String\.fromCharCode\s*\(\s*\d+\s*(?:,\s*\d+\s*){10,}\)",
 )
 
-# Web3 / wallet-hijack pattern. The Qix npm phish overrode fetch /
-# XMLHttpRequest and attached a `window.ethereum` listener that
-# Levenshtein-swapped recipient addresses on the way to the network.
+# Web3 / wallet-hijack pattern. The Qix npm phish overrode fetch/XMLHttpRequest
+# and swapped recipient addresses via a `window.ethereum` listener.
 RE_WEB3_HIJACK = re.compile(
     r"\bwindow\.ethereum\b"
     r"|\bweb3\.eth\.\w+\s*\("
@@ -377,11 +361,9 @@ RE_WEB3_HIJACK = re.compile(
     r"|TronWeb|solanaWeb3",
 )
 
-# Self-propagating supply-chain worms (Shai-Hulud, ForceMemo) plant
-# their own GitHub workflow in every repo they can reach, and lean on
-# trufflehog/gitleaks for credential discovery. The combo of any of
-# these strings inside a *package payload* is overwhelming evidence of
-# repo-takeover intent.
+# Self-propagating worms (Shai-Hulud, ForceMemo) plant their own GitHub workflow
+# in every repo they reach and use trufflehog/gitleaks for credential discovery.
+# Any of these strings in a package payload is strong repo-takeover evidence.
 RE_WORKFLOW_INJECT = re.compile(
     r"\.github/workflows/[^\"\']*\.ya?ml"
     r"|\btrufflehog\b|\bgitleaks\b"
@@ -391,9 +373,8 @@ RE_WORKFLOW_INJECT = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Shell-side patterns specific to install.sh / postinstall scripts that
-# pipe remote code into a shell. `curl ... | sh` and friends are the
-# canonical npm postinstall dropper.
+# install.sh / postinstall scripts piping remote code into a shell.
+# `curl ... | sh` is the canonical npm postinstall dropper.
 RE_SHELL_DROPPER = re.compile(
     r"\bcurl\b[^\n|]*\|\s*(?:sh|bash|zsh)\b"
     r"|\bwget\b[^\n|]*-O-\s*\|\s*(?:sh|bash|zsh)\b"
@@ -403,9 +384,6 @@ RE_SHELL_DROPPER = re.compile(
 )
 
 
-# ---------------------------------------------------------------------------
-# Finding dataclass
-# ---------------------------------------------------------------------------
 @dataclass
 class Finding:
     severity: str
@@ -415,9 +393,7 @@ class Finding:
     evidence: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Checkers
-# ---------------------------------------------------------------------------
 
 
 def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
@@ -428,7 +404,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     """
     findings = []
 
-    # Only care about .pth files that have import lines (executable)
+    # Only .pth files with import lines are executable
     import_lines = [line for line in content.splitlines() if RE_PTH_IMPORT.match(line)]
     if not import_lines:
         return findings  # Pure path entries, inert
@@ -473,7 +449,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
                 )
             )
 
-    # Large base64 blob (special handling for blob size)
+    # Large base64 blob
     if RE_LARGE_BLOB.search(content):
         blob = RE_LARGE_BLOB.search(content).group()
         findings.append(
@@ -486,7 +462,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
-    # Catch-all: any import line at all in .pth (if nothing else triggered)
+    # Catch-all: any import line in .pth if nothing else triggered
     if not findings and import_lines:
         evidence = "\n".join(import_lines[:5])
         if len(import_lines) > 5:
@@ -524,7 +500,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     is_setup = basename in ("setup.py", "setup.cfg")
     is_init = basename == "__init__.py"
 
-    # Pre-compute all pattern matches
+    # Pre-compute pattern matches
     has_network = bool(RE_NETWORK.search(content))
     has_subprocess = bool(RE_SUBPROCESS.search(content))
     has_base64 = bool(RE_BASE64.search(content))
@@ -549,9 +525,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_c2_polling = bool(RE_C2_POLLING.search(content))
     has_may12_ioc = bool(RE_MAY12_IOC.search(content))
 
-    # ---------------------------------------------------------------
     # CRITICAL: combination patterns that strongly indicate malice
-    # ---------------------------------------------------------------
 
     # base64 decode + subprocess execution (staged payload)
     if has_base64 and has_subprocess:
@@ -743,9 +717,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
-    # ---------------------------------------------------------------
     # HIGH: single strong signals or weaker combinations
-    # ---------------------------------------------------------------
 
     # Obfuscated payload: base64 + exec/eval + large blob
     if has_base64 and has_exec_eval and has_blob:
@@ -882,9 +854,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 )
             )
 
-    # ---------------------------------------------------------------
     # MEDIUM: standalone signals (informational, may be legitimate)
-    # ---------------------------------------------------------------
 
     # base64 + exec/eval without blob
     if has_base64 and has_exec_eval and not has_blob:
@@ -962,7 +932,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
-def _extract_evidence(content: str, pattern: re.Pattern, max_matches: int = 3) -> str:
+def _extract_evidence(
+    content: str,
+    pattern: re.Pattern,
+    max_matches: int = 3,
+) -> str:
     """Pull matching lines as evidence snippets."""
     lines = content.splitlines()
     matches = []
@@ -977,23 +951,18 @@ def _extract_evidence(content: str, pattern: re.Pattern, max_matches: int = 3) -
     return " | ".join(matches) if matches else ""
 
 
-# ---------------------------------------------------------------------------
 # Non-Python checkers
-# ---------------------------------------------------------------------------
-# Several recent PyPI compromises (PyTorch Lightning 2.6.x, ForceMemo)
-# carried the active payload in a bundled .js / .sh / workflow yaml so
-# the Python imports looked clean on first glance. These checkers scan
-# those file types when they appear inside a Python wheel/sdist.
+# Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a
+# bundled .js / .sh / workflow yaml so the Python imports looked clean. These
+# checkers scan those file types when they appear inside a wheel/sdist.
 
 
 def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run JS-side checks. Triggered by .js / .mjs / .cjs / .ts."""
     findings = []
 
-    # A JS file *inside a Python wheel* that's larger than 100 KB is
-    # itself anomalous (legit Python packages don't ship hand-written
-    # JS bundles). Combined with ANY of the other JS heuristics it is
-    # CRITICAL; standalone it is HIGH.
+    # A >100 KB JS file inside a Python wheel is anomalous: CRITICAL combined
+    # with any other JS heuristic, HIGH standalone.
     is_large = len(content) > 100 * 1024
     has_obf = bool(RE_JS_OBFUSCATION.search(content))
     has_web3 = bool(RE_WEB3_HIJACK.search(content))
@@ -1118,10 +1087,8 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
 def check_workflow_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run GitHub-Actions workflow checks. Triggered by .github/workflows/*.yml."""
     findings = []
-    # A GitHub workflow file inside a *PyPI package* is itself
-    # suspicious (Shai-Hulud's whole MO is to plant `shai-hulud.yml`
-    # in every repo it can write to). Anything matching the workflow
-    # injection signature gets flagged CRITICAL.
+    # A workflow file inside a PyPI package is suspicious (Shai-Hulud plants
+    # `shai-hulud.yml` everywhere); injection-signature matches are CRITICAL.
     if RE_WORKFLOW_INJECT.search(content):
         findings.append(
             Finding(
@@ -1165,15 +1132,11 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
     return findings
 
 
-# ---------------------------------------------------------------------------
 # Archive handling
-# ---------------------------------------------------------------------------
 
 # Tarbomb caps, mirrored from scripts/scan_npm_packages.py::safe_extract.
-# Refuses zip-of-death / tar-of-death archives so a hostile sdist or
-# wheel cannot exhaust memory or fill the temp dir before content
-# scanning even starts. Keep these constants in sync with the npm side;
-# we duplicate rather than import to keep `scan_packages.py` standalone.
+# Refuses zip/tar-of-death so a hostile archive cannot exhaust memory before
+# scanning. Keep in sync with the npm side; duplicated to stay standalone.
 HARD_MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB per member
 HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
 HARD_MAX_MEMBERS = 50_000  # entries per archive
@@ -1182,11 +1145,8 @@ HARD_MAX_MEMBERS = 50_000  # entries per archive
 def _refuse_unsafe_member_name(name: str) -> str | None:
     """Return a refusal reason for a member name, or None if safe.
 
-    Mirrors `scan_npm_packages.py::safe_extract` semantics: no absolute
-    paths, no `..` traversal segments. The caller is responsible for
-    checking the resolved path lands inside the extract root, but for
-    iter_archive_files we never write to disk so the name-shape check
-    plus the in-memory size cap is sufficient.
+    Mirrors `safe_extract`: no absolute paths, no `..` traversal. We never write
+    to disk, so the name-shape check plus the in-memory size cap is sufficient.
     """
     if name.startswith("/") or ".." in Path(name).parts:
         return f"unsafe member name {name!r}"
@@ -1196,9 +1156,8 @@ def _refuse_unsafe_member_name(name: str) -> str | None:
 def iter_archive_files(archive_path: str):
     """Yield (filename, text_content) for every file in a wheel/sdist.
 
-    Streams members with size + count caps applied at the member level
-    so a tarbomb / zipbomb cannot blow up the scanner's memory budget.
-    On cap breach we emit a `[WARN]` log and short-circuit the archive.
+    Streams members with per-member size + count caps so a tarbomb/zipbomb can't
+    blow the memory budget. On cap breach, emits a `[WARN]` and short-circuits.
     """
     path = Path(archive_path)
 
@@ -1224,7 +1183,7 @@ def iter_archive_files(archive_path: str):
                         file = sys.stderr,
                     )
                     continue
-                # Declared (uncompressed) size cap.
+                # Declared (uncompressed) size cap
                 if info.file_size > HARD_MAX_FILE_BYTES:
                     print(
                         f"  [WARN] {path.name}: skipped {info.filename!r} "
@@ -1261,20 +1220,17 @@ def iter_archive_files(archive_path: str):
                         file = sys.stderr,
                     )
                     return
-                # Refuse symlinks / hardlinks / devices outright -- the
-                # scanner never writes them anyway, but tar parsers
-                # have historically dereferenced them on extract.
+                # Refuse symlinks/hardlinks/devices: tar parsers have
+                # historically dereferenced them on extract.
                 if member.issym() or member.islnk():
                     print(
-                        f"  [WARN] {path.name}: refused link member "
-                        f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused link member " f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
                 if member.isdev() or member.isfifo():
                     print(
-                        f"  [WARN] {path.name}: refused special member "
-                        f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused special member " f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
@@ -1306,8 +1262,7 @@ def iter_archive_files(archive_path: str):
                     f = tf.extractfile(member)
                     if f is None:
                         continue
-                    # Bound the read so a tar header that lies about
-                    # size cannot OOM us.
+                    # Bound the read: a tar header may lie about size
                     data = f.read(HARD_MAX_FILE_BYTES + 1)
                     if len(data) > HARD_MAX_FILE_BYTES:
                         print(
@@ -1328,11 +1283,9 @@ def iter_archive_files(archive_path: str):
 def scan_archive(archive_path: str, package: str) -> list[Finding]:
     """Scan all files in an archive for malicious patterns.
 
-    A corrupted archive container (truncated wheel, bad gzip header,
-    etc.) used to be silently skipped by an ``except Exception: continue``
-    inside ``iter_archive_files``. Per the silent-failure hardening
-    (SF1) it now emits a CRITICAL ``archive_corrupted`` finding so the
-    main loop counts and surfaces it rather than reporting "0 findings".
+    A corrupted archive container (truncated wheel, bad gzip header, etc.) emits
+    a CRITICAL ``archive_corrupted`` finding rather than being silently skipped
+    and reported as "0 findings" (silent-failure hardening SF1).
     """
     findings: list[Finding] = []
     try:
@@ -1343,22 +1296,17 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
             elif lower.endswith(".py"):
                 findings.extend(check_py_file(content, filename, package))
             elif lower.endswith((".js", ".mjs", ".cjs", ".ts")):
-                # Lightning 2.6.x hid its real payload in a 14.8 MB
-                # router_runtime.js inside a Python wheel. Without this
-                # branch we'd have only seen the small Python loader.
+                # Lightning 2.6.x hid its payload in a 14.8 MB router_runtime.js;
+                # without this branch we'd only see the small Python loader.
                 findings.extend(check_js_file(content, filename, package))
             elif lower.endswith((".sh", ".bash")):
                 findings.extend(check_shell_file(content, filename, package))
             elif "/.github/workflows/" in lower and lower.endswith((".yml", ".yaml")):
-                # Shai-Hulud / ForceMemo plant their own GHA workflow.
-                # A workflow file inside a *PyPI package* is on its own
-                # already a yellow flag; pattern-match the worm signatures.
+                # Shai-Hulud/ForceMemo plant their own GHA workflow
                 findings.extend(check_workflow_file(content, filename, package))
     except (zipfile.BadZipFile, tarfile.TarError, EOFError, OSError) as exc:
-        # The archive cannot be opened or is structurally broken. A
-        # benign wheel/sdist always opens; a malformed one is either a
-        # transport corruption (treat as scan failure) or a deliberate
-        # attempt to bypass scanners that swallow archive errors.
+        # Archive cannot be opened / is structurally broken: either transport
+        # corruption or a deliberate attempt to bypass error-swallowing scanners.
         findings.append(
             Finding(
                 CRITICAL,
@@ -1371,24 +1319,18 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
     return findings
 
 
-# ---------------------------------------------------------------------------
 # Download packages
-# ---------------------------------------------------------------------------
 
 
 _RE_PYPI_SPEC_VERSION = re.compile(r"==\s*([A-Za-z0-9_.\-+!]+)")
 
 
-def _check_blocked_pypi_versions(
-    specs: list[str],
-) -> tuple[list[str], list[Finding]]:
+def _check_blocked_pypi_versions(specs: list[str]) -> tuple[list[str], list[Finding]]:
     """Filter ``specs`` against ``BLOCKED_PYPI_VERSIONS``.
 
     Returns ``(safe_specs, findings)``. Each blocked spec emits a CRITICAL
-    ``Finding`` and is removed from the returned spec list so the caller
-    never fetches the malicious tarball. Specs without an ``==X.Y.Z`` pin
-    pass through unchanged -- pip will resolve them at download time and
-    the existing scanners will catch the payload via the IOC regexes.
+    ``Finding`` and is dropped so the malicious tarball is never fetched. Specs
+    without an ``==X.Y.Z`` pin pass through; the IOC regexes catch them later.
     """
     safe: list[str] = []
     findings: list[Finding] = []
@@ -1410,7 +1352,7 @@ def _check_blocked_pypi_versions(
                     f"{name}=={version} is on the BLOCKED_PYPI_VERSIONS list",
                 )
             )
-            # Drop the spec; do not download.
+            # Drop the spec; do not download
             continue
         safe.append(spec)
     return safe, findings
@@ -1419,14 +1361,11 @@ def _check_blocked_pypi_versions(
 def _pip_download_env() -> dict[str, str]:
     """Return a scrubbed environment for invoking `pip download`.
 
-    Hostile shells / CI configs can override the index with PIP_INDEX_URL,
-    PIP_EXTRA_INDEX_URL, or a user `pip.conf`. We strip every PIP_*
-    override and route the resolver explicitly at PyPI. PIP_CONFIG_FILE
-    is forced to /dev/null so a stray ~/.pip/pip.conf with an
-    extra-index-url cannot bypass the pin.
+    Strips every PIP_* override and forces the resolver at PyPI; PIP_CONFIG_FILE
+    is /dev/null so a stray pip.conf extra-index-url cannot bypass the pin.
     """
     env = {**os.environ}
-    # Drop any user override.
+    # Drop any user override
     for key in [k for k in env if k.startswith("PIP_")]:
         env.pop(key, None)
     env["PIP_INDEX_URL"] = "https://pypi.org/simple"
@@ -1436,10 +1375,8 @@ def _pip_download_env() -> dict[str, str]:
     return env
 
 
-# Pip resolver flags shared by both download branches. Pinning the
-# index URL on the CLI is belt + braces with the env scrub above.
-# `--no-build-isolation` is deliberately NOT set; we never invoke
-# setup.py at all because of `--only-binary :all:`.
+# Pip resolver flags shared by both download branches. CLI index-URL pin is
+# belt + braces with the env scrub; `--only-binary :all:` avoids running setup.py.
 _PIP_DOWNLOAD_PIN_FLAGS = [
     "--index-url",
     "https://pypi.org/simple",
@@ -1448,9 +1385,8 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 ]
 
 
-# Strip any character that could escape `dest` via `os.path.join`. This
-# is the last line of defence before `pkg_dir = os.path.join(dest, ...)`
-# so a spec like `../../etc/foo==1.0` cannot land outside the temp tree.
+# Strip characters that could escape `dest` via `os.path.join`, so a spec like
+# `../../etc/foo==1.0` cannot land outside the temp tree.
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -1462,27 +1398,21 @@ def download_packages(
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Download packages to dest using pip download. NEVER installs.
 
-    Returns ``(results, download_errors)`` where ``results`` is a list of
-    ``(spec_or_name, filepath)`` for every downloaded archive and
-    ``download_errors`` is a list of one-line transport-failure summaries.
-    A non-empty ``download_errors`` MUST cause the caller to exit non-zero
-    even if no findings were produced; a silent ``0 findings, scan
-    incomplete`` is the bug class this return-shape was widened to fix.
+    Returns ``(results, download_errors)``: ``results`` is ``(spec_or_name,
+    filepath)`` per archive; ``download_errors`` is one-line transport-failure
+    summaries. A non-empty ``download_errors`` MUST make the caller exit
+    non-zero so a partial scan can't masquerade as "0 findings, all clean".
 
-    When with_deps=True, downloads the full transitive dependency tree
-    in a single pip invocation (all archives land in one flat dir).
-    When with_deps=False (default), downloads each spec individually
-    with --no-deps.
+    with_deps=True downloads the full transitive tree in one pip call (flat dir);
+    with_deps=False (default) downloads each spec individually with --no-deps.
     """
     results: list[tuple[str, str]] = []
     download_errors: list[str] = []
     env = _pip_download_env()
 
     if with_deps:
-        # Single pip download call for all specs + their transitive deps.
-        # `--only-binary :all:` refuses sdists so we never execute a
-        # setup.py just to learn dependency metadata; combined with the
-        # scrubbed env, pip is wired hard at pypi.org.
+        # Single pip download for all specs + transitive deps. `--only-binary
+        # :all:` refuses sdists so we never execute setup.py for metadata.
         os.makedirs(dest, exist_ok = True)
         cmd = [
             sys.executable,
@@ -1498,13 +1428,11 @@ def download_packages(
                 cmd,
                 capture_output = True,
                 text = True,
-                timeout = 600,  # transitive resolution can be slow
+                timeout = 600,  # transitive resolution is slow
                 env = env,
             )
             if proc.returncode != 0:
-                msg = (
-                    f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
-                )
+                msg = f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
                 print(f"  [ERROR] {msg}", file = sys.stderr)
                 download_errors.append(msg)
         except subprocess.TimeoutExpired:
@@ -1516,14 +1444,12 @@ def download_packages(
         for fname in sorted(os.listdir(dest)):
             fpath = os.path.join(dest, fname)
             if os.path.isfile(fpath):
-                # Derive package name from filename
                 pkg_name = fname.split("-")[0].replace("_", "-").lower()
                 results.append((pkg_name, fpath))
     else:
         for spec in specs:
             raw_name = _extract_pkg_name(spec)
-            # Sanitize before joining into `dest` so a hostile spec
-            # cannot path-traverse out of the destination directory.
+            # Sanitize before joining into `dest` to prevent path traversal
             safe_name = _RE_PKG_NAME_SANITIZE.sub("_", raw_name) or "_pkg"
             pkg_dir = os.path.join(dest, safe_name)
             os.makedirs(pkg_dir, exist_ok = True)
@@ -1547,10 +1473,7 @@ def download_packages(
                     env = env,
                 )
                 if proc.returncode != 0:
-                    msg = (
-                        f"pip download failed for {spec}: "
-                        f"{proc.stderr.strip()[:500]}"
-                    )
+                    msg = f"pip download failed for {spec}: " f"{proc.stderr.strip()[:500]}"
                     print(f"  [ERROR] {msg}", file = sys.stderr)
                     download_errors.append(msg)
                     continue
@@ -1560,7 +1483,6 @@ def download_packages(
                 download_errors.append(msg)
                 continue
 
-            # Find downloaded file(s)
             for fname in os.listdir(pkg_dir):
                 fpath = os.path.join(pkg_dir, fname)
                 if os.path.isfile(fpath):
@@ -1568,9 +1490,7 @@ def download_packages(
     return results, download_errors
 
 
-# ---------------------------------------------------------------------------
 # Parse requirements files
-# ---------------------------------------------------------------------------
 
 _RE_NAME = re.compile(r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)")
 
@@ -1579,9 +1499,7 @@ def _extract_pkg_name(spec: str) -> str:
     """Extract the package name from a pip spec string."""
     m = _RE_NAME.match(spec)
     return (
-        m.group(1)
-        if m
-        else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+        m.group(1) if m else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
     )
 
 
@@ -1601,7 +1519,7 @@ def parse_requirements(req_files: list[str]) -> list[dict]:
                     if not line or line.startswith("#") or line.startswith("-"):
                         continue
                     is_git = line.startswith("git+") or "git+" in line.split("#")[0]
-                    # Strip inline comments and environment markers for spec
+                    # Strip inline comments and env markers
                     spec = line.split("#")[0].strip()
                     spec = spec.split(";")[0].strip()
                     if not spec:
@@ -1634,7 +1552,7 @@ def get_downloaded_version(archive_path: str) -> str | None:
         parts = basename[:-4].split("-")
         if len(parts) >= 2:
             return parts[1]
-    # Sdist: name-version.tar.gz / .tar.bz2 / .zip
+    # Sdist: name-version.<ext>
     for ext in (".tar.gz", ".tar.bz2", ".tar.xz", ".tar", ".zip"):
         if basename.endswith(ext):
             stem = basename[: -len(ext)]
@@ -1644,9 +1562,7 @@ def get_downloaded_version(archive_path: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # Display
-# ---------------------------------------------------------------------------
 
 
 def severity_color(sev: str) -> str:
@@ -1662,7 +1578,6 @@ def print_findings(findings: list[Finding]) -> None:
         print("\n  All clean. No suspicious patterns found.")
         return
 
-    # Sort by severity
     findings.sort(key = lambda f: SEVERITY_ORDER.get(f.severity, 99))
 
     print(f"\n  {'=' * 72}")
@@ -1692,9 +1607,7 @@ def print_findings(findings: list[Finding]) -> None:
     print(f"  Summary: {', '.join(parts)}")
 
 
-# ---------------------------------------------------------------------------
 # PyPI version queries and --fix logic
-# ---------------------------------------------------------------------------
 
 
 def version_sort_key(v: str) -> tuple:
@@ -1718,15 +1631,13 @@ def version_sort_key(v: str) -> tuple:
     base = v_clean[0]
     suffix = v[len(base) :]
 
-    # Parse numeric parts
     parts = []
     for seg in base.split("."):
         try:
             parts.append(int(seg))
         except ValueError:
             parts.append(0)
-    # Pad to at least 3 parts
-    while len(parts) < 3:
+    while len(parts) < 3:  # pad to at least 3 parts
         parts.append(0)
 
     # Suffix ordering: dev < alpha < beta < rc < (none) < post
@@ -1742,7 +1653,7 @@ def version_sort_key(v: str) -> tuple:
     elif suffix_lower.startswith("post"):
         suffix_rank = 1
     else:
-        suffix_rank = 0  # stable release
+        suffix_rank = 0  # stable
 
     return (epoch, tuple(parts), suffix_rank, suffix)
 
@@ -1782,11 +1693,10 @@ def find_safe_version(
         print(f"  [WARN] No versions found on PyPI for {name}", file = sys.stderr)
         return None
 
-    # Find index of bad version
     try:
         bad_idx = versions.index(bad_ver)
     except ValueError:
-        # bad_ver might have been resolved to a different string; search by sort key
+        # bad_ver may resolve to a different string; search by sort key
         bad_key = version_sort_key(bad_ver)
         bad_idx = None
         for i, v in enumerate(versions):
@@ -1830,7 +1740,6 @@ def find_safe_version(
                 print(f"    {ver} -- CRITICAL finding(s), skipping")
                 break
 
-        # Clean up scan dir for this version
         shutil.rmtree(scan_dir, ignore_errors = True)
 
         if clean:
@@ -1860,8 +1769,7 @@ def update_req_line(raw_line: str, safe_ver: str, old_ver: str | None) -> str:
         code_part, marker = code_part.split(";", 1)
         marker = ";" + marker
 
-    # Replace version specifier
-    # Match patterns like ==1.2.3, >=1.2, ~=1.0, <=2.0, !=1.1, or bare name
+    # Replace version specifier (==1.2.3, >=1.2, ~=1.0, !=1.1, or bare name)
     rewritten = re.sub(
         r"([A-Za-z0-9._-]+)\s*(?:[><=!~]=?[^;#,\s]*(?:\s*,\s*[><=!~]=?[^;#,\s]*)*)?",
         lambda m: f"{m.group(1)}=={safe_ver}",
@@ -1880,12 +1788,8 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
 
     updates: {line_num (1-indexed): new_line_text}
 
-    Writes atomically: stage in a sibling tmp file on the same
-    filesystem, fsync, then `os.replace` over the original. A SIGKILL
-    or power loss mid-write therefore either leaves the original
-    intact or leaves the fully new file -- never a half-written
-    requirements file (which would silently re-introduce a malicious
-    pin).
+    Writes atomically (sibling tmp file, fsync, os.replace) so a crash mid-write
+    never leaves a half-written file that re-introduces a malicious pin.
     """
     with open(filepath) as f:
         lines = f.readlines()
@@ -1893,8 +1797,7 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
     for line_num, new_text in updates.items():
         idx = line_num - 1
         if 0 <= idx < len(lines):
-            # Preserve original line ending
-            ending = "\n" if lines[idx].endswith("\n") else ""
+            ending = "\n" if lines[idx].endswith("\n") else ""  # preserve line ending
             lines[idx] = new_text + ending
 
     dirpath = os.path.dirname(os.path.abspath(filepath)) or "."
@@ -1917,13 +1820,9 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
         raise
 
 
-def _run_fix(
-    critical_pkgs: set[str],
-    entries: list[dict],
-    max_search: int,
-) -> None:
+def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> None:
     """Run the --fix flow: find safe versions, update requirements files."""
-    # Map package names to their entries for source tracking
+    # Map package names to entries for source tracking
     pkg_entries: dict[str, list[dict]] = {}
     for e in entries:
         norm = e["name"].lower().replace("-", "_").replace(".", "_")
@@ -1941,14 +1840,11 @@ def _run_fix(
             if git_entries:
                 for e in git_entries:
                     src = e["source_file"] or "CLI"
-                    print(
-                        f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update"
-                    )
+                    print(f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update")
                     changes_summary.append(f"  SKIP  {pkg_name} (git URL)")
                 continue
 
-            # Get the currently resolved version
-            # Try to extract from the spec (e.g. name==1.2.3)
+            # Resolved version: try to extract from the spec (name==1.2.3)
             current_ver = None
             for e in related:
                 spec = e["spec"]
@@ -1963,13 +1859,10 @@ def _run_fix(
                 downloaded = download_packages([pkg_name], dl_dir)
                 if downloaded:
                     current_ver = get_downloaded_version(downloaded[0][1])
-                # Delete resolution download immediately
                 shutil.rmtree(dl_dir, ignore_errors = True)
 
             if not current_ver:
-                print(
-                    f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix"
-                )
+                print(f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix")
                 changes_summary.append(f"  SKIP  {pkg_name} (version unknown)")
                 continue
 
@@ -1986,9 +1879,7 @@ def _run_fix(
                 continue
 
             print(f"  [OK]   {pkg_name}: {current_ver} -> {safe_ver}")
-            changes_summary.append(
-                f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}"
-            )
+            changes_summary.append(f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}")
 
             # Update all occurrences in requirements files
             file_updates: dict[str, dict[int, str]] = {}
@@ -2006,7 +1897,6 @@ def _run_fix(
             for filepath, updates in file_updates.items():
                 update_req_file(filepath, updates)
 
-    # Print summary
     print(f"\n  {'=' * 72}")
     print(f"  FIX SUMMARY")
     print(f"  {'=' * 72}")
@@ -2015,9 +1905,7 @@ def _run_fix(
     print(f"\n  Re-run without --fix to verify the scan is clean.")
 
 
-# ---------------------------------------------------------------------------
 # Directory scanning
-# ---------------------------------------------------------------------------
 
 
 def _find_requirements_files(root: str) -> list[str]:
@@ -2034,30 +1922,25 @@ def _find_requirements_files(root: str) -> list[str]:
     skip_dirs = {"__pycache__", "node_modules", "venv", ".venv", "site-packages"}
     results = []
     for dirpath, dirnames, filenames in os.walk(root):
-        # Skip hidden dirs and known non-requirement dirs
+        # Skip hidden and known non-requirement dirs
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".")
-            and d not in skip_dirs
-            and not d.endswith(".egg-info")
+            if not d.startswith(".") and d not in skip_dirs and not d.endswith(".egg-info")
         ]
         dirname = os.path.basename(dirpath)
         for fname in sorted(filenames):
             if not fname.endswith(".txt"):
                 continue
-            # Match requirements*.txt anywhere
             if fnmatch.fnmatch(fname.lower(), "requirements*.txt"):
                 results.append(os.path.join(dirpath, fname))
-            # Match *.txt inside a directory named "requirements"
+            # *.txt inside a directory named "requirements"
             elif dirname == "requirements":
                 results.append(os.path.join(dirpath, fname))
     return sorted(results)
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -2115,9 +1998,7 @@ def main() -> int:
                 print(f"    {f}")
             req_files.extend(found)
         else:
-            print(
-                f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr
-            )
+            print(f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr)
 
     # Build unified entry list: list of dicts with source tracking
     entries: list[dict] = []
@@ -2158,7 +2039,7 @@ def main() -> int:
 
     all_findings: list[Finding] = []
 
-    # Hard pin-block: refuse to download known-malicious PyPI versions.
+    # Hard pin-block: refuse to download known-malicious PyPI versions
     specs, blocked_findings = _check_blocked_pypi_versions(specs)
     all_findings.extend(blocked_findings)
 
@@ -2196,10 +2077,8 @@ def main() -> int:
             )
             _run_fix(critical_pkgs, entries, args.max_search)
 
-    # Surface any pip-download failures BEFORE the scan-result exit code so
-    # an empty / partial download cannot mask itself as "0 findings, all
-    # clean". This is item (4) of the silent-failure hardening: an
-    # unresolvable spec or PyPI timeout used to print to stderr and exit 0.
+    # Surface pip-download failures BEFORE the exit code so a partial download
+    # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     if download_errors:
         print(
             f"\n  {'=' * 72}\n"
@@ -2211,7 +2090,7 @@ def main() -> int:
         for err in download_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
-            "  Refusing to report 'all clean' on a partial scan; " "exiting 2.",
+            "  Refusing to report 'all clean' on a partial scan; exiting 2.",
             file = sys.stderr,
         )
         return 2

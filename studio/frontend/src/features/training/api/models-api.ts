@@ -27,6 +27,7 @@ interface BackendTrainingDefaults {
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;
+  vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
   gradient_checkpointing?: "none" | "true" | "unsloth";
@@ -91,10 +92,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/**
- * Check whether a model is a vision model by asking the backend.
- * Calls GET /api/models/check-vision/{model_name}.
- */
+/** Ask the backend whether a model is a vision model (GET /api/models/check-vision/{model_name}). */
 export async function checkVisionModel(modelName: string): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
   const response = await authFetch(`/api/models/check-vision/${encoded}`);
@@ -106,10 +104,7 @@ export async function checkVisionModel(modelName: string): Promise<boolean> {
   return data.is_vision;
 }
 
-/**
- * Check whether a model is an embedding model by asking the backend.
- * Calls GET /api/models/check-embedding/{model_name}.
- */
+/** Ask the backend whether a model is an embedding model (GET /api/models/check-embedding/{model_name}). */
 export async function checkEmbeddingModel(
   modelName: string,
 ): Promise<boolean> {
