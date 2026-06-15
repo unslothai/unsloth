@@ -166,7 +166,7 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <UsageExamples />
+      <UsageExamples apiKey={revealed} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

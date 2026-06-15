@@ -355,16 +355,20 @@ def _detect_windows_gfx_arch() -> str | None:
                 stderr = subprocess.DEVNULL,
                 timeout = 10,
             )
-            if result.returncode == 0:
-                text = result.stdout.decode(errors = "replace")
-                # findall gets every gcnArchName line so multi-GPU hosts are
-                # enumerable and HIP_VISIBLE_DEVICES selects correctly.
-                _tokens = [
-                    t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
-                ]
-                _pick = _dedup_pick(_tokens)
-                if _pick:
-                    return _pick
+            # Accept partial output even when hipinfo crashes (e.g. exit code
+            # 0xC0000005 / STATUS_ACCESS_VIOLATION on some RDNA 4 hosts): if
+            # gcnArchName is present in stdout the device was enumerated before
+            # the crash, so the arch is trustworthy.  Ignoring it causes a
+            # silent CPU PyTorch fallback (issue #6043).
+            text = result.stdout.decode(errors = "replace")
+            # findall gets every gcnArchName line so multi-GPU hosts are
+            # enumerable and HIP_VISIBLE_DEVICES selects correctly.
+            _tokens = [
+                t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+            ]
+            _pick = _dedup_pick(_tokens)
+            if _pick:
+                return _pick
         except Exception:
             pass
 
@@ -434,7 +438,7 @@ def _detect_windows_gfx_arch() -> str | None:
 
 
 # GPU marketing-name → gfx arch table, mirroring setup.ps1's $nameArchTable.
-# Most-specific first; first match wins. Covers only arches the lemonade-sdk
+# Most-specific first; first match wins. Covers only arches the ROCm
 # prebuilts / AMD Windows torch indexes support; unknown names return None
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [

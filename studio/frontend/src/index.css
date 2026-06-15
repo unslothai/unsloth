@@ -578,6 +578,11 @@
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* Secondary row action (the pinned-chat unpin button) sits just left of
+	   the primary "…" options button. */
+	.sidebar-row-action.is-unpin-action {
+		right: 1.875rem;
+	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
 	   (size-8, rounded-full). Height + radius match for visual
@@ -744,7 +749,7 @@
 	}
 
 	.tooltip-compact {
-		@apply rounded-[9px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -1041,6 +1046,11 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Bypass Permissions badge: red, always-visible active warning. */
+	.composer-pill-btn[data-variant="danger"] {
+		@apply bg-destructive/10 hover:bg-destructive/15;
+		color: var(--destructive);
+	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
 	   Compare keeps its label via data-keep-label. */
@@ -1260,6 +1270,25 @@
 		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	}
 
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	button:focus:not(:focus-visible),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -1294,16 +1323,16 @@
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes, like Gemini: container radius =
-		   item radius (12px) + side gutter (10px), so the curves run parallel.
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
-		border-radius: 22px !important;
+		border-radius: 21px !important;
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
-		/* Side gutter so item hover boxes sit inset from the menu edge, like
-		   Gemini's menus (more breathing room than a hairline gutter). */
-		padding-left: 10px;
-		padding-right: 10px;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -1763,6 +1792,12 @@
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
+}
+
+/* Downloading state shows a progress bar as the last row; give it a little
+   extra breathing room below the bar. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
+	padding-bottom: 18px !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {

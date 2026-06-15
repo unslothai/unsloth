@@ -30,6 +30,7 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.models.model_config import (
+    ModelConfig,
     is_vision_model,
     _is_vision_model_uncached,
     _vision_detection_cache,
@@ -120,6 +121,99 @@ class TestVisionCacheSubprocessPath:
         mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
 
 
+# ---------------------------------------------------------------------------
+# Local GGUF capability path
+# ---------------------------------------------------------------------------
+
+
+class TestLocalGgufVisionDetection:
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_qwen36_gguf_with_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
+        model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+
+        assert is_vision_model(str(model)) is True
+        mock_subprocess.assert_not_called()
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(self, mock_subprocess, tmp_path):
+        variant_dir = tmp_path / "BF16"
+        variant_dir.mkdir()
+        model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+
+        assert is_vision_model(str(model)) is True
+        mock_subprocess.assert_not_called()
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_qwen36_gguf_without_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
+        model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+
+        assert is_vision_model(str(model)) is False
+        mock_subprocess.assert_not_called()
+
+    def test_local_gguf_check_observes_mmproj_added_later(self, tmp_path):
+        model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+
+        assert is_vision_model(str(model)) is False
+        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+        assert is_vision_model(str(model)) is True
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_ui_selection_returns_local_gguf_config(self, mock_subprocess, tmp_path):
+        model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+        mmproj = tmp_path / "mmproj-F32.gguf"
+        mmproj.write_bytes(b"")
+
+        config = ModelConfig.from_ui_selection(str(model), None)
+
+        assert config is not None
+        assert config.is_gguf is True
+        assert config.is_vision is True
+        assert config.gguf_mmproj_file == str(mmproj.resolve())
+        mock_subprocess.assert_not_called()
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_ui_selection_direct_gguf_in_variant_subdir_keeps_mmproj(
+        self, mock_subprocess, tmp_path
+    ):
+        variant_dir = tmp_path / "BF16"
+        variant_dir.mkdir()
+        model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
+        model.write_bytes(b"")
+        mmproj = tmp_path / "mmproj-F32.gguf"
+        mmproj.write_bytes(b"")
+
+        config = ModelConfig.from_ui_selection(str(model), None)
+
+        assert config is not None
+        assert config.is_gguf is True
+        assert config.is_vision is True
+        assert config.gguf_mmproj_file == str(mmproj.resolve())
+        mock_subprocess.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Exception handling — cache the False fallback
 
 

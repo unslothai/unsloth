@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Generator, Iterable, List, Optional
+from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
 
 import httpx
 
@@ -122,15 +122,11 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 1
 
-# Without max_tokens, llama-server defaults n_predict = n_ctx (up to 262144 for
-# Qwen3.5), causing many-minute zombie decodes when cancel fails.
-# t_max_predict_ms is a wall-clock backstop but per the llama.cpp README only
-# fires after a newline, so we keep a token cap as the front-line limiter.
-# The cap is the effective context length when known, else this floor. 4096 was
-# too low: Qwen3 / gpt-oss reasoning traces and max_tokens-omitting OpenAI-API
-# callers (langchain, llama-index, curl) got truncated mid-sentence.
+# Default max_tokens to the effective context when known. The floor is high
+# enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
-_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
+_DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+_DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
     r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
@@ -571,14 +567,27 @@ def _auto_mode_drops_mtp(
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
+    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+
+
+_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
+_THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _extra_arg_flag_name(token: str) -> Optional[str]:
+    if not token.startswith("-") or token in {"-", "--"}:
+        return None
+    if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
+        return None
+    return token.split("=", 1)[0]
+
+
+def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
     if not extra_args:
         return False
     for raw in extra_args:
-        tok = str(raw)
-        if not tok.startswith("--"):
-            continue
-        flag = tok.split("=", 1)[0]
-        if flag in ("--spec-type", "--spec-default"):
+        flag = _extra_arg_flag_name(str(raw))
+        if flag in flags:
             return True
     return False
 
@@ -807,7 +816,11 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        _reaped = self._kill_orphaned_servers()
+        if _reaped:
+            # Reaped VRAM frees lazily; arm the settle wait so the first load
+            # waits before ranking GPUs by free memory.
+            self._last_kill_monotonic = time.monotonic()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -1042,6 +1055,10 @@ class LlamaCppBackend:
 
     @property
     def supports_tools(self) -> bool:
+        # DiffusionGemma serves via the visual runner, whose live per-step canvas
+        # frames are dropped by the agentic tool loop; never route it through tools.
+        if self._is_diffusion:
+            return False
         return self._supports_tools
 
     @property
@@ -1071,7 +1088,7 @@ class LlamaCppBackend:
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod
-    def _find_llama_server_binary() -> Optional[str]:
+    def _find_llama_server_binary(*, include_denied: bool = False) -> Optional[str]:
         """
         Locate the llama-server binary.
 
@@ -1088,28 +1105,70 @@ class LlamaCppBackend:
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
+        def _file_status(p: Path) -> str:
+            # "file", "absent", or "denied" (exists but stays access-denied
+            # across a short retry: Windows AV/ACL or an install replace in
+            # flight). is_file() raises PermissionError (WinError 5) instead of
+            # returning False for the locked case, so never treat it as missing.
+            for _ in range(5):
+                try:
+                    return "file" if p.is_file() else "absent"
+                except PermissionError:
+                    time.sleep(0.2)
+                except OSError:
+                    return "absent"
+            return "denied"
+
+        def _is_file(p: Path) -> bool:
+            return _file_status(p) == "file"
+
+        def _layout_candidates(d: Path) -> list:
+            # build layouts probed under a llama.cpp dir, highest priority first
+            cands = [d / binary_name, d / "build" / "bin" / binary_name]
+            if sys.platform == "win32":
+                cands.append(d / "build" / "bin" / "Release" / binary_name)
+            return cands
+
+        def _unavailable(p: object) -> None:
+            # a pinned or managed binary that exists but is access-denied: report
+            # it instead of silently downgrading to a lower-priority llama-server
+            logger.warning(
+                f"llama-server at {p} exists but is access-denied (antivirus or "
+                "an in-flight install); not falling back to another binary, "
+                "retry once it is released"
+            )
+            return None
+
+        def _scan_pinned(paths: list):
+            # first existing candidate wins -> (path, None); a present-but-denied
+            # one -> (None, denied_path) so the caller reports it rather than
+            # skipping to a lower-priority location. include_denied returns the
+            # locked path instead: diffusion asset lookup only needs its dir.
+            for p in paths:
+                st = _file_status(p)
+                if st == "file":
+                    return str(p), None
+                if st == "denied":
+                    return (str(p), None) if include_denied else (None, p)
+            return None, None
+
         # 1. Env var: direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
-        if env_path and Path(env_path).is_file():
-            return env_path
+        if env_path:
+            hit, locked = _scan_pinned([Path(env_path)])
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         if custom_llama_cpp:
-            custom_dir = Path(custom_llama_cpp)
-            # Root dir (make builds)
-            root_bin = custom_dir / binary_name
-            if root_bin.is_file():
-                return str(root_bin)
-            # build/bin/ (cmake on Linux)
-            cmake_bin = custom_dir / "build" / "bin" / binary_name
-            if cmake_bin.is_file():
-                return str(cmake_bin)
-            # build/bin/Release/ (cmake on Windows)
-            if sys.platform == "win32":
-                win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
-                if win_bin.is_file():
-                    return str(win_bin)
+            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
         # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
@@ -1141,31 +1200,18 @@ class LlamaCppBackend:
                 _seen_roots.add(k)
                 _unique_roots.append(r)
         for unsloth_home in _unique_roots:
-            home_root = unsloth_home / binary_name
-            if home_root.is_file():
-                return str(home_root)
-            home_linux = unsloth_home / "build" / "bin" / binary_name
-            if home_linux.is_file():
-                return str(home_linux)
-            if sys.platform == "win32":
-                home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-                if home_win.is_file():
-                    return str(home_win)
+            hit, locked = _scan_pinned(_layout_candidates(unsloth_home))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
 
-        # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1)
+        # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
+        # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        # Root dir (make builds)
-        root_path = project_root / "llama.cpp" / binary_name
-        if root_path.is_file():
-            return str(root_path)
-        # build/bin/ (cmake builds)
-        build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
-        if build_path.is_file():
-            return str(build_path)
-        if sys.platform == "win32":
-            win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
-            if win_path.is_file():
-                return str(win_path)
+        for p in _layout_candidates(project_root / "llama.cpp"):
+            if _is_file(p):
+                return str(p)
 
         # 7. System PATH
         system_path = shutil.which("llama-server")
@@ -1174,7 +1220,7 @@ class LlamaCppBackend:
 
         # 8. Legacy: extracted to bin/
         bin_path = project_root / "bin" / binary_name
-        if bin_path.is_file():
+        if _is_file(bin_path):
             return str(bin_path)
 
         return None
@@ -1188,7 +1234,7 @@ class LlamaCppBackend:
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag}.
+        supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
         ``--spec-ngram-mod-n-match / -n-min / -n-max`` are real args;
@@ -1213,6 +1259,9 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_cache_ram": False,
+                "supports_ctx_checkpoints": False,
+                "supports_no_cache_prompt": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1228,13 +1277,18 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_cache_ram = False
+        supports_ctx_checkpoints = False
+        supports_no_cache_prompt = False
         try:
+            probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
@@ -1318,6 +1372,9 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_cache_ram = _is_real("--cache-ram")
+            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            supports_no_cache_prompt = _is_real("--no-cache-prompt")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1330,6 +1387,9 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_cache_ram": supports_cache_ram,
+            "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "supports_no_cache_prompt": supports_no_cache_prompt,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -1736,6 +1796,100 @@ class LlamaCppBackend:
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
         return path_dirs
+
+    @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs."""
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            # Ordering: see _build_windows_path_dirs. #5106.
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+            # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+            # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
+            # <binary_dir>/rocblas/library/ which doesn't exist.
+            _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
+            if _hip_path:
+                _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
+                if os.path.isdir(_rocblas_lib):
+                    env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        else:
+            # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
+            # CUDA runtime libs (libcudart, libcublas, etc.)
+            import platform
+
+            lib_dirs = []
+            # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                lib_dirs.append(_wsl_rocm)
+            if lib_dirs:
+                env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            lib_dirs.append(binary_dir)
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
+            # libcudart.so.13 / libcublas.so.13 which live here, not in
+            # /usr/local/cuda.
+            import glob as _glob
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with CUDA 12
+                # where default /usr/local/cuda is CUDA 13+).
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        return env
 
     @staticmethod
     def _select_gpus(
@@ -2351,6 +2505,17 @@ class LlamaCppBackend:
                         # what we have.
                         break
 
+            # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
+            # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
+            self._is_diffusion = bool(
+                (arch and arch.lower().startswith("diffusion")) or canvas_seen
+            )
+            if self._is_diffusion:
+                logger.info(
+                    f"GGUF metadata: diffusion model detected (architecture={arch}); "
+                    "will serve via the diffusion runner"
+                )
+
             # Expand a scalar period straight from the GGUF first.
             if (
                 self._sliding_window_pattern is None
@@ -2361,9 +2526,14 @@ class LlamaCppBackend:
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
                 ]
 
-            # Otherwise hand off to the resolver (cache / bootstrap /
-            # transformers / HF); see `_resolve_swa_pattern`.
-            if self._sliding_window_pattern is None and self._sliding_window and self._n_layers:
+            # Otherwise hand off to the resolver (cache / bootstrap / transformers / HF). Diffusion models
+            # skip it: they do not use Studio's SWA pattern and the resolver can raise for them.
+            if (
+                self._sliding_window_pattern is None
+                and self._sliding_window
+                and self._n_layers
+                and not self._is_diffusion
+            ):
                 hf_repo_candidates = (
                     general.get("general.source.huggingface.repository"),
                     _hf_repo_from_url(general.get("general.source.url")),
@@ -2388,17 +2558,6 @@ class LlamaCppBackend:
                     arch,
                     self._n_layers,
                     hf_repo_candidates,
-                )
-
-            # Block-diffusion models (DiffusionGemma) report a diffusion arch
-            # and/or a diffusion.canvas_length KV; they need the diffusion runner.
-            self._is_diffusion = bool(
-                (arch and arch.lower().startswith("diffusion")) or canvas_seen
-            )
-            if self._is_diffusion:
-                logger.info(
-                    f"GGUF metadata: diffusion model detected (architecture={arch}); "
-                    "will serve via the diffusion runner"
                 )
 
             if self._context_length:
@@ -2438,7 +2597,9 @@ class LlamaCppBackend:
         visual_bin = os.environ.get("DG_VISUAL_BIN")
         if not visual_bin:
             name = "llama-diffusion-gemma-visual-server" + (".exe" if os.name == "nt" else "")
-            base = self._find_llama_server_binary()
+            # include_denied: a transiently locked llama-server still pins the
+            # install dir so the adjacent visual-server can be found
+            base = self._find_llama_server_binary(include_denied = True)
             if base:
                 base_dir = Path(base).parent
                 for cand in (
@@ -2523,6 +2684,10 @@ class LlamaCppBackend:
         ]
 
         env = child_env_without_native_path_secret()
+        # `python -m unsloth_zoo.diffusion_studio.shim` imports unsloth_zoo, which
+        # refuses to load unless UNSLOTH_IS_PRESENT is set (normally by `import
+        # unsloth`). The shim never imports unsloth, so set it here as unsloth does.
+        env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
@@ -2991,6 +3156,16 @@ class LlamaCppBackend:
             return None
 
         return str(mmproj)
+
+    def _mmproj_vram_bytes(self, launch_mmproj_path: Optional[str]) -> int:
+        """Return resolved mmproj VRAM bytes, or 0 when absent/unreadable."""
+        if not launch_mmproj_path:
+            return 0
+        try:
+            return self._get_gguf_size_bytes(launch_mmproj_path)
+        except OSError as e:
+            logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
+            return 0
 
     def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
         """Return mtp_draft_path iff it exists on disk, else None.
@@ -3489,6 +3664,15 @@ class LlamaCppBackend:
                     )
 
             if not binary:
+                # distinguish a transiently locked binary (antivirus / in-flight
+                # install) from a missing one so the user retries, not reinstalls
+                locked = self._find_llama_server_binary(include_denied = True)
+                if locked:
+                    raise RuntimeError(
+                        f"llama-server at {locked} is temporarily unavailable "
+                        "(access-denied; antivirus or an in-flight install). "
+                        "Retry the load once it is released."
+                    )
                 raise RuntimeError(
                     "llama-server binary not found. "
                     "Run setup.sh to build it, install llama.cpp, "
@@ -3557,8 +3741,29 @@ class LlamaCppBackend:
                 effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
+                # Keep fit-budget and launch-flag mmproj resolution in sync.
+                launch_mmproj_path = None
+                if not extra_args_disable_mmproj(extra_args):
+                    launch_mmproj_path = self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
+                # Need both a resolved mmproj AND the config vision flag; a stray
+                # mmproj passing the family-name heuristic must not flip a non-VLM
+                # GGUF into vision mode.
+                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                if is_vision and not effective_is_vision:
+                    logger.warning(
+                        "Vision-capable GGUF loaded without a usable mmproj; "
+                        "image input will be disabled for this session"
+                    )
                 try:
-                    model_size = self._get_gguf_size_bytes(model_path)
+                    gguf_size = self._get_gguf_size_bytes(model_path)
+                    # Include GPU-loaded mmproj in the fit budget (#5825).
+                    mmproj_size = (
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                    )
+                    model_size = gguf_size + mmproj_size
                     gpus = self._get_gpu_free_memory()
 
                     # Resolve effective context: 0 means let llama-server use
@@ -3798,8 +4003,12 @@ class LlamaCppBackend:
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
+                    mmproj_note = (
+                        f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
+                    )
                     logger.info(
-                        f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                        f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
+                        f"{mmproj_note}"
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
@@ -3809,22 +4018,6 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
-
-                launch_mmproj_path = None
-                if not extra_args_disable_mmproj(extra_args):
-                    launch_mmproj_path = self._resolve_launch_mmproj_path(
-                        model_path = model_path,
-                        mmproj_path = mmproj_path,
-                    )
-                # Need both a resolved mmproj AND the config vision flag; a stray
-                # mmproj passing the family-name heuristic must not flip a non-VLM
-                # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
-                    logger.warning(
-                        "Vision-capable GGUF loaded without a usable mmproj; "
-                        "image input will be disabled for this session"
-                    )
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
@@ -3856,27 +4049,43 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
+                fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
+                    fully_gpu_offloaded = True
 
+                server_caps = self.probe_server_capabilities(binary)
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
                         use_fit,
                         requested_ctx,
                         effective_ctx,
-                        self.probe_server_capabilities(binary),
+                        server_caps,
                     )
                 )
+                offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                )
+                threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
+                full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
-                # so we don't inherit llama-server's internal default, which
-                # has varied (hardware concurrency incl. hyperthreads on some
-                # builds).
-                cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
+                # Pass --threads explicitly so we do not inherit llama-server
+                # defaults. Windows + full offload caps at 2 to stop OpenMP
+                # spin-wait burning CPU during GPU decode. User pass-through
+                # offload/thread flags keep last-wins semantics. #5692.
+                if (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                ):
+                    threads_arg = 2
+                else:
+                    threads_arg = n_threads if n_threads is not None else -1
+                cmd.extend(["--threads", str(threads_arg)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4018,6 +4227,28 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
+                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
+                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    unsupported_cache_flags: list[str] = []
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", "0"])
+                    else:
+                        unsupported_cache_flags.append("--cache-ram")
+                    if server_caps.get("supports_ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", "0"])
+                    else:
+                        unsupported_cache_flags.append("--ctx-checkpoints")
+                    if server_caps.get("supports_no_cache_prompt"):
+                        cmd.append("--no-cache-prompt")
+                    else:
+                        unsupported_cache_flags.append("--no-cache-prompt")
+                    if unsupported_cache_flags:
+                        logger.info(
+                            "Skipping unsupported Windows cache flags for llama-server: %s",
+                            ", ".join(unsupported_cache_flags),
+                        )
+
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
@@ -4033,11 +4264,15 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                import os
-                import sys
+                env = self._llama_server_env_for_binary(binary)
 
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                # Windows + full offload: PASSIVE OMP + 2 threads stop
+                # spin-wait burning CPU. CPU/partial offload keeps default
+                # OMP parallelism. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+                    if not threads_overridden:
+                        env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
@@ -4052,96 +4287,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
-
-                if sys.platform == "win32":
-                    # Ordering: see _build_windows_path_dirs. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-
-                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
-                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
-                    # searches <binary_dir>/rocblas/library/ which doesn't exist
-                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install.
-                    _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
-                    if _hip_path:
-                        _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
-                        if os.path.isdir(_rocblas_lib):
-                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
-                else:
-                    # Linux: LD_LIBRARY_PATH for shared libs next to the binary
-                    # plus CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = []
-                    # WSL: system HIP before the bundle's (which segfaults on
-                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
-                    # validates the prebuilt with this same ordering.
-                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                        lib_dirs.append(_wsl_rocm)
-                    if lib_dirs:
-                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-                    lib_dirs.append(binary_dir)
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
-                    # binary links libcudart.so.13 / libcublas.so.13 which live
-                    # here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 where default /usr/local/cuda is CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
@@ -4945,7 +5090,7 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
-    def _kill_orphaned_servers():
+    def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
@@ -4957,7 +5102,11 @@ class LlamaCppBackend:
         Uses psutil for cross-platform support (Linux, macOS, Windows);
         falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         absent.
+
+        Returns the count of processes killed; callers arm the VRAM-settle
+        wait on a positive count.
         """
+        killed = 0
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -5049,6 +5198,7 @@ class LlamaCppBackend:
                             continue
 
                         proc.kill()
+                        killed += 1
                         logger.info(
                             f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
@@ -5061,7 +5211,7 @@ class LlamaCppBackend:
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
                 if sys.platform != "linux":
-                    return
+                    return killed
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -5070,7 +5220,7 @@ class LlamaCppBackend:
                     env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
-                    return
+                    return killed
 
                 for line in result.stdout.strip().splitlines():
                     parts = line.strip().split(None, 1)
@@ -5101,6 +5251,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        killed += 1
                         logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
@@ -5108,6 +5259,7 @@ class LlamaCppBackend:
                         pass
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
+        return killed
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -5281,27 +5433,83 @@ class LlamaCppBackend:
 
     @staticmethod
     def _iter_text_cancellable(
-        response: "httpx.Response", cancel_event: Optional[threading.Event] = None
+        response: "httpx.Response",
+        cancel_event: Optional[threading.Event] = None,
+        stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        first_token_deadline: Optional[float] = None,
+        post_first_chunk_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
     ) -> Generator[str, None, None]:
-        """Iterate an httpx streaming response with cancel support.
-
-        Checks cancel_event between chunks and on ReadTimeout; the
-        _stream_with_retry watcher also closes the response on cancel.
-        """
+        """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
+        if first_token_deadline is None:
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        last_chunk_at: Optional[float] = None
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
                 return
             try:
+                if last_chunk_at is None:
+                    remaining_s = first_token_deadline - time.monotonic()
+                    if remaining_s <= 0:
+                        raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
+                if chunk:
+                    if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
+                        LlamaCppBackend._set_stream_read_timeout(
+                            response,
+                            post_first_chunk_read_timeout_s,
+                        )
+                    last_chunk_at = time.monotonic()
                 yield chunk
             except StopIteration:
                 return
             except httpx.ReadTimeout:
-                # No data within the timeout window -- loop back and re-check
-                # cancel_event.
+                now = time.monotonic()
+                if last_chunk_at is None:
+                    if now >= first_token_deadline:
+                        raise
+                elif now - last_chunk_at >= stall_timeout_s:
+                    raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
                 continue
+
+    @staticmethod
+    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
+        """Lower only post-header stream reads; keep prefill timeout long."""
+        try:
+            timeout_ext = response.request.extensions.get("timeout")
+            if isinstance(timeout_ext, dict):
+                timeout_ext["read"] = read_timeout_s
+        except Exception:
+            logger.debug("Could not lower response read timeout", exc_info = True)
+
+    @staticmethod
+    def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
+        """Best-effort interrupt for a sync httpx request blocked before headers."""
+        try:
+            pool = getattr(getattr(client, "_transport", None), "_pool", None)
+            connections = list(getattr(pool, "_connections", []) or [])
+            for connection in connections:
+                inner = getattr(connection, "_connection", None)
+                stream = getattr(inner, "_network_stream", None)
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    continue
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        except Exception:
+            logger.debug("Could not shutdown active httpx socket", exc_info = True)
+        try:
+            client.close()
+        except Exception:
+            logger.debug("Could not close httpx client", exc_info = True)
 
     @staticmethod
     @contextlib.contextmanager
@@ -5311,38 +5519,28 @@ class LlamaCppBackend:
         payload: dict,
         cancel_event: Optional[threading.Event] = None,
         headers: Optional[dict] = None,
+        first_token_deadline: Optional[float] = None,
     ):
-        """Open an httpx streaming POST with cancel support.
-
-        Sends once with a long read timeout (120 s) so prefill finishes without
-        a retry storm (the old 0.5 s timeout caused duplicate POSTs every half
-        second). A watcher thread cancels by closing the response. httpx can't
-        interrupt a blocked read before the response exists, so cancel during
-        the header wait (1-5 s prefill) is deferred until headers arrive.
-        """
+        """Open one streaming POST and let cancel interrupt prefill or reads."""
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
 
-        # Background watcher: close the response if cancel is requested.
-        # Only effective after response headers arrive (httpx limitation).
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
 
         def _cancel_watcher():
             while not _cancel_closed.is_set():
                 if cancel_event.wait(timeout = 0.3):
-                    # Cancel requested. Poll until the response object exists
-                    # so we can close it, or until the main thread finishes
-                    # (_cancel_closed set in finally).
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
-                        if r is not None:
-                            try:
+                        try:
+                            if r is not None:
                                 r.close()
-                                return
-                            except Exception as e:
-                                logger.debug(f"Error closing response in cancel watcher: {e}")
-                        # Response not created yet -- wait briefly and retry
+                            else:
+                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
+                            return
+                        except Exception as e:
+                            logger.debug(f"Error closing request in cancel watcher: {e}")
                         _cancel_closed.wait(timeout = 0.1)
                     return
 
@@ -5352,12 +5550,12 @@ class LlamaCppBackend:
             watcher.start()
 
         try:
-            # Long read timeout so prefill can finish without a retry storm.
-            # Cancel during prefill and streaming is handled by the watcher
-            # thread closing the response, unblocking any httpx read.
+            if first_token_deadline is None:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = 120.0,
+                read = prefill_read_timeout,
                 write = 10,
                 pool = 10,
             )
@@ -5373,7 +5571,7 @@ class LlamaCppBackend:
                     raise GeneratorExit
                 yield response
                 return
-        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
+        except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
                 raise GeneratorExit
@@ -5398,7 +5596,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
-    ) -> Generator[str | dict, None, None]:
+    ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
 
@@ -5428,14 +5626,12 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
-        # Cap to the effective context length when known, else the floor.
-        # The wall-clock backstop below stops a stuck model regardless.
+        # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         if seed is not None:
@@ -5451,20 +5647,20 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         try:
-            # _stream_with_retry uses a 120 s read timeout so prefill can
-            # finish. Cancel during streaming is handled by the watcher
-            # thread (closes the response on cancel_event).
+            # Prefill can use the long first-token timeout; body reads are lowered after headers.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             with httpx.Client(
                 timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
                     client,
                     url,
                     payload,
                     cancel_event,
                     headers = _auth_headers,
+                    first_token_deadline = first_token_deadline,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -5475,7 +5671,11 @@ class LlamaCppBackend:
                     buffer = ""
                     has_content_tokens = False
                     reasoning_text = ""
-                    for raw_chunk in self._iter_text_cancellable(response, cancel_event):
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
+                        cancel_event,
+                        first_token_deadline = first_token_deadline,
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
@@ -5594,6 +5794,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -5705,7 +5906,6 @@ class LlamaCppBackend:
                 if max_tokens is not None
                 else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
-            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
             if seed is not None:
@@ -5751,12 +5951,14 @@ class LlamaCppBackend:
                     timeout = stream_timeout,
                     limits = httpx.Limits(max_keepalive_connections = 0),
                 ) as client:
+                    first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                     with self._stream_with_retry(
                         client,
                         url,
                         payload,
                         cancel_event,
                         headers = _auth_headers,
+                        first_token_deadline = first_token_deadline,
                     ) as response:
                         if response.status_code != 200:
                             error_body = response.read().decode()
@@ -5768,6 +5970,7 @@ class LlamaCppBackend:
                         for raw_chunk in self._iter_text_cancellable(
                             response,
                             cancel_event,
+                            first_token_deadline = first_token_deadline,
                         ):
                             raw_buf += raw_chunk
                             while "\n" in raw_buf:
@@ -6292,7 +6495,9 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    needs_confirm = bool(confirm_tool_calls)
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
+                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -6353,6 +6558,7 @@ class LlamaCppBackend:
                             timeout = _effective_timeout,
                             session_id = session_id,
                             rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
@@ -6417,7 +6623,6 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         if seed is not None:
@@ -6440,12 +6645,14 @@ class LlamaCppBackend:
             with httpx.Client(
                 timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
                     client,
                     url,
                     stream_payload,
                     cancel_event,
                     headers = _auth_headers,
+                    first_token_deadline = first_token_deadline,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -6454,7 +6661,11 @@ class LlamaCppBackend:
                         )
 
                     buffer = ""
-                    for raw_chunk in self._iter_text_cancellable(response, cancel_event):
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
+                        cancel_event,
+                        first_token_deadline = first_token_deadline,
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)

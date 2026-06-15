@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -1097,14 +1098,11 @@ async function resolveProjectInstructions(
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
-  let projectId: string | null | undefined;
   if (threadId) {
     const thread = await getStoredChatThread(threadId).catch(() => null);
-    projectId = thread?.projectId ?? null;
+    return thread?.projectId ?? null;
   }
-  if (!projectId) {
-    projectId = useChatRuntimeStore.getState().activeProjectId;
-  }
+  const projectId = useChatRuntimeStore.getState().activeProjectId;
   if (!projectId) {
     return null;
   }
@@ -1553,6 +1551,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -1561,6 +1560,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      // Project sources auto-scope: a chat inside a project retrieves from the
+      // project's indexed sources even when the Docs pill is off. The probe is
+      // cached, so this is one round trip per project every ~30s at most.
+      const ragProjectId = await resolveProjectId(resolvedThreadId);
+      const projectRagEnabled = ragProjectId
+        ? await projectHasSources(ragProjectId)
+        : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -1835,8 +1841,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // Artifacts are independent of Search/Code: a local tool-capable model
-      // with Artifacts on exposes render_html even with no other pills active.
+      // Canvas is independent of Search/Code: a local tool-capable model
+      // with Canvas on exposes render_html even with no other pills active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -1845,12 +1851,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
           : disabledToolGuard;
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
@@ -2423,7 +2429,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -2452,7 +2458,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? reasoningEnabled
                   ? { reasoning_effort: localReasoningEffort }
                   : {}
-                : { enable_thinking: reasoningEnabled }
+                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
@@ -2462,12 +2468,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
-              ragEnabled)
+              ragEnabled ||
+              projectRagEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     // First so retrieval is the primary tool when Docs is on.
-                    ...(ragEnabled ? ["search_knowledge_base"] : []),
+                    ...(ragEnabled || projectRagEnabled
+                      ? ["search_knowledge_base"]
+                      : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(renderHtmlToolEnabledForThisTurn
@@ -2475,16 +2484,26 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  confirm_tool_calls: confirmToolCalls,
-                  // Scope: thread_id = this thread's docs, kb_id = a KB.
-                  ...(ragEnabled
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
+                  // Scope: thread_id = this thread's docs, kb_id = a KB,
+                  // project_id = the thread's project sources (auto-on whenever
+                  // the project has indexed sources, no Docs pill needed).
+                  ...(ragEnabled || projectRagEnabled
                     ? {
                         rag_scope: {
-                          ...(ragSource.type === "kb"
+                          ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : resolvedThreadId
-                              ? { thread_id: resolvedThreadId }
-                              : {}),
+                            : {
+                                ...(ragEnabled && resolvedThreadId
+                                  ? { thread_id: resolvedThreadId }
+                                  : {}),
+                                ...(projectRagEnabled && ragProjectId
+                                  ? { project_id: ragProjectId }
+                                  : {}),
+                              }),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(
@@ -3072,7 +3091,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 closeReasoningContent();
                 cumulativeText += delta;
               }
-              // Strip a trailing ${...} template-literal artifact from
+              // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(

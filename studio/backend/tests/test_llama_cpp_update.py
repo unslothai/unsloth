@@ -233,6 +233,39 @@ def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
     assert st["installed_tag"] == "b9600"
 
 
+def test_status_source_build_offers_same_base_mix(monkeypatch, tmp_path):
+    # The reported banner bug: a source build at the same upstream base as a new
+    # Unsloth prebuilt that adds a mix-<sha> suffix. The base build numbers match
+    # (9596 == 9596) but the mix carries extra patches the source build lacks, so
+    # the update must still surface -- mirroring the marker path's is_behind.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9596-mix-e6f2453", llama_tag = "b9596")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9596)
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is True
+    assert st["source_build"] is True
+    assert st["installed_tag"] == "b9596"
+    assert st["latest_tag"] == "b9596-mix-e6f2453"
+
+
+def test_status_source_build_same_base_bare_not_offered(monkeypatch, tmp_path):
+    # Same base, but the prebuilt is a bare rebuild (no mix suffix): nothing extra
+    # to gain, so do not nag.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9596", llama_tag = "b9596")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9596)
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+    assert st["latest_tag"] == "b9596"
+
+
 def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     # While the updater swaps the tree, status polls must not exec the binary
     # being replaced (on Windows that exec can fail the installer's os.replace);
@@ -258,6 +291,33 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     st = upd.get_update_status()
     assert st["job"]["state"] == "running"
     assert probes == {"resolve": 0, "version": 0}
+
+
+def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
+    # Markerless build: get_installed_llama_version falls back to exec'ing
+    # `llama-server --version`. While the updater swaps the tree that exec can
+    # fail the installer's os.replace on Windows, so the About-panel probe must
+    # be skipped (return None) exactly like get_update_status's source probe.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # markerless: no UNSLOTH_PREBUILT_INFO.json
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    probed = {"n": 0}
+
+    def _count_version(b):
+        probed["n"] += 1
+        return 9585
+
+    monkeypatch.setattr(upd, "_installed_build_number", _count_version)
+
+    with upd._job_lock:
+        upd._job["state"] = upd._JOB_RUNNING
+    assert upd.get_installed_llama_version() is None
+    assert probed["n"] == 0  # never exec'd the binary mid-swap
+
+    upd._reset_job_for_tests()  # back to idle -> probe runs
+    assert upd.get_installed_llama_version() == "b9585"
+    assert probed["n"] == 1
 
 
 def test_status_update_available(monkeypatch, tmp_path):
@@ -420,8 +480,8 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
-def test_rocm_install_args_lemonade_gfx():
-    # Lemonade HIP app bundle: gfx family lives in the asset name.
+def test_rocm_install_args_gfx_family():
+    # Per-gfx ROCm bundle: gfx family lives in the asset name.
     assert upd._rocm_install_args("app-b9585-linux-x64-rocm-gfx110X.tar.gz") == [
         "--rocm-gfx",
         "gfx110x",

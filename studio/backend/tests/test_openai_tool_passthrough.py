@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
-
-Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
-extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
-tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
-mapping. No server or GPU required.
-"""
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
 import sys
@@ -38,9 +32,13 @@ from routes.inference import (
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
+    _coalesce_consecutive_user_turns,
+    _drop_empty_assistant_sentinels,
     _effective_max_tokens,
     _extract_content_parts,
     _friendly_error,
+    _merge_user_content,
+    _openai_messages_for_gguf_chat,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
@@ -914,12 +912,6 @@ class TestOpenAICompatibilityHelpers:
 
 
 class TestFriendlyErrorHttpx:
-    """When llama-server is down, httpx RequestError strings lack the
-    "Lost connection to llama-server" substring the sync path keys off, so the
-    old substring-only `_friendly_error` returned a useless generic message.
-    These tests pin the new isinstance-based mapping.
-    """
-
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
@@ -937,7 +929,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "Lost connection" in _friendly_error(exc)
+        assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -1458,3 +1450,170 @@ class TestResponsesChatTemplateKwargs:
         )
         chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
+
+
+# =====================================================================
+# GGUF chat-template role alternation: coalesce orphaned user turns left
+# behind when an empty assistant turn is dropped, so strict templates
+# (Gemma 3, ...) do not 400 on a role-parity break.
+# =====================================================================
+
+
+class TestMergeUserContent:
+    def test_strings_join_with_blank_line(self):
+        assert _merge_user_content("hi", "again") == "hi\n\nagain"
+
+    def test_empty_sides_passthrough(self):
+        assert _merge_user_content("", "again") == "again"
+        assert _merge_user_content("hi", "") == "hi"
+
+    def test_multimodal_parts_concatenate(self):
+        img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        out = _merge_user_content([{"type": "text", "text": "look"}, img], "and this?")
+        assert out == [
+            {"type": "text", "text": "look"},
+            img,
+            {"type": "text", "text": "and this?"},
+        ]
+
+
+class TestCoalesceConsecutiveUserTurns:
+    def test_merges_two_string_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
+    def test_merges_three_consecutive_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "a\n\nb\n\nc"},
+        ]
+
+    def test_alternating_history_is_unchanged(self):
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == msgs
+
+    def test_assistant_and_tool_turns_untouched(self):
+        msgs = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == msgs
+
+    def test_multimodal_parts_survive_merge(self):
+        img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "look"}, img]},
+            {"role": "user", "content": "and this?"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert len(out) == 1
+        assert out[0]["content"] == [
+            {"type": "text", "text": "look"},
+            img,
+            {"type": "text", "text": "and this?"},
+        ]
+
+    def test_does_not_mutate_input(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        _coalesce_consecutive_user_turns(msgs)
+        assert msgs[0]["content"] == "hi"
+
+
+class TestGgufChatHistoryAlternation:
+    def test_empty_assistant_turn_dropped_then_users_coalesced(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        assert roles == ["user"]
+        assert out[0]["content"] == "hi\n\nagain"
+
+    def test_bare_stop_sentinel_also_coalesced(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant"),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+        assert roles == ["user"]
+
+    def test_system_prompt_preserved(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "system", content = "be brief"),
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m["role"] for m in out] == ["system", "user"]
+        assert out[1]["content"] == "hi\n\nagain"
+
+    def test_normal_history_unchanged(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = "hello"),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m["role"] for m in out] == ["user", "assistant", "user"]
+
+    def test_tool_path_rebuild_stays_alternating(self):
+        # Tool path rebuilds via _set_or_prepend_system_message over the coalesced
+        # history, so it stays alternating too.
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        rebuilt = _set_or_prepend_system_message(normalized, "You have access to tools.")
+        roles = [m["role"] for m in rebuilt]
+        assert roles == ["system", "user"]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
