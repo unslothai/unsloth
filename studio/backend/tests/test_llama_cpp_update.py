@@ -293,6 +293,33 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     assert probes == {"resolve": 0, "version": 0}
 
 
+def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
+    # Markerless build: get_installed_llama_version falls back to exec'ing
+    # `llama-server --version`. While the updater swaps the tree that exec can
+    # fail the installer's os.replace on Windows, so the About-panel probe must
+    # be skipped (return None) exactly like get_update_status's source probe.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # markerless: no UNSLOTH_PREBUILT_INFO.json
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    probed = {"n": 0}
+
+    def _count_version(b):
+        probed["n"] += 1
+        return 9585
+
+    monkeypatch.setattr(upd, "_installed_build_number", _count_version)
+
+    with upd._job_lock:
+        upd._job["state"] = upd._JOB_RUNNING
+    assert upd.get_installed_llama_version() is None
+    assert probed["n"] == 0  # never exec'd the binary mid-swap
+
+    upd._reset_job_for_tests()  # back to idle -> probe runs
+    assert upd.get_installed_llama_version() == "b9585"
+    assert probed["n"] == 1
+
+
 def test_status_update_available(monkeypatch, tmp_path):
     binary = _write_install(tmp_path, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
