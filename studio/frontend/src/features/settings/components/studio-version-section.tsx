@@ -29,6 +29,10 @@ function parseStudioVersions(data: ApiObject): StudioVersions {
   };
 }
 
+function hasAllVersions(versions: StudioVersions): boolean {
+  return Boolean(versions.packageVersion && versions.studioVersion);
+}
+
 async function requestStudioVersions(
   token: string | null,
 ): Promise<StudioVersions> {
@@ -46,7 +50,7 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   try {
     const token = getAuthToken();
     const versions = await requestStudioVersions(token);
-    if (!token || (versions.packageVersion && versions.studioVersion)) {
+    if (!token || hasAllVersions(versions)) {
       return versions;
     }
 
