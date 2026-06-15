@@ -66,7 +66,9 @@ def subject_of(token):
 
 def test_unexpired_key_validates():
     seed_user()
-    assert storage.validate_api_key(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
+    assert (
+        storage.validate_api_key(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
+    )
 
 
 def test_never_expiring_key_validates():
