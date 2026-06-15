@@ -1673,7 +1673,9 @@ def resolve_lemonade_rocm_choice(
 
 
 def _lemonade_release_plans(
-    llama_tag: str, host: HostInfo, published_release_tag: str = ""
+    llama_tag: str,
+    host: HostInfo,
+    published_release_tag: str = "",
 ) -> tuple[str, list[InstallReleasePlan]]:
     """Single-attempt plan for a data-center AMD GPU, sourced from lemonade.
     release_tag is lemonade's own counter so updates compare against lemonade;

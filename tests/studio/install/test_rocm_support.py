@@ -333,7 +333,11 @@ class TestResolveUpstreamAssetChoice:
 # TEST: install_llama_prebuilt.py -- data-center ROCm (lemonade) routing
 
 
-def _lemonade_release(tag = "b1300", published_at = "2026-01-01T00:00:00Z", gfxs = None):
+def _lemonade_release(
+    tag = "b1300",
+    published_at = "2026-01-01T00:00:00Z",
+    gfxs = None,
+):
     base = f"https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/{tag}"
     arches = gfxs if gfxs is not None else ["gfx908", "gfx90a"]
     names = [f"llama-{tag}-ubuntu-rocm-{g}-x64.zip" for g in arches]
@@ -447,6 +451,7 @@ class TestDataCenterLemonadeRouting:
             if "lemonade-sdk" in url:
                 return [_lemonade_release(tag = "b1301")]  # would win if pin ignored
             return {"tag_name": "b9637"}
+
         mock_fetch.side_effect = _router
         host = rocm_host(rocm_gfx_target = "gfx908")
         _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
