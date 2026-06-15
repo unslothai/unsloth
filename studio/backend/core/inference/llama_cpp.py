@@ -1560,8 +1560,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _filter_requested_gpus(
-        gpus: list[tuple[int, int]],
-        gpu_ids: list[int] | None,
+        gpus: list[tuple[int, int]], gpu_ids: list[int] | None
     ) -> list[tuple[int, int]]:
         if gpu_ids is None:
             return list(gpus)
