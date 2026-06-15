@@ -145,7 +145,9 @@ class TestIsExternalHost:
     def test_loopback_aliases_are_local(self, host):
         assert is_external_host(host) is False
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"])
+    @pytest.mark.parametrize(
+        "host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.5", "10.0.0.1", "example.com"]
+    )
     def test_non_loopback_is_external(self, host):
         assert is_external_host(host) is True
 

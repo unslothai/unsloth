@@ -18,7 +18,11 @@ import {
 } from "./model-capabilities";
 import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
-export { matchesFormat } from "./format-filters";
+export {
+  matchesFormat,
+  detectResultFormat,
+  isUnslothFinetunable,
+} from "./format-filters";
 export {
   formatLocalUpdated,
   localSourceLabel,
@@ -46,6 +50,7 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   { value: "all", label: "All formats" },
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Checkpoints" },
+  { value: "mlx", label: "MLX" },
 ];
 
 export function formatPipelineTag(tag: string | undefined): string | null {

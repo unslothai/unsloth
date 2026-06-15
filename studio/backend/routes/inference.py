@@ -121,6 +121,19 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    if isinstance(exc, httpx.ReadTimeout):
+        if "stopped producing tokens" in str(exc).lower():
+            return (
+                "The model stopped producing tokens before the response "
+                "completed. Try stopping and retrying, or reduce max tokens."
+            )
+        return (
+            "The model is still processing the prompt but did not produce a "
+            "first token within 20 minutes. Try reducing context length, "
+            "using more GPU offload, or loading a smaller model."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return "Timed out communicating with the model server. Try again shortly."
     # httpx transport failures from the async pass-through helpers. Any
     # RequestError subclass (ConnectError, ReadError, RemoteProtocolError,
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
@@ -224,7 +237,11 @@ def _openai_stream_error_chunk(exc) -> dict:
     (a code-less error hides it)."""
     _cls = _classify_llama_generation_error(exc)
     if _cls:
-        return openai_error_body(_friendly_error(exc), status = 400, code = "context_length_exceeded")
+        return openai_error_body(
+            _friendly_error(exc),
+            status = 400,
+            code = "context_length_exceeded",
+        )
     if _cls is False:
         return openai_error_body(_friendly_error(exc), status = 400)
     return openai_error_body(_friendly_error(exc), status = 500)
@@ -415,17 +432,15 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     return True
 
 
-def _anthropic_stream_error_event(exc):
-    """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
-    to fall through to a normal message_delta finish. Returns an event only for a
-    classifiable upstream client error (context overflow / 4xx) so a streaming
-    over-context request surfaces a real error instead of a silent empty
-    end_turn message."""
-    if _classify_llama_generation_error(exc) is None:
+def _anthropic_stream_error_event(exc, *, force: bool = False):
+    """Return an Anthropic in-band stream error event when one is useful."""
+    _cls = _classify_llama_generation_error(exc)
+    if _cls is None and not force:
         return None
+    status = 400 if _cls is not None else 500
     return build_anthropic_sse_event(
         "error",
-        anthropic_error_body(_friendly_error(exc), status = 400),
+        anthropic_error_body(_friendly_error(exc), status = status),
     )
 
 
@@ -588,8 +603,9 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -621,8 +637,9 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -647,6 +664,152 @@ except ImportError:
         redact_native_paths,
         verify_native_path_lease,
     )
+
+
+def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
+def _llama_streaming_generation_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+
+
+def _set_stream_response_read_timeout(
+    response: httpx.Response, read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S
+) -> None:
+    try:
+        timeout_ext = response.request.extensions.get("timeout")
+        if isinstance(timeout_ext, dict):
+            timeout_ext["read"] = read_timeout_s
+    except Exception:
+        pass
+
+
+async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if request is not None and await request.is_disconnected():
+        if cancel_event is not None:
+            cancel_event.set()
+        return True
+    return False
+
+
+async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request] = None) -> None:
+    while not await _preheader_cancelled(cancel_event, request):
+        await asyncio.sleep(0.05)
+
+
+async def _send_stream_with_preheader_cancel(
+    client: httpx.AsyncClient,
+    req: httpx.Request,
+    cancel_event = None,
+    request: Optional[Request] = None,
+) -> Optional[httpx.Response]:
+    if cancel_event is None and request is None:
+        return await client.send(req, stream = True)
+    if await _preheader_cancelled(cancel_event, request):
+        return None
+
+    send_task = asyncio.create_task(client.send(req, stream = True))
+    cancel_task = asyncio.create_task(_wait_preheader_cancel(cancel_event, request))
+
+    async def _stop_send_task() -> None:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+        send_task.cancel()
+        try:
+            await send_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    try:
+        done, _pending = await asyncio.wait(
+            {send_task, cancel_task},
+            return_when = asyncio.FIRST_COMPLETED,
+        )
+        if send_task in done:
+            return await send_task
+
+        await _stop_send_task()
+        return None
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            cancel_event.set()
+        await _stop_send_task()
+        raise
+    finally:
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _aiter_llama_stream_items(
+    async_iter,
+    *,
+    cancel_event = None,
+    request: Optional[Request] = None,
+    first_token_deadline: Optional[float] = None,
+    response: Optional[httpx.Response] = None,
+    post_first_item_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+):
+    if first_token_deadline is None:
+        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    last_item_at: Optional[float] = None
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        if request is not None and await request.is_disconnected():
+            if cancel_event is not None:
+                cancel_event.set()
+            return
+        waiting_first_item = last_item_at is None
+        try:
+            if waiting_first_item:
+                remaining_s = first_token_deadline - time.monotonic()
+                if remaining_s <= 0:
+                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                if response is not None:
+                    _set_stream_response_read_timeout(response, remaining_s)
+                item = await asyncio.wait_for(async_iter.__anext__(), timeout = remaining_s)
+            else:
+                item = await async_iter.__anext__()
+        except asyncio.TimeoutError as exc:
+            if waiting_first_item:
+                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
+            raise
+        except StopAsyncIteration:
+            return
+        except httpx.ReadTimeout:
+            now = time.monotonic()
+            if last_item_at is None:
+                if now >= first_token_deadline:
+                    raise
+                continue
+            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+        if (
+            last_item_at is None
+            and response is not None
+            and post_first_item_read_timeout_s is not None
+        ):
+            _set_stream_response_read_timeout(response, post_first_item_read_timeout_s)
+        last_item_at = time.monotonic()
+        yield item
+
 
 from models.inference import (
     LoadRequest,
@@ -1027,6 +1190,23 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
             await resp.aclose()
         except Exception:
             pass
+    except asyncio.CancelledError:
+        return
+
+
+async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
+    """Close ``resp`` on client disconnect; sets ``cancel_event`` first so
+    the streamer's RemoteProtocolError handler treats it as cancellation.
+    Catches aborts the in-loop /cancel check misses during prefill. #5692.
+    """
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        cancel_event.set()
+        try:
+            await resp.aclose()
+        except Exception as e:
+            logger.debug("Failed to close response on disconnect: %s", e)
     except asyncio.CancelledError:
         return
 
@@ -2139,7 +2319,7 @@ async def generate_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
         },
     )
 
@@ -3342,12 +3522,18 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
-        if payload.confirm_tool_calls and (
-            payload.enable_tools is True
-            or bool(payload.enabled_tools)
-            or bool(payload.tools)
-            or bool(payload.openai_code_exec_container_id)
-            or bool(payload.anthropic_code_exec_container_id)
+        # Bypass Permissions suppresses the confirm gate, so do not reject a
+        # request that sets both flags (effective confirm is then False).
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
         ):
             raise HTTPException(
                 status_code = 400,
@@ -3533,7 +3719,7 @@ async def openai_chat_completions(
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
+                        "Connection": "close",
                         "X-Accel-Buffering": "no",
                     },
                 )
@@ -3729,7 +3915,9 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
-            if payload.confirm_tool_calls and not payload.stream:
+            # Bypass Permissions suppresses confirm, so the stream requirement
+            # (the gate needs streaming to prompt) no longer applies.
+            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -3809,7 +3997,11 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
-                    confirm_tool_calls = bool(payload.confirm_tool_calls),
+                    # Bypass Permissions takes precedence over the confirm gate:
+                    # never prompt while bypassing.
+                    confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    and not bool(payload.bypass_permissions),
+                    bypass_permissions = bool(payload.bypass_permissions),
                 )
 
             _tool_sentinel = object()
@@ -3954,7 +4146,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4097,7 +4289,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4274,7 +4466,9 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        if payload.confirm_tool_calls and not payload.stream:
+        # Bypass Permissions suppresses confirm, so the stream requirement
+        # (the gate needs streaming to prompt) no longer applies.
+        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
@@ -4360,7 +4554,11 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
-                confirm_tool_calls = bool(payload.confirm_tool_calls),
+                # Bypass Permissions takes precedence over the confirm gate:
+                # never prompt while bypassing.
+                confirm_tool_calls = bool(payload.confirm_tool_calls)
+                and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -4501,7 +4699,7 @@ async def openai_chat_completions(
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "X-Accel-Buffering": "no",
                 },
             )
@@ -4702,7 +4900,7 @@ async def openai_chat_completions(
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -4935,6 +5133,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         )
 
     body = await request.json()
+    if body.get("max_tokens") is None:
+        body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
 
@@ -4952,31 +5152,68 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            client = httpx.AsyncClient(timeout = 600)
+            client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
             resp = None
             bytes_iter = None
+            disconnect_event = threading.Event()
+            disconnect_watcher = None
             try:
-                req = client.build_request("POST", target_url, json = body)
-                resp = await client.send(req, stream = True)
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                )
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, disconnect_event)
+                )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                async for chunk in bytes_iter:
+                async for chunk in _aiter_llama_stream_items(
+                    bytes_iter,
+                    cancel_event = disconnect_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                ):
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
-                if buffer:
+                if not disconnect_event.is_set() and buffer:
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
                         yield out + b"\n\n"
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+                if not disconnect_event.is_set():
+                    logger.error("openai_completions stream error: %s", e)
+                    error_chunk = _openai_stream_error_chunk(e)
+                    yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                    return
             except Exception as e:
+                if disconnect_event.is_set():
+                    return
                 logger.error("openai_completions stream error: %s", e)
+                error_chunk = _openai_stream_error_chunk(e)
+                yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                return
             finally:
+                if disconnect_watcher is not None:
+                    disconnect_watcher.cancel()
+                    try:
+                        await disconnect_watcher
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if bytes_iter is not None:
                     try:
                         await bytes_iter.aclose()
@@ -4995,7 +5232,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
 
         if resp.status_code != 200:
             raise _openai_passthrough_error(resp.status_code, resp.text)
@@ -5033,7 +5274,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     return Response(
         content = resp.content,
         status_code = resp.status_code,
@@ -5125,15 +5366,72 @@ def _responses_message_text(content: Union[str, list]) -> str:
     return "\n".join(parts)
 
 
-def _responses_tool_output_text(output: Union[str, list]) -> str:
+def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]:
     """Return Chat Completions-safe content for a Responses tool result."""
     if isinstance(output, str):
         return output if output.strip() else "(no output)"
 
-    if output:
+    if not output:
+        return "(no output)"
+
+    text_parts: list[str] = []
+    chat_parts: list = []
+    has_multimodal = False
+    for part in output:
+        if not isinstance(part, dict):
+            return json.dumps(output)
+        part_type = part.get("type")
+        if part_type in ("input_text", "output_text", "text"):
+            text = part.get("text")
+            if text is None:
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output text parts require a text field.",
+                )
+            text = str(text)
+            text_parts.append(text)
+            chat_parts.append(TextContentPart(type = "text", text = text))
+            continue
+        if part_type == "input_image":
+            image_url = part.get("image_url")
+            if not isinstance(image_url, str) or not image_url:
+                if part.get("file_id"):
+                    _raise_unsupported_openai_parameter(
+                        "input",
+                        "Responses function_call_output.output input_image parts with file_id are not supported by the local adapter. Use image_url instead.",
+                    )
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image parts require an image_url string.",
+                )
+            detail = part.get("detail", "auto")
+            if detail is None:
+                detail = "auto"
+            if detail not in ("auto", "low", "high", "original"):
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses function_call_output.output input_image detail must be auto, low, high, or original.",
+                )
+            chat_parts.append(
+                ImageContentPart(
+                    type = "image_url",
+                    image_url = ImageUrl(url = image_url, detail = detail),
+                )
+            )
+            has_multimodal = True
+            continue
+        if part_type == "input_file":
+            _raise_unsupported_openai_parameter(
+                "input",
+                "Responses function_call_output.output input_file parts are not supported by the local adapter.",
+            )
         return json.dumps(output)
 
-    return "(no output)"
+    if has_multimodal:
+        return chat_parts
+
+    text = "\n".join(text_parts)
+    return text if text.strip() else "(no output)"
 
 
 _RESPONSES_THINK_OPEN = "<think>"
@@ -5337,10 +5635,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesFunctionCallOutputInputItem):
-            # Chat Completions `role="tool"` requires string content; serialize
-            # a Responses content-array output and keep empty outputs from
-            # tripping the stricter ChatMessage role validator.
-            output = _responses_tool_output_text(item.output)
+            # Flatten pure text arrays for broad template compatibility, and
+            # forward image URL outputs as real multimodal parts for vision models.
+            output = _responses_tool_output_content(item.output)
             messages.append(
                 ChatMessage(
                     role = "tool",
@@ -5775,6 +6072,28 @@ async def _responses_stream(
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
+        def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+            return {
+                "type": "response.failed",
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "failed",
+                    "model": payload.model,
+                    "output": _snapshot_output(),
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                    "error": {
+                        "code": status_code,
+                        "message": _friendly_error(exc),
+                    },
+                },
+            }
+
         # ── Preamble events ──
         yield _sse(
             "response.created",
@@ -5798,13 +6117,20 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = 600)
+        client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
+        disconnect_event = threading.Event()
+        disconnect_watcher = None
         try:
-            req = client.build_request("POST", target_url, json = body)
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await client.send(req, stream = True)
+                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                if resp is None:
+                    return
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
                 yield _sse(
@@ -5852,10 +6178,17 @@ async def _responses_stream(
                 )
                 return
 
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, disconnect_event)
+            )
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if await request.is_disconnected():
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                cancel_event = disconnect_event,
+                request = request,
+                first_token_deadline = first_token_deadline,
+                response = resp,
+            ):
                 if not raw_line:
                     continue
                 if not raw_line.startswith("data: "):
@@ -5972,9 +6305,32 @@ async def _responses_stream(
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
+            if not disconnect_event.is_set():
+                logger.error("responses stream error: %s", e)
+                status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+                yield _sse(
+                    "response.failed",
+                    _failed_response_payload(e, status_code),
+                )
+                return
         except Exception as e:
+            if disconnect_event.is_set():
+                return
             logger.error("responses stream error: %s", e)
+            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+            yield _sse(
+                "response.failed",
+                _failed_response_payload(e, status_code),
+            )
+            return
         finally:
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -5989,6 +6345,9 @@ async def _responses_stream(
                 await client.aclose()
             except Exception:
                 pass
+
+        if disconnect_event.is_set():
+            return
 
         final_reasoning, final_visible = extractor.finish()
         if final_reasoning:
@@ -6196,7 +6555,7 @@ async def _responses_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -6586,7 +6945,10 @@ async def anthropic_messages(
         )
 
     if server_tools:
-        if bool(getattr(payload, "confirm_tool_calls", False)):
+        # Bypass Permissions suppresses confirm, so both flags together is fine.
+        if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
+            getattr(payload, "bypass_permissions", False)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
@@ -6643,6 +7005,7 @@ async def anthropic_messages(
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
+                bypass_permissions = bool(payload.bypass_permissions),
             )
 
         if payload.stream:
@@ -6797,7 +7160,7 @@ async def _anthropic_tool_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -6864,7 +7227,7 @@ async def _anthropic_plain_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7083,7 +7446,6 @@ def _build_passthrough_payload(
     body["max_tokens"] = (
         max_tokens if max_tokens is not None else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
-    body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     # Normalize stop the same way the non-passthrough path does (the passthrough
     # was previously the one path that forwarded an empty stop string verbatim).
     _stop = _normalize_stop_sequences(stop)
@@ -7193,15 +7555,23 @@ async def _anthropic_passthrough_stream(
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
         lines_iter = None
         cancel_watcher = None
+        disconnect_watcher = None
         try:
-            req = client.build_request("POST", target_url, json = body)
-            resp = await client.send(req, stream = True)
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            resp = await _send_stream_with_preheader_cancel(
+                client, req, cancel_event, request = request
+            )
+            if resp is None:
+                return
 
             # Upstream client error (e.g. over-context 400) arrives before any
             # SSE. The 200 stream headers are already flushed, so surface it as
@@ -7224,18 +7594,20 @@ async def _anthropic_passthrough_stream(
                 )
                 return
 
-            # See _openai_passthrough_stream for rationale: aiter_lines()
-            # blocks during llama-server prefill, so the in-loop cancel
-            # check is unreachable until the first SSE chunk arrives.
-            # The watcher closes `resp` on cancel, raising in aiter_lines.
+            # Watchers unblock aiter_lines() during prefill, before in-loop
+            # cancel/disconnect checks can run.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, cancel_event)
+            )
             lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if cancel_event.is_set():
-                    break
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    break
+            async for raw_line in _aiter_llama_stream_items(
+                lines_iter,
+                cancel_event = cancel_event,
+                request = request,
+                first_token_deadline = first_token_deadline,
+                response = resp,
+            ):
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
                 data_str = raw_line[6:]
@@ -7249,16 +7621,37 @@ async def _anthropic_passthrough_stream(
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
                     yield line
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
-                raise
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                event = _anthropic_stream_error_event(
+                    e,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         except Exception as e:
-            logger.error("anthropic_messages passthrough stream error: %s", e)
+            if not cancel_event.is_set():
+                logger.error("anthropic_messages passthrough stream error: %s", e)
+                event = _anthropic_stream_error_event(
+                    e,
+                    force = True,
+                )
+                if event is not None:
+                    yield event
+                return
         finally:
             if cancel_watcher is not None:
                 cancel_watcher.cancel()
                 try:
                     await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
                 except (asyncio.CancelledError, Exception):
                     pass
             if lines_iter is not None:
@@ -7285,7 +7678,7 @@ async def _anthropic_passthrough_stream(
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "X-Accel-Buffering": "no",
         },
     )
@@ -7327,7 +7720,11 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -7681,15 +8078,13 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
 
-    # Outer guard: asyncio.CancelledError at `await client.send(...)` is a
-    # BaseException that bypasses `except httpx.RequestError`; without this the
-    # tracker leaks. The generator's finally only runs once iteration starts.
+    # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         # Dispatch BEFORE returning StreamingResponse so transport errors and
         # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
         # rely on status codes to raise APIError/BadRequestError.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -7698,8 +8093,13 @@ async def _openai_passthrough_stream(
         )
         while True:
             try:
-                req = client.build_request("POST", target_url, json = body)
-                resp = await client.send(req, stream = True)
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                )
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
@@ -7715,6 +8115,21 @@ async def _openai_passthrough_stream(
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
+                )
+            if resp is None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                _tracker.__exit__(None, None, None)
+                return StreamingResponse(
+                    iter(()),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
 
             if resp.status_code == 200:
@@ -7750,21 +8165,21 @@ async def _openai_passthrough_stream(
             # save resp.aiter_lines() so the finally block can aclose() it on
             # our task. See that function for full rationale.
             lines_iter = None
-            # During llama-server prefill, `aiter_lines()` blocks until the
-            # first SSE chunk arrives. The in-loop `cancel_event` check can't
-            # fire until then -- the exact proxy/Colab scenario the cancel POST
-            # recovers from. Run a tiny watcher that closes `resp` as soon as
-            # cancel fires, unblocking the iterator with a RemoteProtocolError
-            # caught in the except clause below.
+            # Watchers unblock aiter_lines() during prefill, before in-loop
+            # cancel/disconnect checks can run.
             cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, cancel_event)
+            )
             try:
                 lines_iter = resp.aiter_lines()
-                async for raw_line in lines_iter:
-                    if cancel_event.is_set():
-                        break
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        break
+                async for raw_line in _aiter_llama_stream_items(
+                    lines_iter,
+                    cancel_event = cancel_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                ):
                     if not raw_line:
                         continue
                     if not raw_line.startswith("data: "):
@@ -7786,6 +8201,8 @@ async def _openai_passthrough_stream(
                 if not cancel_event.is_set():
                     raise
             except Exception as e:
+                if cancel_event.is_set():
+                    return
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
                 err = _openai_stream_error_chunk(e)
@@ -7794,6 +8211,11 @@ async def _openai_passthrough_stream(
                 cancel_watcher.cancel()
                 try:
                     await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
                 except (asyncio.CancelledError, Exception):
                     pass
                 if lines_iter is not None:
@@ -7816,7 +8238,7 @@ async def _openai_passthrough_stream(
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -7843,7 +8265,11 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     while True:
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.post(target_url, json = body, timeout = 600)
+                resp = await client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
         except httpx.RequestError as e:
             # llama-server subprocess crashed / starting / unreachable. Surface the
             # same friendly message the sync chat path emits so operators don't see
