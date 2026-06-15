@@ -3079,7 +3079,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _classify_llama_start_failure(
-        output: str, gguf_path: Optional[str], model_identifier: Optional[str]
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+        returncode: Optional[int] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -3150,6 +3153,16 @@ class LlamaCppBackend:
                     "different model, or use this model directly through "
                     "Ollama instead."
                 )
+
+        # SIGKILL/SIGTERM with no diagnostic output: the OS stopped the server,
+        # almost always OOM (e.g. a model too large for the WSL VM's RAM cap).
+        if returncode in (-9, -15):
+            return (
+                f"llama-server was stopped by the operating system (signal "
+                f"{-returncode}), most likely out of memory. Try a smaller or "
+                "more quantized GGUF, lower the context length, or free memory "
+                "(on WSL, raise the memory limit in .wslconfig)."
+            )
 
         # Fallback: genuinely unknown failure (OOM, missing binary ...).
         return (
@@ -4509,6 +4522,7 @@ class LlamaCppBackend:
                                 out,
                                 gguf_path,
                                 self._model_identifier,
+                                _crash_rc,
                             )
                         )
 

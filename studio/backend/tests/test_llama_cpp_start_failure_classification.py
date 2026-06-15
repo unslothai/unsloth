@@ -139,3 +139,29 @@ class TestOllamaAndFallback:
     def test_empty_output_is_safe(self):
         msg = _classify("", None, None)
         assert "llama-server failed to start" in msg
+
+
+class TestOsKillReturncode:
+    """A SIGKILL/SIGTERM with no diagnostic output (the OOM killer, e.g. a model
+    too large for the WSL VM's RAM) gets a named, actionable message; a recognized
+    output still wins, and a hard fault (-11) keeps the generic fallback."""
+
+    @pytest.mark.parametrize("rc,sig", [(-9, "9"), (-15, "15")])
+    def test_os_kill_with_no_output_names_oom(self, rc, sig):
+        msg = _classify("", "/models/big-bf16.gguf", "local/big", rc)
+        assert f"signal {sig}" in msg
+        assert "out of memory" in msg.lower()
+        assert ".wslconfig" in msg
+        assert "GGUF file is valid" not in msg
+
+    def test_specific_output_wins_over_os_kill_code(self):
+        msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", -9)
+        assert "diffusion" in msg.lower()
+        assert "out of memory" not in msg.lower()
+
+    def test_signal_crash_code_keeps_generic_message(self):
+        # -11 is handled by the retry ladder; if it reaches here with no output
+        # it gets the generic fallback, not the OOM message.
+        msg = _classify("", "/models/x.gguf", "local/x", -11)
+        assert "GGUF file is valid" in msg
+        assert "out of memory" not in msg.lower()
