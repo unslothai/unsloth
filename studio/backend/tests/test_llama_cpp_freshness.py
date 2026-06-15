@@ -362,6 +362,32 @@ def test_is_behind(installed, latest, expected):
     assert fr.is_behind(installed, latest) is expected
 
 
+_FORK = fr.DEFAULT_PUBLISHED_REPO
+_LEM = fr.LEMONADE_ROCM_REPO
+_GGML = "ggml-org/llama.cpp"
+
+
+@pytest.mark.parametrize(
+    "marker, expected",
+    [
+        # consumer lemonade recorded a non-fork repo -> migrate to the fork
+        ({"source": "lemonade", "published_repo": _GGML}, _FORK),
+        ({"source": "lemonade", "published_repo": _FORK}, _FORK),
+        # data-center lemonade already on the lemonade repo -> keep it
+        ({"source": "lemonade", "published_repo": _LEM}, _LEM),
+        # non-lemonade markers keep their own repo
+        ({"source": "published", "published_repo": _FORK}, _FORK),
+        ({"source": "upstream", "published_repo": _GGML}, _GGML),
+        # defensive: corrupt markers fail safe instead of crashing the poller
+        (None, None),
+        ([1, 2], None),
+        ({"source": ["lemonade"], "published_repo": _GGML}, _GGML),
+    ],
+)
+def test_effective_published_repo(marker, expected):
+    assert fr.effective_published_repo(marker) == expected
+
+
 def test_check_prebuilt_freshness_not_behind_on_mix_latest(monkeypatch, tmp_path):
     # Installed the mix latest: marker base tag b9596, full release_tag with sha,
     # GitHub latest is that same full tag. Must not report behind (sticky bug).

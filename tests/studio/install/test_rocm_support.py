@@ -460,6 +460,34 @@ class TestDataCenterLemonadeRouting:
         assert plans[0].release_tag == "b1295"
         assert plans[0].llama_tag == "b9637"
 
+    @patch.object(prebuilt_mod, "fetch_json", side_effect = _fetch_router)
+    def test_datacenter_windows_routes_to_windows_hip(self, _mock):
+        # Windows data-center host: lemonade "windows" asset, windows-hip kind.
+        host = rocm_host(
+            system = "Windows",
+            machine = "AMD64",
+            is_windows = True,
+            is_linux = False,
+            rocm_gfx_target = "gfx908",
+        )
+        _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+        )
+        choice = plans[0].attempts[0]
+        assert choice.install_kind == "windows-hip"
+        assert choice.name == "llama-b1300-windows-rocm-gfx908-x64.zip"
+
+    @patch.object(prebuilt_mod, "fetch_json")
+    def test_draft_and_prerelease_releases_skipped(self, mock_fetch):
+        # The newest list entry is a draft + prerelease; fall back to the real one.
+        newest = _lemonade_release(tag = "b1310", published_at = "2026-03-01T00:00:00Z")
+        newest["draft"], newest["prerelease"] = True, True
+        stable = _lemonade_release(tag = "b1300", published_at = "2026-01-15T00:00:00Z")
+        mock_fetch.return_value = [newest, stable]
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        choice = prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm")
+        assert choice is not None and choice.tag == "b1300"
+
 
 # TEST: install_llama_prebuilt.py -- runtime_patterns_for_choice
 

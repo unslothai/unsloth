@@ -275,14 +275,15 @@ def check_prebuilt_freshness(
         "threshold_days": int(threshold_days),
     }
     marker = read_install_marker(binary_path)
-    if not marker:
+    if not marker or not isinstance(marker, dict):
         return out
     out["has_marker"] = True
     # Display prefers the normalized base ("tag"); comparison below prefers the
     # full "release_tag" -- deliberately opposite fallbacks. A lemonade install's
     # "tag" is the upstream build it was made from, but it tracks lemonade's own
     # release counter, so show release_tag to keep installed/latest one series.
-    if (marker.get("source") or "").lower() == "lemonade":
+    source = marker.get("source")
+    if isinstance(source, str) and source.lower() == "lemonade":
         out["installed_tag"] = marker.get("release_tag") or marker.get("tag")
     else:
         out["installed_tag"] = marker.get("tag") or marker.get("release_tag")

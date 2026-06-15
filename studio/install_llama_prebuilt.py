@@ -1717,9 +1717,11 @@ def resolve_simple_install_release_plans(
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     # Data-center AMD GPUs (gfx908/gfx90a) are not in the fork's per-gfx bundles;
     # serve them from lemonade. Catches the fork-routed fresh install and the
-    # lemonade-repo update re-install alike.
+    # lemonade-repo update re-install alike. macOS never has AMD ROCm, so a
+    # stray forwarded gfx there must not divert off the macOS bundle path.
     if (
         host.is_x86_64
+        and not host.is_macos
         and not host.has_usable_nvidia
         and (repo == LEMONADE_ROCM_REPO or _lemonade_datacenter_gfx(host.rocm_gfx_target))
     ):
