@@ -53,7 +53,6 @@ import { toast } from "@/lib/toast";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
-import { ApiMonitorPanel } from "./components/api-monitor-panel";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -2238,7 +2237,6 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
-            {view.mode === "single" ? <ApiMonitorPanel /> : null}
             {view.mode === "single" && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>

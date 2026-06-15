@@ -6685,6 +6685,9 @@ async def _responses_stream(
                         usage,
                         llama_backend.context_length,
                     )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not disconnect_event.is_set():
                 logger.error("responses stream error: %s", e)
@@ -8662,6 +8665,9 @@ async def _openai_passthrough_stream(
                     yield raw_line + "\n\n"
                     if monitor_event == "done" or raw_line[6:].strip() == "[DONE]":
                         break
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
                 # Watcher closed resp on cancel. Emit nothing extra; the client
                 # initiated the cancel or already disconnected.

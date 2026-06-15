@@ -2,20 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ActivityIcon, CircleIcon, RefreshCwIcon } from "lucide-react";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
-import { getApiMonitor } from "../api/chat-api";
-import type { ApiMonitorEntry, ApiMonitorResponse } from "../types/api";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { getApiMonitor } from "../../chat/api/chat-api";
+import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -139,17 +136,29 @@ function MonitorEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
   );
 }
 
-export function ApiMonitorPanel(): ReactElement {
-  const [open, setOpen] = useState(false);
+export function ApiMonitorConsole(): ReactElement {
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadMonitor = useCallback(async (): Promise<void> => {
+    setRefreshing(true);
+    try {
+      setData(await getApiMonitor());
+      setError(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Monitor unavailable");
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
 
     function schedule(): void {
-      timer = window.setTimeout(poll, open ? 1500 : 5000);
+      timer = window.setTimeout(poll, 1500);
     }
 
     function poll(): void {
@@ -181,92 +190,77 @@ export function ApiMonitorPanel(): ReactElement {
         window.clearTimeout(timer);
       }
     };
-  }, [open]);
+  }, []);
 
   const statusLabel = data?.status ?? "idle";
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <Tooltip>
-        <TooltipPrimitive.Trigger asChild={true}>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="relative flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Open API monitor"
-          >
-            <ActivityIcon className="size-4" />
+    <section className="flex min-w-0 flex-col rounded-lg border border-border/70 bg-background">
+      <div className="flex min-w-0 items-start justify-between gap-3 border-b border-border/60 px-4 py-3">
+        <div className="flex min-w-0 gap-3">
+          <div className="relative mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+            <ActivityIcon className="size-4 text-foreground" />
             {hasActive ? (
-              <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-emerald-500" />
+              <span className="absolute right-1 top-1 size-2 rounded-full bg-emerald-500" />
             ) : null}
-          </button>
-        </TooltipPrimitive.Trigger>
-        <TooltipContent
-          side="bottom"
-          sideOffset={6}
-          className="tooltip-compact"
-        >
-          API monitor
-        </TooltipContent>
-      </Tooltip>
-
-      <SheetContent className="w-[92vw] sm:max-w-[560px]">
-        <SheetHeader className="border-b border-border/60 px-5 py-4">
-          <div className="flex items-start justify-between gap-3 pr-8">
-            <div className="min-w-0">
-              <SheetTitle>API monitor</SheetTitle>
-              <SheetDescription className="truncate">
-                {data?.active_model ?? "No model loaded"}
-              </SheetDescription>
-            </div>
-            <div className="shrink-0 rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
-              {statusLabel}
-            </div>
           </div>
-        </SheetHeader>
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border/60 px-5 py-3 text-xs text-muted-foreground">
-            <span>
-              {(data?.active_requests ?? 0).toLocaleString()} active /{" "}
-              {entries.length.toLocaleString()} recent
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                getApiMonitor()
-                  .then(setData)
-                  .catch(() => setError("Monitor unavailable"));
-              }}
-            >
-              <RefreshCwIcon className="size-3.5" />
-              Refresh
-            </Button>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            {error ? (
-              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                {error}
-              </div>
-            ) : entries.length === 0 ? (
-              <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">
-                No API traffic yet
-              </div>
-            ) : (
-              <div className="grid gap-3">
-                {entries.map((entry) => (
-                  <MonitorEntry key={entry.id} entry={entry} />
-                ))}
-              </div>
-            )}
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-foreground">
+              API monitor
+            </h2>
+            <p className="truncate text-xs text-muted-foreground">
+              {data?.active_model ?? "No model loaded"}
+            </p>
           </div>
         </div>
-      </SheetContent>
-    </Sheet>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
+            {statusLabel}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void loadMonitor()}
+            disabled={refreshing}
+          >
+            <RefreshCwIcon
+              className={cn("size-3.5", refreshing && "animate-spin")}
+            />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between border-b border-border/60 px-4 py-2 text-xs text-muted-foreground">
+        <span>
+          {(data?.active_requests ?? 0).toLocaleString()} active /{" "}
+          {entries.length.toLocaleString()} recent
+        </span>
+        {data?.context_length ? (
+          <span>{data.context_length.toLocaleString()} context</span>
+        ) : null}
+      </div>
+
+      <div className="max-h-[420px] min-h-24 overflow-y-auto p-3">
+        {error ? (
+          <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : entries.length === 0 ? (
+          <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">
+            No API traffic yet
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            {entries.map((entry) => (
+              <MonitorEntry key={entry.id} entry={entry} />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

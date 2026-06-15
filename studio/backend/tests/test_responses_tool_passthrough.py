@@ -1013,6 +1013,54 @@ class TestResponsesStreamAdapter:
         assert entry["status"] == "cancelled"
         assert monitor.active_count() == 0
 
+    def test_stream_task_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                await asyncio.sleep(3600)
+
+            self._install_stream_mock(monkeypatch, [])
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/responses",
+                method = "POST",
+                model = "m",
+                prompt = "hi",
+            )
+            payload = ResponsesRequest(input = "hi", stream = True)
+            messages = [ChatMessage(role = "user", content = "hi")]
+
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            iterator = response.body_iterator
+            first = await anext(iterator)
+            assert "hello" in first
+
+            pending = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_final_visible_text_updates_monitor(self, monkeypatch):
         import routes.inference as inf_mod
 
