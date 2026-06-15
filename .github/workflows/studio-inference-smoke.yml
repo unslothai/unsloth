@@ -264,19 +264,32 @@ jobs:
               determinism_failures = []
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
-                  # Both runs must be non-empty; small-quant drift
-                  # across runs is WARN-only (grounding asserts below
-                  # are the stronger signal).
                   assert a, f"{label}: empty turn {i} response in first run"
                   assert b, f"{label}: empty turn {i} response in second run"
-                  if a.strip() != b.strip():
+                  # Turn 1 is enforced as a hard equality assert below; the
+                  # free-form turns 2-4 record cross-run drift as WARN-only.
+                  if i > 1 and a.strip() != b.strip():
                       determinism_failures.append(
                           f"turn {i}: run1={a!r} run2={b!r}"
                       )
+              # Turn 1 ("1+1=?") is a short, high-confidence arithmetic answer
+              # with no greedy near-ties, so it is reliably reproducible across
+              # runs at temperature=0 -- assert exact equality here, matching
+              # the mac and windows smoke jobs (parity keeps turn-1
+              # reproducibility coverage on every OS). llama.cpp's
+              # non-associative multi-threaded matmul reductions only flip the
+              # argmax on near-tie tokens, which the open-ended turns 2-4 can
+              # hit; those stay WARN-only. Compare on stripped content: the
+              # trailing '\n' can vary with the batch-flush boundary at which
+              # the stream closes.
+              assert first[0].strip() == second[0].strip(), (
+                  f"{label} non-deterministic at turn 1 with temperature=0.0:\n"
+                  f"  run1: {first[0]!r}\n  run2: {second[0]!r}"
+              )
               if determinism_failures:
                   print(
                       f"[{label}] WARN non-determinism at temperature=0.0 across "
-                      f"{len(determinism_failures)} of {len(first)} turn(s); "
+                      f"{len(determinism_failures)} of {len(first) - 1} free-form turn(s); "
                       f"small-quant model drift, not a Studio regression. "
                       f"Details: " + " | ".join(determinism_failures)
                   )
