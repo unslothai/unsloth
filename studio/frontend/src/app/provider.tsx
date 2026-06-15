@@ -193,7 +193,8 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-sidebar-collapsed-width": "3rem",
   "--studio-content-top-inset": "34px",
   "--studio-chat-header-height": "48px",
-  "--studio-chat-header-padding-top": "11px",
+  "--studio-chat-header-padding-top": "9px",
+  "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
   "--studio-window-control-inset": "112px",
 } as CSSProperties;

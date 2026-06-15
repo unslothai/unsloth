@@ -4,7 +4,13 @@
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  LayoutAlignLeftIcon,
+  MinusSignIcon,
+  SquareIcon,
+  SquareSquareIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
@@ -96,39 +102,6 @@ function WindowControlButton({
   );
 }
 
-function MinimizeGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="h-px w-3.5 rounded-full bg-current" />
-  );
-}
-
-function MaximizeGlyph(): ReactElement {
-  return (
-    <span
-      aria-hidden="true"
-      className="size-3 rounded-[2px] border border-current"
-    />
-  );
-}
-
-function RestoreGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="relative size-3.5">
-      <span className="absolute left-0.5 top-0 size-2.5 rounded-[2px] border border-current" />
-      <span className="absolute bottom-0 right-0 size-2.5 rounded-[2px] border border-current bg-background" />
-    </span>
-  );
-}
-
-function CloseGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="relative size-3.5">
-      <span className="absolute left-1/2 top-0 h-3.5 w-px -translate-x-1/2 rotate-45 rounded-full bg-current" />
-      <span className="absolute left-1/2 top-0 h-3.5 w-px -translate-x-1/2 -rotate-45 rounded-full bg-current" />
-    </span>
-  );
-}
-
 export function WindowTitlebar({
   showSidebarSurface = false,
 }: {
@@ -142,6 +115,7 @@ export function WindowTitlebar({
       ? "var(--studio-sidebar-expanded-width,17.5rem)"
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
+  const contentBorderLeft = `calc(${sidebarWidth} + 12px)`;
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -252,13 +226,37 @@ export function WindowTitlebar({
   return (
     <>
       <header
-        className="pointer-events-none absolute inset-x-0 top-0 z-[60] h-[var(--studio-custom-titlebar-height)] select-none text-foreground"
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          showSidebarSurface && "bg-sidebar text-sidebar-foreground",
+        )}
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
           <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full h-3 w-px -translate-x-px bg-sidebar"
+            style={{ left: sidebarWidth }}
+          />
+        )}
+        {showSidebarSurface && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full h-px bg-sidebar-border"
+            style={{ left: contentBorderLeft, right: 0 }}
+          />
+        )}
+        {showSidebarSurface && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
+            style={{ left: sidebarWidth }}
+          />
+        )}
+        {showSidebarSurface && (
+          <div
             className={cn(
-              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center border-r border-sidebar-border bg-sidebar text-sidebar-foreground",
+              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
               pinned ? "gap-2 px-3" : "justify-center",
             )}
             style={{ width: sidebarWidth }}
@@ -342,7 +340,11 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <MinimizeGlyph />
+            <HugeiconsIcon
+              icon={MinusSignIcon}
+              strokeWidth={1.75}
+              className="size-[15px]"
+            />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -350,14 +352,22 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
+            <HugeiconsIcon
+              icon={maximized ? SquareSquareIcon : SquareIcon}
+              strokeWidth={1.75}
+              className="size-[14px]"
+            />
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
-            <CloseGlyph />
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={1.75}
+              className="size-[15px]"
+            />
           </WindowControlButton>
         </div>
       </header>

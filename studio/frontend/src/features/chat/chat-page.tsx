@@ -649,7 +649,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
+        "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
           ? "pl-12 pr-3 md:pl-2"
           : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
@@ -665,7 +665,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="pointer-events-auto max-w-[80%] !h-[34px]"
+        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -2395,13 +2395,23 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
+            )}
+            {incognito && view.mode === "single" && (
+              <div className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+                <HugeiconsIcon
+                  icon={BubbleChatTemporaryIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+                <span>Temporary</span>
+              </div>
             )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
-                className="flex h-[34px] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+                className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
               >
                 <ProjectSwitcher
                   currentProject={currentProject}
@@ -2470,7 +2480,7 @@ export function ChatPage({
                 cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
-                className="h-[34px]"
+                className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
             {view.mode === "single" && (
@@ -2480,7 +2490,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -2510,7 +2520,7 @@ export function ChatPage({
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon
