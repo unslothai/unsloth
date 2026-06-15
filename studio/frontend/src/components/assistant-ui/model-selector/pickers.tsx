@@ -65,6 +65,9 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+// Stable empty default so memo deps don't churn when ocrPresetIds is omitted.
+const EMPTY_PRESET_IDS: ReadonlySet<string> = new Set();
+
 /** Newest-first by `last_modified` (epoch s), repo_id tie-break. Copies the
  * input; treats a missing field as oldest for older-backend compatibility. */
 function sortByDownloadRecency<T extends { repo_id: string; last_modified?: number }>(
@@ -705,6 +708,7 @@ export function HubModelPicker({
   onSelect,
   onFoldersChange,
   visionOnly = false,
+  ocrPresetIds,
 }: {
   models: ModelOption[];
   value?: string;
@@ -714,7 +718,11 @@ export function HubModelPicker({
    *  whose vision capability is unknown (mmproj-less caches, LM Studio,
    *  custom folders). The orchestrator still validates at selection time. */
   visionOnly?: boolean;
+  /** OCR picker: built-in OCR preset ids. Pinned atop Recommended and tagged
+   *  "OCR" so they stay visible even when cached or on chat-only platforms. */
+  ocrPresetIds?: ReadonlySet<string>;
 }) {
+  const presetIds = ocrPresetIds ?? EMPTY_PRESET_IDS;
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
@@ -919,8 +927,11 @@ export function HubModelPicker({
 
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
-      .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isKnownGgufRepo(id))
+      // Keep OCR presets even when cached: visionOnly hides cached safetensors
+      // from Downloaded, so otherwise a cached preset would vanish entirely.
+      .filter((id) => presetIds.has(id) || !downloadedSet.has(id.toLowerCase()))
+      // OCR presets are safetensors, not GGUF; keep them on chat-only too.
+      .filter((id) => !chatOnly || isKnownGgufRepo(id) || presetIds.has(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
@@ -930,7 +941,7 @@ export function HubModelPicker({
       else hub.push(id);
     }
     return [...gguf, ...hub];
-  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
+  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo, presetIds]);
 
   // Infinite scroll paging for the recommended section
   const [recommendedPage, setRecommendedPage] = useState(1);
@@ -940,6 +951,12 @@ export function HubModelPicker({
   }, [models, chatOnly]);
 
   const visibleRecommendedIds = useMemo(() => {
+    // OCR picker: pin presets on top, then page the rest.
+    if (presetIds.size > 0) {
+      const pinned = recommendedIds.filter((id) => presetIds.has(id));
+      const rest = recommendedIds.filter((id) => !presetIds.has(id));
+      return [...pinned, ...rest].slice(0, recommendedPage * 8);
+    }
     const hubStartIndex = recommendedIds.findIndex((id) => !isKnownGgufRepo(id));
     const allGguf =
       hubStartIndex === -1
@@ -954,7 +971,7 @@ export function HubModelPicker({
       result.push(...allHub.slice(p * 4, (p + 1) * 4));
     }
     return result;
-  }, [recommendedIds, recommendedPage, isKnownGgufRepo]);
+  }, [recommendedIds, recommendedPage, isKnownGgufRepo, presetIds]);
 
   const hasMoreRecommended =
     visibleRecommendedIds.length < recommendedIds.length;
@@ -1676,9 +1693,11 @@ export function HubModelPicker({
                       <ModelRow
                         label={id}
                         meta={
-                          isKnownGgufRepo(id)
-                            ? "GGUF"
-                            : (vram?.detail ?? extractParamLabel(id))
+                          presetIds.has(id)
+                            ? "OCR"
+                            : isKnownGgufRepo(id)
+                              ? "GGUF"
+                              : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(
@@ -1749,9 +1768,11 @@ export function HubModelPicker({
                     <ModelRow
                       label={id}
                       meta={
-                        isKnownGgufRepo(id)
-                          ? "GGUF"
-                          : (vram?.detail ?? extractParamLabel(id))
+                        presetIds.has(id)
+                          ? "OCR"
+                          : isKnownGgufRepo(id)
+                            ? "GGUF"
+                            : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
                       optionProps={hubModelList.getOptionProps(

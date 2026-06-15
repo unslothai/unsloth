@@ -2086,7 +2086,7 @@ function DocumentExtractionSection() {
   const canScan = extractorReady && visionReadyForExtraction;
   const activeMode = deriveDocExtractMode(docExtract);
 
-  // OCR-picker model list: 3 OCR presets pinned at top + the user's
+  // OCR-picker model list: the 4 OCR presets pinned at top + the user's
   // vision-capable downloaded models filtered in below.
   const ocrPickerModels = useMemo<ModelOption[]>(() => {
     const presetIds = new Set(OCR_MODEL_PRESETS.map((p) => p.modelId));
@@ -2105,6 +2105,12 @@ function DocumentExtractionSection() {
       }));
     return [...presetEntries, ...userEntries];
   }, [allModels]);
+
+  // Pin these to the top of the OCR picker's Recommended list, tagged "OCR".
+  const ocrPresetIdSet = useMemo(
+    () => new Set(OCR_MODEL_PRESETS.map((p) => p.modelId)),
+    [],
+  );
 
   const handleOcrSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -2366,6 +2372,7 @@ function DocumentExtractionSection() {
                   value={ocrModelId}
                   onSelect={handleOcrSelect}
                   visionOnly
+                  ocrPresetIds={ocrPresetIdSet}
                 />
               </div>
               {!defaultOcrSelected && (
