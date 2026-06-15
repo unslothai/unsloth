@@ -1621,7 +1621,6 @@ class LlamaCppBackend:
         VRAM, is the real ceiling: the weights load into shared system RAM."""
         try:
             import psutil
-
             return int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
@@ -1636,7 +1635,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _apu_ram_shortfall_message(
-        model_size_bytes: int, avail_mib: Optional[int], headroom_mib: int = 2048
+        model_size_bytes: int,
+        avail_mib: Optional[int],
+        headroom_mib: int = 2048,
     ) -> Optional[str]:
         """On a unified-memory APU, return a user-facing refusal when the weights
         cannot fit in available system RAM (else None). Weights only: KV/context
