@@ -280,15 +280,25 @@ jobs:
                       f"small-quant model drift, not a Studio regression. "
                       f"Details: " + " | ".join(determinism_failures)
                   )
-              # Sanity: turn-2 reply should mention the earlier question, and
-              # turn-4 reply should mention Paris (model echoes the city it
-              # produced for turn 3). Lower-cased substring checks keep the
-              # assertion robust to formatting jitter.
-              joined = " ".join(first).lower()
-              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+              # History-grounding -- run the SAME checks against BOTH runs, not
+              # just the first, so a regression that only breaks the second
+              # in-process conversation still fails. Turn 1 echoes the
+              # arithmetic result; turn 4 ("Repeat the city name") must say
+              # Paris. Check turn 4 specifically (replies[3]), not the joined
+              # transcript: the transcript also holds turn 3's own "Paris", so a
+              # history-broken server could pass turn 3 yet drop history on turn
+              # 4 and still slip past a whole-transcript check. Lower-cased
+              # substrings keep the checks robust to formatting jitter.
+              for run_name, replies in (("run1", first), ("run2", second)):
+                  assert "1" in replies[0], (
+                      f"{label} {run_name}: turn-1 answer should contain '1', got {replies[0]!r}"
+                  )
+                  assert "paris" in replies[3].lower(), (
+                      f"{label} {run_name}: turn-4 ('Repeat the city name') must echo the "
+                      f"capital from turn 3; got {replies[3]!r} (transcript: {replies})"
+                  )
               status_word = "PASS" if not determinism_failures else "PASS (with drift)"
-              print(f"[{label}] {status_word} -- 4 turns, history grounded ('paris' present)")
+              print(f"[{label}] {status_word} -- 4 turns, history grounded in both runs ('paris' present)")
           PY
 
       - name: Stop Studio

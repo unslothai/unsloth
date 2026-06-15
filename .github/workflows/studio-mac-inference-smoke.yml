@@ -282,15 +282,27 @@ jobs:
                   f"{label} non-deterministic at turn 1 with temperature=0.0:\n"
                   f"  run1: {first[0]!r}\n  run2: {second[0]!r}"
               )
-              # Sanity: turn-1 reply should contain the arithmetic result,
-              # and turn-4 should mention Paris (the model echoes the city it
-              # produced for turn 3) -- which only works if the server threads
-              # conversation history through every turn. Lower-cased substring
-              # checks keep the assertion robust to formatting jitter.
-              joined = " ".join(first).lower()
-              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
-              print(f"[{label}] OK -- 4 turns, turn-1 deterministic, history grounded")
+              # History-grounding -- run the SAME checks against BOTH
+              # independent runs, not just the first: a regression that only
+              # breaks the second in-process conversation (e.g. later requests
+              # stop threading prior turns) must still fail the job. Turn 1
+              # must echo the arithmetic result. Turn 4 ("Repeat the city
+              # name") must say Paris -- and we check turn 4 specifically
+              # (replies[3]), not the joined transcript: the transcript also
+              # holds turn 3's own "Paris", so a stateless / history-broken
+              # server could answer turn 3 correctly yet drop history on turn 4
+              # and still slip past a whole-transcript substring check. Turn 4
+              # echoing the city is what proves history threaded forward.
+              # Lower-cased substrings keep the checks robust to formatting jitter.
+              for run_name, replies in (("run1", first), ("run2", second)):
+                  assert "1" in replies[0], (
+                      f"{label} {run_name}: turn-1 answer should contain '1', got {replies[0]!r}"
+                  )
+                  assert "paris" in replies[3].lower(), (
+                      f"{label} {run_name}: turn-4 ('Repeat the city name') must echo the "
+                      f"capital from turn 3; got {replies[3]!r} (transcript: {replies})"
+                  )
+              print(f"[{label}] OK -- 4 turns, turn-1 deterministic, history grounded in both runs")
           PY
 
       - name: Stop Studio
