@@ -735,10 +735,7 @@ with sync_playwright() as p:
         info("non-Enter key after Enter guard still recovers immediately")
     except Exception:
         shoot("06f-mac-ime-enter-guard-recovery-FAIL")
-        fail(
-            "After guarding Enter, a later non-IME key did not clear "
-            "composingRef immediately."
-        )
+        fail("After guarding Enter, a later non-IME key did not clear composingRef immediately.")
     shoot("06f-mac-ime-enter-guard")
     info("Mac IME switch Enter guard PASS")
     clear()

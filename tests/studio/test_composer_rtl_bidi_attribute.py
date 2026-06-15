@@ -195,12 +195,12 @@ def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str)
         "Enter while composingRef is stuck must prevent the same key from "
         "falling through to submit"
     )
-    assert refresh_call in guard_block, (
-        "Enter while composingRef is stuck must keep the watchdog armed"
-    )
-    assert "return;" in guard_block, (
-        "Enter while composingRef is stuck must not reach immediate recovery"
-    )
+    assert (
+        refresh_call in guard_block
+    ), "Enter while composingRef is stuck must keep the watchdog armed"
+    assert (
+        "return;" in guard_block
+    ), "Enter while composingRef is stuck must not reach immediate recovery"
 
 
 def test_main_composer_stuck_enter_does_not_clear_before_submit():
