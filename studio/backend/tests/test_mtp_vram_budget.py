@@ -3,23 +3,10 @@
 
 """Tests for the deterministic MTP VRAM reserve used by load-time auto-fit.
 
-Guards the regression where Studio advertised a context (e.g. 110k for the
-Qwen3.6-27B MTP GGUF) that fit on paper but OOMed mid-generation. The reserve is
-computed straight from GGUF dims, with no tuned per-architecture constant:
-
-  overhead(ctx) = draft_KV(ctx, draft_cache_type) + separate_drafter_weights
-
-where draft_KV is, for an embedded head (Qwen), ``nextn_predict_layers``
-attention layers sized from the main model's dims; and for a separate drafter
-(Gemma), the drafter GGUF's own KV via the same architecture-aware estimator.
-The speculative compute/verify buffer (which does NOT grow with context) is left
-to ride in the ctx-fit headroom, like the main model's compute buffer -- so it
-needs no magic constant.
-
-Deterministic anchors are checked against real llama-server measurements
-(Qwen3.5/3.6 + Gemma-4, llama.cpp b9625, B200) -- see scripts/maxctx_bench.py and
-outputs/maxctx/. Pure: no GPU, network, subprocess, or GGUF I/O.
-"""
+reserve(ctx) = draft_KV(ctx, draft_cache_type) + separate_drafter_weights, sized
+from GGUF dims (embedded head from the main model's dims; separate drafter from
+its own KV). Anchors checked against real llama-server measurements. Pure: no
+GPU, network, subprocess, or GGUF I/O."""
 
 from __future__ import annotations
 

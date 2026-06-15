@@ -1,21 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deterministic compute-graph buffer estimate (``_estimate_compute_buffer_bytes``).
-
-llama.cpp reserves a per-device compute buffer dominated by the vocab-width
-output buffer plus a small activation scratch. It is context-independent and
-scales with ``--parallel`` (concurrent serving slots), not with how the model is
-split across GPUs. In tensor mode the buffer is materialized on every device.
-
-These tests pin the estimate's shape and that it is a SAFE upper bound on the
-allocations measured on real hardware (Qwen3.6-27B-MTP Q6_K, b9625):
-
-    single-GPU serving slots  parallel 1/2/4/8 -> ~36 / 492 / 1388 / 3220 MiB
-    tensor 2-GPU parallel 1   -> ~600 MiB/device  (vs the old flat 5120 reserve)
-
-No GPU, subprocess, or GGUF I/O. Cross-platform.
-"""
+"""Tests for ``_estimate_compute_buffer_bytes``: it scales with ``--parallel``,
+tensor exceeds pipeline, and it is a safe upper bound on the allocations measured
+on real hardware (Qwen3.6-27B-MTP: parallel 1/2/4/8 -> 36/492/1388/3220 MiB single
+GPU, ~600 MiB/device tensor). No GPU, subprocess, or GGUF I/O."""
 
 from __future__ import annotations
 

@@ -537,46 +537,14 @@ def _is_companion_gguf_path(path: str) -> bool:
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
 
-# Context-fit VRAM budget, applied to FREE VRAM (nvidia-smi memory.free), so it
-# already accounts for whatever else is resident on the GPU. Matches the pin
-# fraction now: capped-GPU measurement (Qwen3.6-27B-MTP Q6_K, 32 GB, b9625) showed
-# the full footprint ran at full speed up to 97.5% of free, spilling ~108k.
-# CAVEAT: this headroom is a FRACTION of free, but the compute/CUDA-graph + verify
-# buffers it must cover are roughly ABSOLUTE (~1-3 GB, see the tensor-mode reserve
-# below). On a GPU that is already partly full, free is smaller, so 5% of free can
-# fall below that absolute buffer and over-promise -> #5106 CPU spill. The fit
-# subtracts a byte-accurate MTP draft reserve on top; an absolute compute-buffer
-# floor (like tensor mode) is the robust follow-up for the partly-full-GPU case.
+# Cap total GPU occupancy at this fraction of the card. The fit reserves an
+# absolute (1 - frac) * total per GPU when total VRAM is known, else a fraction
+# of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
-# Extra VRAM fraction reserved when MTP will engage: the draft model's
-# weights, KV cache, and compute buffers live outside the main model's
-# estimate. Applied to BOTH the ctx-fit budget and the GPU pin thresholds --
-# tightening only the fit lets a load whose weights land between the two
-# fractions pin without any room for the drafter.
-# Fallback only: used when GGUF dims are too sparse to size the MTP overhead in
-# bytes (see _estimate_mtp_overhead_bytes). When the dims are known we reserve a
-# byte-accurate, context- and n_max-aware amount instead -- a flat fraction of
-# total VRAM under-reserves at long context (the draft KV grows with ctx) on
-# small cards and over-reserves on large ones.
+# Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
+# reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
-
-# Byte-accurate, context-aware MTP draft reserve. The speculative MTP path adds,
-# on top of the main model's weights + KV estimate, two things that ARE derivable
-# from GGUF metadata (no tuned per-architecture constant):
-#   1. a draft KV cache that GROWS WITH CONTEXT --
-#        embedded head (Qwen): nextn_predict_layers attention layers, sized from
-#          the main model's attention dims;
-#        separate drafter (Gemma): the drafter GGUF's OWN KV, sized from the
-#          drafter's dims via the same 5-path estimator (handles its SWA/GQA);
-#      both = dims x n_ctx x bytes-per-element(draft cache type).
-#   2. the drafter's weights (separate drafter only; an embedded head's weights
-#      are already inside the main GGUF size).
-# The speculative compute/verify buffer is a graph allocation that does NOT grow
-# with context (~0.2-0.6 GiB, and a further ~n_max term); like the main model's
-# compute buffer it is left to ride in the ctx-fit headroom rather than modeled
-# with a magic constant. llama.cpp's draft KV defaults to f16 independent of the
-# main --cache-type-k/v, so the draft cache type is tracked separately.
 
 
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
@@ -625,10 +593,7 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 
 
 def _extra_args_requests_mtp(extra_args: Optional[Iterable[str]]) -> bool:
-    """User explicitly enabled MTP via extras, e.g. ``--spec-type draft-mtp`` or
-    a chain like ``--spec-type ngram-mod,draft-mtp``. Studio suppresses its own
-    spec emission in this case (``_extra_args_set_spec_type``), but the load
-    still runs MTP, so the VRAM-fit budget must still reserve for it."""
+    """True if extras request MTP (``--spec-type draft-mtp`` or a chain); the budget must reserve for it."""
     if not extra_args:
         return False
     args = [str(a) for a in extra_args]
@@ -644,11 +609,7 @@ def _extra_args_requests_mtp(extra_args: Optional[Iterable[str]]) -> bool:
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
-    """Last user-supplied draft-depth value from extras, else None. Accepts the
-    current ``--spec-draft-n-max`` and the legacy ``--draft-max`` alias (older
-    llama.cpp builds; still probed/emitted by _build_ngram_mod_flags). Lets the
-    MTP budget use the effective draft depth even when the first-class
-    ``spec_draft_n_max`` field is unset."""
+    """Draft depth from extras (``--spec-draft-n-max`` or legacy ``--draft-max``), else None."""
     if not extra_args:
         return None
     args = [str(a) for a in extra_args]
@@ -666,10 +627,7 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
 
 
 def _extra_args_mtp_draft_path(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Last user-supplied separate MTP drafter path from extras, else None.
-    The drafter GGUF (``--model-draft`` / ``--spec-draft-model`` / ``-md``) loads
-    onto the GPU, so its weights must be reserved when the user wires MTP through
-    extras instead of the first-class drafter path."""
+    """Separate drafter path from extras (``--model-draft``/``--spec-draft-model``/``-md``), else None."""
     if not extra_args:
         return None
     args = [str(a) for a in extra_args]
@@ -685,13 +643,7 @@ def _extra_args_mtp_draft_path(extra_args: Optional[Iterable[str]]) -> Optional[
 
 
 def _extra_args_draft_cache_type(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Last user-supplied draft KV cache type from extras, else None (-> f16).
-
-    llama.cpp defaults the MTP draft context to an f16 KV cache regardless of the
-    main ``--cache-type-k/v``; a user can override it with
-    ``--cache-type-k-draft`` / ``--spec-draft-type-k`` / ``-ctkd`` (and the V
-    aliases). We track the K type for the reserve (K and V are sized identically).
-    """
+    """Draft KV cache type from extras (``--cache-type-k-draft`` etc.), else None (llama.cpp uses f16)."""
     if not extra_args:
         return None
     args = [str(a) for a in extra_args]
@@ -889,9 +841,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
-        # Feed-forward width and vocab size, for the deterministic compute-graph
-        # buffer estimate (output buffer ~ n_vocab x n_ubatch; activation scratch
-        # ~ n_embd x n_ubatch). vocab is read from the tokenizer tokens array len.
+        # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
         # Architecture-aware KV fields for 5-path estimation
@@ -1667,10 +1617,8 @@ class LlamaCppBackend:
              probe returned [] on AMD) and NVIDIA hosts missing
              ``nvidia-smi`` from PATH.
 
-        Returns list of (gpu_index, free_mib, total_mib) sorted by index; empty if
-        no supported GPU is reachable. ``total`` lets the fit reserve an ABSOLUTE
-        headroom (a fraction of total) so the reserve does not shrink as the GPU
-        fills with other processes.
+        Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
+        supported GPU is reachable. ``total`` lets the fit reserve absolute headroom.
         """
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
@@ -1835,15 +1783,9 @@ class LlamaCppBackend:
     # buffers; 0.90 dropped 91-94% fits to CPU offload (#5106).
     _GPU_PIN_VRAM_FRACTION = 0.95
 
-    # FALLBACK per-GPU compute-graph buffer for tensor mode (MiB), used ONLY when
-    # GGUF dims (vocab / embedding_length) are unavailable so the deterministic
-    # ``_estimate_compute_buffer_bytes`` returns 0. The deterministic estimate --
-    # output buffer (n_vocab x n_ubatch) + activation scratch, replicated per
-    # device and scaled by the serving-slot count -- is the primary path and is
-    # measured ~0.6 GB/device for a 27B/248k-vocab model at --parallel 1 (the flat
-    # 5 GB here was ~8x too conservative). The estimate is context-independent and
-    # roughly EQUAL on every device. The auto-fallback to layer split covers any
-    # underestimate.
+    # Fallback per-device tensor-mode compute buffer (MiB), used only when GGUF
+    # dims are unavailable so _estimate_compute_buffer_bytes (the primary, derived
+    # path) returns 0.
     _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
 
     # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
@@ -2140,12 +2082,8 @@ class LlamaCppBackend:
         return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
-        """A lightweight backend carrying a separate drafter GGUF's metadata.
-
-        Lets us size the drafter's own KV cache with the same architecture-aware
-        ``_estimate_kv_cache_bytes`` (its SWA/GQA/dims), instead of a magic
-        constant. Cached per path; returns ``None`` if the drafter can't be read.
-        """
+        """Lightweight backend with a drafter GGUF's metadata, to size its own KV
+        via _estimate_kv_cache_bytes. Cached per path; None if unreadable."""
         cache = getattr(self, "_draft_backend_cache", None)
         if cache is not None and cache[0] == drafter_path:
             return cache[1]
@@ -2188,18 +2126,10 @@ class LlamaCppBackend:
         drafter_path: Optional[str] = None,
         draft_cache_type: Optional[str] = None,
     ) -> Optional[int]:
-        """VRAM the MTP draft context's KV cache needs at ``n_ctx``.
-
-        Two MTP flavours, both sized straight from GGUF dims:
-          * separate drafter (Gemma): the drafter is its own model -- size its KV
-            with the drafter's dims via ``_estimate_kv_cache_bytes`` (honours the
-            drafter's SWA window, GQA, etc.).
-          * embedded head (Qwen): ``nextn_predict_layers`` full-attention layers
-            sized from the MAIN model's attention dims.
-        ``draft_cache_type`` is the draft KV quantization (llama.cpp defaults the
-        draft context to f16 regardless of the main ``--cache-type-k/v``). Returns
-        ``None`` when dims are missing so the caller keeps the flat fallback.
-        """
+        """Draft KV cache bytes at ``n_ctx``, sized from GGUF dims. Separate
+        drafter (Gemma): the drafter's own KV via _estimate_kv_cache_bytes.
+        Embedded head (Qwen): nextn_predict_layers attention layers from the main
+        model's dims. None when dims are missing (caller keeps the flat fallback)."""
         if n_ctx <= 0:
             return None
         if drafter_path:
@@ -2226,16 +2156,10 @@ class LlamaCppBackend:
         drafter_path: Optional[str] = None,
         draft_weights_bytes: int = 0,
     ) -> Optional[int]:
-        """Extra VRAM the MTP draft path needs at ``n_ctx``, from GGUF dims.
-
-        ``draft KV (grows with ctx) + separate-drafter weights``. The
-        speculative compute/verify buffer (which does not grow with context, and
-        the small ``spec_draft_n_max`` term) is left to the ctx-fit headroom, the
-        same as the main model's compute buffer -- so no tuned constant is used.
-        Returns ``None`` when the draft KV can't be sized from dims, so the caller
-        keeps the legacy flat-fraction reserve. ``draft_weights_bytes`` is the
-        separate-drafter file size (Gemma); 0 for an embedded head.
-        """
+        """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
+        drafter weights. The verify buffer rides in the ctx-fit headroom (no tuned
+        constant). None when the draft KV can't be sized (caller keeps the flat
+        fallback). ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx, drafter_path = drafter_path, draft_cache_type = draft_cache_type
         )
@@ -2243,11 +2167,8 @@ class LlamaCppBackend:
             return None
         return draft_kv + max(0, draft_weights_bytes)
 
-    # llama.cpp's physical micro-batch (``--ubatch``); Studio does not override it.
-    _DEFAULT_N_UBATCH = 512
-    # Safety margin on the compute-buffer estimate -> a small upper bound over the
-    # measured allocations (dimensionless; not a per-architecture VRAM constant).
-    _COMPUTE_BUFFER_SAFETY = 1.15
+    _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
+    _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
 
     def _estimate_compute_buffer_bytes(
         self,
@@ -2256,22 +2177,10 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         per_device_tensor: bool = False,
     ) -> int:
-        """Deterministic per-device compute-graph buffer (bytes), from GGUF dims.
-
-        llama.cpp reserves a graph buffer dominated by the vocab-width output
-        buffer (``n_vocab x n_ubatch x f32``) plus a small activation scratch
-        (``~n_embd x n_ubatch``). It is **context-independent** and scales with
-        ``--parallel`` (concurrent serving slots): pipeline/layer-split decode of a
-        single token is ~free, so each ADDITIONAL slot reserves ~one output buffer.
-        In tensor mode the graph + all-reduce staging is materialized on EVERY
-        device, so the output buffer is counted per device (including the first).
-
-        Calibrated against measured allocations (Qwen3.6-27B-MTP Q6_K, vocab
-        248320, n_embd 5120): parallel 1/2/4/8 -> 36/492/1388/3220 MiB single-GPU;
-        ~600 MiB/device tensor. The estimate is a slight upper bound (safety
-        margin). Returns 0 when vocab/embedding dims are unavailable, so the caller
-        can keep a conservative fallback.
-        """
+        """Per-device compute-graph buffer (bytes) from GGUF dims: a vocab-width
+        output buffer + activation scratch. Context-independent; scales with
+        ``--parallel`` (serving slots). Tensor mode materializes it on every device.
+        A slight upper bound over measured allocations; 0 when dims are missing."""
         n_vocab = self._vocab_size or 0
         n_embd = self._embedding_length or 0
         if n_vocab <= 0 or n_embd <= 0:
@@ -2308,13 +2217,9 @@ class LlamaCppBackend:
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
-        Budget caps total GPU occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card.
-        When ``total_mib`` (the GPU's total VRAM) is given, the reserve is
-        ABSOLUTE -- ``budget = free - (1 - frac) * total`` -- so it does not shrink
-        as the GPU fills with other processes (free already excludes them). When
-        ``total_mib`` is None it falls back to ``free * frac`` (the reserve scales
-        with free). Tighter than ``_GPU_PIN_VRAM_FRACTION`` on purpose
-        (over-promising context OOMs at runtime). Weights alone over budget ->
+        Budget caps occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card: an
+        absolute ``free - (1 - frac) * total`` when ``total_mib`` is given (does not
+        shrink as the GPU fills), else ``free * frac``. Weights alone over budget
         returns ``requested_ctx``.
 
         ``kv_on_gpu`` mirrors ``--kv-offload`` (default on); when False the KV
@@ -2343,21 +2248,14 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP engaged: carve the drafter's reserve out of the fit budget. When a
-        # byte-accurate, context-aware overhead is available (mtp_overhead_fn) it
-        # supersedes the flat fraction -- the draft KV grows with ctx, so the
-        # reserve must be evaluated per candidate context inside the search, not
-        # as a one-shot fraction of total VRAM. The flat fraction stays as the
-        # fallback when GGUF dims are too sparse to size the draft KV. Callers can
-        # still override the fraction outright (tensor-parallel passes a fatter
-        # margin), so only compute a default when none was supplied.
+        # mtp_overhead_fn (byte-accurate, per-ctx) supersedes the flat fraction;
+        # the flat fraction is the fallback when dims can't size the draft KV.
+        # Callers may override budget_frac (tensor mode passes a fatter margin).
         if budget_frac is None:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
-        # Absolute reserve (fraction of TOTAL) when total VRAM is known, so the
-        # headroom for compute/CUDA/verify buffers does not shrink on a partly-full
-        # GPU; else the legacy fraction-of-free. Clamp >=0 so a near-full GPU
-        # yields an empty budget rather than a negative one.
+        # Absolute reserve off total when known (stays constant as the GPU fills),
+        # else fraction-of-free. Clamp >=0 so a near-full GPU yields an empty budget.
         if total_mib is not None and total_mib > 0:
             budget_mib = max(0.0, available_mib - (1.0 - budget_frac) * total_mib)
         else:
@@ -2589,8 +2487,7 @@ class LlamaCppBackend:
             WANTED = {
                 "general.architecture",
                 "tokenizer.chat_template",
-                # Vocab size for the compute-buffer estimate: captured from the
-                # tokens array LENGTH (no explicit vocab_size key in many GGUFs).
+                # Vocab size = tokens array length (no vocab_size key in many GGUFs).
                 "tokenizer.ggml.tokens",
                 # Block-diffusion marker (DiffusionGemma); routes to the diffusion runner.
                 "diffusion.canvas_length",
@@ -2689,8 +2586,7 @@ class LlamaCppBackend:
                             elif vtype == 9:  # ARRAY
                                 atype = struct.unpack("<I", f.read(4))[0]
                                 alen = struct.unpack("<Q", f.read(8))[0]
-                                # Vocab size = number of tokens; capture the length
-                                # without retaining the (large) token strings.
+                                # Vocab size = token count; keep the length, not the strings.
                                 if key == "tokenizer.ggml.tokens":
                                     self._vocab_size = int(alen)
                                 val_a = self._gguf_read_array_value(f, atype, alen)
@@ -3528,11 +3424,8 @@ class LlamaCppBackend:
           smallest GPU keeps room for KV.
         """
         # Drop GPUs that can't hold the per-device compute-graph buffer; they'd
-        # OOM in tensor mode. load_model already filters before calling, so this
-        # is defense-in-depth that also keeps the pure function self-contained
-        # (and unit-testable without a GPU). Deterministic per-device estimate
-        # (output buffer + activation/comm, replicated on every device); the flat
-        # constant is only a fallback when vocab/embd dims are unavailable.
+        # OOM in tensor mode. Defense-in-depth (load_model also filters) that keeps
+        # this pure and unit-testable. Derived per-device reserve; flat fallback.
         _reserve_bytes = self._estimate_compute_buffer_bytes(
             n_parallel = n_parallel, per_device_tensor = True
         )
@@ -3555,10 +3448,8 @@ class LlamaCppBackend:
         free_by_idx = {idx: free for idx, free in usable_gpus}
         pool_mib = sum(free_by_idx.values())
         kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
-        # MTP keeps a draft model + its own KV cache + verify buffer on GPU. Use
-        # the byte-accurate, context-aware reserve when available; else the legacy
-        # flat 2 GiB. The byte-accurate term is subtracted per candidate context
-        # inside _fit_ctx (the draft KV grows with ctx), not once here.
+        # MTP reserve: byte-accurate per-ctx inside _fit_ctx when available, else a
+        # flat 2 GiB here.
         if mtp_engaged and mtp_overhead_fn is None:
             kv_budget_b -= 2 * 1024**3
 
@@ -3575,9 +3466,7 @@ class LlamaCppBackend:
                     # falls back to layer split.
                     return ctx_floor
                 if mtp_overhead_fn is not None:
-                    # Combined consumer kv(ctx)+mtp(ctx) is not a single linear
-                    # term (verify buffer is fixed, draft KV scales), so binary
-                    # search instead of the linear interpolation below.
+                    # kv(ctx)+mtp(ctx) is not single-linear, so binary search.
                     def _consumer(c: int) -> int:
                         return self._estimate_kv_cache_bytes(
                             c, cache_type_kv, n_parallel = n_parallel
@@ -3614,10 +3503,7 @@ class LlamaCppBackend:
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )
-        # The MTP draft reserve also has to fit the even split, else an uneven
-        # pair gets tensor_split=None (even) while the smaller GPU can't host its
-        # share. Mirror the pooled budget: byte-accurate when available, else the
-        # legacy flat 2 GiB that kv_budget_b used above.
+        # The MTP reserve also has to fit the even split (mirror the pooled budget).
         mtp_bytes = _mtp_at(effective_ctx) if effective_ctx > 0 else 0
         if mtp_engaged and mtp_overhead_fn is None:
             mtp_bytes = 2 * 1024**3
@@ -4015,10 +3901,8 @@ class LlamaCppBackend:
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
-                    # (idx, free, total) -> 2-tuple gpus for the existing logic
-                    # plus a total map so the fit can reserve an ABSOLUTE headroom
-                    # (a fraction of each GPU's total), which stays correct when
-                    # the GPU is already partly used by other processes.
+                    # 2-tuple gpus for existing logic + a total map for the absolute
+                    # per-GPU headroom (correct when the GPU is already partly used).
                     _gpu_mem = self._get_gpu_memory()
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
@@ -4063,15 +3947,11 @@ class LlamaCppBackend:
                         and _mtp_size_for_fit < _MTP_MIN_SIZE_B
                         and not bool(mtp_draft_path)
                     )
-                    # A user --spec-type that names mtp in extras runs MTP even
-                    # though Studio suppresses its own emission, so it must still
-                    # reserve VRAM (the original gap behind this fix).
+                    # Extras can run MTP even when Studio suppresses its own emission.
                     _user_mtp_via_extras = _extra_args_requests_mtp(extra_args)
-                    # Mirror _build_speculative_flags so the budget never reserves
-                    # for MTP that the launch resolver will not emit: MTP needs a
-                    # head/drafter (forced mtp on a plain GGUF falls back to
-                    # --spec-default) and a binary that supports --spec-type mtp
-                    # (older builds fall back, "binary_no_mtp").
+                    # Mirror _build_speculative_flags: reserve only for MTP the launch
+                    # resolver will actually emit (needs a head/drafter and a binary
+                    # that supports --spec-type mtp).
                     _mtp_model_for_fit = bool(
                         self._nextn_predict_layers
                         or _is_mtp_model_name(model_identifier, model_path)
@@ -4098,17 +3978,14 @@ class LlamaCppBackend:
                         )
                     )
 
-                    # Effective draft depth for the budget. Extras are appended
-                    # last at launch (last-wins), so a --spec-draft-n-max /
-                    # --draft-max there overrides the first-class field; then the
-                    # platform default from _build_speculative_flags (2 GPU/3 CPU).
+                    # Effective draft depth: extras win (last-wins at launch), else
+                    # the field, else the platform default (2 GPU / 3 CPU).
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
                         _mtp_eff_n_max = 2 if gpus else 3
-                    # Separate drafter (Gemma, or a user --model-draft in extras)
-                    # weights live on GPU too; an embedded head (Qwen) is already
-                    # inside model_size.
+                    # Separate-drafter weights live on GPU too (an embedded head is
+                    # already in model_size).
                     _mtp_draft_for_budget = mtp_draft_path or _extra_args_mtp_draft_path(extra_args)
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
@@ -4116,14 +3993,10 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _mtp_draft_weights = 0
-                    # Draft KV quantization. llama.cpp defaults the draft context
-                    # to f16 independent of the main --cache-type-k/v; honour an
-                    # explicit --cache-type-k-draft / --spec-draft-type-k in extras
-                    # so the reserve recomputes if the draft KV is quantized.
+                    # Draft KV type (f16 by default; an extras override recomputes it).
                     _mtp_draft_cache_type = _extra_args_draft_cache_type(extra_args)
 
-                    # Byte-accurate, context-aware MTP reserve when GGUF dims allow
-                    # it; else None -> the flat _MTP_VRAM_RESERVE_FRAC fallback.
+                    # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
                     if _mtp_will_engage:
                         _probe_ctx = self._context_length or (
@@ -4139,9 +4012,7 @@ class LlamaCppBackend:
                             )
                             is not None
                         ):
-                            # Small closure capturing this load's draft depth,
-                            # drafter path/weights + draft KV type; ctx varies per
-                            # fit candidate.
+                            # Closure binding this load's draft params; ctx varies.
                             def mtp_overhead_fn(
                                 ctx: int,
                                 _n: int = _mtp_eff_n_max,
@@ -4161,20 +4032,12 @@ class LlamaCppBackend:
                     def _mtp_bytes(ctx: int) -> int:
                         return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
 
-                    # Deterministic compute-graph buffer (context-independent), from
-                    # GGUF dims + the serving-slot count. In layer-split / single-GPU
-                    # the output buffer lives on one device, so it is a single lump
-                    # added to the pooled footprint (the per-GPU 0.95 reserve covers
-                    # the small per-device activation scratch). Tensor mode reserves
-                    # it per device inside _plan_tensor_parallel instead. At the
-                    # default --parallel 1 this is a few tens of MiB; it grows with
-                    # concurrent serving slots. 0 when vocab/embd dims are missing.
+                    # Layer-split compute buffer (one lump; tensor mode reserves it
+                    # per device in _plan_tensor_parallel). Context-independent, so
+                    # fold it into the model footprint for the branches below.
                     _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
                         n_parallel = n_parallel, per_device_tensor = False
                     )
-                    # Compute buffer behaves like extra weights in the fit math
-                    # (context-independent), so fold it into the model footprint for
-                    # the layer-split / single-GPU branches below.
                     model_size_fit = model_size + _compute_buffer_pipeline
 
                     # Auto-cap context to fit GPU VRAM and select GPUs. Two
