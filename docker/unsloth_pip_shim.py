@@ -20,6 +20,7 @@ absolute path so there is no recursion. `python -m pip` / `%pip` bypass PATH and
 are not intercepted -- the driven `unsloth-run` handles those by parsing the
 notebook directly.
 """
+
 import os, re, sys, subprocess
 
 REAL = {"pip": "/opt/unsloth-venv/bin/pip", "uv": "/opt/unsloth-venv/bin/uv"}
@@ -27,18 +28,48 @@ MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_trans
 
 # Packages whose baked version must never be changed by a notebook install cell.
 _KEEP = {
-    "torch", "torchvision", "torchaudio", "triton", "triton-rocm", "pytorch-triton",
-    "xformers", "vllm", "bitsandbytes", "flashinfer", "flashinfer-python",
-    "unsloth", "unsloth-zoo", "unsloth_zoo",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "triton",
+    "triton-rocm",
+    "pytorch-triton",
+    "xformers",
+    "vllm",
+    "bitsandbytes",
+    "flashinfer",
+    "flashinfer-python",
+    "unsloth",
+    "unsloth-zoo",
+    "unsloth_zoo",
 }
 _KEEP_PREFIX = ("nvidia-", "nvidia_")
 # pip/uv flags that consume the following token as a value (so we don't mistake
 # that value for a requirement).
 _VALUE_FLAGS = {
-    "-r", "--requirement", "-c", "--constraint", "-i", "--index-url",
-    "--extra-index-url", "-f", "--find-links", "--target", "-t", "--python", "-p",
-    "--prefix", "--index-strategy", "--upgrade-package", "-P", "--no-binary",
-    "--only-binary", "--platform", "--python-version", "--abi", "--implementation",
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "--target",
+    "-t",
+    "--python",
+    "-p",
+    "--prefix",
+    "--index-strategy",
+    "--upgrade-package",
+    "-P",
+    "--no-binary",
+    "--only-binary",
+    "--platform",
+    "--python-version",
+    "--abi",
+    "--implementation",
 }
 
 
@@ -112,11 +143,13 @@ def main():
 
     if recorded:
         try:
-            os.makedirs(os.path.dirname(MARKER), exist_ok=True)
+            os.makedirs(os.path.dirname(MARKER), exist_ok = True)
             with open(MARKER, "w") as f:
                 f.write(recorded)
-            print(f"[unsloth-nb] notebook requested transformers=={recorded}; will "
-                  f"activate its sidecar for the model cells (base stack kept).")
+            print(
+                f"[unsloth-nb] notebook requested transformers=={recorded}; will "
+                f"activate its sidecar for the model cells (base stack kept)."
+            )
         except OSError:
             pass
     if dropped:

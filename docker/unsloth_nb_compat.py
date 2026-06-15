@@ -20,6 +20,7 @@ Two activation paths:
     startup file) activates the sidecar before the first model cell, using the
     version the notebook's own install cell asked for (recorded by the pip shim).
 """
+
 from __future__ import annotations
 import os, sys, glob, json
 
@@ -32,9 +33,16 @@ MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_trans
 # fallback when a notebook does not pin transformers but names a new-family model.
 _TIER_SUBSTRINGS = {
     "5.10.2": ("gemma-4-12b", "gemma4-12b"),
-    "5.5.0":  ("gemma-4", "gemma4", "qwen3.6"),
-    "5.3.0":  ("ministral-3", "glm-4.7-flash", "qwen3-30b-a3b", "qwen3.5",
-               "qwen3-next", "qwen3_5", "lfm2.5-vl"),
+    "5.5.0": ("gemma-4", "gemma4", "qwen3.6"),
+    "5.3.0": (
+        "ministral-3",
+        "glm-4.7-flash",
+        "qwen3-30b-a3b",
+        "qwen3.5",
+        "qwen3-next",
+        "qwen3_5",
+        "lfm2.5-vl",
+    ),
 }
 
 
@@ -100,9 +108,11 @@ def activate(version: str | None, *, quiet: bool = False):
         return None
     if "transformers" in sys.modules:
         if not quiet:
-            print(f"[unsloth-nb] transformers already imported; cannot switch to "
-                  f"{version} in-process (restart the kernel, or use `unsloth-run`).",
-                  file=sys.stderr)
+            print(
+                f"[unsloth-nb] transformers already imported; cannot switch to "
+                f"{version} in-process (restart the kernel, or use `unsloth-run`).",
+                file = sys.stderr,
+            )
         return None
     if d not in sys.path:
         sys.path.insert(0, d)
@@ -118,7 +128,7 @@ def resolve(model_name: str | None = None):
 
 
 # -- manual JupyterLab integration: activate before the first model cell --------
-def _pre_run_cell(_info=None):
+def _pre_run_cell(_info = None):
     v = requested_version()
     if v and "transformers" not in sys.modules:
         activate(v)

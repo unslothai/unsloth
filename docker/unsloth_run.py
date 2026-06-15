@@ -14,6 +14,7 @@ Usage:
 
 A raw github URL (raw.githubusercontent.com/.../nb/Foo.ipynb) is fetched first.
 """
+
 import argparse, json, os, re, subprocess, sys, tempfile, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,11 +56,11 @@ def _scan(nb):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="unsloth-run")
+    ap = argparse.ArgumentParser(prog = "unsloth-run")
     ap.add_argument("notebook")
     ap.add_argument("--out")
-    ap.add_argument("--timeout", type=int, default=3600)
-    ap.add_argument("--transformers", dest="tf")
+    ap.add_argument("--timeout", type = int, default = 3600)
+    ap.add_argument("--transformers", dest = "tf")
     args = ap.parse_args()
 
     nb = _load(args.notebook)
@@ -70,7 +71,8 @@ def main():
     # Materialise the notebook locally for nbconvert.
     if args.notebook.startswith(("http://", "https://")) or args.out:
         src_path = args.out or os.path.join(
-            tempfile.mkdtemp(), os.path.basename(args.notebook.split("?")[0]))
+            tempfile.mkdtemp(), os.path.basename(args.notebook.split("?")[0])
+        )
         with open(src_path, "w") as f:
             json.dump(nb, f)
     else:
@@ -82,7 +84,7 @@ def main():
     # The pip/uv shim writes the marker; pre-seed it too so the kernel agrees.
     if want:
         marker = env.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
-        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        os.makedirs(os.path.dirname(marker), exist_ok = True)
         open(marker, "w").write(want)
     if sidecar:
         env["PYTHONPATH"] = sidecar + os.pathsep + env.get("PYTHONPATH", "")
@@ -93,14 +95,21 @@ def main():
         print("[unsloth-run] no transformers pin/model tier detected; using base venv")
 
     cmd = [
-        "/opt/unsloth-venv/bin/jupyter", "nbconvert", "--to", "notebook",
-        "--execute", f"--ExecutePreprocessor.timeout={args.timeout}",
+        "/opt/unsloth-venv/bin/jupyter",
+        "nbconvert",
+        "--to",
+        "notebook",
+        "--execute",
+        f"--ExecutePreprocessor.timeout={args.timeout}",
         "--ExecutePreprocessor.kernel_name=python3",
-        src_path, "--output", os.path.basename(out_path),
-        "--output-dir", os.path.dirname(os.path.abspath(out_path)) or ".",
+        src_path,
+        "--output",
+        os.path.basename(out_path),
+        "--output-dir",
+        os.path.dirname(os.path.abspath(out_path)) or ".",
     ]
     print("[unsloth-run] executing:", os.path.basename(src_path))
-    sys.exit(subprocess.call(cmd, env=env))
+    sys.exit(subprocess.call(cmd, env = env))
 
 
 if __name__ == "__main__":
