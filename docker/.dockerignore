@@ -9,3 +9,4 @@
 !unsloth_pip_shim.py
 !unsloth_ipython_startup.py
 !unsloth_run.py
+!unsloth_sync_notebooks.sh

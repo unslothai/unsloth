@@ -25,7 +25,18 @@ if [[ -x /usr/local/cuda-13.0/bin/ptxas ]] && [[ -z "${TRITON_PTXAS_PATH:-}" ]];
     export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
 fi
 
+# Make the unslothai/notebooks collection available under /workspace before the
+# user command runs (JupyterLab, unsloth-run, or a shell). Best-effort: it is
+# fully gated by UNSLOTH_SKIP_NOTEBOOK_SYNC and never blocks or fails the
+# container (see unsloth_sync_notebooks.sh).
+sync_notebooks() {
+    if [[ -x /usr/local/bin/unsloth-sync-notebooks ]]; then
+        /usr/local/bin/unsloth-sync-notebooks || true
+    fi
+}
+
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
+    sync_notebooks
     exec "$@"
 fi
 
@@ -44,6 +55,7 @@ if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
         warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
         warn "Training requires an NVIDIA GPU. CPU mode covers Jupyter, GGUF tooling and Studio chat."
+        sync_notebooks
         exec "$@"
     fi
 fi
@@ -146,4 +158,5 @@ if major < 8:
     print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
 PY
 
+sync_notebooks
 exec "$@"
