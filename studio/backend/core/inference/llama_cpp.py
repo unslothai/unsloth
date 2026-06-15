@@ -533,6 +533,14 @@ def _is_companion_gguf_path(path: str) -> bool:
     return name.startswith("mtp-") or "/mtp/" in f"/{p}"
 
 
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+
+
+def _is_big_endian_gguf_path(path: str) -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_BIG_ENDIAN_GGUF_FILENAME_RE.search(name))
+
+
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
 
@@ -541,7 +549,11 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """
     variant_key = variant.strip().lower()
     main_files = [
-        f for f in files if f.lower().endswith(".gguf") and not _is_companion_gguf_path(f)
+        f
+        for f in files
+        if f.lower().endswith(".gguf")
+        and not _is_companion_gguf_path(f)
+        and not _is_big_endian_gguf_path(f)
     ]
     if not variant_key:
         return sorted(main_files)

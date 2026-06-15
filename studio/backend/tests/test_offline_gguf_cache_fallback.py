@@ -141,6 +141,31 @@ class TestGgufVariantFileResolution:
 
         assert _gguf_files_for_variant(files, "stories260K") == ["tinyllamas/stories260K.gguf"]
 
+    @pytest.mark.parametrize(
+        "big_endian_path",
+        [
+            "model-Q4_K_M-be.gguf",
+            "model-Q4_K_M_be.gguf",
+            "model-Q4_K_M_be_infill.gguf",
+            r"nested\model-Q4_K_M_be.gguf",
+        ],
+    )
+    def test_filters_big_endian_known_quant_before_exact_match(self, big_endian_path):
+        files = [
+            big_endian_path,
+            "model-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["model-Q4_K_M.gguf"]
+
+    def test_empty_variant_filters_big_endian_files(self):
+        files = [
+            "model-Q4_K_M-be.gguf",
+            "model-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
+
     def test_download_uses_exact_variant_label(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
         downloaded: list[str] = []

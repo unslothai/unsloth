@@ -1142,7 +1142,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
-const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|-)be(?:[.-]|$)/;
+const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/;
 
 function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   if (!variant?.filename) {
