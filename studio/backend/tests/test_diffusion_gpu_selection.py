@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib
+import struct
 import sys
+import threading
 import types as _types
 from pathlib import Path
 from unittest import mock
@@ -51,6 +53,19 @@ def _make_backend(backend_cls):
     backend._wait_for_health = mock.Mock(return_value = True)
     backend._drain_stdout = mock.Mock()
     return backend
+
+
+def _write_diffusion_gguf(path: Path) -> None:
+    key = b"general.architecture"
+    value = b"diffusion_gemma"
+    path.write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key
+        + struct.pack("<I", 8)
+        + struct.pack("<Q", len(value))
+        + value
+    )
 
 
 def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(
@@ -128,6 +143,63 @@ def test_child_gpu_pin_detects_rocm_from_torch_version(monkeypatch, backend_cls)
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
     assert env["HIP_VISIBLE_DEVICES"] == "1"
     assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_gpu_free_memory_detects_rocm_masks_from_torch_version(
+    monkeypatch, llama_cpp_module, backend_cls
+):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(ordinal):
+            assert ordinal == 0
+            return 123 * 1024 * 1024, 456 * 1024 * 1024
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0+rocm6.4"
+    fake_torch.cuda = FakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _types.SimpleNamespace(returncode = 1, stdout = ""),
+    )
+
+    assert backend_cls._get_gpu_free_memory() == [(1, 123)]
+
+
+def test_load_model_rejects_diffusion_multi_gpu_before_kill(tmp_path, backend_cls):
+    gguf_path = tmp_path / "diffusion.gguf"
+    _write_diffusion_gguf(gguf_path)
+    backend = _make_backend(backend_cls)
+    backend._serial_load_lock = threading.Lock()
+    backend._process = object()
+    backend._healthy = True
+    backend._is_diffusion = True
+    backend._model_identifier = "local/diffusiongemma"
+    backend._gguf_path = str(gguf_path)
+    backend._hf_variant = None
+
+    with pytest.raises(ValueError, match = "support one gpu_id"):
+        backend.load_model(
+            gguf_path = str(gguf_path),
+            model_identifier = "local/diffusiongemma",
+            n_ctx = 0,
+            gpu_ids = [0, 1],
+        )
+
+    backend._kill_process.assert_not_called()
 
 
 def test_requested_gpu_filter_rejects_partial_visibility(backend_cls):

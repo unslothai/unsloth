@@ -1500,6 +1500,15 @@ class LlamaCppBackend:
         return 0
 
     @staticmethod
+    def _torch_is_rocm(torch_module) -> bool:
+        try:
+            if getattr(torch_module.version, "hip", None) is not None:
+                return True
+            return "rocm" in str(getattr(torch_module, "__version__", "")).lower()
+        except Exception:
+            return False
+
+    @staticmethod
     def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
         """Inject DC llama.cpp tuning into env in place via setdefault (user
         values win); return whether the box qualified. Opt out with
@@ -1539,8 +1548,7 @@ class LlamaCppBackend:
             return
         try:
             import torch as _torch
-            torch_version = getattr(_torch, "__version__", "")
-            if getattr(_torch.version, "hip", None) is not None or "rocm" in torch_version.lower():
+            if LlamaCppBackend._torch_is_rocm(_torch):
                 env["HIP_VISIBLE_DEVICES"] = pinned
                 env.pop("ROCR_VISIBLE_DEVICES", None)
         except Exception as e:
@@ -1648,7 +1656,7 @@ class LlamaCppBackend:
             # Match utils/hardware/hardware.py::_get_parent_visible_gpu_spec:
             # treat an empty mask (HIP_VISIBLE_DEVICES="") as "no GPUs" rather
             # than falling through. ``or`` would coerce "" to the wrong source.
-            if getattr(torch.version, "hip", None) is not None:
+            if LlamaCppBackend._torch_is_rocm(torch):
                 hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
                 rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
                 cvd = (
@@ -2291,6 +2299,31 @@ class LlamaCppBackend:
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None
 
+    @staticmethod
+    def _gguf_is_diffusion_model(gguf_path: str) -> bool:
+        try:
+            with open(gguf_path, "rb") as f:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:
+                    return False
+                _version = struct.unpack("<I", f.read(4))[0]
+                _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+                for _ in range(kv_count):
+                    key_len = struct.unpack("<Q", f.read(8))[0]
+                    key = f.read(key_len).decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+                    if key == "general.architecture" and vtype == 8:
+                        slen = struct.unpack("<Q", f.read(8))[0]
+                        if f.read(slen).decode("utf-8").lower().startswith("diffusion"):
+                            return True
+                        continue
+                    if key == "diffusion.canvas_length":
+                        return True
+                    LlamaCppBackend._gguf_skip_value(f, vtype)
+        except Exception:
+            return False
+        return False
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -2596,8 +2629,7 @@ class LlamaCppBackend:
         """
         import os
 
-        if gpu_ids is not None and len(gpu_ids) > 1:
-            raise ValueError(f"DiffusionGemma GGUF loads support one gpu_id, got {list(gpu_ids)}.")
+        self._validate_diffusion_gpu_ids(gpu_ids)
 
         assets = self._find_diffusion_assets()
         if assets is None:
@@ -3476,6 +3508,12 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+            self._validate_diffusion_gpu_ids_before_reload(
+                gguf_path = gguf_path,
+                model_identifier = model_identifier,
+                hf_variant = hf_variant,
+                gpu_ids = gpu_ids,
+            )
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
             if self._already_in_target_state(
@@ -4873,19 +4911,11 @@ class LlamaCppBackend:
         compares raw kwargs so ``load_model`` can short-circuit a duplicate
         /load that raced past the route-level check (#5401).
         """
-        if not self.is_loaded:
-            return False
-        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
-            return False
-        # Direct-file loads pass hf_variant=None while the backend stores an
-        # extracted filename label; compare paths to keep the guard symmetric.
-        if gguf_path is not None and self._gguf_path:
-            try:
-                if Path(self._gguf_path).resolve() != Path(gguf_path).resolve():
-                    return False
-            except OSError:
-                return False
-        elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
+        if not self._loaded_model_source_matches(
+            model_identifier = model_identifier,
+            hf_variant = hf_variant,
+            gguf_path = gguf_path,
+        ):
             return False
         if self._requested_n_ctx != int(n_ctx):
             return False
@@ -4957,6 +4987,50 @@ class LlamaCppBackend:
             if list(extra_args) != current:
                 return False
         return True
+
+    @staticmethod
+    def _validate_diffusion_gpu_ids(gpu_ids: Optional[List[int]]) -> None:
+        if gpu_ids is not None and len(gpu_ids) > 1:
+            raise ValueError(f"DiffusionGemma GGUF loads support one gpu_id, got {list(gpu_ids)}.")
+
+    def _loaded_model_source_matches(
+        self,
+        *,
+        model_identifier: str,
+        hf_variant: Optional[str],
+        gguf_path: Optional[str] = None,
+    ) -> bool:
+        if not self.is_loaded:
+            return False
+        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
+            return False
+        # Direct-file loads pass hf_variant=None while the backend stores an
+        # extracted filename label; compare paths to keep the guard symmetric.
+        if gguf_path is not None and self._gguf_path:
+            try:
+                return Path(self._gguf_path).resolve() == Path(gguf_path).resolve()
+            except OSError:
+                return False
+        return (self._hf_variant or "").lower() == (hf_variant or "").lower()
+
+    def _validate_diffusion_gpu_ids_before_reload(
+        self,
+        *,
+        gguf_path: Optional[str],
+        model_identifier: str,
+        hf_variant: Optional[str],
+        gpu_ids: Optional[List[int]],
+    ) -> None:
+        if gpu_ids is None or len(gpu_ids) <= 1:
+            return
+        if gguf_path is not None and self._gguf_is_diffusion_model(gguf_path):
+            self._validate_diffusion_gpu_ids(gpu_ids)
+        if self._is_diffusion and self._loaded_model_source_matches(
+            model_identifier = model_identifier,
+            hf_variant = hf_variant,
+            gguf_path = gguf_path,
+        ):
+            self._validate_diffusion_gpu_ids(gpu_ids)
 
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
