@@ -806,10 +806,18 @@ if (-not $HasNvidiaSmi) {
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
         if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+        # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes long
+        # before VenvDir is set), so also derive the venv from the setup python
+        # and the default Studio home; else the venv hipInfo is not recognized and
+        # the amd-smi/DiskPart gate reopens.
         $venvRoots = @()
         if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
         $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
         if ($vd) { $venvRoots += $vd }
+        if ($env:UNSLOTH_SETUP_PYTHON) {
+            try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
+        }
+        if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
         try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
         foreach ($root in $venvRoots) {
             if ([string]::IsNullOrWhiteSpace($root)) { continue }
@@ -830,7 +838,9 @@ if (-not $HasNvidiaSmi) {
         $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
         if ($hipRoot) {
             $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-            if (Test-Path $hipinfoCandidate) {
+            if ((Test-Path $hipinfoCandidate) -and (Test-HipinfoIsVenvInternal $hipinfoCandidate)) {
+                # ${hipEnvLabel} points into the venv (AMD wheel): not a HIP SDK.
+            } elseif (Test-Path $hipinfoCandidate) {
                 substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
                 substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
                 substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"

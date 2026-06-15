@@ -366,6 +366,16 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "Test-HipinfoIsVenvInternal $hipinfoExe.Source" in text
         ), f"{ps.name} must run the venv exclusion on the Get-Command hipinfo result"
+        # The HIP_PATH/ROCM_PATH candidate must also be venv-filtered, else an env
+        # var pointing into the venv reopens the gate.
+        assert (
+            "Test-HipinfoIsVenvInternal $hipinfoCandidate" in text
+        ), f"{ps.name} must run the venv exclusion on the HIP_PATH/ROCM_PATH candidate"
+        # VenvDir/VIRTUAL_ENV can be unset at probe time (the update flow), so the
+        # venv root must also be derived from the setup python.
+        assert (
+            "UNSLOTH_SETUP_PYTHON" in text
+        ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_SETUP_PYTHON"
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
