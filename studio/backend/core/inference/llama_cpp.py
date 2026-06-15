@@ -2576,9 +2576,7 @@ class LlamaCppBackend:
         import os
 
         if gpu_ids is not None and len(gpu_ids) > 1:
-            raise ValueError(
-                f"DiffusionGemma GGUF loads support one gpu_id, got {list(gpu_ids)}."
-            )
+            raise ValueError(f"DiffusionGemma GGUF loads support one gpu_id, got {list(gpu_ids)}.")
 
         assets = self._find_diffusion_assets()
         if assets is None:

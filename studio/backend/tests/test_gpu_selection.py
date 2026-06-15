@@ -757,7 +757,9 @@ class TestRouteErrors(unittest.TestCase):
                 "from_identifier",
                 return_value = model_config,
             ),
-            patch.object(inference_route.hardware_utils, "get_device", return_value = DeviceType.CUDA),
+            patch.object(
+                inference_route.hardware_utils, "get_device", return_value = DeviceType.CUDA
+            ),
             patch.object(inference_route, "resolve_requested_gpu_ids", return_value = [0, 1]),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
             patch.object(
