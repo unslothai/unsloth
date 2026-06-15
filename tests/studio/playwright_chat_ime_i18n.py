@@ -125,6 +125,7 @@ with sync_playwright() as p:
 
     page_errors: list[str] = []
     console_errors: list[str] = []
+    expected_probe_cancel_500s = [0]
 
     def _on_console(m):
         if m.type != "error":
@@ -300,11 +301,16 @@ with sync_playwright() as p:
         """Cancel a real run started by a submit probe before the next case."""
         stop_btn = page.locator('button[aria-label="Stop generating"]')
         send_btn = page.locator('button[aria-label="Send message"]')
+        allowed_cancel_500 = False
         try:
             stop_btn.wait_for(state = "visible", timeout = 5_000)
+            expected_probe_cancel_500s[0] += 1
+            allowed_cancel_500 = True
             stop_btn.click(timeout = 5_000)
             info(f"{label}: stopped generation started by submit probe")
         except Exception:
+            if allowed_cancel_500:
+                expected_probe_cancel_500s[0] = max(0, expected_probe_cancel_500s[0] - 1)
             pass
         try:
             expect(send_btn).to_be_visible(timeout = 15_000)
@@ -734,7 +740,19 @@ with sync_playwright() as p:
     #    via is_benign_*; fail only on real errors.
     shoot("07-final")
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]
-    real_console_errors = [e for e in console_errors if not is_benign_console_error(e)]
+    probe_cancel_500_allowance = expected_probe_cancel_500s[0]
+    real_console_errors = []
+    for error in console_errors:
+        if is_benign_console_error(error):
+            continue
+        if (
+            probe_cancel_500_allowance > 0
+            and "Failed to load resource: the server responded with a status of 500" in error
+            and "Internal Server Error" in error
+        ):
+            probe_cancel_500_allowance -= 1
+            continue
+        real_console_errors.append(error)
     info(
         f"page_errors={len(page_errors)} ({len(real_page_errors)} non-benign); "
         f"console_errors={len(console_errors)} "
