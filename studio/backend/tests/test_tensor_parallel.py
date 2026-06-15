@@ -633,6 +633,6 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     # pooled budget can't hold weights + per-device compute buffers.
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_gpu_usable(g) >= reserve_mib" in src  # admit by usable budget
-    assert "g[1] >= reserve_mib" not in src        # not raw free
-    assert "_tp_weight_budget_mib" in src          # pooled-weight capacity gate
-    assert "falling back to layer split" in src    # downgrade on overcommit
+    assert "g[1] >= reserve_mib" not in src  # not raw free
+    assert "_tp_weight_budget_mib" in src  # pooled-weight capacity gate
+    assert "falling back to layer split" in src  # downgrade on overcommit

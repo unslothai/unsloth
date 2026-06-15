@@ -3484,6 +3484,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
+
         # Per-GPU usable budget: free - (1-frac)*total (raw free when total is
         # unknown), the same headroom the layer-split paths enforce.
         def _usable(idx: int, free_mib: int) -> float:
@@ -4204,8 +4205,7 @@ class LlamaCppBackend:
                         # floor the context, not stop an overcommitted launch. Fall
                         # back to layer split when it can't.
                         _tp_weight_budget_mib = (
-                            sum(_gpu_usable(g) for g in tp_gpus)
-                            - len(tp_gpus) * reserve_mib
+                            sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
                         if _tp_weight_budget_mib <= model_size / (1024 * 1024):
                             logger.info(
