@@ -50,6 +50,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  forkChatThread,
+  getForkCount,
+} from "@/features/chat/api/chat-api";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import {
   PromptStorageDialog,
@@ -126,6 +131,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -2729,6 +2735,111 @@ const AssistantMessage: FC = () => {
 
 const COPY_RESET_MS = 2000;
 
+const ForkCountBadge: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) {
+        if (!cancelled) setCount(0);
+        return;
+      }
+      void getForkCount(remoteId, messageId)
+        .then((n) => {
+          if (!cancelled) setCount(n);
+        })
+        .catch(() => {
+          /* swallow: badge is non-critical */
+        });
+    };
+    refresh();
+    const handler = () => refresh();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
+    };
+  }, [aui, messageId]);
+
+  if (count <= 0) return null;
+  return (
+    <span
+      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+      title={`${count} fork${count === 1 ? "" : "s"} from this message`}
+    >
+      <GitBranchIcon strokeWidth={1.75} className="size-3" />
+      {count}
+    </span>
+  );
+};
+
+const useForkMessageAction = () => {
+  const aui = useAui();
+  const navigate = useNavigate();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const [pending, setPending] = useState(false);
+
+  const handleFork = async () => {
+    const remoteId = aui.threadListItem().getState().remoteId;
+    if (!remoteId) {
+      toast.error("Cannot fork an unsaved chat");
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await forkChatThread(remoteId, {
+        messageId,
+        newThreadId: crypto.randomUUID(),
+        createdAt: Date.now(),
+      });
+      useChatRuntimeStore.getState().setActiveThreadId(result.thread.id);
+      navigate({
+        to: "/chat",
+        search: { thread: result.thread.id },
+        replace: false,
+      });
+      if (result.containerSnapshotWarning) {
+        toast.info("Fork created", {
+          description: result.containerSnapshotWarning,
+        });
+      } else {
+        toast.success("Fork created");
+      }
+    } catch (error) {
+      console.error("Failed to fork", error);
+      toast.error("Failed to fork", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return {
+    forkMessage: handleFork,
+    forkDisabled: isRunning || pending,
+  };
+};
+
+const ForkMessageButton: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+
+  return (
+    <TooltipIconButton
+      tooltip="Fork from here"
+      disabled={forkDisabled}
+      onClick={forkMessage}
+    >
+      <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
@@ -2799,6 +2910,8 @@ const CopyButton: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
@@ -2810,6 +2923,7 @@ const AssistantActionBar: FC = () => {
           <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      <ForkCountBadge />
       <DeleteMessageButton />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
@@ -2824,10 +2938,18 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-full bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
+          <ActionBarMorePrimitive.Item
+            disabled={forkDisabled}
+            onSelect={() => void forkMessage()}
+            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+          >
+            <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+            Fork in new chat
+          </ActionBarMorePrimitive.Item>
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-full px-3 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
@@ -2894,6 +3016,8 @@ const UserActionBar: FC = () => {
           />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
+      <ForkCountBadge />
+      <ForkMessageButton />
       <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );
