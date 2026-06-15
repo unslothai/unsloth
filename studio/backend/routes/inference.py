@@ -2122,9 +2122,7 @@ async def validate_model(
     except LlamaServerNotFoundError as e:
         # GGUF model but no llama.cpp runtime installed: surface the actionable
         # "install the prebuilt" message instead of a generic "Invalid model".
-        logger.warning(
-            "GGUF runtime missing while validating '%s': %s", request.model_path, e
-        )
+        logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         not_supported_hints = [

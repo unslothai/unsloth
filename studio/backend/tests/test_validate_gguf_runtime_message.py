@@ -53,9 +53,7 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
 
     def test_missing_llama_server_returns_actionable_message(self):
         route = _load_route_module("inf_route_runtime_msg_1", "routes/inference.py")
-        err = self._validate(
-            route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG)
-        )
+        err = self._validate(route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG))
         self.assertEqual(err.status_code, 400)
         self.assertIn("unsloth studio setup", err.detail)
         self.assertIn("llama.cpp runtime", err.detail)
@@ -65,9 +63,7 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
         # A genuinely-unresolvable identifier must keep the safe generic message
         # (we only special-case the runtime-missing error).
         route = _load_route_module("inf_route_runtime_msg_2", "routes/inference.py")
-        err = self._validate(
-            route, "not/a-real-model", RuntimeError("totally different failure")
-        )
+        err = self._validate(route, "not/a-real-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 400)
         self.assertEqual(err.detail, "Invalid model")
 
