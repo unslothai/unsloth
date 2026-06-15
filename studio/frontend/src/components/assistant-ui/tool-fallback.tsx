@@ -8,7 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -142,7 +142,7 @@ function ToolFallbackTrigger({
       {...props}
     >
       {isRunning ? (
-        <ToolCallSpinner className="aui-tool-fallback-trigger-icon" />
+        <Spinner className="aui-tool-fallback-trigger-icon" />
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"

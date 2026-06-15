@@ -61,6 +61,7 @@ import {
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
+  markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
   updateStoredChatThread,
@@ -69,6 +70,7 @@ import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
@@ -561,10 +563,29 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
+  // Snapshot the toggle SYNCHRONOUSLY, before the await below. This runs in
+  // the same tick as the user's send, so it reliably captures the toggle's
+  // state at creation. Reading it after the await would let a toggle-off
+  // that lands mid-await (the list call is a real network round-trip) flip
+  // the decision and persist what should have been an incognito thread.
+  const incognitoAtInit = useChatRuntimeStore.getState().incognito;
+  // Fresh assistant-ui threads are local ids. Temporary chats can skip the
+  // history list entirely so a storage outage cannot block the first send.
+  if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
+    markThreadIncognito(threadId);
+    return;
+  }
   const existing = (await listStoredChatThreads({ includeArchived: true })).find(
     (thread) => thread.id === threadId,
   );
   if (existing) {
+    return;
+  }
+  // For non-local ids, keep the existing check first so an already-persisted
+  // thread is never tagged -- that's what keeps a real thread saving normally
+  // even if the toggle flips on while its run is still streaming.
+  if (incognitoAtInit) {
+    markThreadIncognito(threadId);
     return;
   }
 
@@ -610,7 +631,10 @@ function createStudioDbAdapter(
       }
       return {
         remoteId: thread.id,
-        status: thread.archived ? "archived" : "regular",
+        // Always regular: archive state is owned by the app's own controls.
+        // Reporting archived here makes assistant-ui unarchive a chat the
+        // moment it is opened.
+        status: "regular",
         title: thread.title,
       };
     },
@@ -659,8 +683,10 @@ function createStudioDbAdapter(
     },
 
     async unarchive(remoteId: string) {
+      // No-op on archive state: the app owns it via the sidebar menu and the
+      // archived chats settings dialog. assistant-ui calls this when an
+      // archived chat is opened, which must not unarchive it.
       await ensureStoredChatThread(remoteId);
-      await updateStoredChatThread(remoteId, { archived: false });
     },
 
     async delete(remoteId: string) {

@@ -862,6 +862,7 @@ class InferenceOrchestrator:
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         **_unused,
@@ -924,6 +925,7 @@ class InferenceOrchestrator:
             session_id = session_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
+            bypass_permissions = bypass_permissions,
         )
 
     def generate_with_adapter_control(

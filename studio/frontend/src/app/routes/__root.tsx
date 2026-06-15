@@ -118,6 +118,7 @@ function RootLayout() {
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -133,6 +134,7 @@ function RootLayout() {
     const chatRuntime = useChatRuntimeStore.getState();
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
   }, [isChatRoute]);
 
   return (

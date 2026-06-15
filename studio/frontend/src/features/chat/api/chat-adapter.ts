@@ -1551,6 +1551,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -1840,8 +1841,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // Artifacts are independent of Search/Code: a local tool-capable model
-      // with Artifacts on exposes render_html even with no other pills active.
+      // Canvas is independent of Search/Code: a local tool-capable model
+      // with Canvas on exposes render_html even with no other pills active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -1850,12 +1851,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
           : disabledToolGuard;
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
@@ -2428,7 +2429,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -2457,7 +2458,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? reasoningEnabled
                   ? { reasoning_effort: localReasoningEffort }
                   : {}
-                : { enable_thinking: reasoningEnabled }
+                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
@@ -2483,7 +2484,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  confirm_tool_calls: confirmToolCalls,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
@@ -3087,7 +3091,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 closeReasoningContent();
                 cumulativeText += delta;
               }
-              // Strip a trailing ${...} template-literal artifact from
+              // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(
