@@ -5955,9 +5955,9 @@ def resolve_install_attempts(
 
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
-    bundle: CUDA (with a CPU fallback), per-gfx ROCm, or CPU. Same selection the
-    upstream filename path used, just sourced from the manifest instead of
-    reconstructed from asset names."""
+    bundle: CUDA, per-gfx ROCm, or (non-GPU) CPU. Same selection the upstream
+    filename path used, just sourced from the manifest instead of reconstructed
+    from asset names."""
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
         # Prefer the cudart major Studio loads at runtime (torch's bundled
@@ -5972,7 +5972,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         )
         if selection is not None:
             attempts.extend(selection.attempts)
-    if host.has_rocm and not host.has_usable_nvidia:
+    elif host.has_rocm:
         # Use the fork's own per-gfx ROCm bundle (hash-approved, ships the full
         # ROCm runtime). Do NOT append the CPU asset for ROCm-only hosts: if no
         # bundle covers the GPU we want validate_prebuilt_attempts to raise
@@ -5982,6 +5982,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
+        # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
+        # selection produced nothing we want an empty attempt list so the caller
+        # source-builds with CUDA, not a CPU-only binary silently installed on a
+        # GPU host (mirrors the ROCm branch, and Windows NVIDIA).
         cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
         if cpu_choice is not None:
             attempts.append(cpu_choice)

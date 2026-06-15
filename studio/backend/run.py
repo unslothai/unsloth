@@ -869,6 +869,13 @@ def run_server(
     from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
+    # Allow local stdio MCP servers on a loopback bind (the user's own machine),
+    # but never on Colab, which is a hosted VM reachable through its proxy. The
+    # gate reads the env var at request time, so this need not precede the import.
+    from utils.host_policy import apply_stdio_mcp_loopback_default
+
+    apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
+
     # Create all standard directories on startup.
     ensure_studio_directories()
 
