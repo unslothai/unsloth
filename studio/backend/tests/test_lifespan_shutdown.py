@@ -40,6 +40,24 @@ def test_run_lifespan_shutdown_survives_dead_default_executor():
     assert hw.DEVICE is None
 
 
+def test_run_lifespan_shutdown_survives_shutdown_default_executor():
+    """Production path: loop.shutdown_default_executor() makes run_in_executor raise
+    'Executor shutdown has been called'; the helper must still recover inline."""
+    term_box, terminate = _counter()
+    clear_box, clear = _counter()
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+
+    async def _drive():
+        await asyncio.get_running_loop().shutdown_default_executor()
+        await run_lifespan_shutdown(terminate, clear, hw)
+
+    asyncio.run(_drive())
+
+    assert term_box["n"] == 1, "terminate must run via inline fallback"
+    assert clear_box["n"] == 1
+    assert hw.DEVICE is None
+
+
 def test_run_lifespan_shutdown_normal_path():
     """Healthy executor: each step runs exactly once."""
     term_box, terminate = _counter()

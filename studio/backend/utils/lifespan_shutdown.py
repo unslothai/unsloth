@@ -12,6 +12,7 @@ unit-tested without the heavy backend import graph.
 
 import asyncio
 import contextvars
+import types
 from typing import Callable
 
 import structlog
@@ -20,12 +21,14 @@ logger = structlog.get_logger(__name__)
 
 
 async def run_lifespan_shutdown(
-    terminate_downloads: Callable[[], None], clear_compiled_cache: Callable[[], None], hw_module
+    terminate_downloads: Callable[[], None],
+    clear_compiled_cache: Callable[[], None],
+    hw_module: types.ModuleType,
 ) -> None:
     """Run each shutdown step guarded so one failure can't skip the others; never raise."""
     loop = asyncio.get_running_loop()
     # Copy context for parity with asyncio.to_thread. Schedule and await
-    # separately so a dead executor (raises at submit) retries inline, while a
+    # separately so a dead executor (raises at submit) runs inline, while a
     # body exception (raised at await) is logged, not re-run.
     ctx = contextvars.copy_context()
     try:
