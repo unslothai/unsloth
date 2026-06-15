@@ -75,6 +75,14 @@ from state.tool_approvals import (
 logger = get_logger(__name__)
 
 
+class LlamaServerNotFoundError(RuntimeError):
+    """A GGUF model needs the llama.cpp runtime but no llama-server binary is
+    installed. Subclasses RuntimeError so existing handlers still catch it, while
+    routes can detect it to show an actionable "install the runtime" message
+    instead of a generic "invalid model".
+    """
+
+
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
 

@@ -2082,6 +2082,8 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    from core.inference.llama_cpp import LlamaServerNotFoundError
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2117,6 +2119,13 @@ async def validate_model(
 
     except HTTPException:
         raise
+    except LlamaServerNotFoundError as e:
+        # GGUF model but no llama.cpp runtime installed: surface the actionable
+        # "install the prebuilt" message instead of a generic "Invalid model".
+        logger.warning(
+            "GGUF runtime missing while validating '%s': %s", request.model_path, e
+        )
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         not_supported_hints = [
             "No config file found",
