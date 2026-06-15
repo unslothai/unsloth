@@ -801,7 +801,30 @@ $script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+    # Ignore the venv-internal hipInfo.exe the AMD torch wheel puts on PATH: it is
+    # not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
+    function Test-HipinfoIsVenvInternal {
+        param([AllowNull()][string]$HipinfoPath)
+        if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+        $venvRoots = @()
+        if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+        $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+        if ($vd) { $venvRoots += $vd }
+        try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+        foreach ($root in $venvRoots) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+            if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
     $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+    if ($hipinfoExe -and (Test-HipinfoIsVenvInternal $hipinfoExe.Source)) {
+        $hipinfoExe = $null  # venv-internal hipInfo.exe is not a HIP SDK
+    }
     if (-not $hipinfoExe) {
         $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
         $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
@@ -2259,13 +2282,15 @@ if ($script:UnslothVerbose) {
 # of whether the CUDA Toolkit is installed yet.
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
-# Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
-# the auto-generated filenames are extremely long. Keep the cache directory
-# under the user's Studio home (NOT the C:\ drive root) -- long paths are already
-# enabled above, and Python opts into them, so deep inductor paths still fit
-# without polluting the system drive.
-$TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
-if (-not (Test-Path -LiteralPath $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+# Triton/inductor filenames are long, so Windows MAX_PATH (260) can break
+# compilation. With long paths enabled, keep the cache under Studio home (off the
+# C:\ root); otherwise fall back to a short drive-root dir to keep MAX_PATH headroom.
+if ($LongPathsEnabled) {
+    $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+} else {
+    $TorchCacheDir = "C:\tc"
+}
+if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"

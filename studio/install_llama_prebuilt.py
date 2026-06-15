@@ -62,8 +62,8 @@ def _path_inside_venv(path: str) -> bool:
     That venv-internal hipInfo is NOT a HIP SDK and must not be mistaken for one
     (see _amd_smi_allowed)."""
     try:
-        _root = os.path.abspath(sys.prefix)
-        return os.path.commonpath([os.path.abspath(path), _root]) == _root
+        _root = os.path.normcase(os.path.abspath(sys.prefix))
+        return os.path.normcase(os.path.commonpath([os.path.abspath(path), _root])) == _root
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False
@@ -94,7 +94,10 @@ def _amd_smi_allowed() -> bool:
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         _root = os.environ.get(_var)
-        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+        if not _root:
+            continue
+        _candidate = os.path.join(_root, "bin", "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
             return True
     return False
 

@@ -1531,7 +1531,30 @@ shell.Run cmd, 0, False
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+        # Ignore the venv-internal hipInfo.exe the AMD torch wheel puts on PATH: it
+        # is not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
+        function Test-HipinfoIsVenvInternal {
+            param([AllowNull()][string]$HipinfoPath)
+            if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+            $venvRoots = @()
+            if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+            $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+            if ($vd) { $venvRoots += $vd }
+            try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+            foreach ($root in $venvRoots) {
+                if ([string]::IsNullOrWhiteSpace($root)) { continue }
+                try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+                if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            return $false
+        }
         $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if ($hipinfoExe -and (Test-HipinfoIsVenvInternal $hipinfoExe.Source)) {
+            $hipinfoExe = $null  # venv-internal hipInfo.exe is not a HIP SDK
+        }
         if (-not $hipinfoExe) {
             $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
             $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }

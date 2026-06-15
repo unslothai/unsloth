@@ -233,8 +233,14 @@ def _amd_smi_allowed_under(system, hipinfo_present, env):
         if hipinfo_present
         else (lambda name: None)
     )
+    # Pin sys.prefix to a venv root that does NOT contain the fake C:\hip\bin
+    # hipinfo above, so _path_inside_venv treats it as an external HIP SDK. On a
+    # POSIX test runner abspath(r"C:\hip\...") becomes <cwd>/C:\hip\..., which
+    # would land inside the real sys.prefix if the checkout sits under it -- so
+    # the helper must isolate sys.prefix just like the venv-internal tests do.
     with (
         patch.object(prebuilt.platform, "system", return_value = system),
+        patch.object(prebuilt.sys, "prefix", r"C:\venv"),
         patch.object(prebuilt.shutil, "which", side_effect = which),
         patch.dict(prebuilt.os.environ, env, clear = True),
     ):
@@ -314,6 +320,37 @@ def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
         assert prebuilt._amd_smi_allowed() is True
 
 
+def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
+    # The venv exclusion must also cover the HIP_PATH/ROCM_PATH fallback: a hipinfo
+    # under <venv>/_rocm_sdk_core/bin is still not a real HIP SDK.
+    venv_root = tmp_path / "venv"
+    hip_root = venv_root / "_rocm_sdk_core"
+    (hip_root / "bin").mkdir(parents = True)
+    (hip_root / "bin" / "hipinfo.exe").write_text("")
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(venv_root)),
+        patch.object(prebuilt.shutil, "which", side_effect = lambda name: None),
+        patch.dict(prebuilt.os.environ, {"ROCM_PATH": str(hip_root)}, clear = True),
+    ):
+        assert prebuilt._amd_smi_allowed() is False
+
+
+def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
+    # A real HIP SDK pointed to by HIP_PATH (outside the venv) still opens the
+    # gate, so the env-root venv filter does not regress HIP-SDK Windows users.
+    hip_root = tmp_path / "hipsdk"
+    (hip_root / "bin").mkdir(parents = True)
+    (hip_root / "bin" / "hipinfo.exe").write_text("")
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
+        patch.object(prebuilt.shutil, "which", side_effect = lambda name: None),
+        patch.dict(prebuilt.os.environ, {"HIP_PATH": str(hip_root)}, clear = True),
+    ):
+        assert prebuilt._amd_smi_allowed() is True
+
+
 def test_ps_installers_gate_amd_smi_on_windows():
     # Both PowerShell installers must gate amd-smi behind HIP-SDK presence + the
     # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
@@ -321,6 +358,14 @@ def test_ps_installers_gate_amd_smi_on_windows():
         text = ps.read_text(encoding = "utf-8")
         assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
+        # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors
+        # _path_inside_venv()), else amd-smi can still pop the DiskPart UAC.
+        assert "Test-HipinfoIsVenvInternal" in text, (
+            f"{ps.name} missing venv-internal hipinfo exclusion helper"
+        )
+        assert "Test-HipinfoIsVenvInternal $hipinfoExe.Source" in text, (
+            f"{ps.name} must run the venv exclusion on the Get-Command hipinfo result"
+        )
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
