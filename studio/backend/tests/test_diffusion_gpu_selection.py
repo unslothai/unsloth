@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types as _types
 from pathlib import Path
@@ -10,20 +11,36 @@ from unittest import mock
 
 import pytest
 
-_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
-if _BACKEND_DIR not in sys.path:
-    sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+@pytest.fixture()
+def llama_cpp_module(monkeypatch):
+    module_name = "core.inference.llama_cpp"
+    was_loaded = module_name in sys.modules
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    monkeypatch.syspath_prepend(backend_dir)
 
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+    loggers_stub = _types.ModuleType("loggers")
+    loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    monkeypatch.setitem(sys.modules, "loggers", loggers_stub)
+    monkeypatch.setitem(sys.modules, "structlog", _types.ModuleType("structlog"))
+
+    module = importlib.import_module(module_name)
+    yield module
+
+    if not was_loaded:
+        sys.modules.pop(module_name, None)
+        parent = sys.modules.get("core.inference")
+        if parent is not None and getattr(parent, "llama_cpp", None) is module:
+            delattr(parent, "llama_cpp")
 
 
-def _make_backend() -> LlamaCppBackend:
-    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+@pytest.fixture()
+def backend_cls(llama_cpp_module):
+    return llama_cpp_module.LlamaCppBackend
+
+
+def _make_backend(backend_cls):
+    backend = backend_cls.__new__(backend_cls)
     backend._context_length = 4096
     backend._stdout_lines = []
     backend._kill_process = mock.Mock()
@@ -36,7 +53,9 @@ def _make_backend() -> LlamaCppBackend:
     return backend
 
 
-def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(monkeypatch):
+def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(
+    monkeypatch, llama_cpp_module, backend_cls
+):
     captured = {}
 
     class DummyProcess:
@@ -47,9 +66,9 @@ def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(monkeypatch
         captured["env"] = kwargs["env"]
         return DummyProcess()
 
-    monkeypatch.setattr("core.inference.llama_cpp.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", fake_popen)
 
-    backend = _make_backend()
+    backend = _make_backend(backend_cls)
     assert backend._start_diffusion_server(
         model_path = "/models/diffusiongemma.gguf",
         gguf_path = "/models/diffusiongemma.gguf",
@@ -69,8 +88,8 @@ def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(monkeypatch
     assert backend.tensor_parallel is False
 
 
-def test_diffusion_server_rejects_multi_gpu_pins():
-    backend = _make_backend()
+def test_diffusion_server_rejects_multi_gpu_pins(backend_cls):
+    backend = _make_backend(backend_cls)
 
     with pytest.raises(ValueError, match = "support one gpu_id"):
         backend._start_diffusion_server(
@@ -87,32 +106,39 @@ def test_diffusion_server_rejects_multi_gpu_pins():
     backend._find_diffusion_assets.assert_not_called()
 
 
-def test_child_gpu_pin_clears_rocr_when_hip_is_forced():
+def test_child_gpu_pin_clears_rocr_when_hip_is_forced(backend_cls):
     env = {"ROCR_VISIBLE_DEVICES": "1"}
 
-    LlamaCppBackend._pin_child_gpu_env(env, "1", force_hip = True)
+    backend_cls._pin_child_gpu_env(env, "1", force_hip = True)
 
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
     assert env["HIP_VISIBLE_DEVICES"] == "1"
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
-def test_tensor_parallel_launch_uses_planned_gpu_order_for_tensor_split():
-    assert LlamaCppBackend._launch_gpu_indices(
+def test_requested_gpu_filter_rejects_partial_visibility(backend_cls):
+    assert backend_cls._filter_requested_gpus([(0, 1024), (1, 2048)], [1]) == [(1, 2048)]
+
+    with pytest.raises(ValueError, match = r"Requested GPU IDs \[2\]"):
+        backend_cls._filter_requested_gpus([(0, 1024), (1, 2048)], [1, 2])
+
+
+def test_tensor_parallel_launch_uses_planned_gpu_order_for_tensor_split(backend_cls):
+    assert backend_cls._launch_gpu_indices(
         gpu_ids = [1, 0],
         gpu_indices = [0, 1],
         tensor_parallel = True,
     ) == [0, 1]
 
-    assert LlamaCppBackend._launch_gpu_indices(
+    assert backend_cls._launch_gpu_indices(
         gpu_ids = [1, 0],
         gpu_indices = [0, 1],
         tensor_parallel = False,
     ) == [1, 0]
 
 
-def test_already_in_target_state_mismatches_changed_gpu_ids():
-    backend = _make_backend()
+def test_already_in_target_state_mismatches_changed_gpu_ids(backend_cls):
+    backend = _make_backend(backend_cls)
     backend._process = object()
     backend._healthy = True
     backend._model_identifier = "local/model"

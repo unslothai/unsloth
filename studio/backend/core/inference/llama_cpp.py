@@ -693,6 +693,10 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+class _GpuVisibilityError(ValueError):
+    pass
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -1553,6 +1557,23 @@ class LlamaCppBackend:
         if gpu_indices is not None:
             return list(gpu_indices)
         return None
+
+    @staticmethod
+    def _filter_requested_gpus(
+        gpus: list[tuple[int, int]],
+        gpu_ids: list[int] | None,
+    ) -> list[tuple[int, int]]:
+        if gpu_ids is None:
+            return list(gpus)
+        visible_ids = {idx for idx, _ in gpus}
+        missing_ids = [idx for idx in gpu_ids if idx not in visible_ids]
+        if missing_ids:
+            raise _GpuVisibilityError(
+                f"Requested GPU IDs {missing_ids} are not visible to llama-server "
+                f"(visible GPU IDs: {sorted(visible_ids)})"
+            )
+        requested_ids = set(gpu_ids)
+        return [gpu for gpu in gpus if gpu[0] in requested_ids]
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
@@ -3700,14 +3721,10 @@ class LlamaCppBackend:
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
-                    gpus = self._get_gpu_free_memory()
-                    if gpu_ids is not None:
-                        requested_gpu_set = set(gpu_ids)
-                        gpus = [gpu for gpu in gpus if gpu[0] in requested_gpu_set]
-                        if not gpus:
-                            raise RuntimeError(
-                                f"Requested GPU IDs {gpu_ids} are not visible to llama-server"
-                            )
+                    gpus = self._filter_requested_gpus(
+                        self._get_gpu_free_memory(),
+                        gpu_ids,
+                    )
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
@@ -3956,6 +3973,8 @@ class LlamaCppBackend:
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
+                except _GpuVisibilityError:
+                    raise
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True

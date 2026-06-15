@@ -1554,9 +1554,30 @@ async def load_model(
         # This must happen before the GGUF already-loaded check so changing GPU
         # selection forces a reload instead of returning the old process.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+        resolved_gguf_gpu_ids: Optional[list[int]] = None
+
+        def _resolve_gguf_gpu_ids() -> Optional[list[int]]:
+            nonlocal resolved_gguf_gpu_ids
+            if effective_gpu_ids is None:
+                return None
+            if resolved_gguf_gpu_ids is not None:
+                return resolved_gguf_gpu_ids
+            device = hardware_utils.get_device()
+            if device != hardware_utils.DeviceType.CUDA:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"gpu_ids {list(effective_gpu_ids)} is only supported for GGUF "
+                        "loads on CUDA/ROCm backends, but the current backend "
+                        f"is '{device.value}'."
+                    ),
+                )
+            resolved_gguf_gpu_ids = resolve_requested_gpu_ids(effective_gpu_ids)
+            return resolved_gguf_gpu_ids
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if request.gguf_variant or is_direct_gguf_request:
+            resolved_gguf_gpu_ids = _resolve_gguf_gpu_ids()
             gguf_variant_matches = is_direct_gguf_request or bool(
                 llama_backend.hf_variant
                 and request.gguf_variant
@@ -1572,7 +1593,7 @@ async def load_model(
                     request,
                     llama_backend,
                     effective_chat_template_override,
-                    effective_gpu_ids = effective_gpu_ids,
+                    effective_gpu_ids = resolved_gguf_gpu_ids,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -1682,22 +1703,7 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if effective_gpu_ids is not None:
-                device = hardware_utils.get_device()
-                if device != hardware_utils.DeviceType.CUDA:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"gpu_ids {list(effective_gpu_ids)} is only supported for GGUF "
-                            "loads on CUDA/ROCm backends, but the current backend "
-                            f"is '{device.value}'."
-                        ),
-                    )
-            resolved_gpu_ids = (
-                resolve_requested_gpu_ids(effective_gpu_ids)
-                if effective_gpu_ids is not None
-                else None
-            )
+            resolved_gpu_ids = _resolve_gguf_gpu_ids()
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
