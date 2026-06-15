@@ -3,15 +3,21 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ActivityIcon, CircleIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  ChevronDownIcon,
+  CircleIcon,
+  RefreshCwIcon,
+} from "lucide-react";
 import {
   type ReactElement,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import { getApiMonitor } from "../../chat/api/chat-api";
+import { getApiMonitor, getApiMonitorEntry } from "../../chat/api/chat-api";
 import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
@@ -81,10 +87,35 @@ function UsageBar({ value }: { value?: number | null }): ReactElement | null {
   );
 }
 
-function MonitorEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
+function MonitorEntry({
+  entry,
+  detail,
+  expanded,
+  loading,
+  onToggle,
+}: {
+  entry: ApiMonitorEntry;
+  detail?: ApiMonitorEntry;
+  expanded: boolean;
+  loading: boolean;
+  onToggle: () => void;
+}): ReactElement {
+  const prompt = detail?.prompt ?? entry.prompt_preview;
+  const replyText =
+    detail?.error ??
+    detail?.reply ??
+    entry.error ??
+    entry.reply_preview;
+  const reply = replyText || (entry.status === "running" ? "Waiting..." : "No reply");
+
   return (
-    <article className="rounded-lg border border-border/70 bg-background p-3">
-      <div className="flex min-w-0 items-start justify-between gap-3">
+    <article className="rounded-lg border border-border/70 bg-background">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-start justify-between gap-3 p-3 text-left"
+        aria-expanded={expanded}
+      >
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <CircleIcon
@@ -97,41 +128,59 @@ function MonitorEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
           <div className="mt-1 truncate text-[11px] text-muted-foreground">
             {entry.model}
           </div>
-        </div>
-        <div className="shrink-0 text-right text-[11px] text-muted-foreground">
-          <div>{formatTime(entry.started_at)}</div>
-          <div>{formatDuration(entry.duration_ms)}</div>
-        </div>
-      </div>
-
-      <div className="mt-3 grid gap-2">
-        <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">
-            Prompt
-          </div>
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-2 text-xs leading-5">
-            {entry.prompt || "No prompt text"}
-          </pre>
-        </div>
-        <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">
-            Reply
-          </div>
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-2 text-xs leading-5">
+          <div className="mt-2 line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
             {entry.error ||
-              entry.reply ||
-              (entry.status === "running" ? "Waiting..." : "No reply")}
-          </pre>
+              entry.reply_preview ||
+              entry.prompt_preview ||
+              (entry.status === "running" ? "Waiting..." : "No preview")}
+          </div>
         </div>
-      </div>
+        <div className="flex shrink-0 items-start gap-2 text-right text-[11px] text-muted-foreground">
+          <div>
+            <div>{formatTime(entry.started_at)}</div>
+            <div>{formatDuration(entry.duration_ms)}</div>
+          </div>
+          <ChevronDownIcon
+            className={cn(
+              "mt-0.5 size-3.5 transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+        </div>
+      </button>
 
-      <div className="mt-3 text-[11px] text-muted-foreground">
-        {formatTokens(entry)}
-        {entry.context_length ? (
-          <> / {entry.context_length.toLocaleString()} context</>
-        ) : null}
-        <UsageBar value={entry.context_usage} />
-      </div>
+      {expanded ? (
+        <div className="border-t border-border/60 p-3 pt-2">
+          <div className="grid gap-2">
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                <span>Prompt</span>
+                {entry.prompt_truncated && !detail ? <span>Preview</span> : null}
+              </div>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-2 text-xs leading-5">
+                {loading && !detail ? "Loading..." : prompt || "No prompt text"}
+              </pre>
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                <span>Reply</span>
+                {entry.reply_truncated && !detail ? <span>Preview</span> : null}
+              </div>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-2 text-xs leading-5">
+                {loading && !detail ? "Loading..." : reply}
+              </pre>
+            </div>
+          </div>
+
+          <div className="mt-3 text-[11px] text-muted-foreground">
+            {formatTokens(entry)}
+            {entry.context_length ? (
+              <> / {entry.context_length.toLocaleString()} context</>
+            ) : null}
+            <UsageBar value={entry.context_usage} />
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -140,6 +189,12 @@ export function ApiMonitorConsole(): ReactElement {
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [details, setDetails] = useState<Record<string, ApiMonitorEntry>>({});
+  const [loadingDetails, setLoadingDetails] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const loadingDetailsRef = useRef<Set<string>>(new Set());
 
   const loadMonitor = useCallback(async (): Promise<void> => {
     setRefreshing(true);
@@ -195,6 +250,62 @@ export function ApiMonitorConsole(): ReactElement {
   const statusLabel = data?.status ?? "idle";
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
+  const loadDetail = useCallback(
+    (id: string): void => {
+      if (loadingDetailsRef.current.has(id)) {
+        return;
+      }
+      loadingDetailsRef.current.add(id);
+      setLoadingDetails((prev) => new Set(prev).add(id));
+      getApiMonitorEntry(id)
+        .then((entry) => {
+          setDetails((prev) => ({ ...prev, [id]: entry }));
+        })
+        .catch(() => {
+          setDetails((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        })
+        .finally(() => {
+          loadingDetailsRef.current.delete(id);
+          setLoadingDetails((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        });
+    },
+    [],
+  );
+
+  const toggleEntry = useCallback(
+    (entry: ApiMonitorEntry): void => {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(entry.id)) {
+          next.delete(entry.id);
+        } else {
+          next.add(entry.id);
+          loadDetail(entry.id);
+        }
+        return next;
+      });
+    },
+    [loadDetail],
+  );
+
+  useEffect(() => {
+    for (const entry of entries) {
+      if (!expandedIds.has(entry.id)) {
+        continue;
+      }
+      if (!details[entry.id] || entry.status === "running") {
+        loadDetail(entry.id);
+      }
+    }
+  }, [details, entries, expandedIds, loadDetail]);
 
   return (
     <section className="flex min-w-0 flex-col rounded-lg border border-border/70 bg-background">
@@ -256,7 +367,14 @@ export function ApiMonitorConsole(): ReactElement {
         ) : (
           <div className="grid gap-3">
             {entries.map((entry) => (
-              <MonitorEntry key={entry.id} entry={entry} />
+              <MonitorEntry
+                key={entry.id}
+                entry={entry}
+                detail={details[entry.id]}
+                expanded={expandedIds.has(entry.id)}
+                loading={loadingDetails.has(entry.id)}
+                onToggle={() => toggleEntry(entry)}
+              />
             ))}
           </div>
         )}

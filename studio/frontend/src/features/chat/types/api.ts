@@ -198,8 +198,12 @@ export interface ApiMonitorEntry {
   endpoint: string;
   method: string;
   model: string;
-  prompt: string;
-  reply: string;
+  prompt?: string;
+  reply?: string;
+  prompt_preview: string;
+  reply_preview: string;
+  prompt_truncated: boolean;
+  reply_truncated: boolean;
   status: "running" | "completed" | "cancelled" | "error";
   started_at: number;
   updated_at: number;

@@ -31,6 +31,30 @@ def test_api_monitor_tracks_reply_usage_and_context():
     assert entry["duration_ms"] is not None
 
 
+def test_api_monitor_summary_omits_full_prompt_and_reply():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "p" * 500,
+    )
+    monitor.set_reply(entry_id, "r" * 500)
+
+    [summary] = monitor.snapshot(include_details = False)
+    assert "prompt" not in summary
+    assert "reply" not in summary
+    assert summary["prompt_preview"].endswith("...")
+    assert summary["reply_preview"].endswith("...")
+    assert summary["prompt_truncated"] is True
+    assert summary["reply_truncated"] is True
+
+    detail = monitor.get(entry_id)
+    assert detail is not None
+    assert detail["prompt"] == "p" * 500
+    assert detail["reply"] == "r" * 500
+
+
 def test_api_monitor_keeps_bounded_recent_history():
     monitor = ApiMonitor(max_entries = 2)
 

@@ -2419,8 +2419,19 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,
-        "entries": api_monitor.snapshot(),
+        "entries": api_monitor.snapshot(include_details = False),
     }
+
+
+@studio_router.get("/monitor/{entry_id}")
+async def get_api_monitor_entry(
+    entry_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """Return full prompt/reply details for one OpenAI-compatible API request."""
+    entry = api_monitor.get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code = 404, detail = "Monitor entry not found")
+    return entry
 
 
 @router.post("/generate/stream")

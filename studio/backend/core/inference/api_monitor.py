@@ -16,6 +16,7 @@ from typing import Any, Optional
 _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
+_PREVIEW_CHARS = 360
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -50,7 +51,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     error: Optional[str] = None
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
         if self.finished_monotonic is not None:
             duration_ms = max(
@@ -62,13 +63,15 @@ class ApiMonitorEntry:
         context_usage = None
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
-        return {
+        payload = {
             "id": self.id,
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            "prompt": self.prompt,
-            "reply": self.reply,
+            "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
+            "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
+            "prompt_truncated": len(self.prompt) > _PREVIEW_CHARS,
+            "reply_truncated": len(self.reply) > _PREVIEW_CHARS,
             "status": self.status,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
@@ -81,6 +84,10 @@ class ApiMonitorEntry:
             "total_tokens": self.total_tokens,
             "error": self.error,
         }
+        if include_details:
+            payload["prompt"] = self.prompt
+            payload["reply"] = self.reply
+        return payload
 
 
 class ApiMonitor:
@@ -213,9 +220,16 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
 
-    def snapshot(self) -> list[dict[str, Any]]:
+    def snapshot(self, *, include_details: bool = True) -> list[dict[str, Any]]:
         with self._lock:
-            return [entry.snapshot() for entry in self._entries]
+            return [entry.snapshot(include_details = include_details) for entry in self._entries]
+
+    def get(self, entry_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return None
+            return entry.snapshot(include_details = True)
 
     def active_count(self) -> int:
         with self._lock:
