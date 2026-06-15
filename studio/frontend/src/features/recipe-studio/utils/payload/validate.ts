@@ -137,12 +137,9 @@ export function validateUsedProviders(
     if (!provider.endpoint.trim()) {
       errors.push(`Model provider ${provider.name}: endpoint is required.`);
     }
-    const providerType = normalizeModelProviderType(provider.provider_type);
-    if (!providerType) {
-      errors.push(
-        `Model provider ${provider.name}: provider_type is required.`,
-      );
-    } else if (!isSupportedModelProviderType(providerType)) {
+    const providerType =
+      normalizeModelProviderType(provider.provider_type) || "openai";
+    if (!isSupportedModelProviderType(providerType)) {
       errors.push(
         `Model provider ${provider.name}: provider_type '${providerType}' is not supported by Data Designer. Use openai for OpenAI-compatible providers or anthropic for native Anthropic.`,
       );
