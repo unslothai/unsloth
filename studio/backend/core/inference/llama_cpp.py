@@ -3484,9 +3484,18 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        # Drop GPUs that can't hold the per-device compute-graph buffer; they'd
-        # OOM in tensor mode. Defense-in-depth (load_model also filters) that keeps
-        # this pure and unit-testable. Derived per-device reserve; flat fallback.
+        # Per-GPU usable budget: free - (1-frac)*total (raw free when total is
+        # unknown), the same headroom the layer-split paths enforce.
+        def _usable(idx: int, free_mib: int) -> float:
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            if t > 0:
+                return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
+            return float(free_mib)
+
+        # Drop GPUs whose usable budget can't hold the per-device compute-graph
+        # buffer; they'd OOM in tensor mode. Admitting on raw free would let a
+        # partly-used big card in with no budget left. Defense-in-depth (load_model
+        # gates too). Derived per-device reserve; flat fallback.
         _reserve_bytes = self._estimate_compute_buffer_bytes(
             n_ubatch = n_ubatch, n_parallel = n_parallel, per_device_tensor = True
         )
@@ -3495,7 +3504,7 @@ class LlamaCppBackend:
             if _reserve_bytes > 0
             else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
         )
-        usable_gpus = [g for g in gpus if g[1] >= reserve_mib]
+        usable_gpus = [g for g in gpus if _usable(g[0], g[1]) >= reserve_mib]
         gpu_indices = sorted(idx for idx, _ in usable_gpus)
         if len(gpu_indices) < 2:
             # Tensor parallelism is meaningless on <2 GPUs (the caller drops the
@@ -3507,17 +3516,6 @@ class LlamaCppBackend:
                 None,
             )
         free_by_idx = {idx: free for idx, free in usable_gpus}
-
-        # Per-GPU usable budget caps occupancy at _CTX_FIT_VRAM_FRACTION of the
-        # card (free - (1-frac)*total), mirroring the layer-split paths; raw free
-        # when total is unknown. Without this, tensor mode spent the safety cushion
-        # the rest of the fit protects on a partly-used GPU.
-        def _usable(idx: int, free_mib: int) -> float:
-            t = total_by_idx.get(idx, 0) if total_by_idx else 0
-            if t > 0:
-                return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
-            return float(free_mib)
-
         usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
         pool_mib = sum(usable_by_idx.values())
         kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
@@ -4176,7 +4174,10 @@ class LlamaCppBackend:
                             if _tp_reserve_bytes > 0
                             else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
                         )
-                        tp_gpus = [g for g in gpus if g[1] >= reserve_mib]
+                        # Admit by usable budget (free - (1-frac)*total), not raw
+                        # free: a partly-used big card can clear the reserve on raw
+                        # free yet have no budget left.
+                        tp_gpus = [g for g in gpus if _gpu_usable(g) >= reserve_mib]
 
                     if tensor_parallel and len(tp_gpus) < 2:
                         # Tensor parallelism needs >= 2 usable GPUs. On a single
@@ -4196,6 +4197,24 @@ class LlamaCppBackend:
                         # Studio's flags, so it would still reach llama-server and
                         # fail here; strip it so the downgrade actually applies.
                         extra_args = strip_split_mode_only(extra_args)
+
+                    if tensor_parallel and tp_gpus:
+                        # The pooled usable budget, after each device's compute
+                        # buffer, must still hold the weights; the planner can only
+                        # floor the context, not stop an overcommitted launch. Fall
+                        # back to layer split when it can't.
+                        _tp_weight_budget_mib = (
+                            sum(_gpu_usable(g) for g in tp_gpus)
+                            - len(tp_gpus) * reserve_mib
+                        )
+                        if _tp_weight_budget_mib <= model_size / (1024 * 1024):
+                            logger.info(
+                                "Tensor parallelism requested but the pooled VRAM "
+                                "budget cannot hold the weights plus per-device "
+                                "compute buffers; falling back to layer split."
+                            )
+                            tensor_parallel = False
+                            extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation: use all usable GPUs, weight

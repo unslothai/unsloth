@@ -610,3 +610,29 @@ def test_tensor_reserve_scales_with_ubatch():
     small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 512)
     big_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 4096)
     assert big_ub < small_ub
+
+
+def test_tensor_admission_drops_gpu_below_usable_budget():
+    # A partly-used big card can clear the buffer reserve on raw free yet have no
+    # usable budget left (free - 0.05*total). Admit by usable budget: GPU 0 here is
+    # 6000 free on an 80 GB card -> usable 1904 < flat reserve 5120, so it's dropped
+    # (leaving <2 -> no split). Without total_by_idx, raw free 6000 >= 5120 admits it.
+    b = _kv_seeded_backend()
+    gpus = [(0, 6000), (1, 40000)]
+    totals = {0: 81920, 1: 81920}
+    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
+    assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
+    _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
+    assert gi_raw == [0, 1]  # raw free would have admitted both
+
+
+def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
+    # load_model is too entangled (subprocess + GPU probe) to drive end-to-end, so
+    # assert at the source level that the tensor prefilter admits on the usable
+    # budget (_gpu_usable), not raw free, and downgrades to layer split when the
+    # pooled budget can't hold weights + per-device compute buffers.
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_gpu_usable(g) >= reserve_mib" in src  # admit by usable budget
+    assert "g[1] >= reserve_mib" not in src        # not raw free
+    assert "_tp_weight_budget_mib" in src          # pooled-weight capacity gate
+    assert "falling back to layer split" in src    # downgrade on overcommit
