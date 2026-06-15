@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -15,6 +16,14 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+
+# A failed probe isn't cached (a recovered server must come back), but it's
+# recorded so a down server isn't re-probed -- and the chat send re-hung for
+# the full timeout -- on every message. Cool off for this long after a failure;
+# much longer for OAuth, whose probe can hang up to _OAUTH_PROBE_TIMEOUT,
+# so that hang doesn't recur every minute.
+FAILED_PROBE_COOLOFF_SECONDS = 60.0
+OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 
@@ -25,30 +34,108 @@ def is_stdio(address: str) -> bool:
     return not address.strip().lower().startswith(("http://", "https://"))
 
 
+def _split_windows_command_line(address: str) -> list[str]:
+    """Parse a Windows command line using the same backslash/quote rules that
+    subprocess.list2cmdline() writes. This keeps trailing backslashes before a
+    closing quote from being doubled in the resulting argv."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    backslashes = 0
+    arg_started = False
+    i = 0
+
+    while i < len(address):
+        ch = address[i]
+        if ch == "\\":
+            backslashes += 1
+            i += 1
+            continue
+        if ch == '"':
+            current.extend("\\" * (backslashes // 2))
+            if backslashes % 2:
+                current.append('"')
+            else:
+                in_quotes = not in_quotes
+            arg_started = True
+            backslashes = 0
+            i += 1
+            continue
+        if ch.isspace() and not in_quotes:
+            if backslashes:
+                current.extend("\\" * backslashes)
+                arg_started = True
+                backslashes = 0
+            if arg_started or current:
+                parts.append("".join(current))
+                current = []
+                arg_started = False
+            i += 1
+            while i < len(address) and address[i].isspace():
+                i += 1
+            continue
+        if backslashes:
+            current.extend("\\" * backslashes)
+            arg_started = True
+            backslashes = 0
+        current.append(ch)
+        arg_started = True
+        i += 1
+
+    if backslashes:
+        current.extend("\\" * backslashes)
+        arg_started = True
+    if in_quotes:
+        raise ValueError("No closing quotation")
+    if arg_started or current:
+        parts.append("".join(current))
+    return parts
+
+
 def parse_stdio_command(address: str) -> list[str]:
     """Split a stdio command line into argv. Shared by route validation and the
     transport so both agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
-    parts = shlex.split(address, posix = posix)
-    if not posix:
-        # posix=False keeps backslash paths intact but also keeps the surrounding
-        # quotes on a token. Strip a matched pair so the argv reaches the
-        # subprocess clean ('"C:\\Program Files\\node"' -> C:\\Program Files\\node).
-        parts = [
-            p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
-            for p in parts
-        ]
-    return parts
+    if posix:
+        return shlex.split(address, posix = posix)
+    if address.lstrip().startswith("'"):
+        raise ValueError("Single-quoted executables are not supported on Windows")
+    return _split_windows_command_line(address)
+
+
+def join_stdio_command(parts: list[str]) -> str:
+    """Inverse of parse_stdio_command: join argv into a single command string
+    that parse_stdio_command() splits back into ``parts`` on this platform.
+    Config files (issue #5936) carry structured command + args; storage holds
+    one string in the url field. Windows uses list2cmdline so spaced/backslash
+    paths round-trip through the posix=False quote-strip; posix uses shlex."""
+    if sys.platform == "win32":
+        import subprocess
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
 
 
 def stdio_mcp_enabled() -> bool:
-    """stdio MCP servers spawn local processes as the backend user (and bypass
-    the python/terminal sandbox), so they are only allowed when the backend
-    host is the user's own machine. The Tauri desktop app sets
-    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see main.py); advanced localhost /
-    self-hosted users can opt in with the same variable. It stays off for
-    Colab and any network (0.0.0.0) bind."""
-    return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
+    """stdio MCP servers spawn local processes as the backend user (bypassing the
+    sandbox), so allowed only when the host is the user's own machine. On startup
+    a loopback bind defaults UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see
+    utils.host_policy.apply_stdio_mcp_loopback_default, called from run.py); the
+    Tauri app does the same. Off for Colab and any network (0.0.0.0) bind unless
+    an operator sets the var out-of-band; set it to 0 to force-disable.
+
+    When stdio is on only because of that loopback auto-default, an explicit
+    `unsloth studio run --disable-tools` turns it back off (a local stdio command
+    is server-side code execution). An explicit operator opt-in via the env var
+    still wins -- including the documented `=1` network opt-in, where the process
+    tool policy is False merely by the external-host default, not by choice."""
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
+        return False
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active
+
+    if loopback_default_active() and get_tool_policy() is False:
+        return False
+    return True
 
 
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for
@@ -66,8 +153,8 @@ def probe_timeout(address: str, use_oauth: bool) -> float:
 
 
 def parse_server_headers(server: dict) -> Optional[dict]:
-    """Parsed headers_json. For stdio servers this dict is the process
-    environment instead of HTTP headers (see _client)."""
+    """Parsed headers_json. For stdio servers this dict is the process env
+    instead of HTTP headers (see _client)."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -85,8 +172,8 @@ def _oauth_store():
         from key_value.aio.stores.filetree import FileTreeStore
         from utils.paths.storage_roots import ensure_dir, studio_root
 
-        # Hash keys/collections — fastmcp uses raw URLs like https://x.com as
-        # keys and FileTreeStore would treat the "://" as nested directories.
+        # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
+        # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
             key_sanitization_strategy = AlwaysHashStrategy(),
@@ -96,15 +183,12 @@ def _oauth_store():
 
 
 async def clear_oauth_tokens_async(url: str) -> None:
-    """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by
-    MCP URL, so on server delete / URL change / OAuth disable we have to
-    clear the old credentials explicitly. Otherwise re-registering the
-    same URL would silently reuse the old account's token. The entire
-    body runs inside the protected block -- store / OAuth construction
-    failing must not make the delete / update route 500."""
+    """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by MCP
+    URL, so on server delete / URL change / OAuth disable we must clear them, else
+    re-registering the same URL reuses the old account's token. Best-effort: store
+    / OAuth failures must not 500 the delete / update route."""
     try:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
@@ -112,7 +196,11 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
-def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
+def _client(
+    url: str,
+    headers: Optional[dict],
+    use_oauth: bool = False,
+):
     from fastmcp import Client
 
     if is_stdio(url):
@@ -124,9 +212,8 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
         parts = parse_stdio_command(url)
         if not parts:
             raise ValueError(f"Empty stdio command: {url!r}")
-        # env vars ride the headers field (merged over the SDK's safe default env).
-        # keep_alive=False tears the subprocess down on exit, so a one-shot
-        # probe/tool call never leaves an orphan process.
+        # env vars ride the headers field (merged over the SDK default env).
+        # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
         return Client(
             StdioTransport(
                 command = parts[0],
@@ -142,13 +229,10 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
-        SSETransport
-        if infer_transport_type_from_url(url) == "sse"
-        else StreamableHttpTransport
+        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
@@ -165,6 +249,53 @@ async def list_tools_async(
         return [t.model_dump(exclude_none = True) for t in tools]
 
     return await asyncio.wait_for(_fetch(), timeout = timeout)
+
+
+# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools()
+# probes a server only on a cache miss, keeping MCP discovery off the chat
+# send's critical path -- tool schemas are stable within a session. The
+# /refresh route warms it; a URL/header/OAuth change or a delete evicts it.
+# Successful probes are cached indefinitely.
+_tool_cache: dict[str, list[dict]] = {}
+
+# server_id -> monotonic time before which a failed server must not be
+# re-probed (see record_probe_failure). Cleared on a successful probe or
+# eviction.
+_probe_cooloff_until: dict[str, float] = {}
+
+# MCP server fields whose change invalidates a server's discovered tools: the
+# endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
+# all (is_enabled). A rename does not. The update route's eviction and
+# get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+
+
+def get_cached_tools(server_id: str) -> Optional[list[dict]]:
+    return _tool_cache.get(server_id)
+
+
+def cache_tools(server_id: str, tools: list[dict]) -> None:
+    _tool_cache[server_id] = tools
+    _probe_cooloff_until.pop(server_id, None)
+
+
+def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
+    cooloff = OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+    _probe_cooloff_until[server_id] = time.monotonic() + cooloff
+
+
+def in_failure_cooloff(server_id: str) -> bool:
+    return _probe_cooloff_until.get(server_id, 0.0) > time.monotonic()
+
+
+def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
+    """Evict one server's cached tools, or every entry when server_id is None."""
+    if server_id is None:
+        _tool_cache.clear()
+        _probe_cooloff_until.clear()
+    else:
+        _tool_cache.pop(server_id, None)
+        _probe_cooloff_until.pop(server_id, None)
 
 
 def _flatten_result(result: Any) -> str:
@@ -195,10 +326,9 @@ def call_tool_sync(
 ) -> str:
     """Synchronously call an MCP tool.
 
-    ``cancel_event``: optional ``threading.Event``. When set, the in-flight
-    HTTP call is cancelled and the function returns a cancellation Error.
-    Polled in parallel with the tool call via ``asyncio.wait`` so a /cancel
-    POST from the UI interrupts even mid-network-read.
+    ``cancel_event``: optional ``threading.Event``. When set, the in-flight call is
+    cancelled and a cancellation Error returned. Polled alongside the tool call via
+    ``asyncio.wait`` so a /cancel POST interrupts even mid-network-read.
     """
 
     async def _call() -> Any:
@@ -207,14 +337,13 @@ def call_tool_sync(
 
     async def _watch_cancel() -> None:
         # 50 ms cadence keeps cancellation responsive without busy-looping;
-        # matches the cadence routes/inference.py uses for cancel watchers.
+        # matches routes/inference.py's cancel watcher cadence.
         while cancel_event is not None and not cancel_event.is_set():
             await asyncio.sleep(0.05)
 
     async def _race() -> Any:
-        # Check cancellation before spawning the call task so a pre-set
-        # event short-circuits before opening the transport / HTTP
-        # connection (reviewer-reproduced race).
+        # Check cancellation before spawning the call task so a pre-set event
+        # short-circuits before opening the transport / HTTP connection.
         if cancel_event is not None and cancel_event.is_set():
             raise _MCPCancelled
         call_task = asyncio.create_task(_call())

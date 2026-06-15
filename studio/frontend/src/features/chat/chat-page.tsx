@@ -9,7 +9,7 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
-import { Thread } from "@/components/assistant-ui/thread";
+import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
   NativeModelChip,
   NativeModelDropOverlay,
@@ -29,12 +30,17 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { CustomizeIcon } from "@hugeicons/core-free-icons";
+import {
+  BubbleChatTemporaryIcon,
+  Folder02Icon,
+  LayoutAlignRightIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
+  type CSSProperties,
   type ReactElement,
   memo,
   useCallback,
@@ -49,12 +55,18 @@ import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
+import { ProjectSwitcher } from "./components/project-switcher";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import { useChatProjects } from "./hooks/use-chat-projects";
+import {
+  type SidebarItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -100,6 +112,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 type LoraCandidate = {
   id: string;
@@ -149,12 +162,6 @@ function pickBestLoraForBase(
   return partial ?? sorted[0] ?? null;
 }
 
-function isAssistantLocalThreadId(
-  threadId: string | null | undefined,
-): boolean {
-  return Boolean(threadId?.startsWith("__LOCALID_"));
-}
-
 function messageHasImage(message: MessageRecord): boolean {
   const contentParts = Array.isArray(message.content) ? message.content : [];
   if (contentParts.some((part) => part.type === "image")) {
@@ -181,12 +188,14 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
+  projectId,
   artifact,
   artifactSurface,
   onCloseArtifact,
 }: {
   threadId?: string;
   newThreadNonce?: string;
+  projectId?: string | null;
   artifact?: ChatArtifact | null;
   artifactSurface: ChatArtifactSurface;
   onCloseArtifact: () => void;
@@ -272,6 +281,8 @@ const SingleContent = memo(function SingleContent({
       modelType="base"
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
+      projectId={projectId}
+      listThreads={false}
     >
       <ResizablePanelGroup
         orientation="horizontal"
@@ -351,9 +362,8 @@ function modelMatchesDeleted(
 }
 
 /**
- * Detect if this is a LoRA base-vs-fine-tuned compare.
- * Returns true when the loaded checkpoint is a LoRA — in that case
- * we use the fast simultaneous base/lora adapter-toggle path.
+ * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
+ * compare that uses the fast simultaneous adapter-toggle path.
  */
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
@@ -365,49 +375,60 @@ function useIsLoraCompare(): boolean {
 
 const CompareContent = memo(function CompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
   return isLoraCompare ? (
-    <LoraCompareContent pairId={pairId} />
+    <LoraCompareContent
+      pairId={pairId}
+      onExitCompare={onExitCompare}
+      projectId={projectId}
+    />
   ) : (
     <GeneralCompareContent
       pairId={pairId}
+      projectId={projectId}
       models={models}
       loraModels={loraModels}
+      externalModels={externalModels}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
+      onExitCompare={onExitCompare}
     />
   );
 });
 
 /**
- * A single column in the compare layout. Hosts one ChatRuntimeProvider
- * and one Thread rendered with hideComposer — the composer is shared
- * across both panes and rendered outside the pane flex.
+ * A single column in the compare layout: one ChatRuntimeProvider and one
+ * Thread with hideComposer (the composer is shared across panes).
  *
- * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
- * mobile (flex-col) they share height equally, and on desktop (flex-row)
- * they share width equally. The `min-*` constraints are required for
- * the inner viewport to scroll internally instead of spilling into the
- * page.
+ * Each pane is `flex-1 basis-0 min-h-0 min-w-0` so panes share height
+ * (mobile flex-col) or width (desktop flex-row) equally. The `min-*`
+ * constraints let the inner viewport scroll instead of spilling.
  */
 function ComparePane({
   modelType,
   pairId,
+  projectId,
   initialThreadId,
   handleName,
   header,
@@ -415,6 +436,7 @@ function ComparePane({
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
+  projectId?: string | null;
   initialThreadId: string | undefined;
   handleName: string;
   header: ReactElement;
@@ -432,6 +454,7 @@ function ComparePane({
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
         >
@@ -444,16 +467,13 @@ function ComparePane({
 }
 
 /**
- * Shared shell for both compare variants. A vertical flex column with
- * the two panes as siblings and the shared composer docked at the
- * bottom. On mobile the panes stack (flex-col); on desktop they sit
- * side by side (md:flex-row).
+ * Shared shell for both compare variants: a flex column with the two panes
+ * as siblings and the shared composer docked at the bottom. Panes stack on
+ * mobile (flex-col), sit side by side on desktop (md:flex-row).
  *
- * Flex is used rather than CSS grid for the pane container so that
- * viewport sizing stays stable across viewport-size transitions. Grid
- * rows with 1fr were triggering resize thrash in assistant-ui's
- * autoscroll hook on breakpoint crossings, leaving it stuck in a
- * scroll-to-bottom loop.
+ * Flex, not grid, for the pane container: grid rows with 1fr triggered
+ * resize thrash in assistant-ui's autoscroll on breakpoint crossings,
+ * leaving it stuck in a scroll-to-bottom loop.
  */
 function CompareShell({
   handlesRef,
@@ -487,12 +507,23 @@ function CompareShell({
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
-}: { pairId: string }): ReactElement {
+  onExitCompare,
+  projectId,
+}: {
+  pairId: string;
+  onExitCompare?: () => void;
+  projectId?: string | null;
+}): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
 
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
+
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -508,17 +539,25 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
       handlesRef={handlesRef}
-      composer={<SharedComposer handlesRef={handlesRef} />}
+      composer={
+        <SharedComposer
+          handlesRef={handlesRef}
+          onExitCompare={onExitCompare}
+          model1ThreadId={baseThreadId}
+          model2ThreadId={loraThreadId}
+        />
+      }
     >
       <>
         <ComparePane
           modelType="base"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
           header={
@@ -532,6 +571,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <ComparePane
           modelType="lora"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
@@ -549,14 +589,14 @@ const LoraCompareContent = memo(function LoraCompareContent({
 });
 
 /**
- * Per-pane header rendered inside GeneralCompareContent. Contains the
- * model selector aligned with the global topbar height. The left pane
- * reserves room for the mobile sidebar trigger; the right pane reserves
- * room for the global settings button.
+ * Per-pane header (inside GeneralCompareContent) with the model selector,
+ * aligned to the global topbar height. Left pane reserves room for the
+ * mobile sidebar trigger; right pane for the global settings button.
  */
 function GeneralCompareHeader({
   models,
   loraModels,
+  externalModels,
   value,
   onValueChange,
   onFoldersChange,
@@ -566,6 +606,7 @@ function GeneralCompareHeader({
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   value: string;
   onValueChange: (
     id: string,
@@ -586,6 +627,7 @@ function GeneralCompareHeader({
       <ModelSelector
         models={models}
         loraModels={loraModels}
+        externalModels={externalModels}
         value={value}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
@@ -601,18 +643,24 @@ function GeneralCompareHeader({
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -620,6 +668,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -644,6 +695,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -667,7 +719,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -677,6 +729,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           handlesRef={handlesRef}
           model1={model1}
           model2={model2}
+          onExitCompare={onExitCompare}
+          model1ThreadId={model1ThreadId}
+          model2ThreadId={model2ThreadId}
         />
       }
     >
@@ -684,6 +739,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model1"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
           header={
@@ -691,6 +747,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="left"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model1.id}
               onValueChange={(id, meta) =>
                 setModel1({
@@ -708,6 +765,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model2"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
@@ -716,6 +774,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="right"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model2.id}
               onValueChange={(id, meta) =>
                 setModel2({
@@ -735,12 +794,260 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 });
 
+function formatProjectChatDate(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function extractMessageText(content: MessageRecord["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (part.type === "text") {
+        return part.text;
+      }
+      if (part.type === "image") {
+        return "Image";
+      }
+      if (part.type === "audio") {
+        return "Audio";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function ProjectLanding({
+  projectId,
+  projectName,
+  items,
+}: {
+  projectId: string;
+  projectName: string;
+  items: SidebarItem[];
+}): ReactElement {
+  const navigate = useNavigate();
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const initialActiveThreadRef = useRef<string | null>(null);
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
+  const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
+    null,
+  );
+  const [newThreadNonce, setNewThreadNonce] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [previews, setPreviews] = useState<
+    Record<string, { snippet: string; date: string }>
+  >({});
+
+  useEffect(() => {
+    initialActiveThreadRef.current =
+      useChatRuntimeStore.getState().activeThreadId;
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    useChatRuntimeStore.getState().setContextUsage(null);
+    setPendingNewThreadId(null);
+    setNewThreadNonce(crypto.randomUUID());
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      setPendingNewThreadId(null);
+      return;
+    }
+    if (activeThreadId === initialActiveThreadRef.current) {
+      return;
+    }
+    setPendingNewThreadId(activeThreadId);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreviews(): Promise<void> {
+      const entries = await Promise.all(
+        items.map(async (item) => {
+          if (item.type !== "single") {
+            return [
+              item.id,
+              {
+                snippet: "Compare chat",
+                date: formatProjectChatDate(item.createdAt),
+              },
+            ] as const;
+          }
+          const messages = await listStoredChatMessages(item.id).catch(() => []);
+          const firstUserMessage =
+            messages.find((message) => message.role === "user") ?? messages[0];
+          return [
+            item.id,
+            {
+              snippet: firstUserMessage
+                ? extractMessageText(firstUserMessage.content)
+                : "",
+              date: formatProjectChatDate(item.createdAt),
+            },
+          ] as const;
+        }),
+      );
+      if (!cancelled) {
+        setPreviews(Object.fromEntries(entries));
+      }
+    }
+
+    void loadPreviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  return (
+    <ChatRuntimeProvider
+      key={projectId}
+      projectId={projectId}
+      newThreadNonce={newThreadNonce}
+      listThreads={false}
+    >
+      {pendingNewThreadId ? (
+        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
+        </div>
+      ) : (
+        <div
+          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          style={
+            {
+              ["--thread-max-width" as string]: "48rem",
+            } as CSSProperties
+          }
+        >
+          {/* 46rem matches the composer so every block shares the same edges. */}
+          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-4">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={1.75}
+                  className="size-6.5"
+                />
+              </span>
+              <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+                {projectName}
+              </h1>
+            </div>
+
+            <ProjectComposer
+              disabled={Boolean(pendingNewThreadId)}
+              placeholder={`New chat in ${projectName}`}
+            />
+
+            <div className="mt-9 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setProjectTab("chats")}
+                data-active={projectTab === "chats"}
+                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Chats
+              </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("sources")}
+                data-active={projectTab === "sources"}
+                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Sources
+                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
+                  New
+                </span>
+              </button>
+            </div>
+
+            {projectTab === "sources" ? (
+              <ProjectSourcesPanel projectId={projectId} />
+            ) : (
+            <div className="mt-8 flex flex-col gap-1">
+              {items.map((item) => {
+                const preview = previews[item.id];
+                return (
+                  <button
+                    key={`${item.type}:${item.id}`}
+                    type="button"
+                    onClick={() => {
+                      navigate({
+                        to: "/chat",
+                        search:
+                          item.type === "single"
+                            ? { thread: item.id, project: projectId }
+                            : { compare: item.id, project: projectId },
+                      });
+                    }}
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                        {item.title}
+                      </div>
+                      {preview?.snippet ? (
+                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                          {preview.snippet}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-[14px] text-muted-foreground">
+                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            )}
+          </div>
+        </div>
+      )}
+    </ChatRuntimeProvider>
+  );
+}
+
 export function ChatPage(): ReactElement {
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isCurrentChatRoute = pathname.startsWith("/chat");
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
+  const incognitoLabel = incognito
+    ? "Turn off temporary chat"
+    : "Turn on temporary chat";
+  const toggleIncognito = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    store.setIncognito(!store.incognito);
+    // On an empty scratch chat there's nothing to abandon, so flip in
+    // place: navigating would remount the thread and bounce the composer
+    // (it docks to the bottom before the welcome state re-centers it).
+    // Otherwise start a clean chat so the temporary session can't inherit
+    // or leave behind a persisted thread (matches ChatGPT / Gemini).
+    const onEmptyScratchChat =
+      !search.thread &&
+      !search.compare &&
+      !search.project &&
+      store.activeThreadId == null;
+    if (onEmptyScratchChat) return;
+    // setActiveThreadId already clears contextUsage.
+    store.setActiveThreadId(null);
+    store.setActiveProjectId(null);
+    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
@@ -769,7 +1076,9 @@ export function ChatPage(): ReactElement {
         });
         navigate({
           to: "/chat",
-          search: { new: crypto.randomUUID() },
+          search: search.project
+            ? { project: search.project }
+            : { new: crypto.randomUUID() },
           replace: true,
         });
       })
@@ -787,6 +1096,14 @@ export function ChatPage(): ReactElement {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  // Latest non-compare view, so exiting compare can restore it even when
+  // compare was opened from a path that doesn't set viewBeforeCompareRef.
+  const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
+  useEffect(() => {
+    if (!search.compare) {
+      lastNonCompareViewRef.current = { ...search };
+    }
+  }, [search]);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -803,6 +1120,30 @@ export function ChatPage(): ReactElement {
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
+    search.project ?? null,
+  );
+  const { projects, isLoading: projectsLoading } = useChatProjects();
+  const currentProject = currentProjectId
+    ? (projects.find((project) => project.id === currentProjectId) ?? null)
+    : null;
+  const { items: currentProjectItems } = useChatSidebarItems({
+    projectId: currentProjectId ?? "__no_project_selected__",
+  });
+  const currentChatTitle = activeThreadId
+    ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
+    : undefined;
+  const openProjectLanding = useCallback(
+    (projectId: string) => {
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(projectId);
+      navigate({ to: "/chat", search: { project: projectId } });
+    },
+    [navigate],
+  );
+  const openProjectsList = useCallback(() => {
+    navigate({ to: "/projects" });
+  }, [navigate]);
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
@@ -916,15 +1257,11 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
-    // Per-provider default effort. Anthropic gets the highest available
-    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
-    // thinking adjusts cost per turn — sitting at the top of the dial
-    // gives users the strongest answers and the model can still skip
-    // thinking when the turn is trivial. OpenAI gets "high" by default
-    // — the gpt-5.x reasoning models accept high across the board and
-    // it's the right cost/quality sweet spot for Responses-API tools
-    // (web search included). Everyone else gets "medium" as a balanced
-    // default. Users can pick another level via the Think dropdown.
+    // Per-provider default effort. Anthropic gets the highest level since
+    // Claude's adaptive thinking adjusts cost per turn (top of dial =
+    // strongest answers, still skips thinking when trivial). OpenAI gets
+    // "high" (gpt-5.x accept it across the board; good cost/quality for
+    // Responses-API tools). Everyone else "medium". Overridable via Think.
     const isAnthropic = provider?.providerType === "anthropic";
     const isOpenAI = provider?.providerType === "openai";
     const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -965,19 +1302,15 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
-    // (per https://platform.kimi.ai/docs/models). Mirror that default
-    // in the UI so the Think pill comes up clicked when the user picks
-    // a Kimi model. The Search pill stays off by default; the mutual-
-    // exclusion handlers in the composer flip the two when needed.
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side (per
+    // https://platform.kimi.ai/docs/models). Mirror that so the Think pill
+    // comes up clicked for Kimi models. Search stays off; the composer's
+    // mutual-exclusion handlers flip the two when needed.
     const isKimi = provider?.providerType === "kimi";
-    // Web search is on by default for the two providers we trust most
-    // for it: Anthropic (web_search_20250305 server tool, structured
-    // citations) and OpenAI (/v1/responses web_search, structured
-    // citations). Other providers stay off-by-default — OpenRouter's
-    // plugins shape and Kimi's $web_search builtin still work when the
-    // user opts in via the pill, but they're a notch less reliable so
-    // we don't pre-enable them.
+    // Web search on by default only for the two providers we trust most:
+    // Anthropic and OpenAI (both with structured citations). Others stay
+    // off-by-default; OpenRouter and Kimi work on opt-in but are less
+    // reliable, so we don't pre-enable them.
     const searchOnByDefault =
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
@@ -1012,15 +1345,11 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models never give us a local tool runtime (no
-      // python sandbox), so `supportsTools` must be false. The three
-      // `supportsBuiltin*` flags pick up the slack for providers that
-      // run the tool server-side: `supportsBuiltinWebSearch` lights
-      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
-      // `supportsBuiltinCodeExecution` lights up the Code pill
-      // (Anthropic Claude 4.x and OpenAI gpt-5.5), and
-      // `supportsBuiltinImageGeneration` lights up the Images pill
-      // (OpenAI cloud Responses-API models only).
+      // External models have no local tool runtime, so `supportsTools` is
+      // false. The `supportsBuiltin*` flags cover providers that run tools
+      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
+      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
+      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -1043,25 +1372,105 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
 
+  useEffect(() => {
+    let canceled = false;
+
+    async function resolveProjectId(): Promise<void> {
+      if (search.project) {
+        setCurrentProjectId(search.project);
+        useChatRuntimeStore.getState().setActiveProjectId(search.project);
+        return;
+      }
+
+      if (search.thread) {
+        const thread = await getStoredChatThread(search.thread).catch(() => null);
+        if (!canceled) {
+          const projectId = thread?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      if (search.compare) {
+        const threads = await listStoredChatThreads({
+          pairId: search.compare,
+          includeArchived: true,
+        }).catch(() => []);
+        if (!canceled) {
+          const projectId = threads[0]?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      setCurrentProjectId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(null);
+    }
+
+    void resolveProjectId();
+    return () => {
+      canceled = true;
+    };
+  }, [search.compare, search.project, search.thread]);
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
       return {
         mode: "compare",
         pairId: search.compare,
+        projectId: currentProjectId,
       };
     }
     if (search.thread) {
-      return { mode: "single", threadId: search.thread };
-    }
-    if (persistedActiveThreadId) {
-      return { mode: "single", threadId: persistedActiveThreadId };
+      return {
+        mode: "single",
+        threadId: search.thread,
+        projectId: currentProjectId,
+      };
     }
     if (search.new) {
-      return { mode: "single", newThreadNonce: search.new };
+      return {
+        mode: "single",
+        newThreadNonce: search.new,
+        projectId: currentProjectId,
+      };
     }
-    return { mode: "single" };
-  }, [search.thread, search.compare, search.new, persistedActiveThreadId]);
+    if (search.project) {
+      return {
+        mode: "project",
+        projectId: search.project,
+      };
+    }
+    if (persistedActiveThreadId) {
+      return {
+        mode: "single",
+        threadId: persistedActiveThreadId,
+        projectId: currentProjectId,
+      };
+    }
+    return { mode: "single", projectId: currentProjectId };
+  }, [
+    search.thread,
+    search.compare,
+    search.new,
+    search.project,
+    persistedActiveThreadId,
+    currentProjectId,
+  ]);
+
+  // Temporary chat only applies to a fresh single-view chat. Exit incognito
+  // when we land on anything else (compare, a project, or an existing thread
+  // via sidebar/deep link/back), so the toggle isn't stranded and the UI
+  // never implies a saved thread is temporary.
+  useEffect(() => {
+    const onFreshSingleChat = view.mode === "single" && !view.threadId;
+    if (incognito && !onFreshSingleChat) {
+      setIncognito(false);
+    }
+  }, [view, incognito, setIncognito]);
 
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
@@ -1071,7 +1480,9 @@ export function ChatPage(): ReactElement {
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
-      : `compare:${view.pairId}`;
+      : view.mode === "compare"
+        ? `compare:${view.pairId}`
+        : `project:${view.projectId}`;
 
   useEffect(() => {
     clearAutoOpenedArtifacts();
@@ -1081,9 +1492,9 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
-    // view intentionally excludes __LOCALID_ threads (they fall through to
-    // { mode: "single" } with no threadId/nonce).  Don't close an artifact
-    // whose thread is the currently active local thread.
+    // view excludes __LOCALID_ threads (they fall through to mode:"single"
+    // with no threadId/nonce). Don't close an artifact whose thread is the
+    // active local thread.
     if (
       selectedArtifact.threadId &&
       selectedArtifact.threadId === activeThreadId
@@ -1189,9 +1600,8 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
-        // Same per-provider default policy as the useEffect path above:
-        // Anthropic picks the highest available level, OpenAI picks
-        // "high", everyone else picks "medium".
+        // Same per-provider default policy as the useEffect above:
+        // Anthropic highest level, OpenAI "high", everyone else "medium".
         const isAnthropic = selectedProvider?.providerType === "anthropic";
         const isOpenAI = selectedProvider?.providerType === "openai";
         const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -1213,9 +1623,8 @@ export function ChatPage(): ReactElement {
                 ? "medium"
                 : clampedEffort
           : store.reasoningEffort;
-        // Clear any cached router-picked openrouter/free model unless the
-        // user is staying on openrouter/free — otherwise the chip would
-        // keep showing a stale ":<chosen>" suffix from a previous model.
+        // Clear any cached router-picked openrouter/free model unless staying
+        // on openrouter/free, else the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
@@ -1240,13 +1649,12 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
         );
-        // See sibling useEffect above: Kimi's k2.x default to thinking
-        // enabled, so the Think pill comes up clicked. Search pill stays
-        // off by default; mutual exclusion flips them via the composer.
+        // See sibling useEffect: Kimi's k2.x default to thinking enabled
+        // (Think pill clicked). Search stays off; the composer's mutual
+        // exclusion flips them.
         const isKimi = selectedProvider?.providerType === "kimi";
-        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
-        // on-by-default since their server tools emit structured
-        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by
+        // default (structured citations end-to-end); others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
@@ -1272,9 +1680,8 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
-          // Clear previous-model counters; the relaxed external-provider
-          // render gate would otherwise show stale stats until the next
-          // completion overwrites them.
+          // Clear previous-model counters, else the relaxed external-provider
+          // render gate shows stale stats until the next completion.
           contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -1290,14 +1697,10 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools
-          // stays false. The three supportsBuiltin* flags carry the
-          // server-side capability info for each pill:
-          //   - Search → providerSupportsBuiltinWebSearch
-          //   - Code   → providerSupportsBuiltinCodeExecution
-          //              (Anthropic Claude 4.x + OpenAI gpt-5.5)
-          //   - Images → providerSupportsBuiltinImageGeneration
-          //              (OpenAI cloud Responses-API models)
+          // External models have no local tool runtime → supportsTools false.
+          // The supportsBuiltin* flags carry server-side capability per pill:
+          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
+          // Responses-API).
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -1393,24 +1796,34 @@ export function ChatPage(): ReactElement {
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
-  const { setPinned, isMobile } = useSidebar();
-  const openSidebar = useCallback(() => setPinned(true), [setPinned]);
+  const { isMobile } = useSidebar();
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-  }, [navigate, search]);
+    navigate({
+      to: "/chat",
+      search: {
+        compare: crypto.randomUUID(),
+        ...(currentProjectId ? { project: currentProjectId } : {}),
+      },
+    });
+  }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
-    if (!saved) return;
+    // Prefer the explicit save; fall back to the last non-compare view so
+    // the composer + menu path also returns where the user started.
+    const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
+    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    if (!saved) {
+      navigate({ to: "/chat" });
+      return;
+    }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore usage from the last assistant message, but only if it
-    // matches the currently active checkpoint. Without this guard the
-    // relaxed render gate would show stale stats from another model.
+    // Restore usage from the last assistant message, only if it matches the
+    // active checkpoint, else the relaxed render gate shows stale stats.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1430,7 +1843,7 @@ export function ChatPage(): ReactElement {
           const usageModelId =
             (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
-          // (model-scoped usage cannot be attributed to "nothing").
+          // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
             if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
               return;
@@ -1480,15 +1893,13 @@ export function ChatPage(): ReactElement {
         .flatMap((provider) =>
           provider.models.map((model) => {
             // For OpenRouter's free router we know which underlying free
-            // model the gateway actually picked once a stream completes
-            // (chat-adapter latches `chunk.model` into the runtime store).
-            // Render the chip as `openrouter:<short-chosen>` — drop the
-            // redundant `/free` from the router id and the org prefix
-            // from the chosen id (e.g.
-            //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
-            //     -> openrouter:ring-2.6-1t-20260508:free
-            // ). The `:free` suffix on the chosen id already conveys
-            // 'free model', so the leading `/free` is noise.
+            // model the gateway picked once a stream completes (chat-adapter
+            // latches `chunk.model`). Render the chip as
+            // `openrouter:<short-chosen>`, dropping the redundant `/free`
+            // and the chosen id's org prefix (e.g. openrouter/free +
+            // inclusionai/ring-2.6-1t-20260508:free ->
+            // openrouter:ring-2.6-1t-20260508:free). The `:free` suffix
+            // already conveys "free model".
             let displayName = model;
             if (
               provider.providerType === "openrouter" &&
@@ -1657,7 +2068,6 @@ export function ChatPage(): ReactElement {
         closeModelSelector,
         openSettings,
         closeSettings,
-        openSidebar,
         enterCompare,
         exitCompare,
       }),
@@ -1669,7 +2079,6 @@ export function ChatPage(): ReactElement {
       exitCompare,
       openModelSelector,
       openSettings,
-      openSidebar,
     ],
   );
 
@@ -1693,11 +2102,25 @@ export function ChatPage(): ReactElement {
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
 
+  if (!isCurrentChatRoute) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
+    );
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
+        {/* Fade under the top bar so messages dissolve as they scroll
+            beneath it, instead of a hard cut. */}
+        {view.mode !== "compare" && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+          />
+        )}
         <div
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
@@ -1728,6 +2151,40 @@ export function ChatPage(): ReactElement {
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
+            )}
+            {incognito && view.mode === "single" && (
+              <div className="flex h-[34px] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+                <HugeiconsIcon
+                  icon={BubbleChatTemporaryIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+                <span>Temporary</span>
+              </div>
+            )}
+            {view.mode !== "compare" && currentProjectId && (
+              <nav
+                aria-label="Project location"
+                className="flex h-[34px] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+              >
+                <ProjectSwitcher
+                  currentProject={currentProject}
+                  projects={projects}
+                  isLoading={projectsLoading}
+                  onSelectProject={openProjectLanding}
+                  onViewAllProjects={openProjectsList}
+                />
+                {currentProject && activeThreadId ? (
+                  <>
+                    <span className="shrink-0" aria-hidden>
+                      /
+                    </span>
+                    <span className="min-w-0 truncate">
+                      {currentChatTitle ?? "New chat"}
+                    </span>
+                  </>
+                ) : null}
+              </nav>
             )}
             {pendingNativeModelIntent && view.mode !== "compare" ? (
               <NativeModelChip
@@ -1780,18 +2237,23 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
-            {!settingsOpen && (
+            {view.mode === "single" && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
-                    onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open configuration"
-                    data-tour="chat-settings"
+                    onClick={toggleIncognito}
+                    className={cn(
+                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      incognito
+                        ? "bg-primary/10 text-primary hover:bg-primary/15"
+                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+                    )}
+                    aria-label={incognitoLabel}
+                    aria-pressed={incognito}
                   >
                     <HugeiconsIcon
-                      icon={CustomizeIcon}
+                      icon={BubbleChatTemporaryIcon}
                       strokeWidth={1.75}
                       className="size-icon"
                     />
@@ -1802,18 +2264,52 @@ export function ChatPage(): ReactElement {
                   sideOffset={6}
                   className="tooltip-compact"
                 >
-                  Open configuration
+                  {incognitoLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {!settingsOpen && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(true)}
+                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open run settings"
+                    data-tour="chat-settings"
+                  >
+                    <HugeiconsIcon
+                      icon={LayoutAlignRightIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  Open run settings
                 </TooltipContent>
               </Tooltip>
             )}
           </div>
         </div>
 
-        {view.mode === "single" ? (
+        {view.mode === "project" ? (
+          <ProjectLanding
+            key={view.projectId}
+            projectId={view.projectId}
+            projectName={currentProject?.name ?? "Project"}
+            items={currentProjectItems}
+          />
+        ) : view.mode === "single" ? (
           <SingleContent
             key={view.threadId ?? view.newThreadNonce ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            projectId={view.projectId}
             artifact={selectedArtifact}
             artifactSurface={artifactSurface}
             onCloseArtifact={closeArtifactSurface}
@@ -1822,11 +2318,14 @@ export function ChatPage(): ReactElement {
           <CompareContent
             key={view.pairId}
             pairId={view.pairId}
+            projectId={view.projectId}
             models={models}
             loraModels={loraModels}
+            externalModels={externalModels}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
+            onExitCompare={exitCompare}
           />
         )}
 

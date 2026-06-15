@@ -9,17 +9,19 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   CheckIcon,
   CopyIcon,
-  DownloadIcon,
   EyeIcon,
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
   useEffect,
@@ -45,10 +47,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed artifact iframes are intentionally excluded from the overlay focus
-// trap. Granting same-origin sandbox privileges would weaken isolation, so
-// keyboard users can reach Studio controls here while fully interactive artifact
-// content remains a known sandbox limitation.
+// Sandboxed artifact iframes are deliberately outside the overlay focus trap:
+// granting same-origin sandbox privileges would weaken isolation, so reaching
+// interactive artifact content via keyboard is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -78,9 +79,8 @@ function ArtifactGeneratingPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center bg-muted/10 px-6 text-center">
       <div className="max-w-[30ch] space-y-1.5">
-        <img
-          src="/Sloth%20emojis/sloth%20w%20pc%20transparent.png"
-          alt=""
+        <MascotImg
+          src="Sloth emojis/sloth w pc transparent.png"
           aria-hidden={true}
           className="mx-auto mb-3 size-20 object-contain"
         />
@@ -201,10 +201,10 @@ export function ArtifactSurface({
       tabIndex={variant === "overlay" ? -1 : undefined}
       onKeyDown={handleDialogKeyDown}
       className={cn(
-        "relative flex min-h-0 flex-col border border-border bg-background",
+        "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl shadow-xl",
+          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
       aria-label={`${artifact.title} artifact`}
     >
@@ -266,7 +266,7 @@ export function ArtifactSurface({
             onClick={() => downloadTextFile(filename, artifact.code)}
             aria-label="Download artifact HTML"
           >
-            <DownloadIcon className="size-4" />
+            <HugeiconsIcon icon={Download01Icon} className="size-4" />
           </Button>
           <Button
             type="button"
@@ -330,7 +330,7 @@ export function ArtifactSurface({
             className="h-full"
           />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!rounded-none [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}

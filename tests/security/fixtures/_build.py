@@ -1,20 +1,12 @@
 """Deterministic builder for the wheel + sdist binary fixtures.
 
-This script is NOT run from CI; the produced .whl / .tar.gz bytes are
-committed alongside it. Re-run only when the IOC literal changes.
+Not run from CI; the produced .whl / .tar.gz bytes are committed alongside
+it. Re-run only when the IOC literal changes.
 
-Determinism strategy
---------------------
-- All member timestamps fixed to `SOURCE_DATE_EPOCH=0` (Unix epoch).
-- All members written with uid=0, gid=0, uname="", gname="".
-- Permission bits fixed: 0o644 for files, 0o755 for directories.
-- Members emitted in sorted order so the archive byte stream does not
-  depend on filesystem iteration order.
-- `zipfile.ZipFile` is invoked with `compresslevel=6` (default DEFLATE)
-  to keep output stable across stdlib versions.
-
-Re-running this script and diffing the .whl bytes against git is the
-regression test for determinism (also asserted in test_scan_packages).
+Determinism: fixed timestamps (SOURCE_DATE_EPOCH=0), uid/gid=0, empty
+uname/gname, fixed perms (0o644 files / 0o755 dirs), sorted member order,
+and DEFLATE compresslevel=6 for stability across stdlib versions. Diffing
+re-built .whl bytes against git is the regression test (see test_scan_packages).
 """
 
 from __future__ import annotations
@@ -33,9 +25,8 @@ _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 HERE = Path(__file__).resolve().parent
 
 
-# The IOC literal that scan_packages.py must trip on. Keep this in
-# sync with KNOWN_IOC_STRINGS in scripts/scan_npm_packages.py and
-# RE_MAY12_IOC in scripts/scan_packages.py.
+# IOC literal scan_packages.py must trip on. Keep in sync with
+# KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
