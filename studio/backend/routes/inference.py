@@ -3467,6 +3467,11 @@ async def _proxy_to_external_provider(
             stream_failed = False
             async for line in gen:
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
+                if monitor_event is None:
+                    try:
+                        _monitor_openai_chunk(monitor_id, json.loads(line))
+                    except Exception:
+                        pass
                 if monitor_event == "error":
                     stream_failed = True
                 yield f"{line}\n\n"
@@ -3476,6 +3481,9 @@ async def _proxy_to_external_provider(
                 if not stream_failed:
                     api_monitor.finish(monitor_id)
                 yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
@@ -5018,6 +5026,9 @@ async def openai_chat_completions(
 
             content_text = await asyncio.to_thread(_drain_to_text)
             api_monitor.set_reply(monitor_id, content_text)
+            _stats = _sf_stats_holder.get("stats")
+            if _stats:
+                _monitor_usage(monitor_id, _stats.get("usage"))
             api_monitor.finish(monitor_id)
             response = ChatCompletion(
                 id = completion_id,
@@ -5231,6 +5242,9 @@ async def openai_chat_completions(
                 ],
             )
             api_monitor.set_reply(monitor_id, full_text)
+            _stats = stats_holder.get("stats")
+            if _stats:
+                _monitor_usage(monitor_id, _stats.get("usage"))
             api_monitor.finish(monitor_id)
             return JSONResponse(content = response.model_dump())
 
@@ -5486,6 +5500,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
                 if resp is None:
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
                 if resp.status_code != 200:
                     err_bytes = await resp.aread()
@@ -5527,6 +5542,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
                         yield out + b"\n\n"
+                if disconnect_event.is_set():
+                    api_monitor.finish(monitor_id, "cancelled")
+                    return
                 api_monitor.finish(monitor_id)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 if not disconnect_event.is_set():
@@ -5535,6 +5553,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                     return
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             except Exception as e:
                 if disconnect_event.is_set():
                     api_monitor.finish(monitor_id, "cancelled")
@@ -6732,6 +6752,7 @@ async def _responses_stream(
             for event in _ensure_message_open():
                 yield event
             full_text += final_visible
+            api_monitor.append_reply(monitor_id, final_visible)
             yield _sse(
                 "response.output_text.delta",
                 {
@@ -6746,6 +6767,7 @@ async def _responses_stream(
             for event in _ensure_message_open():
                 yield event
             full_text = full_reasoning
+            api_monitor.set_reply(monitor_id, full_text)
             yield _sse(
                 "response.output_text.delta",
                 {

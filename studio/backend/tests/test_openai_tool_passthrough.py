@@ -43,7 +43,9 @@ from routes.inference import (
     _monitor_openai_sse_event,
     _openai_messages_for_gguf_chat,
     _openai_stream_usage_chunk,
+    _proxy_to_external_provider,
     _set_or_prepend_system_message,
+    openai_completions,
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy
@@ -1457,6 +1459,223 @@ class TestGgufVisionToolRouting:
         assert entry["prompt_tokens"] == 5
         assert entry["completion_tokens"] == 21
         assert entry["total_tokens"] == 26
+
+
+class TestApiMonitorProviderAndCompletionStreams:
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class DummyExternalClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream_chat_completion(self, **kwargs):
+                    assert kwargs["stream"] is False
+                    yield json.dumps(
+                        {
+                            "choices": [{"message": {"content": "provider reply"}}],
+                            "usage": {
+                                "prompt_tokens": 3,
+                                "completion_tokens": 4,
+                                "total_tokens": 7,
+                            },
+                        }
+                    )
+
+                async def close(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+
+            response = await _proxy_to_external_provider(payload, self._Request())
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+
+            assert chunks[-1] == "data: [DONE]\n\n"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == "provider reply"
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 4
+            assert entry["total_tokens"] == 7
+
+        asyncio.run(_run())
+
+    def test_external_stream_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class DummyExternalClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream_chat_completion(self, **_kwargs):
+                    yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                    await asyncio.sleep(3600)
+
+                async def close(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+
+            response = await _proxy_to_external_provider(payload, self._Request())
+            iterator = response.body_iterator
+            first = await anext(iterator)
+            assert "hello" in first
+
+            pending = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_completions_preheader_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": True}
+
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return None
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            response = await openai_completions(Request(), current_subject = "test")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+
+            assert chunks == []
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+
+class TestApiMonitorSafetensorsUsage:
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+
+    def test_non_streaming_safetensors_records_usage(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class DummyBackend:
+                active_model_name = "safe-model"
+                models = {"safe-model": {}}
+
+                def generate_chat_response(self, *, stats_holder, **_kwargs):
+                    stats_holder["stats"] = {
+                        "usage": {
+                            "prompt_tokens": 8,
+                            "completion_tokens": 5,
+                            "total_tokens": 13,
+                        }
+                    }
+                    yield "safe reply"
+
+                def reset_generation_state(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
+            monkeypatch.setattr(
+                inf_mod,
+                "_detect_safetensors_features",
+                lambda *_args, **_kwargs: {"supports_tools": False},
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            body = json.loads(response.body)
+
+            assert body["choices"][0]["message"]["content"] == "safe reply"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == "safe reply"
+            assert entry["prompt_tokens"] == 8
+            assert entry["completion_tokens"] == 5
+            assert entry["total_tokens"] == 13
+
+        asyncio.run(_run())
 
 
 class TestApiMonitorAudioInput:
