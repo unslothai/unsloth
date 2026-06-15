@@ -1223,12 +1223,14 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
+          {/* Active-mode badge: always visible when bypass is on, even while
+              the pill row is collapsed (returns null when off). */}
+          <BypassPermissionsToggle />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
-              <BypassPermissionsToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
               {mcpEnabledForChat ? (
