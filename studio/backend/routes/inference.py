@@ -6202,9 +6202,7 @@ async def _responses_non_streaming(
             reasoning_text, text = _extract_responses_reasoning(
                 raw_text,
                 msg.get("reasoning_content"),
-                parse_think_markers = _responses_should_parse_think_markers(
-                    chat_req, llama_backend
-                ),
+                parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
             )
             tool_calls = msg.get("tool_calls") or []
 

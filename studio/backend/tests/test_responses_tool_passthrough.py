@@ -790,9 +790,7 @@ class TestResponsesNonStreamingAdapter:
             return JSONResponse(
                 content = {
                     "model": "test-model",
-                    "choices": [
-                        {"message": {"content": "<think>plan</think>answer"}}
-                    ],
+                    "choices": [{"message": {"content": "<think>plan</think>answer"}}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
