@@ -548,16 +548,26 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 
 
 def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
     variant_key = variant_key.strip().lower()
     variant_index = stem.find(variant_key) if variant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    variant_in_parent_only = (
+        bool(parent)
+        and variant_index < 0
+        and (
+            (variant_key and variant_key in parent)
+            or (not variant_key and _GGUF_KNOWN_QUANT_RE.search(parent) is not None)
+        )
+    )
     for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
         if variant_index >= 0 and variant_index < match.start():
             return True
         tail = stem[match.end() :].lstrip("._-")
         if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
-            return True
+            return not variant_in_parent_only
     return False
 
 

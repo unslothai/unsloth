@@ -576,3 +576,45 @@ def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
 
     assert result["downloaded_bytes"] == 0
     assert result["progress"] == 0
+
+
+def test_gguf_download_progress_excludes_big_endian_sibling(monkeypatch, tmp_path):
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M-be.gguf").write_bytes(b"y" * 20_000)
+
+    result = asyncio.run(
+        models_route.get_gguf_download_progress(
+            repo_id = "org/repo",
+            variant = "Q4_K_M",
+            expected_bytes = 20_000,
+            current_subject = "test-user",
+        )
+    )
+
+    assert result["downloaded_bytes"] == 0
+    assert result["progress"] == 0
+
+
+def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev" / "Q4_K_M"
+    snap.mkdir(parents = True)
+    (snap / "foo.gguf").write_bytes(b"x" * 20_000)
+
+    result = asyncio.run(
+        models_route.get_gguf_download_progress(
+            repo_id = "org/repo",
+            variant = "Q4_K_M",
+            expected_bytes = 20_000,
+            current_subject = "test-user",
+        )
+    )
+
+    assert result["downloaded_bytes"] == 20_000
+    assert result["progress"] == 1.0

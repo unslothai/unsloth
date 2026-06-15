@@ -1147,16 +1147,25 @@ const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
 
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
-  const stem = filename.replace(/\.[^.]*$/, "").toLowerCase();
+  const normalized = filename.replace(/\\/g, "/").toLowerCase();
+  const separatorIndex = normalized.lastIndexOf("/");
+  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
+  const stem = basename.replace(/\.[^.]*$/, "");
   const quantKey = quant?.trim().toLowerCase() || "";
   const quantIndex = quantKey ? stem.indexOf(quantKey) : -1;
+  const quantInParentOnly =
+    !!parent &&
+    quantIndex < 0 &&
+    ((!!quantKey && parent.includes(quantKey)) ||
+      (!quantKey && GGUF_KNOWN_QUANT_RE.test(parent)));
   for (const match of stem.matchAll(BIG_ENDIAN_GGUF_FILENAME_RE)) {
     if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
       return true;
     }
     const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
     if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
-      return true;
+      return !quantInParentOnly;
     }
   }
   return false;
@@ -1170,13 +1179,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   if (!filename) {
     return false;
   }
-  const separatorIndex = Math.max(
-    filename.lastIndexOf("/"),
-    filename.lastIndexOf("\\"),
-  );
-  const basename =
-    separatorIndex >= 0 ? filename.slice(separatorIndex + 1) : filename;
-  return !hasBigEndianGgufMarker(basename, variant.quant);
+  return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
 async function autoLoadSmallestModel(): Promise<{

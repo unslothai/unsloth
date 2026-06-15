@@ -165,6 +165,13 @@ class TestGgufVariantFileResolution:
 
         assert _gguf_files_for_variant(files, "Q4_K_M") == ["foo-be-Q4_K_M.gguf"]
 
+    def test_keeps_model_name_be_token_with_quant_subdir(self):
+        files = [
+            "Q4_K_M/foo-be.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["Q4_K_M/foo-be.gguf"]
+
     def test_empty_variant_filters_big_endian_files(self):
         files = [
             "model-Q4_K_M-be.gguf",
@@ -411,6 +418,22 @@ class TestDetectGgufFromCache:
             out == "BF16/foo.gguf"
         ), f"subdir-only layout must resolve to relative path, got {out}"
 
+    def test_subdir_quant_keeps_be_model_name_token(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/a",
+            {"Q4_K_M/foo-be.gguf": 1},
+        )
+        assert _detect_gguf_from_hf_cache("unsloth/a") == "Q4_K_M/foo-be.gguf"
+
+    def test_big_endian_only_cache_is_not_detected(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/a",
+            {"model-Q4_K_M-be.gguf": 1},
+        )
+        assert _detect_gguf_from_hf_cache("unsloth/a") is None
+
     def test_returns_none_when_no_gguf(self, hf_cache):
         _build_cache(hf_cache, "unsloth/a", {"README.md": 10})
         assert _detect_gguf_from_hf_cache("unsloth/a") is None
@@ -440,6 +463,17 @@ class TestDetectGgufModelRemoteOffline:
         ):
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
+
+    def test_remote_big_endian_only_repo_is_not_detected(self, clean_offline_env, monkeypatch):
+        siblings = [
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf"),
+        ]
+        monkeypatch.setattr(
+            "huggingface_hub.model_info",
+            lambda *_args, **_kwargs: _types.SimpleNamespace(siblings = siblings),
+        )
+
+        assert detect_gguf_model_remote("unsloth/a") is None
 
     def test_repository_not_found_does_not_consult_cache(self, hf_cache, clean_offline_env):
         # Cache has a file but the API says the repo is gone.
@@ -739,6 +773,18 @@ class TestListLocalGgufVariantsSubdir:
         config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "Q4_K_M")
         assert config is not None
         assert config.gguf_file == str(target.resolve())
+
+    def test_local_variant_listing_keeps_subdir_be_model_name_token(self, tmp_path):
+        from utils.models.model_config import list_local_gguf_variants
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "Q4_K_M").mkdir()
+        (tmp_path / "Q4_K_M" / "foo-be.gguf").write_bytes(b"\0" * 10)
+
+        variants, _ = list_local_gguf_variants(str(tmp_path))
+        assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+            ("Q4_K_M", "Q4_K_M/foo-be.gguf", 10)
+        ]
 
 
 class TestListGgufVariantsPermanentErrors:

@@ -113,16 +113,26 @@ _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECAS
 
 
 def is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
     quant_key = quant.strip().lower()
     quant_index = stem.find(quant_key) if quant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _GGUF_QUANT_RE.search(parent) is not None)
+        )
+    )
     for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
         if quant_index >= 0 and quant_index < match.start():
             return True
         tail = stem[match.end() :].lstrip("._-")
         if not tail or _GGUF_QUANT_RE.search(tail) is None:
-            return True
+            return not quant_in_parent_only
     return False
 
 
@@ -160,7 +170,10 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
         for name in filenames
-        if is_gguf_filename(name) and not is_mmproj_filename(name) and not is_mtp_drafter_path(name)
+        if is_gguf_filename(name)
+        and not is_mmproj_filename(name)
+        and not is_mtp_drafter_path(name)
+        and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
         return None

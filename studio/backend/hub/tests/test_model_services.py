@@ -82,6 +82,10 @@ def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")
     assert not gguf.is_big_endian_gguf_path("foo-be-Q4_K_M.gguf", "Q4_K_M")
+    assert not gguf.is_big_endian_gguf_path("Q4_K_M/foo-be.gguf", "Q4_K_M")
+    assert gguf.pick_best_gguf(["model-Q4_K_M-be.gguf", "model-Q4_K_M.gguf"]) == (
+        "model-Q4_K_M.gguf"
+    )
 
 
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):

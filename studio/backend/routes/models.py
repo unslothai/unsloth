@@ -2188,8 +2188,12 @@ async def get_gguf_download_progress(
                 for f in _iter_gguf_paths(entry):
                     if _is_mmproj_filename(f.name):
                         continue
-                    fname = f.name.lower().replace("-", "").replace("_", "")
-                    if not variant_lower or variant_lower in fname:
+                    rel = f.relative_to(entry).as_posix()
+                    quant = _extract_quant_label(rel)
+                    if _is_big_endian_gguf_path(rel, quant):
+                        continue
+                    rel_key = rel.lower().replace("-", "").replace("_", "")
+                    if not variant_lower or variant_lower in rel_key:
                         try:
                             downloaded_bytes += f.stat().st_size
                         except OSError:
