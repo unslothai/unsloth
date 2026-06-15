@@ -2522,9 +2522,7 @@ def _python_exec(
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
-        safe_env = (
-            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
-        )
+        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2533,9 +2531,7 @@ def _python_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = (
-                _bypass_preexec if disable_sandbox else _sandbox_preexec
-            )
+            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -2627,9 +2623,7 @@ def _bash_exec(
 
     try:
         workdir = _get_workdir(session_id)
-        safe_env = (
-            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
-        )
+        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2638,9 +2632,7 @@ def _bash_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = (
-                _bypass_preexec if disable_sandbox else _sandbox_preexec
-            )
+            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
