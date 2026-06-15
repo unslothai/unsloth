@@ -1020,7 +1020,11 @@ class TestResponsesStreamAdapter:
             def __init__(self, **_kwargs):
                 pass
 
-            def feed(self, _content, _reasoning_content = None):
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
                 return "", ""
 
             def finish(self):
@@ -1062,7 +1066,11 @@ class TestResponsesStreamAdapter:
             def __init__(self, **_kwargs):
                 pass
 
-            def feed(self, _content, _reasoning_content = None):
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
                 return "", ""
 
             def finish(self):
