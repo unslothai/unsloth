@@ -43,14 +43,32 @@ const DEFAULT: HardwareInfo = {
 // Module-level cache so multiple components share one fetch.
 let cached: HardwareInfo | null = null;
 let fetchPromise: Promise<HardwareInfo> | null = null;
+let cacheGeneration = 0;
+const listeners = new Set<(info: HardwareInfo) => void>();
+
+function notifyHardwareInfo(info: HardwareInfo) {
+    listeners.forEach((listener) => listener(info));
+}
+
+export function invalidateHardwareInfo() {
+    cacheGeneration += 1;
+    cached = null;
+    fetchPromise = null;
+}
+
+export async function refreshHardwareInfo(): Promise<HardwareInfo> {
+    invalidateHardwareInfo();
+    return fetchOnce();
+}
 
 async function fetchOnce(): Promise<HardwareInfo> {
     if (cached) return cached;
     if (fetchPromise) return fetchPromise;
 
+    const generation = cacheGeneration;
     fetchPromise = (async () => {
         try {
-            const res = await authFetch("/api/system/hardware");
+            const res = await authFetch("/api/system/hardware?include_details=true");
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             const info: HardwareInfo = {
@@ -70,11 +88,15 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
             };
-            cached = info;
-            return info;
+            if (generation === cacheGeneration) {
+                cached = info;
+                notifyHardwareInfo(info);
+                return info;
+            }
+            return cached ?? DEFAULT;
         } catch {
             // Reset so subsequent calls retry (e.g. backend wasn't ready).
-            fetchPromise = null;
+            if (generation === cacheGeneration) fetchPromise = null;
             return DEFAULT;
         }
     })();
@@ -90,13 +112,17 @@ export function useHardwareInfo(): HardwareInfo {
     const [info, setInfo] = useState<HardwareInfo>(cached ?? DEFAULT);
 
     useEffect(() => {
-        if (cached) return;
-
         let cancelled = false;
-        fetchOnce().then((hw) => {
+        const listener = (hw: HardwareInfo) => {
             if (!cancelled) setInfo(hw);
-        });
-        return () => { cancelled = true; };
+        };
+
+        listeners.add(listener);
+        if (!cached) fetchOnce().then(listener);
+        return () => {
+            cancelled = true;
+            listeners.delete(listener);
+        };
     }, []);
 
     return info;
