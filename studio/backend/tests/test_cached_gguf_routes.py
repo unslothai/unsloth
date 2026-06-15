@@ -503,6 +503,58 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     assert flags["F16"] is False
 
 
+def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
+    import huggingface_hub.constants as hf_constants
+
+    siblings = [
+        SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
+        SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
+    ]
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_args, **_kwargs: SimpleNamespace(siblings = siblings),
+    )
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo", hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert [(v.quant, v.filename, v.size_bytes, v.downloaded) for v in result.variants] == [
+        ("Q4_K_M", "model-Q4_K_M.gguf", 10, True)
+    ]
+
+
+def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, tmp_path):
+    import huggingface_hub.constants as hf_constants
+
+    variants = [
+        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10),
+    ]
+    monkeypatch.setattr(
+        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, False)
+    )
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo", hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert result.variants[0].downloaded is False
+
+
 def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
     """A cached mmproj adapter must not count toward a same-label main
     variant's download progress (mmproj-F16 vs an F16 weight)."""

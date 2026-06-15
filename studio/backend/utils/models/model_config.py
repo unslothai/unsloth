@@ -25,6 +25,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1383,6 +1384,34 @@ def _extract_quant_label(filename: str) -> str:
     return stem.split("-")[-1]
 
 
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+_GGUF_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+
+
+def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_key = quant.strip().lower()
+    quant_index = stem.find(quant_key) if quant_key else -1
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
+            return True
+    return False
+
+
 def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str:
     """Directory to scan upward from for local GGUF companion files."""
     import re
@@ -1522,6 +1551,8 @@ def list_gguf_variants(
             continue
 
         quant = _extract_quant_label(fname)
+        if _is_big_endian_gguf_path(fname, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = fname
@@ -1598,6 +1629,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         if _is_mtp_drafter(rel):
             continue
         quant = _extract_quant_label(rel)
+        if _is_big_endian_gguf_path(rel, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = rel

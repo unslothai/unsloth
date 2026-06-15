@@ -81,6 +81,7 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -112,6 +113,7 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -2106,7 +2108,11 @@ async def get_gguf_variants(
                                     size = f.stat().st_size
                                 except OSError:
                                     continue  # broken symlink / unreadable: skip
-                                q = _extract_quant_label(f.name).lower()
+                                rel = f.relative_to(snap).as_posix()
+                                q = _extract_quant_label(rel)
+                                if _is_big_endian_gguf_path(rel, q):
+                                    continue
+                                q = q.lower()
                                 by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)

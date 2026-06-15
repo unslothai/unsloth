@@ -158,6 +158,13 @@ class TestGgufVariantFileResolution:
 
         assert _gguf_files_for_variant(files, "Q4_K_M") == ["model-Q4_K_M.gguf"]
 
+    def test_keeps_model_name_be_token_before_quant(self):
+        files = [
+            "foo-be-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["foo-be-Q4_K_M.gguf"]
+
     def test_empty_variant_filters_big_endian_files(self):
         files = [
             "model-Q4_K_M-be.gguf",
@@ -165,6 +172,23 @@ class TestGgufVariantFileResolution:
         ]
 
         assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
+
+    def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
+        siblings = [
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
+        ]
+        monkeypatch.setattr(
+            "huggingface_hub.model_info",
+            lambda *_args, **_kwargs: _types.SimpleNamespace(siblings = siblings),
+        )
+
+        variants, has_vision = list_gguf_variants("org/repo")
+
+        assert has_vision is False
+        assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+            ("Q4_K_M", "model-Q4_K_M.gguf", 10)
+        ]
 
     def test_download_uses_exact_variant_label(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
@@ -207,6 +231,46 @@ class TestGgufVariantFileResolution:
 
         assert downloaded == ["tinyllamas/stories260K.gguf"]
         assert out == "/fake/ggml-org/models/tinyllamas/stories260K.gguf"
+
+    def test_download_includes_uppercase_split_gguf_shards(self, monkeypatch, tmp_path):
+        backend = LlamaCppBackend()
+        downloaded: list[str] = []
+
+        files = [
+            "model-Q4_K_M-00001-of-00002.GGUF",
+            "model-Q4_K_M-00002-of-00002.GGUF",
+        ]
+
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
+
+        def fake_download(
+            *,
+            repo_id,
+            filename,
+            token = None,
+        ):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: files),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("huggingface_hub.hf_hub_download", fake_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = "org/repo",
+                hf_variant = "Q4_K_M",
+            )
+
+        assert downloaded == files
+        assert out == "/fake/org/repo/model-Q4_K_M-00001-of-00002.GGUF"
 
 
 def _siblings(items: dict[str, int]):

@@ -1142,7 +1142,25 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
-const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/;
+const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
+const GGUF_KNOWN_QUANT_RE =
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
+
+function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+  const stem = filename.replace(/\.[^.]*$/, "").toLowerCase();
+  const quantKey = quant?.trim().toLowerCase() || "";
+  const quantIndex = quantKey ? stem.indexOf(quantKey) : -1;
+  for (const match of stem.matchAll(BIG_ENDIAN_GGUF_FILENAME_RE)) {
+    if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
+      return true;
+    }
+    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   if (!variant?.filename) {
@@ -1158,7 +1176,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   );
   const basename =
     separatorIndex >= 0 ? filename.slice(separatorIndex + 1) : filename;
-  return !BIG_ENDIAN_GGUF_FILENAME_RE.test(basename);
+  return !hasBigEndianGgufMarker(basename, variant.quant);
 }
 
 async function autoLoadSmallestModel(): Promise<{
