@@ -3,23 +3,13 @@
 
 """Verification tests for PR #6269 (training-worker namespace-shadow guard).
 
-`_ensure_real_packages` in core/training/trainer.py runs before
-`from unsloth import FastLanguageModel`. It removes namespace-package shadow
-directories (a `unsloth` / `unsloth_zoo` directory without __init__.py on
-sys.path) so the import does not bind to an empty namespace package.
-
-The interesting property is import order. `unsloth.__init__` -> `_gpu_init`
-deliberately runs its ROCm / Windows bitsandbytes fixes BEFORE its own
-`import unsloth_zoo`, so the guard must let `unsloth` import `unsloth_zoo`
-rather than importing `unsloth_zoo` itself first. These tests model that
-contract with fake packages and assert the guard imports unsloth first.
-
-Everything runs in a subprocess against the real `_ensure_real_packages`
-extracted from trainer.py source (via ast), so no GPU, torch, or real unsloth
-import is needed. The editable / PEP 660 install case (where a namespace
-shadow actually wins because the real package is reachable only through a meta
-path finder that runs after the path finder) is reproduced with a small
-MetaPathFinder appended to sys.meta_path.
+`_ensure_real_packages` (core/training/trainer.py) drops namespace-package
+shadow dirs (a `unsloth`/`unsloth_zoo` dir with no __init__.py on sys.path)
+before `from unsloth import ...`. Order matters: `unsloth.__init__` runs its
+ROCm/Windows bnb fixes before importing unsloth_zoo, so the guard must import
+unsloth first. Each test runs the real guard (ast-extracted from source, no
+GPU/torch) in a subprocess, with fake packages reachable only via a meta path
+finder to mimic an editable/PEP 660 install where the shadow wins.
 """
 
 import json
@@ -35,9 +25,8 @@ TRAINER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "traine
 
 
 # ── fake package bodies ──────────────────────────────────────────────
-# The real `unsloth` records its import, sets the sentinel that mimics
-# _gpu_init's pre-zoo fixes, then imports unsloth_zoo. The real `unsloth_zoo`
-# records its import and snapshots whether that sentinel was set when it ran.
+# Real `unsloth` sets a sentinel (mimics _gpu_init's pre-zoo fixes) then
+# imports unsloth_zoo, which records whether that sentinel was set first.
 
 _REAL_UNSLOTH_INIT = textwrap.dedent(
     """
@@ -85,11 +74,8 @@ _DRIVER = textwrap.dedent(
     exec(compile(mod, cfg["trainer_py"], "exec"), ns)
     _ensure_real_packages = ns["_ensure_real_packages"]
 
-    # The subprocess runs under -S, so site-packages (where the real unsloth /
-    # unsloth_zoo live) is not on sys.path and cannot beat the namespace shadow;
-    # stdlib stays available. Put the shadow roots first so the path finder
-    # returns the namespace portion; the real packages are reachable only via
-    # the meta path finder below, mimicking a source / editable install.
+    # Under -S site-packages is off, so a shadow root placed first wins the
+    # path finder; the real packages come only from the meta finder below.
     for root in reversed(cfg["shadow_roots"]):
         sys.path.insert(0, root)
 
@@ -110,6 +96,13 @@ _DRIVER = textwrap.dedent(
                     )
                 return None
         sys.meta_path.append(_RealFinder())
+
+    # optionally force importlib.invalidate_caches to raise, to prove the guard
+    # still restores sys.path in that case
+    if cfg.get("raise_on_invalidate"):
+        def _boom():
+            raise RuntimeError("invalidate_caches failed")
+        importlib.invalidate_caches = _boom
 
     path_before = list(sys.path)
     result = {"error": None}
@@ -156,6 +149,7 @@ def _run(
     real: bool,
     names = ("unsloth_zoo", "unsloth"),
     trainer_py: Path = TRAINER_PY,
+    raise_on_invalidate: bool = False,
 ):
     order_file = tmp_path / "order.txt"
     sentinel_file = tmp_path / "sentinel.txt"
@@ -170,6 +164,7 @@ def _run(
         "real_root": str(real_root) if real else None,
         "names": list(names),
         "out": str(out),
+        "raise_on_invalidate": raise_on_invalidate,
     }
     cfg_path = tmp_path / "cfg.json"
     cfg_path.write_text(json.dumps(cfg))
@@ -270,6 +265,16 @@ def test_multiple_shadow_entries_all_removed(tmp_path):
     # namespace shadow and unsloth_zoo_real would be False
     assert res["unsloth_zoo_real"], res
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
+    assert res["path_restored"], res
+
+
+def test_sys_path_restored_if_invalidate_caches_raises(tmp_path):
+    """sys.path is restored even if importlib.invalidate_caches raises."""
+    shadow = tmp_path / "shadow"
+    _make_namespace_shadow(shadow, "unsloth_zoo")
+    res = _run(tmp_path, shadow_roots = [shadow], real = True, raise_on_invalidate = True)
+
+    assert res["error"] == "RuntimeError", res
     assert res["path_restored"], res
 
 

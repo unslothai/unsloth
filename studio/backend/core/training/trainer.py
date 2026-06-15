@@ -88,14 +88,11 @@ def _ensure_real_packages(*names: str) -> None:
     for name in shadowed:
         for cached in [m for m in list(sys.modules) if m == name or m.startswith(name + ".")]:
             del sys.modules[cached]
-    importlib.invalidate_caches()
     try:
-        # Import parent-first (callers pass names dependency-first, e.g.
-        # "unsloth_zoo", "unsloth"). unsloth.__init__ -> _gpu_init runs its
-        # ROCm/Windows fixes (bitsandbytes arch detection, BNB_ROCM_VERSION)
-        # before its own `import unsloth_zoo`, so unsloth must be imported first;
-        # importing unsloth_zoo directly here would skip those guards and can
-        # fail on ROCm/Windows. The later cached import is then a no-op.
+        importlib.invalidate_caches()
+        # Import unsloth before unsloth_zoo (names are dependency-first):
+        # unsloth.__init__ runs ROCm/Windows bnb fixes before it imports zoo,
+        # so importing zoo first here would skip them. Repeat import is a no-op.
         for name in reversed(names):
             importlib.import_module(name)
     finally:
