@@ -649,8 +649,10 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
-        side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
+        "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
+        side === "left"
+          ? "pl-12 pr-3 md:pl-2"
+          : "pl-3 pr-[calc(3rem+var(--studio-window-control-inset,0px))]",
       )}
     >
       <ModelSelector
@@ -663,7 +665,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="max-w-[80%] !h-[34px]"
+        className="pointer-events-auto max-w-[80%] !h-[34px]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -2363,17 +2365,17 @@ export function ChatPage({
         )}
         <div
           className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
+            "pointer-events-none absolute top-0 left-0 right-[10px] z-[65] flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
             isMobile
-              ? "pl-12 pr-1.5"
+              ? "pl-12"
               : pinned
                 ? "pl-2"
-                : "pl-[calc(0.5rem+var(--studio-mac-traffic-light-inset,0px))]",
+                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
           )}
         >
-          <div className="flex items-center gap-1">
+          <div className="pointer-events-auto flex items-center gap-1">
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
@@ -2458,7 +2460,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="pointer-events-auto ml-auto flex items-center gap-2">
             {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
