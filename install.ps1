@@ -1898,13 +1898,11 @@ shell.Run cmd, 0, False
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # CPU PyTorch is only a temporary base: ROCm could not be probe-verified
-            # at bootstrap (arch was name-inferred), so install a light CPU base now;
-            # setup.ps1's own detection replaces it with GPU ROCm wheels next, so the
-            # final install IS GPU-accelerated.
-            substep "Installing CPU PyTorch now as a temporary base." "Cyan"
-            substep "Studio setup replaces it with GPU ROCm wheels for $ROCmGfxArch next" "Cyan"
-            substep "(bundled runtime; HIP SDK not required) -- the final install is GPU-accelerated." "Cyan"
+            # Only an unmapped arch reaches here: a mapped one set $ROCmIndexUrl
+            # above and installs ROCm directly. No ROCm PyTorch wheels exist for
+            # this arch (e.g. RDNA2 gfx103X), so PyTorch stays on CPU.
+            substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
+            substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm) {
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
