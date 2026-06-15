@@ -63,9 +63,7 @@ def test_cpu_thread_cap_is_opt_in(raw):
 
 
 # Anything that is not a positive integer raises a clear ValueError.
-@pytest.mark.parametrize(
-    "raw", ["zero", "0", "-3", "1.5", "abc", "8a", "0x4", "1e3", "4 0"]
-)
+@pytest.mark.parametrize("raw", ["zero", "0", "-3", "1.5", "abc", "8a", "0x4", "1e3", "4 0"])
 def test_cpu_thread_cap_requires_positive_integer(raw):
     with pytest.raises(ValueError, match = "must be a positive integer"):
         configure_cpu_threads({"UNSLOTH_CPU_THREADS": raw})
@@ -118,8 +116,8 @@ def _ast_line_of_platform_compat_import(source: str) -> int:
     raise AssertionError("_platform_compat import not found")
 
 
-# AST-based ordering: configure_cpu_threads() must precede _platform_compat
-# in both run.py and main.py. Robust to formatting / line shifts.
+# AST ordering: configure_cpu_threads() must precede _platform_compat in both
+# run.py and main.py. Robust to formatting / line shifts.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
     source = entry_point.read_text()

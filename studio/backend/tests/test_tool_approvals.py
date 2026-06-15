@@ -19,6 +19,7 @@ import pytest
 from state import tool_approvals
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
+    abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
     request_tool_decision,
@@ -40,7 +41,13 @@ def _clear_pending():
 class _Waiter:
     """Run ``request_tool_decision`` in a thread and capture its result."""
 
-    def __init__(self, session_id, approval_id, cancel_event = None, timeout = None):
+    def __init__(
+        self,
+        session_id,
+        approval_id,
+        cancel_event = None,
+        timeout = None,
+    ):
         self.session_id = session_id
         self.approval_id = approval_id
         self.cancel_event = cancel_event
@@ -70,7 +77,11 @@ def _has_pending(approval_id) -> bool:
         return approval_id in tool_approvals._pending
 
 
-def _wait_until(pred, timeout = 2.0, interval = 0.005) -> bool:
+def _wait_until(
+    pred,
+    timeout = 2.0,
+    interval = 0.005,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if pred():
@@ -102,6 +113,14 @@ def test_slot_cleaned_up_after_decision():
     resolve_tool_decision(aid, "allow")
     w.join()
     assert _wait_until(lambda: not _has_pending(aid))
+
+
+def test_abort_tool_decision_removes_unwaited_slot():
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    abort_tool_decision(slot, aid)
+    assert not _has_pending(aid)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is False
 
 
 def test_approval_ids_are_unique():
@@ -159,6 +178,26 @@ def test_duplicate_resolve_after_completion_returns_false():
     assert resolve_tool_decision(aid, "deny") is False
 
 
+def test_first_decision_is_immutable():
+    """A second confirmation cannot flip an already-recorded decision.
+
+    The waiter reads ``slot["decision"]`` outside the lock and then cleans up,
+    so a duplicate or out-of-order POST that lands in that window must be
+    rejected and must not overwrite the first decision -- an Allow can never
+    become a Deny. Distinct from the after-completion case above: here the slot
+    is still pending (no waiter has consumed it yet).
+    """
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    # Second decision, same id, before any waiter consumes/cleans the slot.
+    assert resolve_tool_decision(aid, "deny", session_id = "sess") is False
+    assert slot["decision"] == "allow"
+    # The waiter still observes the first (immutable) decision.
+    assert wait_tool_decision(slot, aid) == "allow"
+    assert not _has_pending(aid)
+
+
 # ── Cancellation and timeout ─────────────────────────────────────────
 
 
@@ -207,9 +246,7 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
     for i in range(n):
         aid = new_approval_id()
         waiters[aid] = _Waiter(f"s{i}", aid).start()
-    expected = {
-        aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)
-    }
+    expected = {aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)}
     for aid, decision in expected.items():
         assert resolve_tool_decision(aid, decision) is True
     for aid, w in waiters.items():

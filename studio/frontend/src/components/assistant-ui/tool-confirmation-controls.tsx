@@ -6,7 +6,10 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ToolCallMessagePartStatus } from "@assistant-ui/react";
+import type {
+  ToolCallMessagePartComponent,
+  ToolCallMessagePartStatus,
+} from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
 
 /**
@@ -32,15 +35,19 @@ export function ToolConfirmationControls({
   status?: ToolCallMessagePartStatus;
 }) {
   const confirmation = useChatRuntimeStore((s) =>
-    toolCallId ? s.toolConfirmations[toolCallId] : undefined,
+    toolCallId &&
+    Object.prototype.hasOwnProperty.call(s.toolConfirmations, toolCallId)
+      ? s.toolConfirmations[toolCallId]
+      : undefined,
   );
   const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
   const clearToolConfirmation = useChatRuntimeStore(
     (s) => s.clearToolConfirmation,
   );
-  const sessionId = confirmation?.sessionId ?? "";
+  const autoAllowKey = confirmation?.autoAllowKey ?? "";
   const autoAllowed = useChatRuntimeStore(
-    (s) => s.alwaysAllowToolsBySession.get(sessionId)?.has(toolName) ?? false,
+    (s) =>
+      s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false,
   );
 
   const [decided, setDecided] = useState(false);
@@ -109,7 +116,7 @@ export function ToolConfirmationControls({
         variant="outline"
         disabled={pending !== null}
         onClick={() => {
-          if (sessionId) allowToolAlways(sessionId, toolName);
+          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           void resolve("allow");
         }}
       >
@@ -130,4 +137,21 @@ export function ToolConfirmationControls({
       ) : null}
     </div>
   );
+}
+
+export function withToolConfirmation(
+  Component: ToolCallMessagePartComponent,
+): ToolCallMessagePartComponent {
+  const WithToolConfirmation: ToolCallMessagePartComponent = (props) => (
+    <>
+      <Component {...props} />
+      <ToolConfirmationControls
+        toolCallId={props.toolCallId}
+        toolName={props.toolName}
+        result={props.result}
+        status={props.status}
+      />
+    </>
+  );
+  return WithToolConfirmation;
 }

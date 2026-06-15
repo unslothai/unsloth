@@ -122,7 +122,7 @@ export function ProgressSection({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
-  // Auto-reset when training stops -- no useEffect needed
+  // Auto-resets when training stops; no useEffect needed
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
   const pct =

@@ -256,6 +256,7 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
         disable_sandbox = False,
     ):
         seen.append(disable_sandbox)
@@ -288,6 +289,7 @@ def test_loop_bypass_overrides_confirm_for_direct_callers():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
         disable_sandbox = False,
     ):
         return f"RAN[{name}]"
@@ -324,9 +326,9 @@ def test_gguf_loop_confirm_gate_respects_bypass():
         node
         for node in ast.walk(ast.parse(src))
         if isinstance(node, ast.Assign)
-        and any(getattr(t, "id", None) == "_needs_confirm" for t in node.targets)
+        and any(getattr(t, "id", None) == "needs_confirm" for t in node.targets)
     ]
-    assert gates, "could not find the _needs_confirm gate in the GGUF loop"
+    assert gates, "could not find the needs_confirm gate in the GGUF loop"
     names = {n.id for g in gates for n in ast.walk(g.value) if isinstance(n, ast.Name)}
     assert "confirm_tool_calls" in names
     assert "bypass_permissions" in names  # bypass must suppress the GGUF gate

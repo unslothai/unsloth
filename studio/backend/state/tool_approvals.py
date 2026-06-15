@@ -58,7 +58,12 @@ def begin_tool_decision(session_id, approval_id) -> dict:
     return slot
 
 
-def wait_tool_decision(slot, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT):
+def wait_tool_decision(
+    slot,
+    approval_id,
+    cancel_event = None,
+    timeout = _DECISION_TIMEOUT,
+):
     """Block on a slot from ``begin_tool_decision`` until the user decides.
 
     Returns ``"allow"`` or ``"deny"``. Falls back to ``"deny"`` if the wait
@@ -80,21 +85,44 @@ def wait_tool_decision(slot, approval_id, cancel_event = None, timeout = _DECISI
                 _pending.pop(approval_id, None)
 
 
+def abort_tool_decision(slot, approval_id) -> None:
+    """Remove a slot that was announced but never entered ``wait_tool_decision``.
+
+    Streaming wrappers may stop after ``tool_start`` is yielded and before
+    the loop resumes into ``wait_tool_decision``. In that case there is no
+    waiter to run the normal cleanup path, so the generator close path calls
+    this explicitly.
+    """
+    with _lock:
+        if _pending.get(approval_id) is slot:
+            _pending.pop(approval_id, None)
+
+
 def request_tool_decision(
-    session_id, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT
+    session_id,
+    approval_id,
+    cancel_event = None,
+    timeout = _DECISION_TIMEOUT,
 ):
     """Register and wait in one call (when the slot is not needed early)."""
     slot = begin_tool_decision(session_id, approval_id)
-    return wait_tool_decision(
-        slot, approval_id, cancel_event = cancel_event, timeout = timeout
-    )
+    return wait_tool_decision(slot, approval_id, cancel_event = cancel_event, timeout = timeout)
 
 
-def resolve_tool_decision(approval_id, decision, session_id = None) -> bool:
+def resolve_tool_decision(
+    approval_id,
+    decision,
+    session_id = None,
+) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop.
 
     Returns ``True`` if a pending call matched, ``False`` otherwise (e.g. a
     stale or duplicate confirmation, or a session-scope mismatch).
+
+    The first decision wins: once a slot's event is set, a later (duplicate or
+    out-of-order) confirmation for the same id is rejected without mutating the
+    recorded decision, so an Allow can never be flipped to Deny in the window
+    before the waiter reads ``slot["decision"]`` and pops the slot.
     """
     if not approval_id:
         return False
@@ -103,6 +131,8 @@ def resolve_tool_decision(approval_id, decision, session_id = None) -> bool:
         if not slot:
             return False
         if session_id is not None and slot["session"] != (session_id or ""):
+            return False
+        if slot["event"].is_set():
             return False
         slot["decision"] = decision
         slot["event"].set()

@@ -42,8 +42,8 @@ const EXCLUDED_TAGS_MLX = new Set([
   "ctranslate2",
 ]);
 
-// Embedding / sentence-transformer models ship with onnx/openvino as additional
-// export formats — they should not be excluded by the tag check above.
+// Embedding / sentence-transformer models ship onnx/openvino as extra
+// export formats, so the tag check above must not exclude them.
 const EMBEDDING_TAGS = new Set([
   "sentence-transformers",
   "feature-extraction",
@@ -123,17 +123,16 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
 
 /** Number of unsloth results to pull up-front before yielding general results. */
 const UNSLOTH_PREFETCH = 20;
-/** When the user searched for a specific publisher, show fewer unsloth results
- *  before the pinned (original publisher) model. */
+/** Fewer unsloth results before the pinned model when a publisher is searched. */
 const UNSLOTH_PINNED_PREFETCH = 4;
 /** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
 const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
 
 /**
- * Prime the hf-cache from a listModels result. For public (non-gated,
- * non-private) models, also prime the anonymous slot so the VRAM hook
- * gets cache hits without re-fetching. Gated/private models are only
- * cached under the caller's token to avoid auth leakage.
+ * Prime the hf-cache from a listModels result. For public models, also
+ * prime the anonymous slot so the VRAM hook gets cache hits without
+ * re-fetching. Gated/private models are cached only under the caller's
+ * token to avoid auth leakage.
  */
 function primeFromListing(
   name: string,
@@ -173,8 +172,8 @@ async function* mergedModelIterator(
     ...common,
   });
 
-  // Start pinned model lookup immediately so it can run in parallel with
-  // the Phase 1 unsloth iteration instead of blocking Phase 2.
+  // Start the pinned lookup now so it runs in parallel with Phase 1
+  // instead of blocking Phase 2.
   const pinnedPromise = pinnedId
     ? cachedModelInfo({
         name: pinnedId,
@@ -203,9 +202,8 @@ async function* mergedModelIterator(
   if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
     const pinned = await pinnedPromise;
     if (pinned) {
-      // Record both the raw input and the canonical name returned by HF
-      // so phase 2 deduplication works even when casing differs
-      // (e.g. user typed "OpenAI/gpt-oss-20b", HF returns "openai/gpt-oss-20b").
+      // Record both the raw input and HF's canonical name so phase 2 dedupe
+      // works across casing (e.g. "OpenAI/..." vs HF's "openai/...").
       seen.add(pinnedId);
       const canonicalName = (pinned as { name?: string }).name;
       if (canonicalName && canonicalName !== pinnedId) {
@@ -255,7 +253,7 @@ async function* priorityThenListingIterator(
   for (const result of settled) {
     if (result.status === "fulfilled") {
       const m = result.value as { name?: string; pipeline_tag?: string };
-      // Skip models that don't match the selected task filter
+      // Skip models that don't match the task filter.
       if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
       if (m.name) seen.add(m.name);
       yield result.value;
@@ -288,8 +286,8 @@ export function useHfModelSearch(
 ) {
   const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
 
-  // Parse publisher detection once and share between the iterator factory
-  // and the secondary sort gate (avoids duplicating the regex + logic).
+  // Detect the publisher once, shared by the iterator factory and the
+  // secondary sort gate (avoids duplicating the regex + logic).
   const { isPublisherQuery, searchQuery, pinnedId, trimmed } = useMemo(() => {
     const t = query.trim();
     const m = PUBLISHER_RE.exec(t);
@@ -305,7 +303,7 @@ export function useHfModelSearch(
   const createIter = useCallback(
     () => {
       if (!trimmed) {
-        // No query: show priority models first (with full metadata), then general unsloth listing
+        // No query: priority models first (full metadata), then general unsloth.
         if (priorityIds && priorityIds.length > 0) {
           return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
         }
@@ -316,13 +314,11 @@ export function useHfModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
-      // Typed query: disable task filter so explicitly searched models still
-      // appear even if HF task metadata is wrong/missing.
-      // If the query is a valid "owner/repo" identifier (exactly two non-empty,
-      // slash-free, space-free segments), strip the org prefix so unsloth
-      // variants surface, then pin the original publisher model after a small
-      // batch of unsloth results.  Queries for unsloth-owned models are left
-      // as-is so they get the full 20-result prefetch and secondary sort.
+      // Typed query: disable the task filter so explicitly searched models
+      // appear even with wrong/missing HF task metadata. For a valid
+      // "owner/repo" query, strip the org prefix so unsloth variants
+      // surface, then pin the original publisher model after a small batch.
+      // unsloth-owned queries are left as-is for the full prefetch + sort.
       return mergedModelIterator(searchQuery, undefined, accessToken, pinnedId) as AsyncGenerator<unknown>;
     },
     [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
@@ -333,10 +329,9 @@ export function useHfModelSearch(
   const mapModel = useMemo(() => makeMapModel(excludeGguf, excludedTags), [excludeGguf, excludedTags]);
   const search = useHfPaginatedSearch(createIter, mapModel);
 
-  // Secondary sort guarantee: unsloth models always float to the top.
-  // Skip when the user searched for a specific non-unsloth publisher
-  // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
-  // pinned ordering in that case.
+  // Secondary sort: unsloth models always float to the top. Skip for a
+  // specific non-unsloth publisher query (e.g. "openai/gpt-oss-20b") --
+  // the iterator already handles pinned ordering there.
   const results = useMemo(
     () =>
       isPublisherQuery

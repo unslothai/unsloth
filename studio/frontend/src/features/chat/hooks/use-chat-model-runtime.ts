@@ -24,12 +24,17 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
-  CHAT_REASONING_ENABLED_KEY,
-  loadOptionalBool,
-  type ReasoningEffort,
+  readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import {
+  applyActiveModelStatusToStore,
+  clampLocalReasoningEffort,
+  normalizeSpeculativeType,
+  resolveInferenceCheckpointId,
+} from "../lib/apply-inference-status-to-store";
 import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
@@ -56,10 +61,16 @@ type SelectedModelInput = {
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "items-start gap-2.5",
+  toast: "chat-model-load-toast items-center gap-2.5",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
+  cancelButton:
+    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-[11px] !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
+} as const;
+
+const MODEL_LOADED_TOAST_CLASSNAMES = {
+  toast: "chat-model-loaded-toast items-center gap-2.5",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -78,20 +89,35 @@ function stripTrailingEpoch(input: string): string {
   return cleaned || input;
 }
 
+function shortModelLabel(idOrName: string): string {
+  const slash = idOrName.lastIndexOf("/");
+  const label = slash >= 0 ? idOrName.slice(slash + 1) : idOrName;
+  return label || idOrName;
+}
+
 function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
+  if (model.is_mlx) tags.push("MLX");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
   if (model.is_audio) tags.push("Audio");
   if (model.has_audio_input) tags.push("Audio Input");
-  if (!model.is_lora && !model.is_vision && !model.is_gguf && !model.is_audio && !model.has_audio_input)
+  if (
+    !model.is_lora &&
+    !model.is_vision &&
+    !model.is_gguf &&
+    !model.is_mlx &&
+    !model.is_audio &&
+    !model.has_audio_input
+  )
     tags.push("Base");
   return tags.join(" · ");
 }
@@ -102,6 +128,7 @@ function toChatModelSummary(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -113,10 +140,55 @@ function toChatModelSummary(model: {
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
     isGguf: Boolean(model.is_gguf),
+    isMlx: Boolean(model.is_mlx),
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
   };
+}
+
+// Merge capability flags from a load/status response into the matching
+// models[] entry. /api/models/list omits audio capability for default and
+// active-GGUF entries, so the attach gates (`activeModel?.hasAudioInput`)
+// would otherwise stay false. Mirrors the compare composer's sync.
+// Exported for tests.
+export function syncModelCapabilities(
+  modelId: string,
+  resp: {
+    display_name?: string | null;
+    is_vision?: boolean;
+    is_lora?: boolean;
+    is_gguf?: boolean;
+    is_audio?: boolean;
+    audio_type?: string | null;
+    has_audio_input?: boolean;
+  },
+): void {
+  const store = useChatRuntimeStore.getState();
+  const models = store.models;
+  const synced = {
+    isVision: Boolean(resp.is_vision),
+    isGguf: Boolean(resp.is_gguf),
+    isAudio: Boolean(resp.is_audio),
+    audioType: resp.audio_type ?? null,
+    hasAudioInput: Boolean(resp.has_audio_input),
+  };
+  const idx = models.findIndex((m) => m.id === modelId);
+  if (idx === -1) {
+    store.setModels([
+      ...models,
+      {
+        id: modelId,
+        name: resp.display_name || modelId,
+        isLora: Boolean(resp.is_lora),
+        ...synced,
+      },
+    ]);
+  } else {
+    const next = [...models];
+    next[idx] = { ...next[idx], ...synced };
+    store.setModels(next);
+  }
 }
 
 function toLoraSummary(lora: {
@@ -142,41 +214,6 @@ function toLoraSummary(lora: {
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
-}
-
-// Canonicalises any value the backend reports (or persisted state holds)
-// onto the five UI-facing modes the Speculative Decoding dropdown
-// understands: "auto" / "mtp" / "ngram" / "mtp+ngram" / "off" / null.
-// Mirrors backend _canonicalize_spec_mode so old persisted "default" /
-// "draft-mtp" / "ngram-mod" / chain values round-trip cleanly.
-function normalizeSpeculativeType(v: string | null | undefined): string | null {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
-  if (s === "ngram-simple") return "ngram-simple";
-  if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod") return "ngram";
-  if (s === "mtp+ngram") return "mtp+ngram";
-  // Comma-chained legacy values (e.g. from older persisted state).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
-  if (hasMtp && hasNgram) return "mtp+ngram";
-  if (hasMtp) return "mtp";
-  if (hasNgram) return "ngram";
-  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
-  return "auto";
-}
-
-type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
-
-function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort {
-  if (value === "low" || value === "medium" || value === "high") {
-    return value;
-  }
-  return "low";
 }
 
 export function useChatModelRuntime() {
@@ -233,19 +270,18 @@ export function useChatModelRuntime() {
       message: string,
       progressPercent?: number | null,
       progressLabel?: string | null,
-      onStop?: () => void,
     ) =>
       createElement(ModelLoadDescription, {
         title,
         message,
         progressPercent,
         progressLabel,
-        onStop,
       }),
     [],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+    const signal = options?.signal;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
@@ -254,147 +290,35 @@ export function useChatModelRuntime() {
         listLoras(),
       ]);
 
+      // Cancellation can land while the requests above are in flight. Bail
+      // before writing backend state back -- cancelLoading already cleared it.
+      if (signal?.aborted) return;
+
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
 
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
       const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
       if (statusRes.active_model && !isExternalSelectionActive) {
-        setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
-
-        // Apply inference defaults on reconnect (page refresh with model already loaded)
-        if (statusRes.inference) {
-          const currentParams = useChatRuntimeStore.getState().params;
-          setParams(
-            mergeBackendRecommendedInference({
-              current: currentParams,
-              response: statusRes,
-              modelId: statusRes.active_model,
-              presetSource: useChatRuntimeStore.getState().activePresetSource,
-            }),
-          );
-        }
-
-        // Restore reasoning/tools support flags and context length
-        const hydratingExistingModel =
-          selectedCheckpoint !== statusRes.active_model ||
-          useChatRuntimeStore.getState().activeGgufVariant !==
-            (statusRes.gguf_variant ?? null);
-        const supportsReasoning = statusRes.supports_reasoning ?? false;
-        const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
-        const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
-        const reasoningEffortLevels =
-          reasoningStyle === "reasoning_effort"
-            ? (["low", "medium", "high"] as const)
-            : (["low", "medium", "high"] as const);
-        const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
-        const supportsTools = statusRes.supports_tools ?? false;
-        const storedReasoningEnabled = loadOptionalBool(
-          CHAT_REASONING_ENABLED_KEY,
-        );
-        const currentGgufContextLength = statusRes.is_gguf
-          ? (statusRes.context_length ?? null)
-          : null;
-        const ggufMaxContextLength = statusRes.is_gguf
-          ? (statusRes.max_context_length ?? null)
-          : null;
-        const ggufNativeContextLength = statusRes.is_gguf
-          ? (statusRes.native_context_length ?? null)
-          : null;
-        const currentSpecType = normalizeSpeculativeType(
-          statusRes.speculative_type,
-        );
-        // Refresh runs both on F5 (fresh store needs hydration) AND right
-        // after a fresh load (store was already set by the load path). For
-        // the user-configurable model params we only hydrate when the shadow
-        // `loaded*` field is still null -- that signals "not yet hydrated".
-        // Otherwise we'd clobber the values the load path just applied and
-        // the UI would appear to revert the user's changes.
-        const prevState = useChatRuntimeStore.getState();
-        const clampedReasoningEffort = clampLocalReasoningEffort(
-          prevState.reasoningEffort,
-        );
-        const nextDefaultChatTemplate =
-          statusRes.chat_template === undefined
-            ? prevState.defaultChatTemplate
-            : statusRes.chat_template;
-        useChatRuntimeStore.setState({
-          supportsReasoning,
-          reasoningAlwaysOn,
-          reasoningStyle,
-          supportsReasoningOff: reasoningStyle !== "reasoning_effort",
-          reasoningEffortLevels,
-          reasoningEffort: clampedReasoningEffort,
-          supportsPreserveThinking,
-          supportsTools,
-          // Reset per-turn reasoning flag so:
-          //   1. models that do not support reasoning do not inherit a stale
-          //      off state from a prior model, and
-          //   2. local reasoning-effort models (where the composer hides
-          //      the Off option via supportsReasoningOff=false) cannot end
-          //      up with reasoningEnabled=false carried over from an
-          //      external model where Off was selected — the composer would
-          //      keep showing "Think: <level>" via effectiveReasoningEnabled,
-          //      but the chat-adapter would omit the kwarg and the Harmony
-          //      template would fall back to its own default effort.
-          reasoningEnabled: supportsReasoning
-            ? reasoningStyle === "reasoning_effort"
-              ? true
-              : useChatRuntimeStore.getState().reasoningEnabled
-            : true,
-          ggufContextLength: currentGgufContextLength,
-          ggufMaxContextLength,
-          ggufNativeContextLength,
-          modelRequiresTrustRemoteCode:
-            statusRes.requires_trust_remote_code ?? false,
-          defaultChatTemplate: nextDefaultChatTemplate,
-          loadedIsMultimodal: isMultimodalResponse(statusRes),
-          ...(prevState.loadedSpeculativeType === null && {
-            speculativeType: currentSpecType,
-            loadedSpeculativeType: currentSpecType,
-          }),
-          ...(statusRes.spec_draft_n_max !== undefined &&
-            prevState.loadedSpecDraftNMax === null &&
-            prevState.specDraftNMax === null && {
-              specDraftNMax: statusRes.spec_draft_n_max ?? null,
-              loadedSpecDraftNMax: statusRes.spec_draft_n_max ?? null,
-            }),
-          ...(statusRes.cache_type_kv !== undefined &&
-            prevState.loadedKvCacheDtype === null && {
-              kvCacheDtype: statusRes.cache_type_kv,
-              loadedKvCacheDtype: statusRes.cache_type_kv,
-            }),
-          ...(statusRes.chat_template_override !== undefined &&
-            prevState.loadedChatTemplateOverride === null &&
-            prevState.chatTemplateOverride === null && {
-              chatTemplateOverride: statusRes.chat_template_override,
-              loadedChatTemplateOverride: statusRes.chat_template_override,
-            }),
-        });
-
-        // Set reasoning default for Qwen3.5/3.6 small models
-        if (
-          supportsReasoning &&
-          hydratingExistingModel &&
-          storedReasoningEnabled === null
-        ) {
-          let reasoningDefault = true;
-          const mid = statusRes.active_model.toLowerCase();
-          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-              reasoningDefault = false;
-            }
-          }
-          useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
+        const checkpointId = resolveInferenceCheckpointId(statusRes);
+        if (checkpointId) {
+          setCheckpoint(checkpointId, statusRes.gguf_variant);
+          applyActiveModelStatusToStore(statusRes, {
+            previousCheckpoint: selectedCheckpoint,
+          });
+          // setModels(listRes...) above used catalog data, which omits audio
+          // capability. Re-apply live status so attach gates survive a refresh.
+          syncModelCapabilities(checkpointId, statusRes);
         }
       } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
+          loadedIsDiffusion: false,
         });
       }
     } catch (error) {
+      if (signal?.aborted) return;
       const message =
         error instanceof Error ? error.message : "Failed to load models";
       setModelsError(message);
@@ -471,10 +395,11 @@ export function useChatModelRuntime() {
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
+      const toastDisplayName = shortModelLabel(displayName);
       const loadAttemptId = ++loadAttemptRef.current;
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(displayName, "The model");
+      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -571,19 +496,16 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto whenever the user
-            // switches to a different model. Spec strategy is a
-            // per-model decision: a sub-3B non-MTP GGUF that ran with
-            // "Off" should not carry that choice into a 27B MTP GGUF
-            // where Auto would auto-promote to draft-mtp. The user can
-            // still pick a forced mode on the new model; this just
-            // clears the stale prior-model choice so the backend's
-            // platform-aware path runs by default. Same applies to
-            // spec_draft_n_max which is MTP-only.
+            // On a model switch, fall back to the persisted standing
+            // preference rather than null so a per-session forced MTP mode
+            // can't follow the user onto a model without an MTP head.
+            // spec_draft_n_max is MTP-only and always resets. The loaded
+            // shadow is seeded too, preventing a transient dirty Apply state.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
+              const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
-                speculativeType: null,
-                loadedSpeculativeType: null,
+                speculativeType: persistedSpeculativeType,
+                loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
@@ -596,6 +518,7 @@ export function useChatModelRuntime() {
               ggufContextLength,
               speculativeType,
               specDraftNMax,
+              tensorParallel,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -624,11 +547,17 @@ export function useChatModelRuntime() {
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
+              tensor_parallel: tensorParallel,
             });
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
+            // The load applied this spec mode, so persist the user's standing
+            // preference now (the requested intent, not the resolved echo;
+            // saveSpeculativeType keeps only the universal auto/ngram/off).
+            saveSpeculativeType(speculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
@@ -651,6 +580,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedTp = loadResponse.tensor_parallel ?? false;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -707,6 +637,8 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              tensorParallel: loadedTp,
+              loadedTensorParallel: loadedTp,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
@@ -716,8 +648,11 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeNativePathToken: nativePathToken ?? null,
             });
+            // Unlock attach menus for capabilities the catalog entry lacked.
+            syncModelCapabilities(modelId, loadResponse);
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (
               modelId.toLowerCase().includes("qwen3") &&
@@ -750,7 +685,7 @@ export function useChatModelRuntime() {
                 store.setParams({ ...store.params, ...p });
               }
             }
-            await refresh();
+            await refresh({ signal: abortCtrl.signal });
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
@@ -779,9 +714,14 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  // Restore the previous model in the split mode it was running,
+                  // not the default layer split.
+                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  loadedSpeculativeType: null,
+                  loadedSpecDraftNMax: null,
                 });
                 await refresh();
               } catch {
@@ -794,39 +734,44 @@ export function useChatModelRuntime() {
 
         const isCachedLoad = isDownloaded || isCachedLora;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
+        const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
+          description,
+          duration: Infinity,
+          closeButton: true,
+          cancel: {
+            label: "Cancel",
+            onClick: cancelLoading,
+          },
+          classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+          onDismiss: (dismissedToast: { id: string | number }) => {
+            if (loadToastIdRef.current !== dismissedToast.id) {
+              return;
+            }
+            setLoadToastDismissedState(true);
+          },
+        });
         const toastId = toast(
           null,
-          {
-            description: renderLoadDescription(
+          modelLoadToastOptions(
+            renderLoadDescription(
               toastTitle,
               loadingDescription,
               isCachedLoad ? null : 0,
               isCachedLoad ? null : "Preparing download",
-              cancelLoading,
             ),
-            duration: Infinity,
-            classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-            onDismiss: (dismissedToast) => {
-              if (loadToastIdRef.current !== dismissedToast.id) {
-                return;
-              }
-              setLoadToastDismissedState(true);
-            },
-          },
+          ),
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models (GGUF and non-GGUF).
-        // Then, once the download wraps (or for already-cached models),
-        // poll the llama-server mmap phase so "Starting model..." no
-        // longer looks frozen for several minutes on large MoE models.
+        // Poll download progress for non-cached models, then (after download
+        // or for cached models) poll the llama-server mmap phase so "Starting
+        // model..." doesn't look frozen for minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate / ETA estimation.
-        // Shared across download + mmap phases so the estimator doesn't
-        // reset when the phase flips.
+        // Rolling window of byte samples for rate/ETA estimation, shared
+        // across download + mmap phases so it survives phase flips.
         type Sample = { t: number; b: number };
         const MIN_SAMPLES = 3;
         const MIN_WINDOW = 3_000; // ms
@@ -919,19 +864,14 @@ export function useChatModelRuntime() {
               if (loadToastDismissedRef.current) return;
               toast(null, {
                 id: toastId,
-                description: renderLoadDescription(
-                  "Downloading model…",
-                  loadingDescription,
-                  pct,
-                  progressLabel,
-                  cancelLoading,
+                ...modelLoadToastOptions(
+                  renderLoadDescription(
+                    "Downloading model…",
+                    loadingDescription,
+                    pct,
+                    progressLabel,
+                  ),
                 ),
-                duration: Infinity,
-                classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-                onDismiss: (dismissedToast) => {
-                  if (loadToastIdRef.current !== dismissedToast.id) return;
-                  setLoadToastDismissedState(true);
-                },
               });
             } else if (
               prog.downloaded_bytes > 0 &&
@@ -958,19 +898,14 @@ export function useChatModelRuntime() {
               if (!loadToastDismissedRef.current) {
                 toast(null, {
                   id: toastId,
-                  description: renderLoadDescription(
-                    "Starting model…",
-                    "Download complete. Loading the model into memory.",
-                    100,
-                    "Download complete",
-                    cancelLoading,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Starting model…",
+                      "Download complete. Loading the model into memory.",
+                      100,
+                      "Download complete",
+                    ),
                   ),
-                  duration: Infinity,
-                  classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-                  onDismiss: (dismissedToast) => {
-                    if (loadToastIdRef.current !== dismissedToast.id) return;
-                    setLoadToastDismissedState(true);
-                  },
                 });
               }
               notifyNative({
@@ -1020,19 +955,14 @@ export function useChatModelRuntime() {
             if (loadToastDismissedRef.current) return;
             toast(null, {
               id: toastId,
-              description: renderLoadDescription(
-                "Starting model…",
-                "Paging weights into memory.",
-                pct,
-                label,
-                cancelLoading,
+              ...modelLoadToastOptions(
+                renderLoadDescription(
+                  "Starting model…",
+                  "Paging weights into memory.",
+                  pct,
+                  label,
+                ),
               ),
-              duration: Infinity,
-              classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-              onDismiss: (dismissedToast) => {
-                if (loadToastIdRef.current !== dismissedToast.id) return;
-                setLoadToastDismissedState(true);
-              },
             });
           } catch {
             // Ignore polling errors.
@@ -1053,13 +983,23 @@ export function useChatModelRuntime() {
 
         try {
           await performLoad();
+          // User cancelled mid-refresh; cancelLoading handles teardown.
+          if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
-            toast.success(`${displayName} loaded`);
+            toast.success(`${toastDisplayName} loaded`, {
+              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
+              closeButton: true,
+              duration: 8000,
+            });
           } else {
-            toast.success(`${displayName} loaded`, {
+            toast.success(`${toastDisplayName} loaded`, {
               id: toastId,
               description: undefined,
+              cancel: undefined,
+              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
+              closeButton: true,
               duration: 8000,
+              onDismiss: undefined,
             });
           }
           notifyNative({
@@ -1078,7 +1018,11 @@ export function useChatModelRuntime() {
               toast.error(message, {
                 id: toastId,
                 description: undefined,
+                cancel: undefined,
+                classNames: undefined,
+                closeButton: true,
                 duration: 8000,
+                onDismiss: undefined,
               });
             }
             notifyNative({
@@ -1118,15 +1062,15 @@ export function useChatModelRuntime() {
     ],
   );
 
-  const ejectModel = useCallback(async () => {
+  const ejectModel = useCallback(async (): Promise<boolean> => {
     if (!params.checkpoint) {
-      return;
+      return false;
     }
     setModelsError(null);
     if (isExternalModelId(params.checkpoint)) {
       clearCheckpoint();
       await refresh();
-      return;
+      return true;
     }
     try {
       async function performUnload(): Promise<void> {
@@ -1135,17 +1079,21 @@ export function useChatModelRuntime() {
         await refresh();
       }
 
-      await toast.promise(performUnload(), {
+      const unloadPromise = performUnload();
+      toast.promise(unloadPromise, {
         loading: "Unloading model",
         success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
           err instanceof Error ? err.message : "Failed to unload model",
         description: "Releases VRAM and resets inference state.",
       });
+      await unloadPromise;
+      return true;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to unload model";
       setModelsError(message);
+      return false;
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 

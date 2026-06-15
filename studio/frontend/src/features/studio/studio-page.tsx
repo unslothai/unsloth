@@ -53,19 +53,30 @@ export function StudioPage(): ReactElement {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
+  const setCurrentRunViewActive = useTrainingRuntimeStore(
+    (s) => s.setCurrentRunViewActive,
+  );
+
   useEffect(() => {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
 
-  // Derive activeTab: auto-switch to "current-run" only while training is
-  // genuinely running.  Once training ends, honour whatever tab the user clicks.
-  // If requestedTab is "current-run" but there's nothing to show, fall back to "configure".
+  // Auto-switch to "current-run" only while training runs; afterward honour
+  // the user's clicked tab. If "current-run" has nothing to show, use
+  // "configure".
   const activeTab =
     isTrainingRunning && requestedTab !== "history"
       ? "current-run"
       : requestedTab === "current-run" && !showTrainingView
         ? "configure"
         : requestedTab;
+
+  // Mirror "Current Run" tab state into the store so the sidebar can highlight
+  // the run this view refers to. Cleared on unmount (leaving the studio page).
+  useEffect(() => {
+    setCurrentRunViewActive(activeTab === "current-run");
+    return () => setCurrentRunViewActive(false);
+  }, [activeTab, setCurrentRunViewActive]);
 
   const { setPinned } = useSidebar();
   const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
@@ -154,7 +165,7 @@ export function StudioPage(): ReactElement {
         />
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
             {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
@@ -166,7 +177,7 @@ export function StudioPage(): ReactElement {
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
                 <Button
                   variant="ghost"

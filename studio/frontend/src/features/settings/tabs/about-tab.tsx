@@ -19,6 +19,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 import {
   type UpdateInstallSource,
   UpdateStudioInstructions,
@@ -42,31 +43,6 @@ function isUpdateInstallSource(value: unknown): value is UpdateInstallSource {
     typeof value === "string" &&
     UPDATE_INSTALL_SOURCES.has(value as UpdateInstallSource)
   );
-}
-
-async function fetchStudioVersions(): Promise<{
-  packageVersion: string | null;
-  studioVersion: string | null;
-}> {
-  try {
-    const token = getAuthToken();
-    const headers = new Headers();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const res = await fetch(apiUrl("/api/health"), { headers });
-    if (!res.ok) {
-      return { packageVersion: null, studioVersion: null };
-    }
-    const data = (await res.json()) as ApiObject;
-    const packageVersion = data.version;
-    const studioVersion = data.studio_version;
-    return {
-      packageVersion:
-        typeof packageVersion === "string" ? packageVersion : null,
-      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-    };
-  } catch {
-    return { packageVersion: null, studioVersion: null };
-  }
 }
 
 async function fetchInstallSource(): Promise<UpdateInstallSource> {
@@ -99,26 +75,12 @@ export function AboutTab() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const [shutdownOpen, setShutdownOpen] = useState(false);
-  const [packageVersion, setPackageVersion] = useState("dev");
-  const [studioVersion, setStudioVersion] = useState("dev");
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
   >("loading");
 
   useEffect(() => {
     let canceled = false;
-
-    fetchStudioVersions().then((nextVersions) => {
-      if (canceled) {
-        return;
-      }
-      if (nextVersions.packageVersion) {
-        setPackageVersion(nextVersions.packageVersion);
-      }
-      if (nextVersions.studioVersion) {
-        setStudioVersion(nextVersions.studioVersion);
-      }
-    });
 
     fetchInstallSource().then((nextInstallSource) => {
       if (!canceled) {
@@ -134,7 +96,7 @@ export function AboutTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.about.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
@@ -142,18 +104,7 @@ export function AboutTab() {
         </p>
       </header>
 
-      <SettingsSection title="Studio">
-        <SettingsRow label={t("settings.about.studioVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {studioVersion}
-          </code>
-        </SettingsRow>
-        <SettingsRow label={t("settings.about.packageVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {packageVersion}
-          </code>
-        </SettingsRow>
-      </SettingsSection>
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.about.updates")}>
         <div className="py-2">
@@ -202,6 +153,37 @@ export function AboutTab() {
               className="size-3.5"
             />
             {t("settings.about.reportIssue")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.about.license.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.about.license.studioLabel")}
+          description={t("settings.about.license.studioDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.studioLicense")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.about.license.libraryLabel")}
+          description={t("settings.about.license.libraryDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.libraryLicense")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>
