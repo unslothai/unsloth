@@ -954,7 +954,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
               configurable: true,
             });
           } catch {
-            // Leave the sandbox failure contained in the artifact if the
+            // Leave the sandbox failure contained in the canvas if the
             // browser refuses to shadow the Web Storage accessor.
           }
         };
@@ -986,7 +986,7 @@ async def artifact_preview_frame(
     allow_network: bool = False,
     token: Optional[str] = None,
 ):
-    """Serve the opaque sandbox shell used for client-side HTML artifacts."""
+    """Serve the opaque sandbox shell used for client-side HTML canvases."""
 
     if allow_network:
         auth_header = request.headers.get("authorization")
@@ -1212,12 +1212,12 @@ async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
-# where the artifact tool is actually present in the tool schema; otherwise
+# where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
 # the fenced-HTML fallback prompt.
 _TOOL_BASE_NUDGE = (
     "Tools are available when they materially improve the answer. Use an enabled "
-    "tool for current facts, calculations, code execution, or artifacts when it "
+    "tool for current facts, calculations, code execution, or canvases when it "
     "materially helps; otherwise answer normally and follow the user's requested "
     "format."
 )
@@ -1233,11 +1233,11 @@ _TOOL_CODE_TIP = (
     "and analyze information from tool results."
 )
 _TOOL_ARTIFACT_TIP = (
-    "For HTML, CSS, or JavaScript artifact requests, call render_html once when "
+    "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
     "argument. After render_html succeeds, do not call it again in the same "
     "response unless the user asks for changes. Future user requests for new "
-    "artifacts may call render_html once."
+    "canvases may call render_html once."
 )
 
 
@@ -3522,12 +3522,18 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
-        if payload.confirm_tool_calls and (
-            payload.enable_tools is True
-            or bool(payload.enabled_tools)
-            or bool(payload.tools)
-            or bool(payload.openai_code_exec_container_id)
-            or bool(payload.anthropic_code_exec_container_id)
+        # Bypass Permissions suppresses the confirm gate, so do not reject a
+        # request that sets both flags (effective confirm is then False).
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
         ):
             raise HTTPException(
                 status_code = 400,
@@ -3909,7 +3915,9 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
-            if payload.confirm_tool_calls and not payload.stream:
+            # Bypass Permissions suppresses confirm, so the stream requirement
+            # (the gate needs streaming to prompt) no longer applies.
+            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -3989,7 +3997,11 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
-                    confirm_tool_calls = bool(payload.confirm_tool_calls),
+                    # Bypass Permissions takes precedence over the confirm gate:
+                    # never prompt while bypassing.
+                    confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    and not bool(payload.bypass_permissions),
+                    bypass_permissions = bool(payload.bypass_permissions),
                 )
 
             _tool_sentinel = object()
@@ -4454,7 +4466,9 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        if payload.confirm_tool_calls and not payload.stream:
+        # Bypass Permissions suppresses confirm, so the stream requirement
+        # (the gate needs streaming to prompt) no longer applies.
+        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
@@ -4540,7 +4554,11 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
-                confirm_tool_calls = bool(payload.confirm_tool_calls),
+                # Bypass Permissions takes precedence over the confirm gate:
+                # never prompt while bypassing.
+                confirm_tool_calls = bool(payload.confirm_tool_calls)
+                and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -6927,7 +6945,10 @@ async def anthropic_messages(
         )
 
     if server_tools:
-        if bool(getattr(payload, "confirm_tool_calls", False)):
+        # Bypass Permissions suppresses confirm, so both flags together is fine.
+        if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
+            getattr(payload, "bypass_permissions", False)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
@@ -6984,6 +7005,7 @@ async def anthropic_messages(
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
+                bypass_permissions = bool(payload.bypass_permissions),
             )
 
         if payload.stream:

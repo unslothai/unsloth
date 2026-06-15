@@ -59,6 +59,7 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
@@ -533,6 +534,10 @@ export function SharedComposer({
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
   );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -741,7 +746,7 @@ export function SharedComposer({
       queueIndexRef.current = 0;
       setQueueProgress({ current: 0, total: 0 });
       toast.error("Prompt queue stopped", {
-        description: "A compare step failed — remaining prompts were not sent.",
+        description: "A compare step failed; remaining prompts were not sent.",
       });
       return;
     }
@@ -1108,6 +1113,20 @@ export function SharedComposer({
       refreshStuckImeTimer();
       return;
     }
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -1240,6 +1259,7 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -1390,6 +1410,12 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
@@ -1684,6 +1710,20 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass Permissions"
+              title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <XIcon className="size-3" />
+              <span>Bypass Permissions</span>
+            </button>
+          )}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}

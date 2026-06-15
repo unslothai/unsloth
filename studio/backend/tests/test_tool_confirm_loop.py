@@ -43,6 +43,7 @@ class _FakeExecuteTool:
         timeout = None,
         session_id = None,
         rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         return f"RESULT[{name}]"

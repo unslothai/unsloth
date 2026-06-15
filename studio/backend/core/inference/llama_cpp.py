@@ -929,7 +929,11 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        _reaped = self._kill_orphaned_servers()
+        if _reaped:
+            # Reaped VRAM frees lazily; arm the settle wait so the first load
+            # waits before ranking GPUs by free memory.
+            self._last_kill_monotonic = time.monotonic()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -5609,7 +5613,7 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
-    def _kill_orphaned_servers():
+    def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
@@ -5621,7 +5625,11 @@ class LlamaCppBackend:
         Uses psutil for cross-platform support (Linux, macOS, Windows);
         falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         absent.
+
+        Returns the count of processes killed; callers arm the VRAM-settle
+        wait on a positive count.
         """
+        killed = 0
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -5713,6 +5721,7 @@ class LlamaCppBackend:
                             continue
 
                         proc.kill()
+                        killed += 1
                         logger.info(
                             f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
@@ -5725,7 +5734,7 @@ class LlamaCppBackend:
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
                 if sys.platform != "linux":
-                    return
+                    return killed
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -5734,7 +5743,7 @@ class LlamaCppBackend:
                     env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
-                    return
+                    return killed
 
                 for line in result.stdout.strip().splitlines():
                     parts = line.strip().split(None, 1)
@@ -5765,6 +5774,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        killed += 1
                         logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
@@ -5772,6 +5782,7 @@ class LlamaCppBackend:
                         pass
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
+        return killed
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -6306,6 +6317,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -7006,7 +7018,9 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    needs_confirm = bool(confirm_tool_calls)
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
+                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -7067,6 +7081,7 @@ class LlamaCppBackend:
                             timeout = _effective_timeout,
                             session_id = session_id,
                             rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
