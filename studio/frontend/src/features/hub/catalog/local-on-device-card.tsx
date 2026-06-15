@@ -28,9 +28,9 @@ import { ggufVariantsMatch } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Alert02Icon,
-  ArrowDown01Icon,
   CubeIcon,
   PencilEdit02Icon,
   PlayIcon,
@@ -349,7 +349,7 @@ export function LocalOnDeviceCard({
                         </span>
                       )}
                       <HugeiconsIcon
-                        icon={ArrowDown01Icon}
+                        icon={ChevronDownStandardIcon}
                         strokeWidth={1.5}
                         className="size-3 shrink-0"
                       />
