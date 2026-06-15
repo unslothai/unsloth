@@ -158,7 +158,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "@tanstack/react-router";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -2778,7 +2777,7 @@ const ForkCountBadge: FC = () => {
   );
 };
 
-const ForkMessageButton: FC = () => {
+const useForkMessageAction = () => {
   const aui = useAui();
   const navigate = useNavigate();
   const messageId = useAuiState(({ message }) => message.id);
@@ -2821,11 +2820,20 @@ const ForkMessageButton: FC = () => {
     }
   };
 
+  return {
+    forkMessage: handleFork,
+    forkDisabled: isRunning || pending,
+  };
+};
+
+const ForkMessageButton: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+
   return (
     <TooltipIconButton
       tooltip="Fork from here"
-      disabled={isRunning || pending}
-      onClick={handleFork}
+      disabled={forkDisabled}
+      onClick={forkMessage}
     >
       <GitBranchIcon strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
@@ -2902,6 +2910,8 @@ const CopyButton: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
@@ -2914,7 +2924,6 @@ const AssistantActionBar: FC = () => {
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ForkCountBadge />
-      <ForkMessageButton />
       <DeleteMessageButton />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
@@ -2929,10 +2938,18 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-full bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
+          <ActionBarMorePrimitive.Item
+            disabled={forkDisabled}
+            onSelect={() => void forkMessage()}
+            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+          >
+            <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+            Fork in new chat
+          </ActionBarMorePrimitive.Item>
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-full px-3 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
