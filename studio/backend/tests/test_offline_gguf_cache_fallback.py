@@ -709,6 +709,37 @@ class TestListLocalGgufVariantsSubdir:
         assert out is not None
         assert Path(out).name == "foo.gguf"
 
+    def test_find_local_gguf_by_variant_ignores_big_endian_sibling(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+        target = tmp_path / "model-Q4_K_M.gguf"
+        target.write_bytes(b"\0" * 20)
+
+        out = _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")
+        assert out == str(target.resolve())
+
+    def test_find_local_gguf_by_variant_skips_big_endian_only_match(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+
+        assert _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M") is None
+
+    def test_model_config_variant_ignores_big_endian_sibling(self, tmp_path):
+        from utils.models.model_config import ModelConfig
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+        target = tmp_path / "model-Q4_K_M.gguf"
+        target.write_bytes(b"\0" * 20)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "Q4_K_M")
+        assert config is not None
+        assert config.gguf_file == str(target.resolve())
+
 
 class TestListGgufVariantsPermanentErrors:
     """Permanent HF errors must surface; cache fallback only on transient."""

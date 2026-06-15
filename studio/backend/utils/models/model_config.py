@@ -1663,13 +1663,16 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
     # path so the quant label can come from the dir name when the basename
     # omits it.
-    matches = sorted(
-        f
-        for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name)
-        and not _is_mtp_drafter(f.relative_to(p).as_posix())
-        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
-    )
+    matches = []
+    for f in _iter_gguf_files(p, recursive = True):
+        rel = f.relative_to(p).as_posix()
+        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+            continue
+        quant = _extract_quant_label(rel)
+        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+            continue
+        matches.append(f)
+    matches.sort()
     if matches:
         return str(matches[0].resolve())
     return None
