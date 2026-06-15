@@ -309,6 +309,25 @@ with sync_playwright() as p:
     def clear() -> None:
         set_value_via_setter("")
 
+    def restore_idle_composer_after_probe(label: str) -> None:
+        """Cancel a real run started by a submit probe before the next case."""
+        stop_btn = page.locator('button[aria-label="Stop generating"]')
+        send_btn = page.locator('button[aria-label="Send message"]')
+        try:
+            stop_btn.wait_for(state = "visible", timeout = 5_000)
+            stop_btn.click(timeout = 5_000)
+            info(f"{label}: stopped generation started by submit probe")
+        except Exception:
+            pass
+        try:
+            expect(send_btn).to_be_visible(timeout = 15_000)
+        except Exception:
+            shoot(f"{label}-idle-restore-FAIL")
+            fail(
+                "Composer did not return to idle after the submit probe; "
+                "Send button is unavailable for the next IME regression case."
+            )
+
     # 3. Baseline: ASCII keyboard typing works. Bail fast if not.
     step("baseline ASCII keyboard typing")
     clear()
@@ -620,6 +639,7 @@ with sync_playwright() as p:
     )
     shoot("06d-keydown-rearm")
     info("keydown re-pin re-arm PASS")
+    restore_idle_composer_after_probe("06d-keydown-rearm")
     clear()
 
     # 6e. Mac input-method switch — onKeyDown immediate recovery.
