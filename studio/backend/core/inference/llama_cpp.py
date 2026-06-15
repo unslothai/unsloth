@@ -1543,10 +1543,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _launch_gpu_indices(
-        gpu_ids: list[int] | None,
-        gpu_indices: list[int] | None,
-        *,
-        tensor_parallel: bool,
+        gpu_ids: list[int] | None, gpu_indices: list[int] | None, *, tensor_parallel: bool
     ) -> list[int] | None:
         """Return physical GPU IDs in the order the child process should see them."""
         if tensor_parallel and gpu_indices is not None:
