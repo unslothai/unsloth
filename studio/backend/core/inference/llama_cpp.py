@@ -3744,9 +3744,7 @@ class LlamaCppBackend:
                     # fallback re-runs with tensor_parallel False and restores MTP.
                     # See llama.cpp common_speculative_impl_draft_mtp.
                     if tensor_parallel and _mtp_will_engage:
-                        speculative_type = (
-                            "ngram" if _mtp_canonical == "mtp+ngram" else "off"
-                        )
+                        speculative_type = "ngram" if _mtp_canonical == "mtp+ngram" else "off"
                         _mtp_will_engage = False
                         _tensor_disabled_mtp = True
                         logger.info(

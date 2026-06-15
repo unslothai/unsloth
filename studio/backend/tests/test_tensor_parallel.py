@@ -277,7 +277,7 @@ def test_mtp_is_disabled_under_tensor_parallel():
     # Forces the spec mode off (ngram kept for mtp+ngram) and clears the engage
     # flag the planner reads, then surfaces the reason for the UI.
     body = src[gate:plan]
-    assert 'speculative_type = (' in body and '"off"' in body and '"ngram"' in body
+    assert "speculative_type = (" in body and '"off"' in body and '"ngram"' in body
     assert "_mtp_will_engage = False" in body
     assert 'self._spec_fallback_reason = "tensor_parallel"' in src
 
