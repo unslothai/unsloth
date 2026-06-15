@@ -811,9 +811,11 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            # shell.Run(cmd, 0, ...) already hides the window, so -WindowStyle Hidden
+            # is redundant; omitting it trims an AV-heuristic token (Kaspersky FP).
             $vbsContent = @"
 Set shell = CreateObject("WScript.Shell")
-cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
+cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File ""$launcherPs1"""
 shell.Run cmd, 0, False
 "@
             # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
@@ -1189,14 +1191,38 @@ shell.Run cmd, 0, False
     if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
     Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
-    # ── Install uv if not present ──
+    # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        substep "installing uv package manager..."
+    $UvMinVersion = "0.7.22"
+    function Test-UvVersionOk {
+        $cmd = Get-Command uv -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $false }
+        try {
+            $raw = (& uv --version 2>$null | Select-Object -First 1)
+        } catch {
+            return $false
+        }
+        if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)') { return $false }
+        try {
+            return ([version]$Matches[1] -ge [version]$UvMinVersion)
+        } catch {
+            return $false
+        }
+    }
+
+    if (-not (Test-UvVersionOk)) {
+        if (Get-Command uv -ErrorAction SilentlyContinue) {
+            substep "updating uv package manager..."
+        } else {
+            substep "installing uv package manager..."
+        }
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            try { winget upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            if (-not (Test-UvVersionOk)) {
+                try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
@@ -1204,17 +1230,38 @@ shell.Run cmd, 0, False
         # use Astral's official PowerShell installer. This is the only
         # supported path on hosts without winget (Windows ARM64 runners,
         # corporate machines without the Store, etc.).
-        if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        if (-not (Test-UvVersionOk)) {
             substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
             Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
     }
 
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    # A freshly installed uv can sit later on PATH than an older one (active
+    # venv, Scoop/pipx shim). Prefer a just-installed uv from a known location.
+    if (-not (Test-UvVersionOk)) {
+        $origPath = $env:PATH
+        foreach ($d in @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
+                         (Join-Path $env:USERPROFILE ".local\bin"),
+                         (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"))) {
+            if ($d -and (Test-Path $d)) {
+                $env:PATH = "$d;$origPath"
+                if (Test-UvVersionOk) { break }
+                $env:PATH = $origPath
+            }
+        }
+    }
+
+    if (-not (Test-UvVersionOk)) {
         step "uv" "could not be installed" "Red"
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return (Exit-InstallFailure "uv could not be installed")
+    }
+
+    # When bytecode compilation is enabled, large installs can exceed uv's 60s
+    # default on slow machines. Default to 180s, preserving overrides ("0" disables).
+    if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
+        $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -1541,7 +1588,7 @@ shell.Run cmd, 0, False
         # popping a UAC/DiskPart prompt RunAsInvoker can't suppress (manifest is
         # asInvoker). So only probe when a HIP SDK is present (hipinfo found ->
         # un-elevated) or the user opts in; else fall through to WMI name inference
-        # (enough to pick ROCm wheels + lemonade llama.cpp).
+        # (enough to pick ROCm wheels + the ROCm llama.cpp prebuilt).
         # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the
         # HIP-SDK heuristic: a HIP SDK binary with a broken runtime can still pop the
         # prompt, so $HipSdkInstalled must NOT silently re-enable it.
@@ -1592,7 +1639,7 @@ shell.Run cmd, 0, False
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
         # ($HasROCm false): the gfx arch inferred from the WMI GPU name lets the
-        # studio setup forward --rocm-gfx and pull a GPU-accelerated (lemonade)
+        # studio setup forward --rocm-gfx and pull a GPU-accelerated ROCm
         # llama.cpp, which bundles its own ROCm runtime. PyTorch's ROCm wheels
         # still require a confirmed HIP SDK -- they stay gated on $HasROCm below.
         if (-not $ROCmGfxArch) {
@@ -1603,7 +1650,7 @@ shell.Run cmd, 0, False
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
             # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
-            #    Targets only arches the lemonade-sdk ROCm prebuilts cover
+            #    Targets only arches the ROCm prebuilts cover
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
@@ -1614,9 +1661,9 @@ shell.Run cmd, 0, False
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                     @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
-                    @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- lemonade gfx103X
-                    @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- lemonade gfx103X
-                    @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- lemonade gfx103X
+                    @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
+                    @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
+                    @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
                 )
                 foreach ($row in $nameArchTable) {
                     if ($ROCmGpuLabel -match $row.P) {
@@ -2221,7 +2268,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2235,7 +2282,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2282,7 +2329,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
@@ -2294,7 +2341,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.7" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2322,7 +2369,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.3" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.7" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

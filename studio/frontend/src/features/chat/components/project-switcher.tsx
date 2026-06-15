@@ -8,11 +8,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  ArrowDown01Icon,
-  Folder01Icon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { ProjectRecord } from "../types";
@@ -46,7 +44,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-[10px] px-1.5 transition-colors hover:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-[#2d2e32]"
+          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-[#2d2e32]"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
@@ -60,9 +58,9 @@ export function ProjectSwitcher({
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
             <HugeiconsIcon
-              icon={ArrowDown01Icon}
+              icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
-              className="relative top-0.5 size-3.5 text-muted-foreground"
+              className="size-3.5 text-muted-foreground"
               aria-hidden={true}
             />
           </span>
@@ -72,7 +70,7 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="app-user-menu menu-soft-surface ring-0 min-w-56 max-w-72 max-h-72 py-2 font-heading rounded-[14px] border-0"
+        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
       >
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">

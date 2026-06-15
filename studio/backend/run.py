@@ -545,6 +545,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 
 def _write_pid_file():
     """Write the current process PID to the studio PID file."""
@@ -864,6 +869,13 @@ def run_server(
     from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
+    # Allow local stdio MCP servers on a loopback bind (the user's own machine),
+    # but never on Colab, which is a hosted VM reachable through its proxy. The
+    # gate reads the env var at request time, so this need not precede the import.
+    from utils.host_policy import apply_stdio_mcp_loopback_default
+
+    apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
+
     # Create all standard directories on startup.
     ensure_studio_directories()
 
@@ -1027,9 +1039,13 @@ def run_server(
     _cloudflare_enabled = cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
-            from cloudflare_tunnel import start_studio_tunnel
+            from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
+
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
+            # Backstop: tear the tunnel down even on an abnormal exit that bypasses
+            # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
+            atexit.register(stop_studio_tunnel)
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 

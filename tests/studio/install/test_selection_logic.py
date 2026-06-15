@@ -2611,6 +2611,59 @@ class TestDirectLinuxNvidiaCpuGate:
         assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
+class TestLinuxPublishedAttemptsNvidiaCpuGate:
+    """Live fork-manifest path (_linux_published_attempts): an NVIDIA host whose
+    CUDA selection finds nothing must NOT be handed the manifest's CPU bundle --
+    the attempt list stays empty so the caller source-builds with CUDA instead of
+    silently installing a CPU-only binary on a GPU host. CPU-only hosts still get
+    the CPU bundle. Mirrors the ROCm policy and TestDirectLinuxNvidiaCpuGate (the
+    latter covers direct_linux_release_plan, which is off the live path, this the
+    live path)."""
+
+    def _cpu_only_bundle(self):
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
+
+    def test_nvidia_host_without_cuda_line_gets_no_cpu_attempt(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert attempts == []
+
+    def test_cpu_host_gets_cpu_attempt(self):
+        host = make_host(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+
 # ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
 # ===========================================================================
@@ -2962,6 +3015,29 @@ class TestPublishedRocmGfxSelection:
                 )
                 is None
             ), unbuilt
+
+    def test_family_token_matches_family_bundle(self):
+        # The llama.cpp update path re-derives --rocm-gfx from the family-named
+        # marker asset, so it forwards a family token (gfx110X, lowercased to
+        # gfx110x by _normalize_forwarded_gfx), not a concrete arch. That must
+        # still select the family bundle instead of falling to a source build.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        for token in ("gfx110X", "gfx110x"):
+            choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                release, self._host(token), "linux-rocm"
+            )
+            assert choice is not None, token
+            assert choice.name == "app-b9457-linux-x64-rocm-gfx110X.tar.gz", token
+
+    def test_windows_family_token_matches_family_bundle(self):
+        # The Windows update path forwards the same family token (gfx120X) for a
+        # windows-rocm bundle, so the family-label match must cover it too.
+        release = self._release("windows-rocm", "app-b9457-windows-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx120x"), "windows-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
 class TestPublishedMacosForkSelection:

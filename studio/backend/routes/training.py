@@ -125,6 +125,17 @@ async def start_training(
 
         backend = get_training_backend()
 
+        # S3 dataset loading needs the optional boto3 dependency. Reject early
+        # with a clear message so credentials are never accepted and then
+        # silently dropped on a host without boto3 installed.
+        if request.s3_config is not None:
+            from core.training.s3_dataset import boto3_available
+            if not boto3_available():
+                raise HTTPException(
+                    status_code = 501,
+                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
+                )
+
         # Check before mutating state.
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -204,6 +215,9 @@ async def start_training(
             "save_steps": request.save_steps,
             "weight_decay": request.weight_decay,
             "max_grad_norm": request.max_grad_norm,
+            "max_grad_value": request.max_grad_value,
+            "max_grad_leaf_norm": request.max_grad_leaf_norm,
+            "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
             "optim": request.optim,
@@ -235,6 +249,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
+            "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
         # Training page has no trust_remote_code toggle; as a safety net consult
@@ -293,6 +308,10 @@ async def start_training(
             error = None,
         )
 
+    except HTTPException:
+        # Deliberate rejections (S3 not implemented, resume validation) must
+        # reach the client with their original status, not a generic 500.
+        raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         # Deliberate user-facing GPU-selection validation message.

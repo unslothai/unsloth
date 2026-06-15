@@ -37,7 +37,71 @@ from utils.paths import outputs_root
 logger = get_logger(__name__)
 
 
+def _coerce_seed(value, default = 3407) -> int:
+    """Normalize None / non-int to `default` (transformers.set_seed(None) raises)."""
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_optional_bool(value, default: bool) -> bool:
+    """Treat explicit None as `default` instead of `bool(None) == False`."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off", ""):
+            return False
+    return bool(value)
+
+
+def _coerce_optional_nonneg_float(name: str, value):
+    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
+    if coerced < 0:
+        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
+    return coerced
+
+
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
+
+
+def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    db_config = {
+        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+    }
+    s3_config = config.get("s3_config")
+    if hasattr(s3_config, "model_dump"):
+        s3_config = s3_config.model_dump()
+    if isinstance(s3_config, dict) and s3_config:
+        db_config["dataset_source"] = "s3"
+        db_config["s3_dataset"] = {
+            "bucket": s3_config.get("bucket"),
+            "region": s3_config.get("region"),
+            "prefix": s3_config.get("prefix"),
+            "use_iam_role": bool(s3_config.get("use_iam_role")),
+        }
+    return db_config
+
+
+def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
+    if not isinstance(s3_dataset, dict):
+        return None
+    bucket = s3_dataset.get("bucket")
+    if not bucket:
+        return None
+    prefix = s3_dataset.get("prefix")
+    return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
 
 
 def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
@@ -211,7 +275,17 @@ class TrainingBackend:
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
             "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "random_seed": kwargs.get("random_seed", 3407),
+            "max_grad_value": _coerce_optional_nonneg_float(
+                "max_grad_value", kwargs.get("max_grad_value")
+            ),
+            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
+            ),
+            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+                kwargs.get("cast_norm_output_to_input_dtype"), True
+            ),
+            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
+            "random_seed": _coerce_seed(kwargs.get("random_seed")),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
             "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
@@ -236,6 +310,7 @@ class TrainingBackend:
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
+            "s3_config": kwargs.get("s3_config"),
         }
 
         # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
@@ -309,7 +384,7 @@ class TrainingBackend:
         self._run_finalized = False
         self._db_run_created = False
         self._db_total_steps_set = False
-        self._db_config = {k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}}
+        self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
         # Assign subprocess handles after state reset.
@@ -732,8 +807,11 @@ class TrainingBackend:
         try:
             from storage.studio_db import create_run
 
-            dataset_name = self._db_config.get("hf_dataset") or next(
-                iter(self._db_config.get("local_datasets") or []), "unknown"
+            dataset_name = (
+                self._db_config.get("hf_dataset")
+                or next(iter(self._db_config.get("local_datasets") or []), None)
+                or _s3_dataset_name(self._db_config.get("s3_dataset"))
+                or "unknown"
             )
             create_run(
                 id = self.current_job_id,
