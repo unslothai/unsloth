@@ -705,14 +705,14 @@ def _extra_args_draft_cache_types(
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Physical micro-batch from extras (``--ubatch``/``--ubatch-size``/``-ub``), else
-    the ``LLAMA_ARG_UBATCH`` env the child honors, else None. It drives the compute-graph
+    """Physical micro-batch from extras (``--ubatch-size``/``-ub``), else the
+    ``LLAMA_ARG_UBATCH`` env the child honors, else None. It drives the compute-graph
     buffer size, so an override must reach the VRAM reserve or it under-budgets. CLI wins."""
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[int] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
-        if flag not in ("--ubatch", "--ubatch-size", "-ub"):
+        if flag not in ("--ubatch-size", "-ub"):
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
@@ -1732,10 +1732,14 @@ class LlamaCppBackend:
                         continue
                     # Total is optional: a driver/mock that returns the legacy
                     # two-column "index,free" yields total 0 (the fit then uses
-                    # the free*frac fallback for that GPU).
-                    idx = int(parts[0])
-                    free_mib = int(parts[1])
-                    total_mib = int(parts[2]) if len(parts) >= 3 and parts[2] else 0
+                    # the free*frac fallback for that GPU). Skip a malformed line
+                    # rather than abandoning the whole probe to the torch fallback.
+                    try:
+                        idx = int(parts[0])
+                        free_mib = int(parts[1])
+                        total_mib = int(parts[2]) if len(parts) >= 3 and parts[2] else 0
+                    except ValueError:
+                        continue
                     if allowed is not None and idx not in allowed:
                         continue
                     gpus.append((idx, free_mib, total_mib))
@@ -2289,7 +2293,11 @@ class LlamaCppBackend:
             # Output + comm/staging materialized on every device, every slot.
             compute = 2 * act_scratch + out_buffer * par
         else:
-            # Single-token decode is ~free; each extra concurrent slot adds one.
+            # Single-token decode is ~free; each extra concurrent slot adds one
+            # output buffer. This assumes a small n_outputs_max (chat decode, where
+            # llama.cpp sizes the graph for ~one logit row per slot); it would
+            # under-count for embeddings / --logits-all / reranking, which Studio
+            # does not run on this path. Matches measured {1:36,2:492,4:1388,8:3220} MiB.
             compute = act_scratch + out_buffer * max(0, par - 1)
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 

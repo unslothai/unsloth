@@ -441,10 +441,10 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
-            (["--ubatch", "2048"], 2048),
             (["--ubatch-size", "1024"], 1024),
             (["-ub", "4096"], 4096),
-            (["--ubatch=512"], 512),
+            (["--ubatch-size=512"], 512),
+            (["--ubatch", "2048"], None),  # not a real llama-server flag; ignore it
             (["-c", "4096"], None),
             (None, None),
         ],
