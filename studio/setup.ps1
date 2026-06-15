@@ -2757,11 +2757,13 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
                 # treat a valid ROCm install as mismatched. A name-inferred gfx
                 # arch (Adrenalin-only, no confirmed runtime) still counts as
                 # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
-                # mirroring the --rocm-gfx forward below. NOTE: this block is
-                # currently inert -- write_prebuilt_metadata does not persist an
-                # install_kind key, so $existingKind is always null. If that changes,
-                # add the remaining host kinds (e.g. windows-arm64) before relying on it.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu") }
+                # mirroring the --rocm-gfx forward below. The CPU branch covers both
+                # the x64 windows-cpu and arm64 windows-arm64 bundles (Windows arm64
+                # has no GPU prebuilt). NOTE: this block is currently inert --
+                # write_prebuilt_metadata does not persist an install_kind key, so
+                # $existingKind is always null; keep $expectedKinds in sync with the
+                # kinds install_llama_prebuilt.py installs before relying on it.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

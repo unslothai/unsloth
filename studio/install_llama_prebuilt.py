@@ -5971,9 +5971,9 @@ def _fork_manifest_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     """Manifest-reading branch of resolve_simple_install_release_plans, used for
-    the fork's bundles whose GPU/arch coverage lives in
-    llama-prebuilt-manifest.json rather than in the filename: arm64 CUDA, Windows
-    CUDA, per-gfx ROCm, and macOS. Linux x64 takes the faster filename path."""
+    every fork host: all of the fork's bundles describe their GPU/arch coverage
+    in llama-prebuilt-manifest.json rather than in the asset filename (CPU,
+    x64/arm64 CUDA, Windows CUDA, per-gfx ROCm, and macOS)."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     release_limit = max(1, max_release_fallbacks)
@@ -6546,8 +6546,8 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            # Single resolver: linux-x64 takes the fast filename path internally,
-            # every other fork host reads the manifest.
+            # Single resolver: every fork host selects from the release manifest;
+            # an explicit ggml-org override selects by asset filename instead.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,
