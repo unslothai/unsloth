@@ -423,7 +423,8 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
     # repo.amd.com wheels need no HIP SDK, so the gate is $ROCmGfxArch-based.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
-        ln for ln in text.splitlines()
+        ln
+        for ln in text.splitlines()
         if '$TorchIndexUrl -like "*/cpu"' in ln and ln.lstrip().startswith("if ")
     ]
     assert gates, "ROCm-index selection gate not found in install.ps1"
