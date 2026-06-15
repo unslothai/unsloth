@@ -252,14 +252,14 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Training page has no trust_remote_code toggle; as a safety net consult
-        # YAML model defaults directly so models that need it always get it.
         if not training_kwargs["trust_remote_code"]:
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
             if yaml_trust:
-                logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
-                training_kwargs["trust_remote_code"] = True
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "This model requires custom code. Confirm it in Studio and try again.",
+                )
 
         # Free GPU memory: shut down any running inference/export subprocesses
         # before training (they'd compete for VRAM otherwise).

@@ -3,6 +3,7 @@
 
 import {
   shouldShowTrainingView,
+  TrainingTrustRemoteCodeDialog,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
   useTrainingRuntimeLifecycle,
@@ -163,6 +164,7 @@ export function StudioPage(): ReactElement {
           initialData={dialogInitial}
           isVlm={config.isVisionModel && config.isDatasetImage === true}
         />
+        <TrainingTrustRemoteCodeDialog />
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
           <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">

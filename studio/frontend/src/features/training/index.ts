@@ -7,6 +7,7 @@ export {
   useTrainingRuntimeStore,
 } from "./stores/training-runtime-store";
 export { useTrainingActions } from "./hooks/use-training-actions";
+export { TrainingTrustRemoteCodeDialog } from "./components/training-trust-remote-code-dialog";
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
 export {

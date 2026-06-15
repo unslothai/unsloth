@@ -32,6 +32,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 from utils.models.model_config import (
     ModelConfig,
     is_vision_model,
+    load_model_config,
     _is_vision_model_uncached,
     _vision_detection_cache,
 )
@@ -49,6 +50,27 @@ def _clear_vision_cache():
 
 
 # Cache hit / miss tests
+
+
+class TestRemoteCodeSafety:
+    def test_load_model_config_default_disables_remote_code(self, monkeypatch):
+        calls = []
+
+        class _AutoConfig:
+            @staticmethod
+            def from_pretrained(model_name, **kwargs):
+                calls.append((model_name, kwargs))
+                return object()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "transformers",
+            _types.SimpleNamespace(AutoConfig = _AutoConfig),
+        )
+
+        load_model_config("org/custom", use_auth = True)
+
+        assert calls == [("org/custom", {"trust_remote_code": False})]
 
 
 class TestVisionCacheHitMiss:
@@ -226,8 +248,11 @@ class TestVisionCacheOnException:
         "utils.models.model_config.load_model_config",
         side_effect = ValueError("bad config"),
     )
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
-    def test_permanent_exception_result_cached(self, mock_needs_t5, mock_load_config):
+    def test_permanent_exception_result_cached(
+        self, mock_needs_t5, mock_raw_config, mock_load_config
+    ):
         """A permanent failure (ValueError / RepositoryNotFoundError /
         GatedRepoError / JSONDecodeError) is caught, returns False, and
         that False is cached so subsequent calls don't retry. ValueError
@@ -236,13 +261,29 @@ class TestVisionCacheOnException:
         assert is_vision_model("broken/model") is False
         assert is_vision_model("broken/model") is False
         mock_load_config.assert_called_once()
+        mock_raw_config.assert_called_once_with("broken/model", hf_token = None)
+
+    @patch(
+        "utils.models.model_config.load_model_config",
+        side_effect = ValueError("custom code required"),
+    )
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    def test_remote_code_config_error_uses_raw_config(
+        self, mock_needs_t5, mock_raw_config, mock_load_config
+    ):
+        assert is_vision_model("custom/vlm") is True
+        assert is_vision_model("custom/vlm") is True
+        mock_load_config.assert_called_once()
+        mock_raw_config.assert_called_once_with("custom/vlm", hf_token = None)
 
     @patch(
         "utils.models.model_config.load_model_config",
         side_effect = OSError("network down"),
     )
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
-    def test_transient_exception_not_cached(self, mock_needs_t5, mock_load_config):
+    def test_transient_exception_not_cached(self, mock_needs_t5, mock_raw_config, mock_load_config):
         """A transient failure (OSError, timeouts) returns None from
         _is_vision_model_uncached, surfaces as False, and is NOT cached
         so the next call retries."""
@@ -250,6 +291,7 @@ class TestVisionCacheOnException:
         assert is_vision_model("broken/model") is False
         assert is_vision_model("broken/model") is False
         assert mock_load_config.call_count == 2
+        assert mock_raw_config.call_count == 2
 
 
 # Direct detection path (non-transformers-5 models) caching
@@ -270,8 +312,12 @@ class TestVisionCacheDirectPath:
 
         assert is_vision_model("google/gemma-3-4b-it") is True
         assert is_vision_model("google/gemma-3-4b-it") is True
-        # load_model_config should only be called once
-        mock_load_config.assert_called_once()
+        mock_load_config.assert_called_once_with(
+            "google/gemma-3-4b-it",
+            use_auth = True,
+            token = None,
+            trust_remote_code = False,
+        )
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
@@ -451,6 +497,10 @@ class TestRawConfigVlmDetection:
 class TestSubprocessScript:
     def test_does_not_import_parent_module(self):
         assert "from utils.models.model_config" not in _VISION_CHECK_SCRIPT
+
+    def test_disables_remote_code(self):
+        assert 'kwargs = {"trust_remote_code": False}' in _VISION_CHECK_SCRIPT
+        assert 'kwargs = {"trust_remote_code": True}' not in _VISION_CHECK_SCRIPT
 
     def test_inline_is_vlm_executes_correctly(self):
         ns: dict = {}

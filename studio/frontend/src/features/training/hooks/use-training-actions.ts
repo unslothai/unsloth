@@ -14,6 +14,7 @@ import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
+import { useTrainingTrustRemoteCodeDialogStore } from "../stores/training-trust-remote-code-dialog-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -50,6 +51,10 @@ export function useTrainingActions() {
     const validation = validateTrainingConfig(config);
     if (!validation.ok) {
       runtimeStore.setStartError(validation.message);
+      return false;
+    }
+
+    if (!(await confirmTrustRemoteCodeIfNeeded(config))) {
       return false;
     }
 
@@ -245,6 +250,23 @@ export function useTrainingActions() {
     stopTrainingRun,
     dismissTrainingRun,
   };
+}
+
+async function confirmTrustRemoteCodeIfNeeded(
+  config: TrainingConfigState,
+): Promise<boolean> {
+  if (!config.modelRequiresTrustRemoteCode || config.trustRemoteCode) {
+    return true;
+  }
+
+  const confirmed =
+    await useTrainingTrustRemoteCodeDialogStore.getState().requestConfirmation();
+  if (!confirmed) {
+    return false;
+  }
+
+  useTrainingConfigStore.getState().setTrustRemoteCode(true);
+  return true;
 }
 
 function getDatasetName(config: TrainingConfigState): string | null {

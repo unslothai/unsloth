@@ -76,6 +76,7 @@ export interface TrainingConfigState {
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
+  modelRequiresTrustRemoteCode: boolean;
   trustRemoteCode: boolean;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
@@ -150,6 +151,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setTrustRemoteCode: (value: boolean) => void;
   setS3Config: (value: S3Config | null) => void;
   canProceed: () => boolean;
   reset: () => void;

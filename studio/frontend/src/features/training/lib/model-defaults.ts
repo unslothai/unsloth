@@ -35,7 +35,6 @@ type ModelDefaultsPatch = Partial<
     | "tensorboardDir"
     | "logFrequency"
     | "finetuneVisionLayers"
-    | "trustRemoteCode"
     | "finetuneLanguageLayers"
     | "finetuneAttentionModules"
     | "finetuneMLPModules"
@@ -163,9 +162,6 @@ export function mapBackendModelConfigToTrainingPatch(
   if (gradientCheckpointing !== undefined) {
     patch.gradientCheckpointing = gradientCheckpointing;
   }
-
-  const trustRemoteCode = toBoolean(training?.trust_remote_code);
-  if (trustRemoteCode !== undefined) patch.trustRemoteCode = trustRemoteCode;
 
   const loraRank = toNumber(lora?.lora_r);
   if (loraRank !== undefined) patch.loraRank = loraRank;

@@ -469,7 +469,7 @@ def load_model_config(
     model_name: str,
     use_auth: bool = False,
     token: Optional[str] = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
 ):
     """Load model config with optional authentication control."""
     from transformers import AutoConfig
@@ -609,7 +609,7 @@ if backend_dir not in sys.path:
 try:
     from transformers import AutoConfig
 
-    kwargs = {"trust_remote_code": True}
+    kwargs = {"trust_remote_code": False}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
@@ -794,7 +794,12 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
         return _raw_config_has_vision_config(model_name, hf_token = hf_token)
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(
+            model_name,
+            use_auth = True,
+            token = hf_token,
+            trust_remote_code = False,
+        )
 
         # Exclude audio-only models sharing the ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
@@ -816,6 +821,9 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
+        raw_result = _raw_config_has_vision_config(model_name, hf_token = hf_token)
+        if raw_result is not None:
+            return raw_result
         # Permanent failures (not found, gated, bad config) cache as False;
         # transient ones (network, timeout) should not.
         try:
