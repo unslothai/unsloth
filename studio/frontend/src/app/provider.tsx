@@ -189,8 +189,12 @@ const MAC_NATIVE_CHROME_STYLE = {
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-custom-titlebar-height": "34px",
-  "--studio-chat-header-height": "34px",
-  "--studio-chat-header-padding-top": "0px",
+  "--studio-sidebar-expanded-width": "17.5rem",
+  "--studio-sidebar-collapsed-width": "3rem",
+  "--studio-content-top-inset": "34px",
+  "--studio-chat-header-height": "48px",
+  "--studio-chat-header-padding-top": "11px",
+  "--studio-chat-header-right-inset": "0px",
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
 

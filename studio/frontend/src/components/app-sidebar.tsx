@@ -44,6 +44,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
+import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -257,6 +258,7 @@ function NavItem({
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -431,6 +433,9 @@ export function AppSidebar() {
     runsOpen,
     isStudioRoute,
   ]);
+
+  const chatDisabled = isTrainingRunning;
+  const showSidebarBrand = !usesCustomTitlebar;
 
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
@@ -957,76 +962,84 @@ export function AppSidebar() {
       variant="sidebar"
       className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
     >
-      <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
-        {/* Expanded: compact logo + close toggle */}
-        <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
-          <Link
-            to="/chat"
-            onClick={(event) => {
-              event.preventDefault();
-              openNewChat(null);
-            }}
-            className="flex items-center gap-[6px] select-none"
-            aria-label={t("shell.aria.home")}
-          >
-            <img
-              src="/circle-logo-small.png"
-              alt="Unsloth"
-              className="h-[34px] w-[34px] rounded-full object-cover"
-            />
-            <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
-              unsloth
-            </span>
-            <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-              {t("shell.beta")}
-            </span>
-          </Link>
-          {!isMobile && (
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={t("shell.aria.closeSidebar")}
-                >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="bottom"
-                sideOffset={6}
-                className="tooltip-compact"
+      <SidebarHeader
+        className={cn(
+          showSidebarBrand
+            ? "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
+            : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
+        )}
+      >
+        {showSidebarBrand && (
+          <>
+            <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
+              <Link
+                to="/chat"
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (chatDisabled) return;
+                  openNewChat(null);
+                }}
+                className="flex items-center gap-[6px] select-none"
+                aria-label={t("shell.aria.home")}
               >
-                {t("shell.aria.closeSidebar")}
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-
-        {/* Collapsed: panel icon doubles as expand trigger */}
-        {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={t("shell.aria.openSidebar")}
-                >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="right"
-                sideOffset={8}
-                className="tooltip-compact"
-              >
-                {t("shell.aria.openSidebar")}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                <img
+                  src="/circle-logo-small.png"
+                  alt="Unsloth"
+                  className="h-[34px] w-[34px] rounded-full object-cover"
+                />
+                <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
+                  unsloth
+                </span>
+                <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  {t("shell.beta")}
+                </span>
+              </Link>
+              {!isMobile && (
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.closeSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="bottom"
+                    sideOffset={6}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.closeSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+            {!isMobile && (
+              <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.openSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="right"
+                    sideOffset={8}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.openSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+          </>
         )}
       </SidebarHeader>
 

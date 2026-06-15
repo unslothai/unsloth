@@ -508,7 +508,7 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col md:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] md:flex-row"
         >
           {children}
         </div>
@@ -652,7 +652,7 @@ function GeneralCompareHeader({
         "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
         side === "left"
           ? "pl-12 pr-3 md:pl-2"
-          : "pl-3 pr-[calc(3rem+var(--studio-window-control-inset,0px))]",
+          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -2360,19 +2360,19 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="pointer-events-none absolute left-0 right-[10px] top-[var(--studio-chat-header-height,48px)] z-20 h-6 bg-gradient-to-b from-background to-[rgb(from_var(--background)_r_g_b/0)]"
+            className="pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-0 left-0 right-[10px] z-[65] flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-[65] flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON } from "@/components/ui/sidebar";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   type MouseEvent,
@@ -135,8 +136,12 @@ export function WindowTitlebar({
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
-  const { pinned } = useSidebarPin();
-  const dragLeft = showSidebarSurface ? (pinned ? "17.5rem" : "3rem") : "0px";
+  const { pinned, togglePinned } = useSidebarPin();
+  const sidebarWidth = showSidebarSurface
+    ? pinned
+      ? "var(--studio-sidebar-expanded-width,17.5rem)"
+      : "var(--studio-sidebar-collapsed-width,3rem)"
+    : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -253,19 +258,75 @@ export function WindowTitlebar({
         {showSidebarSurface && (
           <div
             className={cn(
-              "pointer-events-auto absolute left-0 top-0 h-full border-r border-sidebar-border dark:border-r-0",
-              pinned ? "bg-sidebar" : "bg-white dark:bg-background",
+              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center border-r border-sidebar-border bg-sidebar text-sidebar-foreground",
+              pinned ? "gap-2 px-3" : "justify-center",
             )}
-            style={{ width: pinned ? SIDEBAR_WIDTH : SIDEBAR_WIDTH_ICON }}
+            style={{ width: sidebarWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
-            aria-hidden="true"
-          />
+          >
+            {pinned ? (
+              <>
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <img
+                    src="/rounded-512.png"
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    className="size-5 shrink-0 rounded-[6px] object-cover"
+                  />
+                  <span className="min-w-0 truncate text-[13px] font-semibold leading-none tracking-[0.01em] text-nav-fg">
+                    Unsloth Studio
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  title="Collapse sidebar"
+                  aria-label="Collapse sidebar"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    togglePinned();
+                  }}
+                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <HugeiconsIcon
+                    icon={LayoutAlignLeftIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                title="Expand sidebar"
+                aria-label="Expand sidebar"
+                onMouseDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  togglePinned();
+                }}
+                className="inline-flex size-8 items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <img
+                  src="/rounded-512.png"
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  className="size-5 rounded-[6px] object-cover"
+                />
+                <span className="sr-only">Expand sidebar</span>
+              </button>
+            )}
+          </div>
         )}
         <div
-          className="pointer-events-auto absolute top-0 h-2.5"
+          className="pointer-events-auto absolute top-0 h-full"
           style={{
-            left: dragLeft,
+            left: sidebarWidth,
             right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
           }}
           onMouseDown={handleDragMouseDown}
