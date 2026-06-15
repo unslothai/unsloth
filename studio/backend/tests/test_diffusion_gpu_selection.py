@@ -179,6 +179,37 @@ def test_gpu_free_memory_detects_rocm_masks_from_torch_version(
     assert backend_cls._get_gpu_free_memory() == [(1, 123)]
 
 
+def test_gpu_free_memory_torch_fallback_honors_empty_visibility_mask(
+    monkeypatch, llama_cpp_module, backend_cls
+):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(ordinal):
+            return 123 * 1024 * 1024, 456 * 1024 * 1024
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0"
+    fake_torch.cuda = FakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        llama_cpp_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _types.SimpleNamespace(returncode = 1, stdout = ""),
+    )
+
+    assert backend_cls._get_gpu_free_memory() == []
+
+
 def test_load_model_rejects_diffusion_multi_gpu_before_kill(tmp_path, backend_cls):
     gguf_path = tmp_path / "diffusion.gguf"
     _write_diffusion_gguf(gguf_path)

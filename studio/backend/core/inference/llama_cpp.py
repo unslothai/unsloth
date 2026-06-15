@@ -1675,6 +1675,8 @@ class LlamaCppBackend:
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
                     physical_ids = None
+                if physical_ids == []:
+                    return []
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
