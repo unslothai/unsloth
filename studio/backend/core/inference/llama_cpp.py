@@ -785,6 +785,12 @@ class LlamaCppBackend:
         self._extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
         self._requested_n_ctx: int = 0
+        # Raw kwargs of the last healthy load, for the runtime MTP-crash reload
+        # (see _maybe_recover_from_mtp_crash). Memory-only (carries hf_token);
+        # single-flight so concurrent failures schedule only one reload.
+        self._last_load_kwargs: Optional[dict] = None
+        self._mtp_runtime_fallback_lock = threading.Lock()
+        self._mtp_runtime_fallback_in_progress = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # llama-server tee log (see _drain_stdout / _kill_process).
@@ -3389,6 +3395,30 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
+        # Snapshot the raw load inputs so a runtime MTP crash under tensor
+        # parallelism can quietly reload the same model without MTP. Committed
+        # to self._last_load_kwargs only after a healthy load. Memory-only --
+        # carries hf_token, so it must never be logged.
+        _pending_load_kwargs = {
+            "gguf_path": gguf_path,
+            "mmproj_path": mmproj_path,
+            "mtp_draft_path": mtp_draft_path,
+            "hf_repo": hf_repo,
+            "hf_variant": hf_variant,
+            "hf_token": hf_token,
+            "model_identifier": model_identifier,
+            "is_vision": is_vision,
+            "n_ctx": n_ctx,
+            "chat_template_override": chat_template_override,
+            "cache_type_kv": cache_type_kv,
+            "speculative_type": speculative_type,
+            "spec_draft_n_max": spec_draft_n_max,
+            "tensor_parallel": tensor_parallel,
+            "n_threads": n_threads,
+            "n_gpu_layers": n_gpu_layers,
+            "n_parallel": n_parallel,
+            "extra_args": extra_args,
+        }
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -3580,9 +3610,6 @@ class LlamaCppBackend:
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
-                # Set when MTP is dropped for a tensor attempt (see the tensor-mode
-                # MTP gate below); surfaced afterwards as a spec fallback reason.
-                _tensor_disabled_mtp = False
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). The layer-split
@@ -3736,22 +3763,6 @@ class LlamaCppBackend:
                         # Studio's flags, so it would still reach llama-server and
                         # fail here; strip it so the downgrade actually applies.
                         extra_args = strip_split_mode_only(extra_args)
-
-                    # MTP-draft speculative decoding crashes the CUDA flash-attn
-                    # kernel under --split-mode tensor at decode, which the startup
-                    # health probe can't catch. Drop it for the tensor attempt
-                    # (ngram needs no draft model, so it stays); the layer-split
-                    # fallback re-runs with tensor_parallel False and restores MTP.
-                    # See llama.cpp common_speculative_impl_draft_mtp.
-                    if tensor_parallel and _mtp_will_engage:
-                        speculative_type = "ngram" if _mtp_canonical == "mtp+ngram" else "off"
-                        _mtp_will_engage = False
-                        _tensor_disabled_mtp = True
-                        logger.info(
-                            "Tensor parallelism active; disabling MTP speculative "
-                            "decoding (spec mode now %s).",
-                            speculative_type,
-                        )
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation: use all usable GPUs, weight
@@ -4034,10 +4045,6 @@ class LlamaCppBackend:
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
-                if _tensor_disabled_mtp:
-                    # _build_speculative_flags cleared the reason; record why MTP
-                    # is off so the UI explains it (not a stale-binary prompt).
-                    self._spec_fallback_reason = "tensor_parallel"
 
                 # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
@@ -4379,6 +4386,26 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                _spec_requested_mtp = any("mtp" in str(t).lower() for t in spec_flags)
+                # MTP-draft speculative decoding can pass /health and then crash
+                # the CUDA flash-attn kernel only on the first real decode (seen
+                # with --split-mode tensor). Probe a tiny generation so the
+                # MTP-drop fallback below catches a decode-time failure too, not
+                # just a startup crash. Scoped to tensor mode (the known-bad
+                # combo) so ordinary MTP loads stay probe-free; if a future
+                # llama.cpp runs the two together the probe passes and MTP stays.
+                if (
+                    healthy
+                    and self._tensor_parallel
+                    and _spec_requested_mtp
+                    and not self._cancel_event.is_set()
+                    and not self._probe_mtp_decode()
+                ):
+                    logger.warning(
+                        "MTP speculative decoding crashed on the first decode "
+                        "under tensor parallelism; retrying without it."
+                    )
+                    healthy = False
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
@@ -4386,8 +4413,8 @@ class LlamaCppBackend:
                 # loads. Gate on the spec block (not the drafter path, which
                 # off/ngram local loads also carry) and keep
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
-                # cancel check stops an /unload-killed attempt respawning.
-                _spec_requested_mtp = any("mtp" in str(t).lower() for t in spec_flags)
+                # cancel check stops an /unload-killed attempt respawning. A
+                # decode-probe failure above also routes here.
                 if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
@@ -4485,6 +4512,8 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                # Snapshot of a known-good load, for the runtime MTP-crash reload.
+                self._last_load_kwargs = _pending_load_kwargs
 
                 # Catch silent CPU fallback when GPU was intended (#5106).
                 self._gpu_offload_active = self._classify_gpu_offload(
@@ -4942,6 +4971,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._spec_fallback_reason = None
+            self._last_load_kwargs = None
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False
@@ -5219,6 +5249,95 @@ class LlamaCppBackend:
         for a in cmd:
             if a in ("-fit", "--fit") or a.startswith(("-fit=", "--fit=")):
                 return False
+        return True
+
+    def _probe_mtp_decode(self, timeout: float = 60.0) -> bool:
+        """Confirm speculative decoding survives the first decode.
+
+        MTP-draft can pass ``/health`` (weights load fine) and only crash the
+        CUDA flash-attn kernel when tokens are generated, e.g. under
+        ``--split-mode tensor``. A startup-only health check can't see that, so
+        run one tiny ``/completion`` to exercise the draft path. Returns False
+        on any error (request failure, non-200, or a server that died), so the
+        caller can drop MTP and retry; a healthy server returns quickly.
+        """
+        url = f"http://127.0.0.1:{self._port}/completion"
+        payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
+        try:
+            resp = httpx.post(url, json = payload, timeout = timeout)
+        except Exception as e:
+            logger.debug(f"MTP decode probe failed: {e}")
+            return False
+        if resp.status_code != 200:
+            logger.debug(f"MTP decode probe returned HTTP {resp.status_code}")
+            return False
+        # A crash can drop the connection only after a partial response, or kill
+        # the process right after; treat a dead server as a failed probe.
+        if self._process is not None and self._process.poll() is not None:
+            return False
+        return True
+
+    def _maybe_recover_from_mtp_crash(self, exc: Optional[BaseException] = None) -> bool:
+        """Quietly reload without MTP after a mid-generation llama-server death.
+
+        MTP-draft under --split-mode tensor can pass /health and the first decode,
+        then crash the CUDA flash-attn kernel on a later request (e.g. a prompt-
+        cache checkpoint restore). That death happens after load_model returned,
+        so the load-time MTP fallback and the decode probe can't catch it. When a
+        generation fails because the server exited while MTP + tensor parallelism
+        were active, schedule one background reload of the same model with
+        speculative decoding off, and surface spec_fallback_reason="runtime_error".
+        No persistent ban -- a later fresh load re-tries MTP, so this self-heals
+        if a future llama.cpp supports the combo. Returns True if a reload was
+        scheduled.
+        """
+        # Cheap, non-blocking gate so this is safe to call from async handlers:
+        # Studio-managed MTP under tensor parallelism only. A cancelled request,
+        # a non-MTP/non-tensor load, or a missing snapshot never fires.
+        if self._cancel_event.is_set():
+            return False
+        if not (self._tensor_parallel and self._speculative_type == "draft-mtp"):
+            return False
+        if not self._last_load_kwargs or self._process is None:
+            return False
+        # Single-flight: the first failing request claims the reload; any
+        # concurrent failures are no-ops.
+        with self._mtp_runtime_fallback_lock:
+            if self._mtp_runtime_fallback_in_progress:
+                return False
+            self._mtp_runtime_fallback_in_progress = True
+        snapshot = dict(self._last_load_kwargs)
+        proc = self._process
+
+        def _recover():
+            try:
+                # Confirm the subprocess actually exited (a CUDA abort kills it
+                # fast, but the httpx error can arrive a beat early, and a slower
+                # shutdown can lag) so a transient stream error can't disable MTP.
+                deadline = time.monotonic() + 5.0
+                while proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                if proc.poll() is None:
+                    logger.debug("Generation error but llama-server is alive; keeping MTP.")
+                    return
+                logger.warning(
+                    "llama-server exited mid-generation with MTP under tensor "
+                    "parallelism (%s); reloading without speculative decoding.",
+                    type(exc).__name__ if exc is not None else "server exited",
+                )
+                snapshot["speculative_type"] = "off"
+                self.load_model(**snapshot)
+                # load_model with "off" clears the reason; restore it so the UI
+                # explains why MTP is off after the reload.
+                self._spec_fallback_reason = "runtime_error"
+                logger.info("Reloaded without MTP after the tensor-parallel crash.")
+            except Exception as e:
+                logger.error(f"Reload without MTP failed: {e}")
+            finally:
+                with self._mtp_runtime_fallback_lock:
+                    self._mtp_runtime_fallback_in_progress = False
+
+        threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
         return True
 
     def _wait_for_health(
@@ -5705,6 +5824,9 @@ class LlamaCppBackend:
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
                 return
+            # Server died mid-generation? Quietly reload without MTP if this was
+            # a tensor-parallel + MTP crash; re-raise unchanged for this request.
+            self._maybe_recover_from_mtp_crash(e)
             raise
 
     # ── Tool-calling agentic loop ──────────────────────────────

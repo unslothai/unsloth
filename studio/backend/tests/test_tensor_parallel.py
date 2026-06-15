@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
+import threading
+import time
 import types as _types
 from pathlib import Path
 
@@ -262,24 +264,143 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
 
 
-def test_mtp_is_disabled_under_tensor_parallel():
-    # MTP-draft + --split-mode tensor + flash-attn crashes the CUDA FA kernel at
-    # decode, which the startup /health probe can't catch. load_model must drop
-    # MTP for the tensor attempt -- before the VRAM planner (so no drafter memory
-    # is reserved) and before the spec-flag build (so no --model-draft is emitted).
+def test_mtp_decode_probe_wired_under_tensor_parallel():
+    # MTP-draft can pass /health and crash the CUDA FA kernel only on the first
+    # decode under --split-mode tensor. Rather than statically banning MTP+TP
+    # (which a future llama.cpp may support), load_model probes a decode and
+    # routes a failure into the existing MTP-drop fallback.
     src = _load_model_source()
-    gate = src.find("if tensor_parallel and _mtp_will_engage:")
-    plan = src.find("self._plan_tensor_parallel(")
-    build = src.find("self._build_speculative_flags(")
-    assert gate != -1, "load_model must gate MTP off under tensor parallelism"
-    assert 0 <= gate < plan, "the MTP gate must precede the VRAM planner"
-    assert gate < build, "the MTP gate must precede the speculative-flag build"
-    # Forces the spec mode off (ngram kept for mtp+ngram) and clears the engage
-    # flag the planner reads, then surfaces the reason for the UI.
-    body = src[gate:plan]
-    assert "speculative_type =" in body and '"off"' in body and '"ngram"' in body
-    assert "_mtp_will_engage = False" in body
-    assert 'self._spec_fallback_reason = "tensor_parallel"' in src
+    probe = src.find("_probe_mtp_decode()")
+    assert probe != -1, "load_model must decode-probe MTP under tensor parallelism"
+    # Gated on tensor mode AND an MTP request (ordinary MTP loads stay unprobed).
+    guard = src[max(0, probe - 400) : probe]
+    assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
+    # A failed probe flips healthy so the shared MTP-drop fallback fires.
+    assert "healthy = False" in src[probe : probe + 400]
+    fallback = src.find("if not healthy and _spec_requested_mtp")
+    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+
+
+def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
+    # The probe is the decode-time health gate: True only on a clean 200 from a
+    # live server; any error (dropped connection, non-200, dead process) is a
+    # failed probe so the caller drops MTP and retries.
+    backend = LlamaCppBackend()
+    backend._port = 0
+
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    backend._process = None  # liveness check skipped; exercise the HTTP result
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is True
+
+    def _drop(*a, **k):
+        raise llama_cpp_module.httpx.RemoteProtocolError("peer closed connection")
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+    # 200 but the server aborted right after (poll() returns an exit code).
+    backend._process = _FakeProcess()
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+
+# ── generation-time MTP recovery (mid-stream crash) ──────────────────
+
+
+def _recovery_backend() -> LlamaCppBackend:
+    # A backend that loaded MTP under tensor parallelism and whose server has
+    # since exited (the _FakeProcess poll() returns 0 -> a dead subprocess).
+    b = LlamaCppBackend()
+    b._tensor_parallel = True
+    b._speculative_type = "draft-mtp"
+    b._process = _FakeProcess()
+    b._last_load_kwargs = {
+        "model_identifier": "owner/repo",
+        "tensor_parallel": True,
+        "speculative_type": "auto",
+        "n_parallel": 4,
+    }
+    return b
+
+
+def test_generate_chat_completion_wires_runtime_recovery():
+    # The non-tool generation path must route a mid-stream server death into the
+    # recovery helper (the tool + passthrough paths do so from the routes).
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+    assert "_maybe_recover_from_mtp_crash" in src
+
+
+def test_runtime_recovery_reloads_without_mtp(monkeypatch):
+    # A dead server + tensor + resolved-MTP + snapshot -> one background reload
+    # with speculative_type="off" (rest of the snapshot preserved), then
+    # spec_fallback_reason="runtime_error" and the single-flight flag released.
+    b = _recovery_backend()
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError("peer closed")) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+    assert captured["model_identifier"] == "owner/repo"
+    assert captured["n_parallel"] == 4  # snapshot replayed faithfully
+    deadline = time.monotonic() + 2
+    while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._spec_fallback_reason == "runtime_error"
+    assert b._mtp_runtime_fallback_in_progress is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: setattr(b, "_tensor_parallel", False),
+        lambda b: setattr(b, "_speculative_type", "ngram-mod"),
+        lambda b: setattr(b, "_last_load_kwargs", None),
+        lambda b: setattr(b, "_process", None),
+        lambda b: b._cancel_event.set(),
+    ],
+)
+def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
+    # No reload when tensor is off, the resolved spec was not MTP, there is no
+    # snapshot, the process handle is gone, or the request was cancelled.
+    b = _recovery_backend()
+    mutate(b)
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert calls == []
+
+
+def test_runtime_recovery_is_single_flight(monkeypatch):
+    # Concurrent failures schedule only one reload.
+    b = _recovery_backend()
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_load(**kwargs):
+        started.set()
+        release.wait(timeout = 5)
+        return True
+
+    monkeypatch.setattr(b, "load_model", _slow_load)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert started.wait(timeout = 5)
+    # Second failure while the first reload is in flight is a no-op.
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    release.set()
 
 
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────

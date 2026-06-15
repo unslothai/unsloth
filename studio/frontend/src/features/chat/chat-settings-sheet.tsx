@@ -974,14 +974,12 @@ export function ChatSettingsPanel({
                     speculativeType === "mtp+ngram") && (
                     <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
                       <p>
-                        {specFallbackReason === "tensor_parallel"
-                          ? "MTP speculative decoding is disabled while Tensor Parallelism is on, since llama.cpp cannot run them together."
-                          : specFallbackReason === "runtime_error"
-                            ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                              (llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : "")}
+                        {specFallbackReason === "runtime_error"
+                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                            (llamaUpdateStatus?.update_available
+                              ? " Update llama.cpp to enable it."
+                              : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button
