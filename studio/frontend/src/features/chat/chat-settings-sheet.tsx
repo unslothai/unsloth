@@ -1573,8 +1573,8 @@ function BypassPermissionsToggle() {
           </span>
           <InfoHint>
             Dangerous. Runs every tool call with no confirmation and disables
-            the python/terminal sandbox. Your API keys stay hidden, but code can
-            otherwise reach your whole machine.
+            the python/terminal sandbox. Environment secrets are stripped, but
+            code can still read files and credentials on your machine.
           </InfoHint>
         </div>
         <Switch

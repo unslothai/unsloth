@@ -420,6 +420,17 @@ _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
         "WANDB_DIR",
         "WANDB_CONFIG_DIR",
         "WANDB_CACHE_DIR",
+        # package-manager / git / cloud config pointers to real cred files
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "YARN_RC_FILENAME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "CARGO_HOME",
+        "RCLONE_CONFIG",
+        # auth-helper scripts that hand creds to git/ssh
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
         # shell startup hook: bash -c sources $BASH_ENV (can re-export secrets)
         "BASH_ENV",
         # Windows: HOMEDRIVE+HOMEPATH compose a home that bypasses HOME

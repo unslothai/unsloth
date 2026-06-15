@@ -329,8 +329,13 @@ def run_safetensors_tool_loop(
             # asking the user to approve it would be noise. Registering the
             # approval slot *before* tool_start closes the race where the
             # confirmation could arrive before the waiter exists.
+            # Bypass wins over the confirm gate at the loop level too, so a
+            # direct internal caller passing both flags never prompts.
             needs_confirm = (
-                confirm_tool_calls and not is_disabled and not already_ran_ok
+                confirm_tool_calls
+                and not bypass_permissions
+                and not is_disabled
+                and not already_ran_ok
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = (

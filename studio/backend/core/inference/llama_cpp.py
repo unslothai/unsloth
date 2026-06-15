@@ -5228,8 +5228,13 @@ class LlamaCppBackend:
                     # execute, so prompting for them would be noise.
                     # Registering the slot before tool_start closes the race
                     # where the confirmation could arrive before the waiter.
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
                     _needs_confirm = (
-                        confirm_tool_calls and not _is_duplicate and not _is_disabled
+                        confirm_tool_calls
+                        and not bypass_permissions
+                        and not _is_duplicate
+                        and not _is_disabled
                     )
                     _approval_id = new_approval_id() if _needs_confirm else ""
                     _decision_slot = (

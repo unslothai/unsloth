@@ -278,6 +278,29 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
     assert starts[0]["approval_id"] == ""
 
 
+def test_loop_bypass_overrides_confirm_for_direct_callers():
+    # Even if a direct internal caller passes confirm_tool_calls=True, bypass
+    # must suppress the confirm gate at the loop level (not only at the route).
+    def fake_exec(name, arguments, *, cancel_event = None, timeout = None,
+                  session_id = None, disable_sandbox = False):
+        return f"RAN[{name}]"
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _multi_turn([_tool_call("python", '{"code": "x"}'), "done"]),
+            messages = [{"role": "user", "content": "hi"}],
+            tools = _DEFAULT_TOOLS,
+            execute_tool = fake_exec,
+            session_id = "s",
+            confirm_tool_calls = True,  # raw caller leaves this on...
+            bypass_permissions = True,  # ...but bypass must still win
+        )
+    )
+    starts = [e for e in events if e["type"] == "tool_start"]
+    assert starts and starts[0]["awaiting_confirmation"] is False
+    assert starts[0]["approval_id"] == ""
+
+
 # ── broker / capability env vars are stripped (regression) ──────────
 
 
@@ -386,6 +409,16 @@ def test_bypass_env_repoints_all_temp_vars(monkeypatch, tmp_path):
         "DOCKER_CONFIG",
         "WANDB_DIR",
         "WANDB_CONFIG_DIR",
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "YARN_RC_FILENAME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "CARGO_HOME",
+        "RCLONE_CONFIG",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "BASH_ENV",
         "HOMEDRIVE",
         "HOMEPATH",
     ],
