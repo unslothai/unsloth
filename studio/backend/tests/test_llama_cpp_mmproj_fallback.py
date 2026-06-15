@@ -298,9 +298,7 @@ class TestRetryContract:
         assert should_retry is False
 
     def test_signal_crash_with_bad_arch_does_not_drop_vision(self):
-        should_retry = _detect(_BAD_ARCH_OUT) or (
-            _signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT)
-        )
+        should_retry = _detect(_BAD_ARCH_OUT) or (_signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT))
         assert should_retry is False
 
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
