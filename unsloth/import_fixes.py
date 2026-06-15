@@ -49,7 +49,7 @@ def Version(version):
         new_version = str(version)
         new_version = re.match(r"[0-9\.]{1,}", new_version)
         if new_version is None:
-            raise Exception(str(e))
+            raise ValueError(f"Could not parse version: {version}")
         new_version = new_version.group(0).rstrip(".")
         if new_version != version:
             new_version += ".1"  # Add .1 for dev / alpha / beta / rc
