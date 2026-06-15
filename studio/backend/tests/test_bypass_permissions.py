@@ -308,6 +308,34 @@ def test_loop_bypass_overrides_confirm_for_direct_callers():
     assert starts[0]["approval_id"] == ""
 
 
+def test_gguf_loop_confirm_gate_respects_bypass():
+    # The GGUF loop needs a live llama-server, so (per the other llama_cpp
+    # tests) assert via AST that its _needs_confirm gate applies the bypass
+    # precedence, mirroring the safetensors behavioral test above.
+    import ast
+    import inspect
+    import textwrap
+
+    llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+    src = textwrap.dedent(
+        inspect.getsource(
+            llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools
+        )
+    )
+    gates = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_needs_confirm" for t in node.targets)
+    ]
+    assert gates, "could not find the _needs_confirm gate in the GGUF loop"
+    names = {
+        n.id for g in gates for n in ast.walk(g.value) if isinstance(n, ast.Name)
+    }
+    assert "confirm_tool_calls" in names
+    assert "bypass_permissions" in names  # bypass must suppress the GGUF gate
+
+
 # ── broker / capability env vars are stripped (regression) ──────────
 
 
