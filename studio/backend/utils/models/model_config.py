@@ -1238,11 +1238,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
-        if (
-            _is_mmproj(p.name)
-            or _is_mtp_drafter(rel)
-            or _is_big_endian_gguf_path(rel, quant)
-        ):
+        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1741,7 +1737,11 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 if not fname.lower().endswith(".gguf"):
                     continue
                 quant = _extract_quant_label(fname)
-                if _is_mmproj(fname) or _is_mtp_drafter(fname) or _is_big_endian_gguf_path(fname, quant):
+                if (
+                    _is_mmproj(fname)
+                    or _is_mtp_drafter(fname)
+                    or _is_big_endian_gguf_path(fname, quant)
+                ):
                     continue
                 repo_files.append(fname)
             return _pick_best_gguf(repo_files)
