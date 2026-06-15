@@ -2649,10 +2649,10 @@ class LlamaCppBackend:
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
-        pinned = ",".join(str(i) for i in gpu_ids) if gpu_ids else None
-        # The diffusion visual server takes a visible-device ordinal. When Studio
-        # pins CUDA_VISIBLE_DEVICES, the requested first physical GPU is ordinal 0.
-        gpu = "0" if pinned else os.environ.get("DG_GPU", "0")
+        # The shim's visual_engine sets the child CUDA_VISIBLE_DEVICES to the --gpu
+        # ordinal it receives, so pass the requested physical GPU there directly. The
+        # visual server is single-GPU, so the first requested id is the one used.
+        gpu = str(gpu_ids[0]) if gpu_ids else os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -2674,8 +2674,11 @@ class LlamaCppBackend:
         env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
-        if pinned:
-            self._pin_child_gpu_env(env, pinned, force_hip = True)
+        if gpu_ids:
+            # HIP builds key off HIP_VISIBLE_DEVICES (the shim only sets CVD); clear
+            # any inherited ROCR mask so it cannot reindex underneath HIP.
+            env["HIP_VISIBLE_DEVICES"] = gpu
+            env.pop("ROCR_VISIBLE_DEVICES", None)
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
         # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
         if extra_pythonpath:

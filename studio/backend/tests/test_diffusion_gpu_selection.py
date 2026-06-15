@@ -68,7 +68,7 @@ def _write_diffusion_gguf(path: Path) -> None:
     )
 
 
-def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(
+def test_diffusion_server_passes_requested_physical_gpu_as_ordinal(
     monkeypatch, llama_cpp_module, backend_cls
 ):
     captured = {}
@@ -95,11 +95,13 @@ def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(
         gpu_ids = [1],
     )
 
-    assert captured["cmd"][captured["cmd"].index("--gpu") + 1] == "0"
-    assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    # The shim's visual_engine sets the child CUDA_VISIBLE_DEVICES to the --gpu
+    # ordinal, so the requested physical GPU must be passed as the ordinal itself
+    # (a CUDA_VISIBLE_DEVICES remap + "--gpu 0" gets overwritten back to GPU 0).
+    assert captured["cmd"][captured["cmd"].index("--gpu") + 1] == "1"
+    assert captured["env"]["DG_GPU"] == "1"
     assert captured["env"]["HIP_VISIBLE_DEVICES"] == "1"
     assert "ROCR_VISIBLE_DEVICES" not in captured["env"]
-    assert captured["env"]["DG_GPU"] == "0"
     assert backend.tensor_parallel is False
 
 
