@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/collapsible";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { Spinner } from "@/components/ui/spinner";
 
 const ANIMATION_DURATION = 200;
 
@@ -124,7 +124,7 @@ function ToolGroupTrigger({
       {...props}
     >
       {active ? (
-        <ToolCallSpinner className="aui-tool-group-trigger-loader" />
+        <Spinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
           icon={Wrench01Icon}
