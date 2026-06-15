@@ -148,6 +148,7 @@ from models.responses import (
     LoRABaseModelResponse,
     VisionCheckResponse,
     EmbeddingCheckResponse,
+    TrustRemoteCodeCheckResponse,
 )
 
 router = APIRouter()
@@ -1559,6 +1560,48 @@ async def get_model_config(
             500,
             "Failed to get model config",
             event = "models.get_model_config_failed",
+            log = logger,
+        )
+
+
+@router.get(
+    "/trust-remote-code/{model_name:path}",
+    response_model = TrustRemoteCodeCheckResponse,
+)
+async def get_model_trust_remote_code_requirement(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Check Studio YAML defaults for a trust_remote_code requirement.
+
+    This intentionally avoids AutoConfig/model capability probes so resume
+    confirmation cannot execute repository code before the user consents.
+    """
+    try:
+        if not is_local_path(model_name):
+            resolved = resolve_cached_repo_id_case(model_name)
+            if resolved != model_name:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved,
+                    model_name,
+                )
+            model_name = resolved
+
+        config_dict = load_model_defaults(model_name)
+        requires_trust_remote_code = bool(
+            config_dict.get("training", {}).get("trust_remote_code", False)
+        )
+        return TrustRemoteCodeCheckResponse(
+            model_name = model_name,
+            requires_trust_remote_code = requires_trust_remote_code,
+        )
+    except Exception as e:
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to check model trust_remote_code requirement",
+            event = "models.get_model_trust_remote_code_requirement_failed",
             log = logger,
         )
 

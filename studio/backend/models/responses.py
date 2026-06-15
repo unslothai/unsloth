@@ -57,3 +57,12 @@ class EmbeddingCheckResponse(BaseModel):
     is_embedding: bool = Field(
         ..., description = "Whether the model is an embedding/sentence-transformer model"
     )
+
+
+class TrustRemoteCodeCheckResponse(BaseModel):
+    """Response for checking whether Studio defaults require custom model code"""
+
+    model_name: str = Field(..., description = "Model identifier")
+    requires_trust_remote_code: bool = Field(
+        ..., description = "Whether Studio defaults require trust_remote_code"
+    )

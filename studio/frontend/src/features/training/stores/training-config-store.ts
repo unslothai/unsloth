@@ -511,6 +511,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelDefaultsError: null;
             visionImageSize?: number | null;
             trustRemoteCode?: boolean;
+            modelRequiresTrustRemoteCode?: boolean;
           } = {
             selectedModel,
             modelDefaultsError: null,
@@ -518,6 +519,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (selectedModel !== previousModel) {
             patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
             patch.trustRemoteCode = false;
+            patch.modelRequiresTrustRemoteCode = false;
           }
           set(patch);
 
@@ -799,6 +801,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
+          const hasTrustRemoteCode = Object.hasOwn(
+            config.training ?? {},
+            "trust_remote_code",
+          );
           // Only clear the manual-edit flag when the config provides a LR,
           // so unrelated config patches don't silently disarm the guard.
           if (patch.learningRate !== undefined) {
@@ -806,7 +812,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
           set({
             ...patch,
-            modelRequiresTrustRemoteCode: config.training?.trust_remote_code === true,
+            ...(hasTrustRemoteCode
+              ? {
+                  modelRequiresTrustRemoteCode:
+                    config.training?.trust_remote_code === true,
+                }
+              : {}),
           });
         },
       };

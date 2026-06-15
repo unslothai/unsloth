@@ -13,6 +13,11 @@ interface EmbeddingCheckResponse {
   is_embedding: boolean;
 }
 
+interface TrustRemoteCodeCheckResponse {
+  model_name: string;
+  requires_trust_remote_code: boolean;
+}
+
 interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
@@ -130,6 +135,20 @@ export async function getModelConfig(
     throw new Error(`Failed to fetch model config (${response.status})`);
   }
   return (await response.json()) as ModelConfigResponse;
+}
+
+export async function getModelTrustRemoteCodeRequirement(
+  modelName: string,
+): Promise<boolean> {
+  const encoded = encodeURIComponent(modelName);
+  const response = await authFetch(`/api/models/trust-remote-code/${encoded}`);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to check model trust_remote_code requirement (${response.status})`,
+    );
+  }
+  const data = (await response.json()) as TrustRemoteCodeCheckResponse;
+  return data.requires_trust_remote_code;
 }
 
 export async function listLocalModels(

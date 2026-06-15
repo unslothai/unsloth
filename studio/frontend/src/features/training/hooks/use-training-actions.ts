@@ -7,7 +7,7 @@ import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
-import { getModelConfig } from "../api/models-api";
+import { getModelTrustRemoteCodeRequirement } from "../api/models-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -316,12 +316,7 @@ async function resumePayloadRequiresTrustRemoteCode(
   }
 
   try {
-    const modelDetails = await getModelConfig(
-      payload.model_name,
-      undefined,
-      payload.hf_token ?? undefined,
-    );
-    return modelDetails.config?.training?.trust_remote_code === true;
+    return await getModelTrustRemoteCodeRequirement(payload.model_name);
   } catch {
     return false;
   }
