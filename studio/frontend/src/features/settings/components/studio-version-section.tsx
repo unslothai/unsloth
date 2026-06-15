@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth";
+import { getAuthToken, refreshSession } from "@/features/auth";
+import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
@@ -18,9 +19,14 @@ const EMPTY_VERSIONS: StudioVersions = {
   studioVersion: null,
 };
 
-async function fetchStudioVersions(): Promise<StudioVersions> {
+function hasAnyVersion(versions: StudioVersions): boolean {
+  return Boolean(versions.packageVersion || versions.studioVersion);
+}
+
+async function requestStudioVersions(
+  token: string | null,
+): Promise<StudioVersions> {
   try {
-    const token = getAuthToken();
     const headers = new Headers();
     if (token) {
       headers.set("Authorization", `Bearer ${token}`);
@@ -42,7 +48,23 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
+async function fetchStudioVersions(): Promise<StudioVersions> {
+  const initialToken = getAuthToken();
+  const versions = await requestStudioVersions(initialToken);
+  if (hasAnyVersion(versions) || !initialToken) {
+    return versions;
+  }
+
+  const refreshed = await refreshSession();
+  if (!refreshed) {
+    return versions;
+  }
+
+  return requestStudioVersions(getAuthToken());
+}
+
 export function StudioVersionSection() {
+  const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
   const [studioVersion, setStudioVersion] = useState("dev");
 
@@ -68,12 +90,12 @@ export function StudioVersionSection() {
 
   return (
     <SettingsSection title="Studio">
-      <SettingsRow label="Studio Version">
+      <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}
         </code>
       </SettingsRow>
-      <SettingsRow label="Package Version">
+      <SettingsRow label={t("settings.about.packageVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {packageVersion}
         </code>
