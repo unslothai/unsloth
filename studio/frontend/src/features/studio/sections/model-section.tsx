@@ -133,6 +133,7 @@ export function ModelSection() {
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
   const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
+  const [localModelPickerOpen, setLocalModelPickerOpen] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [scanFolders, setScanFolders] =
     useState<ScanFolderInfo[]>(_scanFoldersCache);
@@ -164,6 +165,11 @@ export function ModelSection() {
     const next = value.trim();
     if (!next) return;
     setSelectedModel(next);
+  }
+
+  function openFolderBrowser() {
+    setLocalModelPickerOpen(false);
+    setShowFolderBrowser(true);
   }
 
   const refreshLocalModelsList = useCallback((signal?: AbortSignal) => {
@@ -407,6 +413,8 @@ export function ModelSection() {
                   if (next) setSelectedModel(next);
                 }}
                 onInputValueChange={setLocalModelInput}
+                open={localModelPickerOpen}
+                onOpenChange={setLocalModelPickerOpen}
                 itemToStringValue={(id) => id}
                 autoHighlight={true}
               >
@@ -489,7 +497,7 @@ export function ModelSection() {
                           type="button"
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
-                          onClick={() => setShowFolderBrowser(true)}
+                          onClick={openFolderBrowser}
                           className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-background dark:hover:text-foreground"
                         >
                           <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
@@ -603,7 +611,7 @@ export function ModelSection() {
                           />
                           <button
                             type="button"
-                            onClick={() => setShowFolderBrowser(true)}
+                            onClick={openFolderBrowser}
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"
