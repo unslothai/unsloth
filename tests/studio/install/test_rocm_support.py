@@ -390,17 +390,23 @@ class TestDataCenterLemonadeRouting:
         assert prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm") is None
         sentinel = ("forkpath", [])
         monkeypatch.setattr(prebuilt_mod, "_fork_manifest_release_plans", lambda *a, **k: sentinel)
-        assert prebuilt_mod.resolve_simple_install_release_plans(
-            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
-        ) == sentinel
+        assert (
+            prebuilt_mod.resolve_simple_install_release_plans(
+                "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+            )
+            == sentinel
+        )
 
     def test_nvidia_with_stray_gfx_not_routed_to_lemonade(self, monkeypatch):
         host = nvidia_host(has_rocm = True, rocm_gfx_target = "gfx908")
         sentinel = ("forkpath", [])
         monkeypatch.setattr(prebuilt_mod, "_fork_manifest_release_plans", lambda *a, **k: sentinel)
-        assert prebuilt_mod.resolve_simple_install_release_plans(
-            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
-        ) == sentinel
+        assert (
+            prebuilt_mod.resolve_simple_install_release_plans(
+                "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+            )
+            == sentinel
+        )
 
     @patch.object(prebuilt_mod, "fetch_json")
     def test_untrusted_asset_url_skipped(self, mock_fetch):

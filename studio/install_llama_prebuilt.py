@@ -1612,7 +1612,10 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
 
 
 def resolve_lemonade_rocm_choice(
-    host: HostInfo, os_prefix: str, install_kind: str, llama_tag: str = "latest"
+    host: HostInfo,
+    os_prefix: str,
+    install_kind: str,
+    llama_tag: str = "latest",
 ) -> AssetChoice | None:
     """Lemonade ROCm bundle for a data-center AMD GPU (gfx908/gfx90a) the fork
     does not ship. None for any other arch or on a fetch/asset/host miss.
@@ -1652,9 +1655,7 @@ def resolve_lemonade_rocm_choice(
     )
 
 
-def _lemonade_release_plans(
-    llama_tag: str, host: HostInfo
-) -> tuple[str, list[InstallReleasePlan]]:
+def _lemonade_release_plans(llama_tag: str, host: HostInfo) -> tuple[str, list[InstallReleasePlan]]:
     """Single-attempt plan for a data-center AMD GPU, sourced from lemonade.
     release_tag is lemonade's own counter so updates compare against lemonade;
     llama_tag is a real upstream tag because the source tree is hydrated from

@@ -329,7 +329,9 @@ def test_status_lemonade_marker_compares_against_fork(monkeypatch, tmp_path):
         source = "lemonade",
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50"
+    )
     st = upd.get_update_status(force_refresh = True)
     assert st["update_available"] is True
     assert st["published_repo"] == "unslothai/llama.cpp"  # not the recorded ggml-org
@@ -349,7 +351,9 @@ def test_start_update_lemonade_marker_targets_fork(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50"
+    )
     captured = {}
     _patch_installer_popen(monkeypatch, on_start = lambda cmd: captured.update(cmd = cmd))
     res = upd.start_update()
