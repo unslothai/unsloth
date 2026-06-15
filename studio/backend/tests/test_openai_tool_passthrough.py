@@ -19,6 +19,7 @@ No running server or GPU required.
 """
 
 import asyncio
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -808,6 +809,108 @@ class TestApiMonitorTextCompletionsFailures:
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "bad prompt" in entry["error"]
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+
+class TestApiMonitorAudioInput:
+    def _patch_audio_backend(self, monkeypatch, chunks):
+        class DummyAudioBackend:
+            active_model_name = "audio-model"
+            models = {
+                "audio-model": {
+                    "has_audio_input": True,
+                    "audio_type": "audio-input",
+                }
+            }
+
+            def generate_audio_input_response(self, **_kwargs):
+                yield from chunks
+
+        monkeypatch.setattr(
+            inference_routes,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False),
+        )
+        monkeypatch.setattr(
+            inference_routes,
+            "get_inference_backend",
+            lambda: DummyAudioBackend(),
+        )
+        monkeypatch.setattr(
+            inference_routes,
+            "_decode_audio_base64",
+            lambda _payload: object(),
+        )
+
+    def test_audio_input_non_streaming_records_active_monitor(self, monkeypatch):
+        async def _run():
+            self._patch_audio_backend(monkeypatch, ["hello", " world"])
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            response = await inference_routes.openai_chat_completions(
+                payload,
+                request,
+                current_subject = "u",
+            )
+            body = json.loads(response.body)
+
+            assert body["choices"][0]["message"]["content"] == "hello world"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == "hello world"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_audio_input_streaming_records_monitor_reply(self, monkeypatch):
+        async def _run():
+            self._patch_audio_backend(monkeypatch, ["hello", " world"])
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+
+            async def is_disconnected():
+                return False
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
+                stream = True,
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = is_disconnected,
+            )
+
+            response = await inference_routes.openai_chat_completions(
+                payload,
+                request,
+                current_subject = "u",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+
+            assert chunks[-1] == "data: [DONE]\n\n"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
 
         asyncio.run(_run())

@@ -2233,8 +2233,21 @@ async def openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
-            audio_array = _decode_audio_base64(payload.audio_base64)
-            system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+            monitor_id = None
+            if not getattr(request.state, "skip_api_monitor", False):
+                monitor_id = api_monitor.start(
+                    endpoint = request.url.path,
+                    method = request.method,
+                    model = model_name,
+                    prompt = _monitor_prompt_from_messages(payload.messages),
+                    context_length = None,
+                )
+            try:
+                audio_array = _decode_audio_base64(payload.audio_base64)
+                system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+            except Exception as e:
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                raise
             cancel_event = threading.Event()
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
@@ -2280,16 +2293,20 @@ async def openai_chat_completions(
 
                         gen = audio_input_generate()
                         _DONE = object()
+                        cancelled = False
                         while True:
                             if cancel_event.is_set():
+                                cancelled = True
                                 break
                             if await request.is_disconnected():
                                 cancel_event.set()
+                                api_monitor.finish(monitor_id, "cancelled")
                                 return
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
                                 break
                             if chunk_text:
+                                api_monitor.append_reply(monitor_id, chunk_text)
                                 chunk = ChatCompletionChunk(
                                     id = completion_id,
                                     created = created,
@@ -2311,15 +2328,20 @@ async def openai_chat_completions(
                                 ChunkChoice(delta = ChoiceDelta(), finish_reason = "stop")
                             ],
                         )
+                        api_monitor.finish(
+                            monitor_id, "cancelled" if cancelled else "completed"
+                        )
                         yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()
+                        api_monitor.finish(monitor_id, "cancelled")
                         raise
                     except Exception as e:
                         logger.error(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
+                        api_monitor.fail(monitor_id, _friendly_error(e))
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
                         _tracker.__exit__(None, None, None)
@@ -2334,18 +2356,13 @@ async def openai_chat_completions(
                     },
                 )
             else:
-                full_text = "".join(audio_input_generate())
-                monitor_id = None
-                if not getattr(request.state, "skip_api_monitor", False):
-                    monitor_id = api_monitor.start(
-                        endpoint = request.url.path,
-                        method = request.method,
-                        model = model_name,
-                        prompt = _monitor_prompt_from_messages(payload.messages),
-                        context_length = None,
-                    )
-                    api_monitor.set_reply(monitor_id, full_text)
-                    api_monitor.finish(monitor_id)
+                try:
+                    full_text = "".join(audio_input_generate())
+                except Exception as e:
+                    api_monitor.fail(monitor_id, _friendly_error(e))
+                    raise
+                api_monitor.set_reply(monitor_id, full_text)
+                api_monitor.finish(monitor_id)
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
