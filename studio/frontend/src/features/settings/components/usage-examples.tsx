@@ -28,8 +28,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 
-// Example type (what to call the API with) and OS axis (curl quoting differs;
-// Python is byte-identical across OSes so its OS row is hidden).
+// API call type; OS axis applies to curl only (Python is OS-identical).
 type ExampleType =
   | "curl"
   | "python"
@@ -57,7 +56,6 @@ const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
 };
 
-// curl-based examples carry the OS dimension; Python does not.
 const OS_AWARE: Record<ExampleType, boolean> = {
   curl: true,
   python: false,
@@ -70,10 +68,9 @@ const OS_AWARE: Record<ExampleType, boolean> = {
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
 
 const PROMPT = "Can Unsloth Studio do API calling?";
-// render_html / search_knowledge_base are intentionally omitted from the
-// examples; web_search + python + terminal are the reliable built-ins.
+// web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
-// Sampling/thinking knobs surfaced by the "+ advanced" examples.
+// Sampling/thinking knobs for the "+ advanced" examples.
 const ADV = {
   temperature: 0.7,
   top_p: 0.8,
@@ -106,13 +103,11 @@ const DOC_LINKS = [
   },
 ];
 
-// JSON-encode a string (quoted, escaped). The result is also a valid Python
-// string literal, so model names with backslashes (Windows paths) or quotes
-// never break the generated JSON or Python.
+// JSON-encode; also a valid Python literal, so odd model names never break output.
 const j = (s: string): string => JSON.stringify(s);
-// Embed inside a POSIX single-quoted string: close, escaped quote, reopen.
+// Embed in a POSIX single-quoted string: close, escaped quote, reopen.
 const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-// Embed inside a PowerShell single-quoted string: '' is a literal quote.
+// Embed in a PowerShell single-quoted string: '' is a literal quote.
 const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
@@ -145,8 +140,7 @@ function curlBodyPretty(model: string, variant: Variant): string {
   return `{\n${lines.join("\n")}\n  }`;
 }
 
-// Compact one-line JSON for the Windows body file (PowerShell mangles inline
-// double quotes passed to curl.exe, so the body is written to disk instead).
+// One-line JSON for the Windows body file (PowerShell mangles inline quotes to curl.exe).
 function winBody(model: string, variant: Variant): string {
   const body: Record<string, unknown> = {
     model,
@@ -181,8 +175,7 @@ function curlUnix(
   -d '${shSingle(curlBodyPretty(model, variant))}'`;
 }
 
-// Windows: PowerShell. curl is aliased to Invoke-WebRequest, so call curl.exe;
-// pass the JSON body via a file to avoid PowerShell's native-arg quote stripping.
+// Windows PowerShell: curl aliases to Invoke-WebRequest, so use curl.exe + body file.
 function curlWindows(
   base: string,
   key: string,
@@ -203,8 +196,7 @@ function pythonSnippet(
   model: string,
   variant: Variant,
 ): string {
-  // temperature/top_p/max_tokens are standard OpenAI args; the rest are
-  // Unsloth extensions the client forwards through extra_body.
+  // Standard OpenAI args are named; Unsloth extensions go through extra_body.
   const named =
     variant === "advanced"
       ? `
@@ -229,8 +221,7 @@ function pythonSnippet(
 ${extra.join("\n")}
     },`
     : "";
-  // With tools, the stream interleaves tool-lifecycle events that carry no
-  // choices, so guard chunk.choices before indexing it.
+  // With tools, some chunks are tool-lifecycle events with no choices; guard it.
   const loop =
     variant !== "plain"
       ? `for chunk in response:
@@ -294,8 +285,7 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
-// Active local checkpoint as repo[:variant]. External (external::...) checkpoints
-// don't apply to the local API, so fall back there and when nothing is loaded.
+// Active local checkpoint as repo[:variant]; external/none falls back to a default.
 function useLoadedModelName(): string {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -324,8 +314,7 @@ function HighlightedCode({
   code: string;
   language: string;
 }) {
-  // Fence the snippet so Streamdown's shiki plugin highlights it; content
-  // inside a code fence is never interpreted as markdown.
+  // Fence so Streamdown's shiki plugin highlights it (no markdown inside a fence).
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
@@ -358,19 +347,16 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
 
-  // The tunnel can start after the first /api/health read, leaving cloudflareUrl
-  // stuck at null; refresh on mount so a running tunnel surfaces here.
+  // Tunnel may start after the first /api/health read; refresh so it surfaces here.
   useEffect(() => {
     void fetchDeviceType({ force: true });
   }, []);
 
   const model = useLoadedModelName();
-  // Show the real key while it's still revealed (before "Done"); otherwise the
-  // copy-and-replace placeholder.
+  // Real key while revealed (before "Done"); otherwise a placeholder.
   const key = apiKey || KEY_PLACEHOLDER;
-  // Toggle on + tunnel up: use the public tunnel URL. Off: use the direct
-  // host:port from the backend (the browser origin equals the tunnel URL when
-  // accessed through the tunnel, so origin is only a last-resort fallback).
+  // Toggle on + tunnel up: public tunnel URL. Off: backend direct host:port
+  // (origin is only a last-resort fallback).
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);

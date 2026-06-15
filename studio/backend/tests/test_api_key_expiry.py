@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Expiry enforcement for API keys and JWT access tokens.
-
-API keys carry an optional tz-aware ``expires_at`` (auth.py stores
-``datetime.now(timezone.utc) + timedelta(...)`` as ISO). ``validate_api_key``
-rejects once that instant passes; JWT access tokens carry an ``exp`` claim that
-PyJWT enforces on decode. Both must surface as 401 on protected routes.
-"""
+"""Expiry enforcement for API keys (tz-aware ``expires_at``) and JWT access
+tokens (``exp`` claim). Both must surface as 401 on protected routes."""
 
 from __future__ import annotations
 
@@ -136,9 +131,6 @@ def test_dependency_rejects_expired_jwt_as_401():
     assert exc.value.detail == "Invalid or expired token"
 
 
-# --- route stores a tz-aware expiry the validator can parse -----------------
-
-
 # --- derivation cache: speeds repeats without bypassing checks --------------
 
 
@@ -174,8 +166,7 @@ def test_cache_does_not_bypass_revocation():
 
 def test_cache_does_not_bypass_expiry():
     seed_user()
-    # A key that expires between two validations: first warms the cache, second
-    # must still be rejected because expiry is re-read from SQLite each call.
+    # Expires between the two calls: the first warms the cache, the second is still rejected.
     near = (datetime.now(timezone.utc) + timedelta(milliseconds = 600)).isoformat()
     raw = make_key(near)
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME

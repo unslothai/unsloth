@@ -18,11 +18,10 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
-  // Live tunnel URL from /api/health (authed); null if none. Ephemeral -- read live.
+  // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
+  // whether the server was launched with --secure.
   cloudflareUrl: string | null;
-  // Direct host:port base from /api/health (authed); the non-tunnel API base.
   serverUrl: string | null;
-  // Whether the server was launched with --secure (loopback-only + tunnel).
   secure: boolean;
   fetched: boolean;
   isChatOnly: () => boolean;
@@ -50,8 +49,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   isChatOnly: () => get().chatOnly,
 }));
 
-// `force` re-reads /api/health even if cached: the tunnel URL may arrive after
-// the first health call, so consumers can refresh to pick it up.
+// `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
 }): Promise<DeviceType> {

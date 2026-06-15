@@ -238,31 +238,25 @@ def _pbkdf2_desktop_secret(raw_secret: str) -> str:
     return _pbkdf2_api_key(raw_secret)
 
 
-# ── API-key derivation cache ───────────────────────────────────────────
-#
-# ``validate_api_key`` runs on every authenticated request, and the 100k-round
-# PBKDF2 dominates that cost. The raw-key -> PBKDF2-hash mapping is a pure,
-# deterministic function (fixed server salt), so memoize it: derive the hash
-# once per key, then reuse it. Entries are keyed by a salted HMAC of the raw key
-# (never the key or a recoverable digest) and the value equals what is already
-# stored at rest, so the cache adds no at-rest exposure. Revocation and expiry
-# stay enforced by the SQLite read on every call -- a cache hit only skips the
-# KDF, never the active/expiry checks. Populated solely for keys that exist in
-# the DB, so unknown-key spam cannot grow it.
+# Memoize the deterministic raw-key -> PBKDF2-hash derivation so the 100k-round
+# KDF runs once per key instead of on every authenticated request. Keyed by a
+# salted HMAC of the key (not the key itself); revocation/expiry are still
+# enforced by the SQLite read on every call, so a cache hit only skips the KDF.
+# Only keys present in the DB are cached, so unknown-key spam can't grow it.
 _api_key_hash_cache: dict[str, str] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
 
 
 def _api_key_cache_id(raw_key: str) -> str:
-    """Stable in-memory cache id for a raw key: HMAC-SHA256 under the server salt."""
+    """Cache id for a raw key: salted HMAC-SHA256 (not the key itself)."""
     return hmac.new(
         _get_or_create_api_key_pbkdf2_salt(), raw_key.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 
 def _reset_api_key_hash_cache() -> None:
-    """Drop all memoized derivations (tests, or after a salt change)."""
+    """Drop memoized derivations (tests / salt change)."""
     with _api_key_hash_cache_lock:
         _api_key_hash_cache.clear()
 
@@ -747,9 +741,7 @@ def validate_api_key(raw_key: str) -> Optional[str]:
         row = cur.fetchone()
         if row is None:
             return None
-        # Real key: memoize the derivation so later requests skip the KDF. Bound
-        # the cache; clear wholesale on overflow (simpler than per-entry eviction
-        # and the re-derivation cost is paid back on the next call).
+        # Real key: memoize so later requests skip the KDF. Bounded; clear on overflow.
         if cached_hash is None:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:

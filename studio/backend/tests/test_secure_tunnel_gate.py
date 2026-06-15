@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Cloudflare tunnel start gate, incl. --secure on loopback.
-
-`--secure` lets the tunnel start on a 127.0.0.1 bind (cloudflared reaches the
-server over http://localhost:port), while non-secure keeps the historical
-0.0.0.0-only behaviour. Imports run.py directly, so run under the Studio venv.
-"""
+"""Cloudflare tunnel start gate, incl. --secure on loopback. Imports run.py
+directly, so run under the Studio venv."""
 
 from __future__ import annotations
 
@@ -65,8 +61,7 @@ def test_run_server_accepts_secure_kwarg():
 
 
 def test_plain_network_launch_forces_tools_off():
-    # Plain/direct launches must force server-side tools off when network-reachable
-    # (0.0.0.0 or --secure) so a public endpoint can't run code via enable_tools.
+    # Network-reachable launches (0.0.0.0 or --secure) must force server-side tools off.
     import run
     from state.tool_policy import get_tool_policy, reset_tool_policy
 
@@ -84,8 +79,7 @@ def test_plain_network_launch_forces_tools_off():
 
 
 def test_run_server_rejects_secure_without_cloudflare():
-    # Direct backend callers (not just the CLI) must reject the contradictory
-    # combo before binding anything.
+    # Direct backend callers (not just the CLI) must reject the contradictory combo.
     import run
     with pytest.raises(SystemExit) as exc:
         run.run_server(secure = True, cloudflare = False)

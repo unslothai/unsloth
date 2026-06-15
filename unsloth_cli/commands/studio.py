@@ -707,8 +707,7 @@ def studio_default(
             raise typer.Exit(2)
         return
 
-    # --secure requires the tunnel; force the loopback bind so display_host /
-    # re-exec / run_server agree.
+    # --secure requires the tunnel; force a loopback bind.
     if secure:
         if not cloudflare:
             typer.echo(
@@ -1049,8 +1048,7 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
-    # --secure: require the tunnel and force a loopback bind (before tool-policy /
-    # re-exec) so the raw port is never public, even with -H 0.0.0.0.
+    # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
         if not cloudflare:
             typer.echo(
@@ -1061,9 +1059,8 @@ def run(
             raise typer.Exit(2)
         host = "127.0.0.1"
 
-    # Gate tools on the *public* exposure, not the bind address: --secure serves
-    # over a public Cloudflare tunnel, so tools must default off (and prompt when
-    # explicitly enabled) even though the bind is loopback.
+    # Gate tools on the *public* exposure: --secure is public via the tunnel, so
+    # tools default off even though the bind is loopback.
     tool_policy_host = "0.0.0.0" if secure else host
 
     # Resolve tool policy here so the re-exec'd child inherits a
@@ -1120,8 +1117,7 @@ def run(
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
-        # Forward --yes if the parent already cleared the network-bind
-        # prompt, else the child re-prompts (use the public exposure host).
+        # Forward --yes if the parent already cleared the network-bind prompt.
         if yes or (enable_tools and is_external_host(tool_policy_host)):
             args.append("--yes")
         # Typer claims --parallel outside ctx.args; without this the
@@ -1224,7 +1220,6 @@ def run(
     # Orange so the tool-policy notice stands out; printed under
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
-    # Secure mode binds loopback but is public via the tunnel; describe that surface.
     _is_external = is_external_host(tool_policy_host)
     _exposure = "the public Cloudflare tunnel" if secure else host
     if _is_external and enable_tools:

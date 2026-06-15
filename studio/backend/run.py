@@ -396,8 +396,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _emit_secure_startup_output(port: int) -> None:
-    """Secure mode: advertise only the Cloudflare link (loopback bind has no public
-    raw URL). _cloudflare_url is set here; run_server fails closed first otherwise."""
+    """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
     print("")
     print("🦥 Unsloth Studio is running (secure)")
     print("─" * 52)
@@ -834,18 +833,15 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare quick-tunnel. --secure tunnels a loopback bind
-    too (cloudflared targets localhost); non-secure keeps the 0.0.0.0-only rule.
-    Colab has its own proxy; api-only has no UI to share."""
+    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
+    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
     return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
 
 
 def _apply_default_tool_policy(host: str, secure: bool) -> None:
-    """Force server-side tools off when the launch is network-reachable (0.0.0.0
-    bind or --secure tunnel). The plain `unsloth studio` launcher and direct
-    `python run.py` never resolve a tool policy, so without this a public endpoint
-    would honor a client's `enable_tools: true` and run code. `unsloth studio run`
-    installs its own resolved policy and does not go through this entrypoint."""
+    """Force server-side tools off on network-reachable launches (0.0.0.0 or --secure)
+    so a public endpoint can't run code via a client's `enable_tools`. `unsloth studio
+    run` installs its own resolved policy and bypasses this."""
     if not (secure or host == "0.0.0.0"):
         return
     from state.tool_policy import set_tool_policy
@@ -880,9 +876,8 @@ def run_server(
     """
     global _server, _shutdown_event
 
-    # --secure exposes only the Cloudflare link: force a loopback bind (cloudflared
-    # reaches localhost) so the raw port is never public, even with -H 0.0.0.0.
-    # Reject the contradictory combo here too so direct callers fail fast.
+    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
+    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
     if secure and not cloudflare:
         raise SystemExit(
             "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
@@ -890,10 +885,7 @@ def run_server(
     if secure:
         host = "127.0.0.1"
 
-    # Network-reachable launches (0.0.0.0 bind or --secure tunnel) force
-    # server-side tools off by default so a public endpoint can't run code via a
-    # client's enable_tools. `unsloth studio run` overrides this afterward with
-    # its resolved/operator-confirmed policy.
+    # `unsloth studio run` overrides this afterward with its resolved policy.
     _apply_default_tool_policy(host, secure)
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
@@ -1027,15 +1019,12 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
-    # Direct (non-tunnel) base for the API panel when the tunnel toggle is off;
-    # resolve 0.0.0.0 to the LAN IP, keep an explicit host (incl. secure's loopback).
+    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
     if port and port > 0:
         _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
-    # Secure mode binds loopback and exposes only the tunnel; the API panel uses
-    # this to hint that a non-secure raw port is network-reachable.
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
@@ -1098,7 +1087,6 @@ def run_server(
     global _cloudflare_url
     _cloudflare_url = None
     app.state.cloudflare_url = None
-    # --secure also tunnels a loopback bind; non-secure stays 0.0.0.0-only.
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
         host = host,
@@ -1118,8 +1106,8 @@ def run_server(
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 
-    # --secure fails closed: no tunnel means no public link, and the loopback bind
-    # exposed nothing, so exit rather than silently fall back to a raw port.
+    # --secure fails closed: no tunnel means no public link, so exit rather than
+    # silently fall back to a raw port.
     if secure and not _cloudflare_url:
         print(
             "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",

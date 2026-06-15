@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--secure/--not-secure` Studio flag.
-
-Pins the typer Option (default off) on both `unsloth studio` and
-`unsloth studio run`, that the chosen polarity reaches the re-exec'd child and
-run_server, that --secure forces a 127.0.0.1 bind, and that --secure is rejected
-alongside --no-cloudflare / before a subcommand. Modeled on
-test_studio_cloudflare_flag.py.
-"""
+"""Tests for the `--secure/--not-secure` Studio flag: option registration,
+re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
+alongside --no-cloudflare or before a subcommand. Modeled on
+test_studio_cloudflare_flag.py."""
 
 from __future__ import annotations
 
@@ -245,8 +241,7 @@ def test_studio_default_rejects_secure_with_subcommand():
 
 
 def test_run_secure_resolves_tools_against_public_host(monkeypatch):
-    # --secure binds 127.0.0.1 but is public via the tunnel, so tool policy must
-    # be resolved against 0.0.0.0 (default OFF), not the loopback default (ON).
+    # --secure is public via the tunnel, so tools resolve against 0.0.0.0 (OFF), not loopback (ON).
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
@@ -292,8 +287,7 @@ def test_run_secure_resolves_tools_against_public_host(monkeypatch):
 
 
 def test_run_secure_enable_tools_forwards_yes(monkeypatch):
-    # Enabling tools on a public secure endpoint must forward --yes so the
-    # re-exec'd child doesn't re-prompt on the network-bind warning.
+    # Enabling tools on a secure endpoint forwards --yes so the child doesn't re-prompt.
     captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
     assert len(captured) == 1, captured
     argv = captured[0]
