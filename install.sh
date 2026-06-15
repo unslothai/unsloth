@@ -178,12 +178,16 @@ run_install_cmd_retry() {
     # value (e.g. a fat-fingered "99999999999999999999") cannot overflow the
     # shell integer range and make `[ -ge ]` error out mid-loop; such values fall
     # back to the default instead. Bounds: 1..100 retries, 0..3600s base delay.
+    # Leading-zero values (e.g. "08") are also rejected: the delay is later fed to
+    # `$((_ricr_delay * 2))`, where a non-octal leading-zero like 08/09 is a fatal
+    # arithmetic error, so the `0?*` pattern routes them to the default (bare "0"
+    # stays valid for a no-wait delay).
     case "$UNSLOTH_INSTALL_RETRIES" in
         ''|*[!0-9]*|0) _ricr_max=3 ;;
         *) if [ "${#UNSLOTH_INSTALL_RETRIES}" -le 3 ] && [ "$UNSLOTH_INSTALL_RETRIES" -ge 1 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRIES" -le 100 ] 2>/dev/null; then _ricr_max=$UNSLOTH_INSTALL_RETRIES; else _ricr_max=3; fi ;;
     esac
     case "$UNSLOTH_INSTALL_RETRY_DELAY" in
-        ''|*[!0-9]*) _ricr_delay=3 ;;
+        ''|*[!0-9]*|0?*) _ricr_delay=3 ;;
         *) if [ "${#UNSLOTH_INSTALL_RETRY_DELAY}" -le 4 ] && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -ge 0 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -le 3600 ] 2>/dev/null; then _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY; else _ricr_delay=3; fi ;;
     esac
     _ricr_attempt=1

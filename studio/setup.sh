@@ -444,17 +444,19 @@ fi
 # with custom-home support) or otherwise lost it, without weakening the guard.
 # The evidence must live INSIDE the directory so an unrelated directory the user
 # placed at a Studio-managed path -- even inside an established Studio home -- is
-# never silently adopted and overwritten:
-#   - UNSLOTH_PREBUILT_INFO.json: written by the prebuilt llama.cpp installer
-#     (the default path, and older than the marker), or
-#   - a top-level llama-quantize symlink: written by source builds (a plain
-#     llama.cpp checkout keeps the binary under build/bin, not a root symlink).
-# Sidecar venvs carry no such fingerprint and stay subject to the strict guard;
-# their marker has been written since the guard was introduced, so an
-# established custom install already has it.
+# never silently adopted and overwritten. Only UNSLOTH_PREBUILT_INFO.json counts:
+# it is written exclusively by the prebuilt llama.cpp installer (the default
+# path, present since #4562 and older than the marker), so its presence uniquely
+# identifies a Studio install. A bare top-level llama-quantize symlink is NOT
+# treated as evidence: a user can have their own llama.cpp build with such a
+# convenience symlink, and this guard runs immediately before a destructive
+# replace / rm -rf. We therefore match the Windows installer and keep markerless
+# source builds strict -- they fail with the "move it aside" message instead of
+# being adopted and deleted. Sidecar venvs likewise carry no such fingerprint and
+# stay subject to the strict guard; their marker has been written since the guard
+# was introduced, so an established custom install already has it.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
-    [ -L "$1/llama-quantize" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
