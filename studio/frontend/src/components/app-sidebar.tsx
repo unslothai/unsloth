@@ -254,7 +254,6 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false);
   };
 
-  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -361,8 +360,6 @@ export function AppSidebar() {
     isStudioRoute,
   ]);
 
-  const chatDisabled = isTrainingRunning;
-
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
       return { project: projectId };
@@ -373,7 +370,6 @@ export function AppSidebar() {
   }
 
   function openNewChat(projectId = activeProjectId) {
-    if (chatDisabled) return;
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
@@ -382,7 +378,6 @@ export function AppSidebar() {
   }
 
   function openProject(projectId: string) {
-    if (chatDisabled) return;
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -892,7 +887,6 @@ export function AppSidebar() {
             to="/chat"
             onClick={(event) => {
               event.preventDefault();
-              if (chatDisabled) return;
               openNewChat(null);
             }}
             className="flex items-center gap-[6px] select-none"
@@ -971,7 +965,6 @@ export function AppSidebar() {
                 !search.compare &&
                 !search.project
               }
-              disabled={chatDisabled}
               onClick={() => openNewChat(null)}
             />
             <NavItem
@@ -979,8 +972,6 @@ export function AppSidebar() {
               label={t("shell.navigation.search")}
               active={false}
               onClick={() => {
-                // Search is read-only and never runs inference, so it stays
-                // available while training (unlike New chat, gated on chatDisabled).
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
               }}

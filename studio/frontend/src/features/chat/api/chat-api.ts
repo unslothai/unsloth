@@ -96,6 +96,11 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      // Send the intended load settings so validate's during-training VRAM
+      // check matches the follow-up /load and doesn't unload the resident
+      // chat model for a load that /load would then reject.
+      max_seq_length: payload.max_seq_length,
+      load_in_4bit: payload.load_in_4bit,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
