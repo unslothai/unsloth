@@ -367,18 +367,21 @@ def test_start_update_lemonade_marker_targets_fork(monkeypatch, tmp_path):
 
 def test_status_datacenter_lemonade_marker_stays_on_lemonade(monkeypatch, tmp_path):
     # A data-center install (gfx908/gfx90a) recorded the lemonade repo; the fork
-    # has no such bundle, so its update must keep checking lemonade.
+    # has no such bundle, so its update must keep checking lemonade. The marker's
+    # tag is the upstream source build; release_tag is lemonade's own counter.
     binary = _write_install(
         tmp_path,
-        "b1292",
+        "b9637",
         repo = "lemonade-sdk/llamacpp-rocm",
         asset = "llama-b1292-ubuntu-rocm-gfx908-x64.zip",
+        release_tag = "b1292",
         source = "lemonade",
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b1300")
     st = upd.get_update_status(force_refresh = True)
     assert st["published_repo"] == "lemonade-sdk/llamacpp-rocm"
+    assert st["installed_tag"] == "b1292"  # lemonade series, not the upstream tag
     assert st["latest_tag"] == "b1300"
     assert st["update_available"] is True
 
@@ -387,9 +390,10 @@ def test_start_update_datacenter_marker_targets_lemonade(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(
         install_dir,
-        "b1292",
+        "b9637",
         repo = "lemonade-sdk/llamacpp-rocm",
         asset = "llama-b1292-ubuntu-rocm-gfx908-x64.zip",
+        release_tag = "b1292",
         source = "lemonade",
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)

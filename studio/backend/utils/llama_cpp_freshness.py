@@ -277,8 +277,13 @@ def check_prebuilt_freshness(
         return out
     out["has_marker"] = True
     # Display prefers the normalized base ("tag"); comparison below prefers the
-    # full "release_tag" -- deliberately opposite fallbacks.
-    out["installed_tag"] = marker.get("tag") or marker.get("release_tag")
+    # full "release_tag" -- deliberately opposite fallbacks. A lemonade install's
+    # "tag" is the upstream build it was made from, but it tracks lemonade's own
+    # release counter, so show release_tag to keep installed/latest one series.
+    if (marker.get("source") or "").lower() == "lemonade":
+        out["installed_tag"] = marker.get("release_tag") or marker.get("tag")
+    else:
+        out["installed_tag"] = marker.get("tag") or marker.get("release_tag")
     out["installed_at_utc"] = marker.get("installed_at_utc")
     # Lemonade installs compare against (and later re-install from) the fork.
     out["published_repo"] = effective_published_repo(marker)

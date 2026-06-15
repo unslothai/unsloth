@@ -346,12 +346,19 @@ def _lemonade_release(tag = "b1300"):
     }
 
 
+def _fetch_router(url):
+    # Lemonade lookup vs the upstream-latest lookup the plan does for source.
+    if "lemonade-sdk" in url:
+        return _lemonade_release()
+    return {"tag_name": "b9637"}  # ggml-org upstream latest (for source hydration)
+
+
 class TestDataCenterLemonadeRouting:
     """gfx908/gfx90a (MI100/MI200) are not in the fork's per-gfx bundles, so they
     are served from lemonade at install and update time. Consumer arches and
     NVIDIA hosts must not be routed here."""
 
-    @patch.object(prebuilt_mod, "fetch_json", return_value = _lemonade_release())
+    @patch.object(prebuilt_mod, "fetch_json", side_effect = _fetch_router)
     def test_datacenter_linux_routes_to_lemonade(self, _mock):
         host = rocm_host(rocm_gfx_target = "gfx908")
         _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
@@ -361,10 +368,13 @@ class TestDataCenterLemonadeRouting:
         assert choice.source_label == "lemonade"
         assert choice.repo == prebuilt_mod.LEMONADE_ROCM_REPO
         assert choice.install_kind == "linux-rocm" and "gfx908" in choice.name
-        # Marker repo (published_repo) is lemonade, so updates re-check lemonade.
+        # published_repo is lemonade (updates re-check lemonade); release_tag is
+        # lemonade's counter; llama_tag is a real upstream tag for source hydration.
         assert plans[0].approved_checksums.repo == prebuilt_mod.LEMONADE_ROCM_REPO
+        assert plans[0].release_tag == "b1300"
+        assert plans[0].llama_tag == "b9637"
 
-    @patch.object(prebuilt_mod, "fetch_json", return_value = _lemonade_release())
+    @patch.object(prebuilt_mod, "fetch_json", side_effect = _fetch_router)
     def test_update_via_lemonade_repo_routes_to_lemonade(self, _mock):
         # The update path re-invokes with --published-repo lemonade + --rocm-gfx.
         host = rocm_host(rocm_gfx_target = "gfx90a")

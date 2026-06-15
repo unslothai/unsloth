@@ -1655,8 +1655,10 @@ def resolve_lemonade_rocm_choice(
 def _lemonade_release_plans(
     llama_tag: str, host: HostInfo
 ) -> tuple[str, list[InstallReleasePlan]]:
-    """Single-attempt plan for a data-center AMD GPU, sourced from lemonade. The
-    marker records the lemonade repo/tag so updates re-check and re-install it."""
+    """Single-attempt plan for a data-center AMD GPU, sourced from lemonade.
+    release_tag is lemonade's own counter so updates compare against lemonade;
+    llama_tag is a real upstream tag because the source tree is hydrated from
+    ggml-org by it (lemonade's counter is not a ggml-org ref)."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
     os_prefix, install_kind = (
         ("windows", "windows-hip") if host.is_windows else ("ubuntu", "linux-rocm")
@@ -1664,13 +1666,17 @@ def _lemonade_release_plans(
     choice = resolve_lemonade_rocm_choice(host, os_prefix, install_kind, llama_tag = requested_tag)
     if choice is None:
         raise PrebuiltFallback("no lemonade ROCm prebuilt for this data-center GPU")
+    try:
+        upstream_tag = latest_upstream_release_tag()
+    except Exception as exc:
+        raise PrebuiltFallback(f"could not resolve upstream source tag for lemonade install: {exc}")
     plan = InstallReleasePlan(
         requested_tag = requested_tag,
-        llama_tag = choice.tag,
+        llama_tag = upstream_tag,
         release_tag = choice.tag,
         attempts = [choice],
         approved_checksums = synthetic_checksums_for_release(
-            LEMONADE_ROCM_REPO, choice.tag, choice.tag
+            LEMONADE_ROCM_REPO, choice.tag, upstream_tag
         ),
     )
     return requested_tag, [plan]
