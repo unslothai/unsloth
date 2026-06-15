@@ -598,6 +598,38 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             p.write_bytes(b"not a gguf")
             self.assertEqual(self.route._estimate_gguf_kv_gb(str(p), 4096), 0.0)
 
+    def test_kv_sizes_at_larger_of_max_seq_len_and_ctx_override(self):
+        # KV must be sized at the context the launcher honors: the larger of
+        # max_seq_length and a user `--ctx-size`, else native, never under-sized.
+        seen = {}
+
+        class _FakeBackend:
+            _context_length = 2048
+
+            def _read_gguf_metadata(self, path):
+                pass
+
+            def _can_estimate_kv(self):
+                return True
+
+            def _estimate_kv_cache_bytes(self, ctx):
+                seen["ctx"] = ctx
+                return ctx * (1024**2)  # 1 MiB per ctx unit -> GB = ctx / 1024
+
+        with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
+            r = self.route
+            # --ctx-size override above max_seq_length -> override wins
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0)
+            self.assertEqual(seen["ctx"], 131072)
+            # override below max_seq_length -> larger (max_seq_length) wins
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
+            self.assertEqual(seen["ctx"], 4096)
+            # no override, no max_seq_length -> native context fallback
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 0, None), 2.0)
+            self.assertEqual(seen["ctx"], 2048)
+            # malformed extras are ignored (fall back to max_seq_length)
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
+
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
 

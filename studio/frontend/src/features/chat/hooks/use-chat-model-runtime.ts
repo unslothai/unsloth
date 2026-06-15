@@ -473,11 +473,28 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
+            // Validate with the same effective context /load will use: a GGUF
+            // native (or custom) context can exceed maxSeqLength, and the load
+            // VRAM guard rejects an oversized context. Sizing validate with the
+            // raw maxSeqLength could pass, unload the current model, then have
+            // /load refuse it. Read pre-unload state; the load path recomputes
+            // its own value, so this leaves loading untouched.
+            const preUnloadState = useChatRuntimeStore.getState();
+            const validateMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              customContextLength: preUnloadState.customContextLength,
+              ggufContextLength: preUnloadState.ggufContextLength,
+              currentCheckpoint,
+              activeGgufVariant: preUnloadState.activeGgufVariant,
+              maxSeqLength,
+              presetSource: preUnloadState.activePresetSource,
+            });
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
-              max_seq_length: maxSeqLength,
+              max_seq_length: validateMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,

@@ -1539,19 +1539,28 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
-def _estimate_gguf_kv_gb(gguf_path: str, max_seq_length: int) -> float:
+def _estimate_gguf_kv_gb(
+    gguf_path: str, max_seq_length: int, llama_extra_args: Optional[list[str]] = None
+) -> float:
     """KV-cache VRAM (GB) llama.cpp allocates for this GGUF at the requested
-    context, via the loader's own estimator. 0 if the metadata is unreadable."""
+    context, via the loader's own estimator. 0 if the metadata is unreadable.
+
+    Sizes at the larger of max_seq_length and any user `--ctx-size`/`-c` in
+    llama_extra_args (the launcher honors that override), and keeps the default
+    f16 cache (ignoring a quantized `--cache-type-*`), so the estimate is never
+    smaller than what the server actually allocates."""
     try:
+        from core.inference.llama_server_args import parse_ctx_override
+
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
             return 0.0
-        ctx = (
-            max_seq_length
-            if max_seq_length and max_seq_length > 0
-            else (probe._context_length or 0)
-        )
+        try:
+            ctx_override = parse_ctx_override(llama_extra_args) or 0
+        except Exception:
+            ctx_override = 0  # malformed extras are rejected upstream; fall back
+        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         return probe._estimate_kv_cache_bytes(ctx) / (1024**3) if ctx > 0 else 0.0
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -1562,6 +1571,7 @@ def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
     max_seq_length: int = 0,
+    llama_extra_args: Optional[list[str]] = None,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB) from its on-disk quantized weights (the dominant
     term; the guard adds margin + floor). Local: the main GGUF incl. split shards
@@ -1579,7 +1589,9 @@ def _estimate_gguf_required_gb(
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(main, max_seq_length)
+            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+                main, max_seq_length, llama_extra_args
+            )
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
@@ -1610,6 +1622,7 @@ def _guard_chat_load_against_training(
     load_in_4bit: bool,
     max_seq_length: int,
     requested_gpu_ids: Optional[List[int]],
+    llama_extra_args: Optional[list[str]] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
 
@@ -1631,7 +1644,12 @@ def _guard_chat_load_against_training(
 
     is_gguf = bool(getattr(config, "is_gguf", False))
     required_override_gb = (
-        _estimate_gguf_required_gb(config, hf_token = hf_token, max_seq_length = max_seq_length)
+        _estimate_gguf_required_gb(
+            config,
+            hf_token = hf_token,
+            max_seq_length = max_seq_length,
+            llama_extra_args = llama_extra_args,
+        )
         if is_gguf
         else None
     )
@@ -1882,6 +1900,7 @@ async def load_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            llama_extra_args = extra_llama_args,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
