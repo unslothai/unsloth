@@ -183,7 +183,9 @@ def run(args):
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
             if args.push_model:
-                model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
+                model.push_to_hub_merged(
+                    args.hub_path, tokenizer, args.save_method, token = args.hub_token
+                )
     else:
         print("Warning: The model is not saved!")
 
