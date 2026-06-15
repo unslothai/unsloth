@@ -84,10 +84,12 @@ def effective_published_repo(marker: Optional[dict]) -> Optional[str]:
     ROCm bundles; route its updates to the fork. Data-center installs (gfx908/
     gfx90a) recorded the lemonade repo and keep updating from it (the fork has no
     such bundle). Non-lemonade markers keep their published_repo."""
-    if not marker:
+    if not isinstance(marker, dict):
         return None
     repo = marker.get("published_repo")
-    if (marker.get("source") or "").lower() == "lemonade" and repo != LEMONADE_ROCM_REPO:
+    source = marker.get("source")
+    source = source.lower() if isinstance(source, str) else ""
+    if source == "lemonade" and repo != LEMONADE_ROCM_REPO:
         return DEFAULT_PUBLISHED_REPO
     return repo
 

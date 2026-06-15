@@ -333,23 +333,22 @@ class TestResolveUpstreamAssetChoice:
 # TEST: install_llama_prebuilt.py -- data-center ROCm (lemonade) routing
 
 
-def _lemonade_release(tag = "b1300"):
+def _lemonade_release(tag = "b1300", published_at = "2026-01-01T00:00:00Z", gfxs = None):
     base = f"https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/{tag}"
-    names = [
-        f"llama-{tag}-ubuntu-rocm-gfx908-x64.zip",
-        f"llama-{tag}-ubuntu-rocm-gfx90a-x64.zip",
-        f"llama-{tag}-windows-rocm-gfx908-x64.zip",
-    ]
+    arches = gfxs if gfxs is not None else ["gfx908", "gfx90a"]
+    names = [f"llama-{tag}-ubuntu-rocm-{g}-x64.zip" for g in arches]
+    names += [f"llama-{tag}-windows-rocm-{g}-x64.zip" for g in arches]
     return {
         "tag_name": tag,
+        "published_at": published_at,
         "assets": [{"name": n, "browser_download_url": f"{base}/{n}"} for n in names],
     }
 
 
 def _fetch_router(url):
-    # Lemonade lookup vs the upstream-latest lookup the plan does for source.
+    # Lemonade list lookup ('latest') vs upstream-latest lookup for source.
     if "lemonade-sdk" in url:
-        return _lemonade_release()
+        return [_lemonade_release()] if "?per_page" in url else _lemonade_release()
     return {"tag_name": "b9637"}  # ggml-org upstream latest (for source hydration)
 
 
@@ -410,11 +409,51 @@ class TestDataCenterLemonadeRouting:
 
     @patch.object(prebuilt_mod, "fetch_json")
     def test_untrusted_asset_url_skipped(self, mock_fetch):
-        rel = _lemonade_release()
+        rel = _lemonade_release(gfxs = ["gfx908"])
         rel["assets"][0]["browser_download_url"] = "https://evil.example.com/x.zip"
-        mock_fetch.return_value = rel
+        mock_fetch.return_value = [rel]
         host = rocm_host(rocm_gfx_target = "gfx908")
         assert prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm") is None
+
+    @patch.object(prebuilt_mod, "fetch_json")
+    def test_walk_back_past_partial_newest(self, mock_fetch):
+        # Newest release has no gfx908 asset yet -> fall back to the older one
+        # that does, mirroring the fork resolver's release walk-back.
+        newest = _lemonade_release(tag = "b1305", published_at = "2026-02-01T00:00:00Z", gfxs = [])
+        older = _lemonade_release(tag = "b1300", published_at = "2026-01-15T00:00:00Z")
+        mock_fetch.return_value = [newest, older]
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        choice = prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm")
+        assert choice is not None and choice.tag == "b1300"
+
+    @patch.object(prebuilt_mod, "fetch_json")
+    def test_newest_by_publish_time_wins(self, mock_fetch):
+        # List order is not release order; pick the newest published_at.
+        mock_fetch.return_value = [
+            _lemonade_release(tag = "b1290", published_at = "2026-01-01T00:00:00Z"),
+            _lemonade_release(tag = "b1301", published_at = "2026-03-01T00:00:00Z"),
+        ]
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        choice = prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm")
+        assert choice is not None and choice.tag == "b1301"
+
+    @patch.object(prebuilt_mod, "fetch_json")
+    def test_pinned_release_tag_selected(self, mock_fetch):
+        # A pinned lemonade release_tag resolves that exact release (tags endpoint),
+        # while source still hydrates from a real upstream tag.
+        def _router(url):
+            if "lemonade-sdk" in url and "/tags/b1295" in url:
+                return _lemonade_release(tag = "b1295")
+            if "lemonade-sdk" in url:
+                return [_lemonade_release(tag = "b1301")]  # would win if pin ignored
+            return {"tag_name": "b9637"}
+        mock_fetch.side_effect = _router
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.LEMONADE_ROCM_REPO, "b1295"
+        )
+        assert plans[0].release_tag == "b1295"
+        assert plans[0].llama_tag == "b9637"
 
 
 # TEST: install_llama_prebuilt.py -- runtime_patterns_for_choice

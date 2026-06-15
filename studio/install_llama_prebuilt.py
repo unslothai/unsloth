@@ -1599,16 +1599,34 @@ def _lemonade_datacenter_gfx(gfx_target: str | None) -> str | None:
     return gfx if gfx in _LEMONADE_DATACENTER_ARCHES else None
 
 
-def _lemonade_release_api_for(llama_tag: str) -> str:
-    """Lemonade release API URL. Lemonade uses its own tag series, so a pinned
-    fork/ggml-org tag will 404 here; only 'latest' or a lemonade tag resolve."""
+def _lemonade_releases_newest_first(llama_tag: str) -> list[dict[str, Any]]:
+    """Lemonade releases to try, newest-published first. A pinned tag yields just
+    that release; 'latest' scans the recent list ordered by publish time -- the
+    same ordering the update banner uses, so detection and install agree (the
+    /releases/latest pointer sorts by commit date and can lag). Lemonade uses its
+    own tag series, so a pinned fork/ggml-org tag simply 404s to an empty list."""
     tag = (llama_tag or "").strip()
-    if not tag or tag.lower() == "latest":
-        return f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
-    return (
-        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/"
-        f"{urllib.parse.quote(tag, safe = '')}"
-    )
+    api = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases"
+    try:
+        if tag and tag.lower() != "latest":
+            return [fetch_json(f"{api}/tags/{urllib.parse.quote(tag, safe = '')}")]
+        payload = fetch_json(f"{api}?per_page=30")
+    except Exception as exc:
+        log(f"Could not fetch {LEMONADE_ROCM_REPO} releases ({exc}); skipping lemonade prebuilt")
+        return []
+    if not isinstance(payload, list):
+        return []
+    rels = [
+        r
+        for r in payload
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    rels.sort(key = lambda r: r.get("published_at") or "", reverse = True)
+    return rels
 
 
 def resolve_lemonade_rocm_choice(
@@ -1618,53 +1636,56 @@ def resolve_lemonade_rocm_choice(
     llama_tag: str = "latest",
 ) -> AssetChoice | None:
     """Lemonade ROCm bundle for a data-center AMD GPU (gfx908/gfx90a) the fork
-    does not ship. None for any other arch or on a fetch/asset/host miss.
-    Lemonade assets are not in the approved-hash manifest, so integrity is
-    functional validation only; UNSLOTH_DISABLE_LEMONADE_ROCM opts out."""
+    does not ship. Walks recent lemonade releases newest-first and takes the
+    first carrying this GPU's asset, so a partial newest nightly falls back to an
+    older complete one (mirrors the fork resolver). None for any other arch, an
+    opt-out, or when no scanned release has the asset. Lemonade assets are not in
+    the approved-hash manifest, so integrity is functional validation only."""
     gfx = _lemonade_datacenter_gfx(host.rocm_gfx_target)
     if gfx is None:
         return None
     if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in ("1", "true", "yes"):
         log("UNSLOTH_DISABLE_LEMONADE_ROCM is set; skipping lemonade-sdk prebuilt")
         return None
-    try:
-        release = fetch_json(_lemonade_release_api_for(llama_tag))
-    except Exception as exc:
-        log(f"Could not fetch {LEMONADE_ROCM_REPO} release ({exc}); skipping lemonade prebuilt")
-        return None
-    release_tag = release.get("tag_name") if isinstance(release, dict) else None
-    if not isinstance(release_tag, str) or not release_tag:
-        return None
-    asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx}-x64.zip"
-    asset_url = release_asset_map(release).get(asset_name)
-    # browser_download_url for a release asset is always github.com/<repo>/download.
-    trusted = (asset_url or "").startswith(
-        f"https://github.com/{LEMONADE_ROCM_REPO}/releases/download/"
-    )
-    if not asset_url or not trusted:
-        log(f"{LEMONADE_ROCM_REPO}@{release_tag} missing or untrusted {asset_name!r}; skipping")
-        return None
-    return AssetChoice(
-        repo = LEMONADE_ROCM_REPO,
-        tag = release_tag,
-        name = asset_name,
-        url = asset_url,
-        source_label = "lemonade",
-        install_kind = install_kind,
-        selection_log = [f"rocm_selection: data-center GPU {host.rocm_gfx_target} -> {asset_name}"],
-    )
+    for release in _lemonade_releases_newest_first(llama_tag):
+        release_tag = release.get("tag_name") if isinstance(release, dict) else None
+        if not isinstance(release_tag, str) or not release_tag:
+            continue
+        asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx}-x64.zip"
+        asset_url = release_asset_map(release).get(asset_name)
+        # browser_download_url for a release asset is always github.com/<repo>/download.
+        if asset_url and asset_url.startswith(
+            f"https://github.com/{LEMONADE_ROCM_REPO}/releases/download/"
+        ):
+            return AssetChoice(
+                repo = LEMONADE_ROCM_REPO,
+                tag = release_tag,
+                name = asset_name,
+                url = asset_url,
+                source_label = "lemonade",
+                install_kind = install_kind,
+                selection_log = [
+                    f"rocm_selection: data-center GPU {host.rocm_gfx_target} -> {asset_name}"
+                ],
+            )
+    log(f"no recent {LEMONADE_ROCM_REPO} release carries a {gfx} asset; skipping lemonade prebuilt")
+    return None
 
 
-def _lemonade_release_plans(llama_tag: str, host: HostInfo) -> tuple[str, list[InstallReleasePlan]]:
+def _lemonade_release_plans(
+    llama_tag: str, host: HostInfo, published_release_tag: str = ""
+) -> tuple[str, list[InstallReleasePlan]]:
     """Single-attempt plan for a data-center AMD GPU, sourced from lemonade.
     release_tag is lemonade's own counter so updates compare against lemonade;
     llama_tag is a real upstream tag because the source tree is hydrated from
-    ggml-org by it (lemonade's counter is not a ggml-org ref)."""
+    ggml-org by it (lemonade's counter is not a ggml-org ref). A pinned
+    published_release_tag selects a specific lemonade release for rollback."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
+    lemonade_tag = published_release_tag.strip() or requested_tag
     os_prefix, install_kind = (
         ("windows", "windows-hip") if host.is_windows else ("ubuntu", "linux-rocm")
     )
-    choice = resolve_lemonade_rocm_choice(host, os_prefix, install_kind, llama_tag = requested_tag)
+    choice = resolve_lemonade_rocm_choice(host, os_prefix, install_kind, llama_tag = lemonade_tag)
     if choice is None:
         raise PrebuiltFallback("no lemonade ROCm prebuilt for this data-center GPU")
     try:
@@ -1700,7 +1721,7 @@ def resolve_simple_install_release_plans(
         and not host.has_usable_nvidia
         and (repo == LEMONADE_ROCM_REPO or _lemonade_datacenter_gfx(host.rocm_gfx_target))
     ):
-        return _lemonade_release_plans(llama_tag, host)
+        return _lemonade_release_plans(llama_tag, host, published_release_tag)
     # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
     # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
     # manifest and is selected by asset filename in the loop below.
