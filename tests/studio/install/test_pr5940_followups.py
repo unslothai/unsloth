@@ -360,12 +360,12 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
         # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors
         # _path_inside_venv()), else amd-smi can still pop the DiskPart UAC.
-        assert "Test-HipinfoIsVenvInternal" in text, (
-            f"{ps.name} missing venv-internal hipinfo exclusion helper"
-        )
-        assert "Test-HipinfoIsVenvInternal $hipinfoExe.Source" in text, (
-            f"{ps.name} must run the venv exclusion on the Get-Command hipinfo result"
-        )
+        assert (
+            "Test-HipinfoIsVenvInternal" in text
+        ), f"{ps.name} missing venv-internal hipinfo exclusion helper"
+        assert (
+            "Test-HipinfoIsVenvInternal $hipinfoExe.Source" in text
+        ), f"{ps.name} must run the venv exclusion on the Get-Command hipinfo result"
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
