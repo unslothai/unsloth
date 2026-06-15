@@ -7796,6 +7796,47 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _merge_user_content(a: Any, b: Any) -> Any:
+    """Join two user ``content`` values: strings with a blank line, else as concatenated parts."""
+    if isinstance(a, str) and isinstance(b, str):
+        if not a:
+            return b
+        if not b:
+            return a
+        return a + "\n\n" + b
+
+    def _parts(c: Any) -> list:
+        if c is None:
+            return []
+        if isinstance(c, str):
+            return [{"type": "text", "text": c}] if c else []
+        if isinstance(c, list):
+            return list(c)
+        return [{"type": "text", "text": str(c)}]
+
+    return _parts(a) + _parts(b)
+
+
+def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
+    """Merge adjacent user turns so the GGUF history stays alternating.
+
+    Dropping an empty assistant turn (0-token reply or Stop-button sentinel) can
+    leave two user turns in a row, which makes strict templates (Gemma 3, ...)
+    raise "Conversation roles must alternate" -> llama-server 400. Only user turns
+    merge (assistant/tool turns may carry tool_calls/tool_call_id); multimodal
+    parts are preserved; no-op for already-alternating histories.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "user" and out and out[-1].get("role") == "user":
+            prev = dict(out[-1])
+            prev["content"] = _merge_user_content(prev.get("content"), m.get("content"))
+            out[-1] = prev
+            continue
+        out.append(m)
+    return out
+
+
 _LOCAL_SERVER_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
@@ -7960,8 +8001,14 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
     per-turn ``image_url`` parts so multi-image chat history keeps each image
     attached to its original turn.
     """
-    messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+    # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
+    # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
+    messages = _coalesce_consecutive_user_turns(
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(
+                [m.model_dump(exclude_none = True) for m in payload.messages]
+            )
+        )
     )
     has_message_image = any(
         isinstance(msg.get("content"), list)
