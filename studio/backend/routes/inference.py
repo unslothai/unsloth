@@ -1501,6 +1501,8 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     try:
         with open(adapter_cfg_path) as f:
             adapter_cfg = json.load(f)
+        if not isinstance(adapter_cfg, dict):  # malformed -> keep requested
+            return load_in_4bit
     except Exception as e:
         logger.warning(f"Could not read adapter_config.json: {e}")
         return load_in_4bit
@@ -1537,13 +1539,29 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
+def _estimate_gguf_kv_gb(gguf_path: str, max_seq_length: int) -> float:
+    """KV-cache VRAM (GB) llama.cpp allocates for this GGUF at the requested
+    context, via the loader's own estimator. 0 if the metadata is unreadable."""
+    try:
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(gguf_path)
+        if not probe._can_estimate_kv():
+            return 0.0
+        ctx = max_seq_length if max_seq_length and max_seq_length > 0 else (probe._context_length or 0)
+        return probe._estimate_kv_cache_bytes(ctx) / (1024**3) if ctx > 0 else 0.0
+    except Exception as e:
+        logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
+        return 0.0
+
+
 def _estimate_gguf_required_gb(
-    config: ModelConfig, hf_token: Optional[str] = None
+    config: ModelConfig, hf_token: Optional[str] = None, max_seq_length: int = 0
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB) from its on-disk quantized weights (the dominant
     term; the guard adds margin + floor). Local: the main GGUF incl. split shards
-    (reusing the loader's own sizer) + mmproj/MTP companions. Remote: the selected
-    variant + vision/MTP companions the loader auto-downloads. None when nothing
+    (reusing the loader's own sizer) + mmproj/MTP companions + the KV cache at the
+    requested context. Remote: the selected variant + vision/MTP companions the
+    loader auto-downloads (KV cache can't be read pre-download). None when nothing
     resolves so the caller default-denies."""
     try:
         total_bytes = 0
@@ -1555,7 +1573,7 @@ def _estimate_gguf_required_gb(
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return total_bytes / (1024**3)
+            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(main, max_seq_length)
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
@@ -1607,7 +1625,9 @@ def _guard_chat_load_against_training(
 
     is_gguf = bool(getattr(config, "is_gguf", False))
     required_override_gb = (
-        _estimate_gguf_required_gb(config, hf_token = hf_token) if is_gguf else None
+        _estimate_gguf_required_gb(config, hf_token = hf_token, max_seq_length = max_seq_length)
+        if is_gguf
+        else None
     )
 
     ok, info = can_load_chat_during_training(
@@ -1847,7 +1867,9 @@ async def load_model(
         # before any "unload the other backend" step below frees the resident
         # chat model for a load we're about to reject. Re-loading the already
         # resident model short-circuits earlier, so it never reaches here.
-        _guard_chat_load_against_training(
+        # Off the event loop: the guard does sync nvidia-smi / HF metadata work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
             hf_token = request.hf_token,
@@ -2254,7 +2276,9 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        _guard_chat_load_against_training(
+        # Off the event loop: the guard does sync nvidia-smi / HF metadata work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
             hf_token = request.hf_token,

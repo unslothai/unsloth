@@ -405,6 +405,13 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "meta/Llama-3-8B")
             self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
 
+    def test_malformed_adapter_config_returns_request(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "adapter_config.json").write_text("[1, 2, 3]")  # not a dict
+            cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
+
 
 # ── validate_model integration (early refusal, real settings) ────────────────
 
@@ -567,6 +574,28 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             return_value = ([SimpleNamespace(quant = "Q4_K_M", size_bytes = 1)], False),
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
+
+    def test_local_adds_kv_cache(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = SimpleNamespace(
+                gguf_file = str(p), gguf_mmproj_file = None, gguf_mtp_file = None,
+                gguf_hf_repo = None, gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
+                gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
+        self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
+
+    def test_kv_helper_graceful_on_non_gguf(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "not-a.gguf"
+            p.write_bytes(b"not a gguf")
+            self.assertEqual(self.route._estimate_gguf_kv_gb(str(p), 4096), 0.0)
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
