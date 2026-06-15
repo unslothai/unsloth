@@ -80,7 +80,14 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
+  model_format?:
+    | "gguf"
+    | "safetensors"
+    | "adapter"
+    | "checkpoint"
+    | "unknown"
+    | null;
   model_id?: string | null;
   updated_at?: number | null;
 }
@@ -89,6 +96,7 @@ interface LocalModelListResponse {
   models_dir: string;
   hf_cache_dir?: string | null;
   lmstudio_dirs: string[];
+  ollama_dirs?: string[];
   models: LocalModelInfo[];
 }
 

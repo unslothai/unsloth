@@ -94,6 +94,19 @@ const DARK_COMBOBOX_CONTENT =
 
 let _scanFoldersCache: ScanFolderInfo[] = [];
 
+function isTrainingUnsupportedLocalModel(model: LocalModelInfo): boolean {
+  const id = model.id.toLowerCase();
+  const path = model.path.toLowerCase();
+  return (
+    model.model_format === "gguf" ||
+    model.source === "lmstudio" ||
+    model.source === "ollama" ||
+    path.endsWith(".gguf") ||
+    id.endsWith(".gguf") ||
+    id.includes("-gguf")
+  );
+}
+
 export function ModelSection() {
   const t = useT();
   const gpu = useGpuInfo();
@@ -294,13 +307,11 @@ export function ModelSection() {
     return applyPriorityOrdering(ids);
   }, [hfResults, selectedModel]);
 
-  // Filter out GGUF models — they can't be used for training
+  // Filter out GGUF/chat-only models that cannot be used for training.
   const trainableLocalModels = useMemo(
     () =>
       localModels.filter((m) => {
-        if (m.source === "lmstudio") return false;
-        if (m.path.endsWith(".gguf")) return false;
-        if (m.id.toLowerCase().includes("-gguf")) return false;
+        if (isTrainingUnsupportedLocalModel(m)) return false;
         return true;
       }),
     [localModels],
@@ -460,7 +471,10 @@ export function ModelSection() {
                   ) : (
                     <ComboboxEmpty>{t("studio.model.noLocalModelsFound")}</ComboboxEmpty>
                   )}
-                  <div ref={localModelManagementRef}>
+                  <div
+                    ref={localModelManagementRef}
+                    className="max-h-32 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                  >
                     <div className="flex items-center gap-1 px-2.5 py-1.5">
                       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                         <HugeiconsIcon icon={Folder02Icon} className="size-3" />
