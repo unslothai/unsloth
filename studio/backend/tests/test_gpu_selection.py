@@ -724,7 +724,7 @@ class TestRouteErrors(unittest.TestCase):
             max_context_length = 4096,
             native_context_length = 4096,
             supports_reasoning = False,
-            reasoning_style = None,
+            reasoning_style = "enable_thinking",
             reasoning_always_on = False,
             supports_preserve_thinking = False,
             supports_tools = False,
@@ -733,6 +733,8 @@ class TestRouteErrors(unittest.TestCase):
             requested_spec_mode = None,
             spec_draft_n_max = None,
             tensor_parallel = False,
+            extra_args = None,
+            extra_args_source = None,
         )
 
         with (

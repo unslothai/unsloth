@@ -1542,6 +1542,22 @@ class LlamaCppBackend:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
     @staticmethod
+    def _launch_gpu_indices(
+        gpu_ids: list[int] | None,
+        gpu_indices: list[int] | None,
+        *,
+        tensor_parallel: bool,
+    ) -> list[int] | None:
+        """Return physical GPU IDs in the order the child process should see them."""
+        if tensor_parallel and gpu_indices is not None:
+            return list(gpu_indices)
+        if gpu_ids is not None:
+            return list(gpu_ids)
+        if gpu_indices is not None:
+            return list(gpu_indices)
+        return None
+
+    @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
@@ -4165,7 +4181,11 @@ class LlamaCppBackend:
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
-                launch_gpu_indices = gpu_ids if gpu_ids is not None else gpu_indices
+                launch_gpu_indices = self._launch_gpu_indices(
+                    gpu_ids,
+                    gpu_indices,
+                    tensor_parallel = tensor_parallel,
+                )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.

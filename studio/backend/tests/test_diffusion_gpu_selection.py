@@ -77,6 +77,20 @@ def test_child_gpu_pin_clears_rocr_when_hip_is_forced():
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+def test_tensor_parallel_launch_uses_planned_gpu_order_for_tensor_split():
+    assert LlamaCppBackend._launch_gpu_indices(
+        gpu_ids = [1, 0],
+        gpu_indices = [0, 1],
+        tensor_parallel = True,
+    ) == [0, 1]
+
+    assert LlamaCppBackend._launch_gpu_indices(
+        gpu_ids = [1, 0],
+        gpu_indices = [0, 1],
+        tensor_parallel = False,
+    ) == [1, 0]
+
+
 def test_already_in_target_state_mismatches_changed_gpu_ids():
     backend = _make_backend()
     backend._process = object()
