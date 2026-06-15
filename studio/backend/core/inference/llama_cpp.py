@@ -4223,7 +4223,9 @@ class LlamaCppBackend:
                         if not _mtp_will_engage:
                             _tp_mtp_floor = 0
                         elif mtp_overhead_fn is not None:
-                            _tp_mtp_floor = _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048)
+                            _tp_mtp_floor = _mtp_bytes(
+                                min(2048, effective_ctx) if effective_ctx > 0 else 2048
+                            )
                         else:
                             _tp_mtp_floor = 2 * 1024**3  # flat reserve when dims unavailable
                         _tp_required_mib = (model_size + _tp_mtp_floor) / (1024 * 1024)
