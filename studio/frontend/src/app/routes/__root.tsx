@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
@@ -14,6 +15,7 @@ import {
   createRootRoute,
   redirect,
   useMatches,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -40,6 +42,8 @@ function RouteFallback() {
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
+  "/projects",
+  "/hub",
   "/login",
   "/signup",
   "/change-password",
@@ -53,8 +57,8 @@ function isChatOnlyAllowed(pathname: string): boolean {
 
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
-    // Ensure platform info is fetched before checking chat-only guard.
-    // fetchDeviceType caches after first call, so subsequent navigations are instant.
+    // Fetch platform info before the chat-only guard. fetchDeviceType caches,
+    // so later navigations are instant.
     await fetchDeviceType();
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
@@ -75,6 +79,7 @@ function RootLayout() {
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const isChatRoute = pathname.startsWith("/chat");
   const { pinned, setPinned, togglePinned } = useSidebarPin();
+  const navigate = useNavigate();
 
   useTrainingUnloadGuard();
 
@@ -104,11 +109,33 @@ function RootLayout() {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         useSettingsDialogStore.getState().openDialog();
+        return;
+      }
+      // Cmd/Ctrl+Shift+O opens a new chat.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
+        e.preventDefault();
+        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
+        const chatRuntime = useChatRuntimeStore.getState();
+        chatRuntime.setActiveThreadId(null);
+        chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        void navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+        });
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [navigate]);
+
+  useEffect(() => {
+    if (isChatRoute) return;
+    const chatRuntime = useChatRuntimeStore.getState();
+    chatRuntime.setActiveProjectId(null);
+    chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
+  }, [isChatRoute]);
 
   return (
     <AppProvider>
@@ -130,9 +157,14 @@ function RootLayout() {
           <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
             <div
-              className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
             >
-              <AnimatePresence initial={false} mode="wait">
+              {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
+                  switching from heavy pages (like Export with many checkpoints).
+                  "popLayout" allows the new route to mount immediately while the
+                  old one animates out, avoiding blocking on expensive exit renders.
+                  See issue #5850. */}
+              <AnimatePresence initial={false} mode="popLayout">
                 <motion.div
                   key={pathname}
                   initial={{ opacity: 0 }}

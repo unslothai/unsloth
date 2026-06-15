@@ -15,24 +15,35 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  setShowLlamaUpdateBanner,
+  useShowLlamaUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
+import {
+  loadHelperPrecacheSettings,
+  updateHelperPrecacheSettings,
+  type HelperPrecacheSettings,
+} from "../api/helper-precache";
+import {
+  DEFAULT_UPLOAD_LIMIT_MB,
+  loadUploadLimitSettings,
+  updateUploadLimitSettings,
+  type UploadLimitSettings,
+} from "../api/upload-limit";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
-//
-// NEVER include auth / session keys here — resetting them would log the user
-// out, which is not what users expect from a "reset preferences" button.
-//
-// Explicitly EXCLUDED:
-//   - "unsloth_auth_token"                 (auth: access token)
-//   - "unsloth_auth_refresh_token"         (auth: refresh token)
-//   - "unsloth_auth_must_change_password"  (auth: forced password change flag)
-//   - "unsloth_onboarding_done"            (session: would force re-onboarding)
+// NEVER include auth/session keys here — clearing them would log the user out
+// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
+// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
+// unsloth_onboarding_done.
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -49,6 +60,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
+  "unsloth_chat_preferences",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -62,12 +74,12 @@ const PREFS_KEYS: string[] = [
   "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
+  // Update notifications
+  "unsloth_show_llama_update_banner",
 ];
 
-// Set to true from resetAllPrefs so the unmount-commit effect skips writing
-// back the in-memory draft — otherwise the cleanup would re-persist the old
-// HF token into localStorage after it was just cleared, and the subsequent
-// reload would read the re-written value.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the
+// in-memory draft, else cleanup would re-persist the just-cleared HF token.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -102,11 +114,26 @@ export function GeneralTab() {
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
+  const showLlamaUpdates = useShowLlamaUpdateBanner();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [uploadLimit, setUploadLimit] = useState<UploadLimitSettings | null>(
+    null,
+  );
+  const [draftUploadLimit, setDraftUploadLimit] = useState(
+    String(DEFAULT_UPLOAD_LIMIT_MB),
+  );
+  const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
+  const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
+  const [helperPrecache, setHelperPrecache] =
+    useState<HelperPrecacheSettings | null>(null);
+  const [helperPrecacheError, setHelperPrecacheError] = useState<string | null>(
+    null,
+  );
+  const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -132,16 +159,102 @@ export function GeneralTab() {
     if (trimmed !== hfToken) setHfToken(trimmed);
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadUploadLimitSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setUploadLimit(settings);
+        setDraftUploadLimit(String(settings.maxUploadSizeMb));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setUploadLimitError(
+          error instanceof Error ? error.message : "Failed to load upload limit.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadHelperPrecacheSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setHelperPrecache(settings);
+        setHelperPrecacheError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHelperPrecacheError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.helperLlm.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveHelperPrecache = async (enabled: boolean) => {
+    setIsSavingHelperPrecache(true);
+    setHelperPrecacheError(null);
+    try {
+      const settings = await updateHelperPrecacheSettings(enabled);
+      setHelperPrecache(settings);
+    } catch (error) {
+      setHelperPrecacheError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.helperLlm.saveError"),
+      );
+    } finally {
+      setIsSavingHelperPrecache(false);
+    }
+  };
+
+  const saveUploadLimit = async () => {
+    const parsed = Number(draftUploadLimit);
+    if (!Number.isInteger(parsed)) {
+      setUploadLimitError("Enter a whole number of MB.");
+      return;
+    }
+    const min = uploadLimit?.minUploadSizeMb ?? 1;
+    const max = uploadLimit?.maxAllowedUploadSizeMb ?? 8192;
+    if (parsed < min || parsed > max) {
+      setUploadLimitError(`Enter a value from ${min} to ${max} MB.`);
+      return;
+    }
+    setIsSavingUploadLimit(true);
+    setUploadLimitError(null);
+    try {
+      const settings = await updateUploadLimitSettings(parsed);
+      setUploadLimit(settings);
+      setDraftUploadLimit(String(settings.maxUploadSizeMb));
+    } catch (error) {
+      setUploadLimitError(
+        error instanceof Error ? error.message : "Failed to save upload limit.",
+      );
+    } finally {
+      setIsSavingUploadLimit(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.general.description")}
         </p>
       </header>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -180,6 +293,96 @@ export function GeneralTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={helperPrecache?.enabled ?? false}
+              disabled={
+                !helperPrecache ||
+                isSavingHelperPrecache ||
+                helperPrecache.disabledByEnv
+              }
+              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+            />
+            {helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.uploads.maxUploadSize")}
+          description={t("settings.general.uploads.maxUploadSizeDescription", {
+            defaultSize: String(
+              uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
+            ),
+          })}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <div className="relative w-28">
+                <Input
+                  type="number"
+                  min={uploadLimit?.minUploadSizeMb ?? 1}
+                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                  step={1}
+                  value={draftUploadLimit}
+                  aria-label="Training dataset upload cap in MB"
+                  onChange={(event) => setDraftUploadLimit(event.target.value)}
+                  className="h-8 w-full pr-10"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                  MB
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isSavingUploadLimit}
+                onClick={() => void saveUploadLimit()}
+              >
+                {isSavingUploadLimit
+                  ? t("common.saving")
+                  : t("common.save")}
+              </Button>
+            </div>
+            {uploadLimitError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {uploadLimitError}
+              </span>
+            ) : null}
+          </div>
         </SettingsRow>
       </SettingsSection>
 
