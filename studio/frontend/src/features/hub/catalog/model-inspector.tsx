@@ -13,6 +13,7 @@ import {
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
@@ -30,7 +31,6 @@ import {
   PackageIcon,
   RamMemoryIcon,
   Share05Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -200,7 +200,7 @@ function StatusChip({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[7px] border bg-transparent px-1.5 text-[11px] font-medium leading-none",
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-[11px] font-medium leading-none",
         toneClass,
         className,
       )}
@@ -725,8 +725,6 @@ export const ModelInspector = memo(function ModelInspector({
           />
         )}
       </div>
-
-      <div aria-hidden="true" className="h-3 shrink-0" />
     </div>
   );
 });

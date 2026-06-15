@@ -5,10 +5,10 @@ import {
   Alert02Icon,
   CheckmarkCircle02Icon,
   InformationCircleIcon,
-  Loading03Icon,
   MultiplicationSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Spinner } from "@/components/ui/spinner";
 import { useTheme } from "next-themes";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
@@ -51,13 +51,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
             className="size-4"
           />
         ),
-        loading: (
-          <HugeiconsIcon
-            icon={Loading03Icon}
-            strokeWidth={2}
-            className="size-4 animate-spin"
-          />
-        ),
+        // App-wide arc spinner so loading toasts match the "Downloading model" toast.
+        loading: <Spinner className="size-4 text-muted-foreground" />,
       }}
       style={
         {

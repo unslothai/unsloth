@@ -59,6 +59,7 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
   supportsProviderPromptCaching,
@@ -176,7 +177,8 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
   return (
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
-    providerType === "vllm"
+    providerType === "vllm" ||
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }
 
@@ -212,6 +214,7 @@ export function ChatProvidersSettings({
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  const seededProviderTypeRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -229,7 +232,9 @@ export function ChatProvidersSettings({
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const [customProviderName, setCustomProviderName] = useState("Custom");
+  const [customProviderName, setCustomProviderName] = useState(
+    CUSTOM_PROVIDER_DISPLAY_NAME,
+  );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -317,6 +322,8 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
+    if (seededProviderTypeRef.current === providerType) return;
+    seededProviderTypeRef.current = providerType;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -363,7 +370,8 @@ export function ChatProvidersSettings({
         setProviderType((current) => {
           if (
             current &&
-            registryRows.some((entry) => entry.provider_type === current)
+            (isCustomProviderType(current) ||
+              registryRows.some((entry) => entry.provider_type === current))
           ) {
             return current;
           }
@@ -935,8 +943,12 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    // Local OpenAI-compat presets skip API keys — run the connection check.
-    if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
+    // Hosted registry providers require keys. Local OpenAI-compatible presets
+    // may be keyless.
+    if (
+      !savedKey &&
+      !supportsRemoteModelCatalog(provider.providerType)
+    ) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -953,6 +965,10 @@ export function ChatProvidersSettings({
           provider.providerType,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
+        modelId:
+          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+            ? (provider.models[0] ?? null)
+            : null,
       });
       if (result.success) {
         toast.success(result.message);
@@ -1058,6 +1074,16 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          {CUSTOM_PROVIDER_DISPLAY_NAME}
+                        </span>
+                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
@@ -1140,7 +1166,7 @@ export function ChatProvidersSettings({
                     onChange={(event) =>
                       setCustomProviderName(event.target.value)
                     }
-                    placeholder="Custom"
+                    placeholder={CUSTOM_PROVIDER_DISPLAY_NAME}
                     className="h-9 text-sm"
                   />
                 </div>
@@ -1507,7 +1533,7 @@ export function ChatProvidersSettings({
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat through the Studio proxy.
+            Manage model connections for chat.
           </p>
         </div>
       </header>

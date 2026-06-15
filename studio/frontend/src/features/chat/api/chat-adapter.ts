@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
+import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
@@ -18,6 +20,7 @@ import {
   toExternalBackendProviderType,
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
+import { tryAdoptServerActiveModel } from "../lib/apply-inference-status-to-store";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -33,7 +36,11 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  type RagAutoInject,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
   resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -74,6 +81,18 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 
+// Small models (<=9B) answer from memory instead of calling search, so "auto"
+// forces retrieval for them and leaves it to larger ones.
+const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  const size = parseParamCountB(checkpoint);
+  // Unknown size -> enable.
+  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
+}
+
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
   prompt_tokens: number;
@@ -99,6 +118,21 @@ interface ServerTimings {
   predicted_ms: number;
   predicted_per_token_ms: number;
   predicted_per_second: number;
+  // DiffusionGemma-only extras (present when serving a diffusion model; ignored otherwise).
+  diffusion?: boolean;
+  diffusion_blocks?: number;
+  diffusion_steps?: number;
+  diffusion_canvas?: number;
+  diffusion_prompt_n?: number;
+  diffusion_prompt_prepare_ms?: number;
+  diffusion_decode_ms?: number;
+  diffusion_wall_ms?: number;
+  // Honest throughput, matching the standalone diffusion CLI:
+  //   effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
+  diffusion_effective_tok_s?: number;
+  diffusion_parallel_tok_s?: number;
+  diffusion_output_tok_s?: number;
+  diffusion_steps_per_second?: number;
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
@@ -252,8 +286,7 @@ function documentCitationToSource(
   title: string;
   metadata?: { description: string };
 } | null {
-  const source =
-    typeof cit.source === "string" && cit.source ? cit.source : "";
+  const source = typeof cit.source === "string" && cit.source ? cit.source : "";
   const docTitle =
     (typeof cit.document_title === "string" && cit.document_title) ||
     (typeof cit.title === "string" && cit.title) ||
@@ -264,13 +297,12 @@ function documentCitationToSource(
   // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
   // or a hostile scheme. Fall back to a stable doc anchor otherwise.
   const url =
-    isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+    isSafeNavigableSourceUrl(source) ||
+    `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
-  const cited =
-    typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
+  const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
   // Trim the cited snippet so the Sources panel stays scannable.
-  const description =
-    cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
   // Anthropic numbers inline [N] per citation, not per source URL.
   // Fold citation type + position-bearing fields into the id so distinct
   // citations on the same source keep separate Sources entries.
@@ -565,154 +597,6 @@ function isAnthropicRefusalMessage(message: RunMessage): boolean {
   return metadata?.custom?.anthropicRefusal === true;
 }
 
-function collectAssistantToolCalls(
-  message: RunMessage,
-): Array<{
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-  extra_content?: unknown;
-}> {
-  const out: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-    extra_content?: unknown;
-  }> = [];
-  for (const part of message.content ?? []) {
-    if (part.type !== "tool-call") continue;
-    const tc = part as ToolCallMessagePart & {
-      argsText?: string;
-      extra_content?: unknown;
-    };
-    const toolNameLower = (tc.toolName ?? "").toLowerCase();
-    const argsObj =
-      tc.args && typeof tc.args === "object"
-        ? (tc.args as Record<string, unknown>)
-        : null;
-    const argsGoogle =
-      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
-        ? (argsObj.google as Record<string, unknown>)
-        : null;
-    const hasNativePart = Boolean(
-      argsGoogle &&
-        typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null,
-    );
-    const hasServerToolMarker = Boolean(
-      argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
-    );
-    const isServerSideBuiltin = isServerSideBuiltinToolPart(
-      toolNameLower,
-      argsObj,
-      hasServerToolMarker,
-      hasNativePart,
-    );
-    if (isServerSideBuiltin) {
-      // Gemini code_execution / image_generation must round-trip the
-      // native_part payload for native replay; drop the rest.
-      if (!hasNativePart) continue;
-    }
-    const argumentsStr =
-      typeof tc.argsText === "string" && tc.argsText.length > 0
-        ? tc.argsText
-        : JSON.stringify(tc.args ?? {});
-    const entry: {
-      id: string;
-      type: "function";
-      function: { name: string; arguments: string };
-      extra_content?: unknown;
-    } = {
-      id: tc.toolCallId,
-      type: "function" as const,
-      function: {
-        name: tc.toolName ?? "",
-        arguments: argumentsStr,
-      },
-    };
-    // Promote args.google to extra_content.google so the backend
-    // native_part replay branch finds it (it only inspects
-    // extra_content, not function.arguments).
-    if (tc.extra_content !== undefined) {
-      entry.extra_content = tc.extra_content;
-    } else if (argsGoogle) {
-      entry.extra_content = { google: argsGoogle };
-    }
-    out.push(entry);
-  }
-  return out;
-}
-
-function collectToolResultMessages(
-  message: RunMessage,
-): Array<{
-  role: "tool";
-  content: string;
-  tool_call_id: string;
-  name?: string;
-}> {
-  const out: Array<{
-    role: "tool";
-    content: string;
-    tool_call_id: string;
-    name?: string;
-  }> = [];
-  for (const part of message.content ?? []) {
-    if (part.type !== "tool-call") continue;
-    const tc = part as ToolCallMessagePart;
-    const result = (tc as { result?: unknown }).result;
-    // Skip provider-side builtins; see isServerSideBuiltinToolPart().
-    const argsObj =
-      tc.args && typeof tc.args === "object"
-        ? (tc.args as Record<string, unknown>)
-        : null;
-    const argsGoogle =
-      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
-        ? (argsObj.google as Record<string, unknown>)
-        : null;
-    const toolNameLower = (tc.toolName ?? "").toLowerCase();
-    const hasServerToolMarker = Boolean(
-      argsObj && argsObj._server_tool === true,
-    );
-    const hasNativePart = Boolean(
-      argsGoogle &&
-        typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null,
-    );
-    if (
-      isServerSideBuiltinToolPart(
-        toolNameLower,
-        argsObj,
-        hasServerToolMarker,
-        hasNativePart,
-      )
-    ) {
-      continue;
-    }
-    if (result === undefined || result === null) continue;
-    let content: string;
-    if (typeof result === "string") {
-      // Backend ChatMessage validator rejects role="tool" with empty
-      // content; serialise sentinel JSON so legitimately empty tool
-      // outputs still round-trip to the provider.
-      content = result.length > 0 ? result : JSON.stringify({ result: "" });
-    } else {
-      try {
-        content = JSON.stringify(result);
-      } catch {
-        content = String(result);
-      }
-    }
-    out.push({
-      role: "tool",
-      content,
-      tool_call_id: tc.toolCallId,
-      ...(tc.toolName ? { name: tc.toolName } : {}),
-    });
-  }
-  return out;
-}
-
 type SerializedMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: OpenAIMessageContent | null;
@@ -733,6 +617,185 @@ type SerializedMessage = {
   extra_content?: unknown;
 };
 
+type SerializedToolCall = NonNullable<SerializedMessage["tool_calls"]>[number];
+type SerializedToolResult = {
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+};
+
+type ToolPartReplayMetadata = {
+  argsObj: Record<string, unknown> | null;
+  argsGoogle: Record<string, unknown> | null;
+  hasNativePart: boolean;
+  isServerSideBuiltin: boolean;
+};
+
+function getToolPartReplayMetadata(
+  tc: ToolCallMessagePart,
+): ToolPartReplayMetadata {
+  const toolNameLower = (tc.toolName ?? "").toLowerCase();
+  const argsObj =
+    tc.args && typeof tc.args === "object"
+      ? (tc.args as Record<string, unknown>)
+      : null;
+  const argsGoogle =
+    argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+      ? (argsObj.google as Record<string, unknown>)
+      : null;
+  const hasNativePart = Boolean(
+    argsGoogle &&
+      typeof argsGoogle.native_part === "object" &&
+      argsGoogle.native_part !== null,
+  );
+  const hasServerToolMarker = Boolean(
+    argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
+  );
+  return {
+    argsObj,
+    argsGoogle,
+    hasNativePart,
+    isServerSideBuiltin: isServerSideBuiltinToolPart(
+      toolNameLower,
+      argsObj,
+      hasServerToolMarker,
+      hasNativePart,
+    ),
+  };
+}
+
+type ToolReplayProvenance = {
+  source?: string;
+  [key: string]: unknown;
+};
+
+function getToolReplayProvenance(
+  part: ToolCallMessagePart,
+): ToolReplayProvenance | null {
+  const provenance = (part as { provenance?: unknown }).provenance;
+  if (
+    !provenance ||
+    typeof provenance !== "object" ||
+    Array.isArray(provenance)
+  ) {
+    return null;
+  }
+  return provenance as ToolReplayProvenance;
+}
+
+function hasToolReplayResult(part: ToolCallMessagePart): boolean {
+  const result = (part as { result?: unknown }).result;
+  return result !== undefined && result !== null;
+}
+
+function shouldFlushCompletedLocalToolPair(part: ToolCallMessagePart): boolean {
+  const provenance = getToolReplayProvenance(part);
+  if (provenance?.source !== "local") {
+    return false;
+  }
+  if (getToolPartReplayMetadata(part).isServerSideBuiltin) {
+    return false;
+  }
+  return hasToolReplayResult(part);
+}
+
+function serializeAssistantToolCallPart(
+  part: ToolCallMessagePart,
+): SerializedToolCall | null {
+  const tc = part as ToolCallMessagePart & {
+    argsText?: string;
+    extra_content?: unknown;
+  };
+  const { argsGoogle, hasNativePart, isServerSideBuiltin } =
+    getToolPartReplayMetadata(tc);
+
+  if (isServerSideBuiltin && !hasNativePart) {
+    return null;
+  }
+
+  const argumentsStr =
+    typeof tc.argsText === "string" && tc.argsText.length > 0
+      ? tc.argsText
+      : JSON.stringify(tc.args ?? {});
+  const entry: SerializedToolCall = {
+    id: tc.toolCallId,
+    type: "function" as const,
+    function: {
+      name: tc.toolName ?? "",
+      arguments: argumentsStr,
+    },
+  };
+  // Promote args.google to extra_content.google so the backend
+  // native_part replay branch can find it. The backend only inspects
+  // extra_content, not function.arguments.
+  if (tc.extra_content !== undefined) {
+    entry.extra_content = tc.extra_content;
+  } else if (argsGoogle) {
+    entry.extra_content = { google: argsGoogle };
+  }
+  return entry;
+}
+
+function serializeToolResultPart(
+  part: ToolCallMessagePart,
+): SerializedToolResult | null {
+  const tc = part as ToolCallMessagePart;
+  const result = (tc as { result?: unknown }).result;
+  const { isServerSideBuiltin } = getToolPartReplayMetadata(tc);
+
+  // Skip provider-side builtins; see isServerSideBuiltinToolPart.
+  if (isServerSideBuiltin) {
+    return null;
+  }
+  if (result === undefined || result === null) return null;
+
+  let content: string;
+  if (typeof result === "string") {
+    // Backend ChatMessage validator rejects role="tool" with empty
+    // content; serialise a sentinel JSON so legitimately empty tool
+    // outputs still round-trip the follow-up turn to the provider.
+    content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else {
+    try {
+      content = JSON.stringify(result);
+    } catch {
+      content = String(result);
+    }
+  }
+
+  return {
+    role: "tool" as const,
+    content,
+    tool_call_id: tc.toolCallId,
+    ...(tc.toolName ? { name: tc.toolName } : {}),
+  };
+}
+
+function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
+  // Gemini/OpenAI provider-native builtin cards replay through
+  // extra_content/native parts and intentionally do not produce role="tool"
+  // messages. Local/user tool calls must have a concrete tool result before
+  // they are replayed ahead of later assistant text.
+  return getToolPartReplayMetadata(part).isServerSideBuiltin;
+}
+
+function sanitizeAssistantReplayText(text: string): string {
+  return text.replace(
+    /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+    "[audio]",
+  );
+}
+
+function buildReplayContent(
+  textContent: string,
+  imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
+): OpenAIMessageContent {
+  return imageParts.length > 0
+    ? [{ type: "text", text: textContent }, ...imageParts]
+    : textContent;
+}
+
 function collectAssistantTextThoughtSignature(
   message: RunMessage,
 ): string | undefined {
@@ -749,6 +812,132 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
+function attachAssistantThoughtSignature(
+  messages: SerializedMessage[],
+  thoughtSignature: string | undefined,
+): void {
+  if (!thoughtSignature) return;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const extra =
+      message.extra_content &&
+      typeof message.extra_content === "object" &&
+      !Array.isArray(message.extra_content)
+        ? (message.extra_content as Record<string, unknown>)
+        : {};
+    const google =
+      extra.google &&
+      typeof extra.google === "object" &&
+      !Array.isArray(extra.google)
+        ? (extra.google as Record<string, unknown>)
+        : {};
+    message.extra_content = {
+      ...extra,
+      google: { ...google, thought_signature: thoughtSignature },
+    };
+    return;
+  }
+}
+
+function serializeAssistantReplayMessages(
+  message: RunMessage,
+): SerializedMessage[] {
+  if (isAnthropicRefusalMessage(message)) {
+    // Prune refused assistant turn from outbound history; the
+    // rendered transcript still shows the user-visible notice.
+    return [];
+  }
+
+  const imageParts = collectImageParts(message);
+  const messages: SerializedMessage[] = [];
+  const pendingTextParts: string[] = [];
+  let pendingToolCalls: SerializedToolCall[] = [];
+  let pendingToolResults: SerializedToolResult[] = [];
+  let imagePartsPending = imageParts.length > 0;
+
+  const flushAssistantAndToolResults = (force = false): void => {
+    const textContent = sanitizeAssistantReplayText(
+      pendingTextParts.join("\n"),
+    );
+    const includeImageParts = imagePartsPending ? imageParts : [];
+    const hasContent = textContent.length > 0 || includeImageParts.length > 0;
+    const hasToolCalls = pendingToolCalls.length > 0;
+
+    if (!force && !hasContent && !hasToolCalls) {
+      return;
+    }
+
+    const assistantMessage: SerializedMessage = {
+      role: "assistant",
+      content: hasContent
+        ? buildReplayContent(textContent, includeImageParts)
+        : "",
+    };
+    if (hasToolCalls) {
+      assistantMessage.tool_calls = pendingToolCalls;
+      // OpenAI requires content === null on assistant turns whose
+      // payload is entirely tool_calls (matches the wire shape Gemini
+      // expects for the next functionCall replay).
+      if (!hasContent) {
+        assistantMessage.content = null;
+      }
+    }
+
+    messages.push(assistantMessage);
+    if (pendingToolResults.length > 0) {
+      messages.push(...pendingToolResults);
+    }
+
+    pendingTextParts.length = 0;
+    pendingToolCalls = [];
+    pendingToolResults = [];
+    imagePartsPending = false;
+  };
+
+  for (const part of message.content ?? []) {
+    if (part.type === "text") {
+      if (pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+      pendingTextParts.push(part.text);
+      continue;
+    }
+
+    if (part.type === "tool-call") {
+      const toolPart = part as ToolCallMessagePart;
+      const toolCall = serializeAssistantToolCallPart(toolPart);
+      if (!toolCall) continue;
+
+      const toolResult = serializeToolResultPart(toolPart);
+      if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
+        continue;
+      }
+
+      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+      if (flushLocalPair && pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+
+      pendingToolCalls.push(toolCall);
+      if (toolResult) {
+        pendingToolResults.push(toolResult);
+      }
+
+      if (flushLocalPair) {
+        flushAssistantAndToolResults();
+      }
+    }
+  }
+
+  flushAssistantAndToolResults(messages.length === 0);
+  attachAssistantThoughtSignature(
+    messages,
+    collectAssistantTextThoughtSignature(message),
+  );
+  return messages;
+}
+
 function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
     message.role !== "system" &&
@@ -758,49 +947,18 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
     return [];
   }
 
-  let textContent = collectTextParts(message).join("\n");
   if (message.role === "assistant") {
-    textContent = textContent.replace(
-      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
-      "[audio]",
-    );
-    if (isAnthropicRefusalMessage(message)) {
-      // Prune refused assistant turn from outbound history; the rendered
-      // transcript still shows the user-visible notice.
-      return [];
-    }
+    return serializeAssistantReplayMessages(message);
   }
 
+  const textContent = collectTextParts(message).join("\n");
   const imageParts = collectImageParts(message);
-  const toolCalls =
-    message.role === "assistant" ? collectAssistantToolCalls(message) : [];
-  const toolResults =
-    message.role === "assistant" ? collectToolResultMessages(message) : [];
-
-  const base: SerializedMessage = {
-    role: message.role,
-    content:
-      imageParts.length > 0
-        ? [{ type: "text", text: textContent }, ...imageParts]
-        : textContent,
-  };
-  if (toolCalls.length > 0) {
-    base.tool_calls = toolCalls;
-    // OpenAI requires content === null on assistant turns that are
-    // entirely tool_calls (matches the wire shape Gemini expects for
-    // the next functionCall replay).
-    if (!textContent && imageParts.length === 0) {
-      base.content = null;
-    }
-  }
-  if (message.role === "assistant") {
-    const sig = collectAssistantTextThoughtSignature(message);
-    if (sig) {
-      base.extra_content = { google: { thought_signature: sig } };
-    }
-  }
-
-  return toolResults.length > 0 ? [base, ...toolResults] : [base];
+  return [
+    {
+      role: message.role,
+      content: buildReplayContent(textContent, imageParts),
+    },
+  ];
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -848,24 +1006,51 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Message content parts (compare view CompareMessagePart type: "audio").
+function extractAudioPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "audio" || !("audio" in part)) return undefined;
+  const audioPart = (
+    part as unknown as {
+      type: "audio";
+      audio: string | { data: string; format: string };
+    }
+  ).audio;
+  const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+  if (!raw) return undefined;
+  return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+}
+
+// Exported for tests.
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
+    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (
-          part as unknown as {
-            type: "audio";
-            audio: string | { data: string; format: string };
-          }
-        ).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      const base64 = extractAudioPartBase64(part);
+      if (base64) return base64;
+    }
+
+    // Attachment content parts (from AudioAttachmentAdapter)
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractAudioPartBase64(part);
+          if (base64) return base64;
+        }
       }
     }
+
+    // Only the newest user message counts. audio_base64 switches the
+    // backend onto the audio generation path, so replaying audio from an
+    // older turn would hijack text follow-ups (Whisper would retranscribe
+    // the stale clip). Matches the consumed-on-send semantics of the
+    // legacy pendingAudio path.
+    break;
   }
 
   // Runtime store (main composer's audio upload).
@@ -913,14 +1098,11 @@ async function resolveProjectInstructions(
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
-  let projectId: string | null | undefined;
   if (threadId) {
     const thread = await getStoredChatThread(threadId).catch(() => null);
-    projectId = thread?.projectId ?? null;
+    return thread?.projectId ?? null;
   }
-  if (!projectId) {
-    projectId = useChatRuntimeStore.getState().activeProjectId;
-  }
+  const projectId = useChatRuntimeStore.getState().activeProjectId;
   if (!projectId) {
     return null;
   }
@@ -964,9 +1146,14 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (await tryAdoptServerActiveModel()) {
+    return { loaded: true, blockedByTrustRemoteCode: false };
+  }
+
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -1031,7 +1218,10 @@ async function autoLoadSmallestModel(): Promise<{
               is_lora: false,
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
+              speculative_type: specSettings.speculativeType,
+              spec_draft_n_max: specSettings.specDraftNMax,
             });
+            saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -1074,10 +1264,13 @@ async function autoLoadSmallestModel(): Promise<{
               ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+              tensorParallel: loadResp.tensor_parallel ?? false,
+              loadedTensorParallel: loadResp.tensor_parallel ?? false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
               loadedIsMultimodal: isMultimodalResponse(loadResp),
+              ...resolveLoadedSpeculativeSettings(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
               id: toastId,
@@ -1118,7 +1311,10 @@ async function autoLoadSmallestModel(): Promise<{
             is_lora: false,
             gguf_variant: null,
             trust_remote_code: trustRemoteCode,
+            speculative_type: specSettings.speculativeType,
+            spec_draft_n_max: specSettings.specDraftNMax,
           });
+          saveSpeculativeType(specSettings.speculativeType);
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
           store.setModelRequiresTrustRemoteCode(
@@ -1138,6 +1334,7 @@ async function autoLoadSmallestModel(): Promise<{
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
+            ...resolveLoadedSpeculativeSettings(sfLoadResp),
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -1200,7 +1397,10 @@ async function autoLoadSmallestModel(): Promise<{
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
       });
+      saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1235,9 +1435,12 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        ...resolveLoadedSpeculativeSettings(loadResp),
       });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1270,6 +1473,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
+      const toolConfirmationIdsByBackendId = new Map<string, string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1307,10 +1514,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
         try {
-          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+          ({ loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
@@ -1341,8 +1550,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         imageToolsEnabled,
         artifactsEnabled,
         mcpEnabledForChat,
+        confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
+        ragEnabled,
+        ragSource,
+        ragMode,
+        ragTopK,
+        ragAutoInject,
+        ragAutoInjectMinScore,
       } = runtime;
+      // Project sources auto-scope: a chat inside a project retrieves from the
+      // project's indexed sources even when the Docs pill is off. The probe is
+      // cached, so this is one round trip per project every ~30s at most.
+      const ragProjectId = await resolveProjectId(resolvedThreadId);
+      const projectRagEnabled = ragProjectId
+        ? await projectHasSources(ragProjectId)
+        : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -1617,8 +1841,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // Artifacts are independent of Search/Code: a local tool-capable model
-      // with Artifacts on exposes render_html even with no other pills active.
+      // Canvas is independent of Search/Code: a local tool-capable model
+      // with Canvas on exposes render_html even with no other pills active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -1627,12 +1851,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
           : disabledToolGuard;
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
@@ -1772,8 +1996,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
+      type ToolCallProvenance = {
+        source?: string;
+        healed?: boolean;
+        forced?: boolean;
+        provisional?: boolean;
+        duplicate?: boolean;
+        reason?: string;
+        [key: string]: unknown;
+      };
+      type PositionedToolCallPart = ToolCallMessagePart & {
+        textCursor?: number;
+        _delta_index?: number;
+        extra_content?: unknown;
+        provenance?: ToolCallProvenance;
+      };
       // Tool call parts, cumulative; result lands on tool_end.
-      const toolCallParts: ToolCallMessagePart[] = [];
+      const toolCallParts: PositionedToolCallPart[] = [];
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -1792,16 +2031,81 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         return parts;
       };
-      const orderAssistantContent = (
-        textParts: ReturnType<typeof parseAssistantContent>,
-      ) => {
-        const imageToolParts = toolCallParts.filter(
-          (part) => part.toolName === "image_generation",
-        );
-        const otherToolParts = toolCallParts.filter(
-          (part) => part.toolName !== "image_generation",
-        );
-        return [...otherToolParts, ...textParts, ...imageToolParts];
+      const buildAssistantContent = (rawText: string) => {
+        const positionedTools = toolCallParts
+          .map((part, index) => {
+            const cursor = (part as PositionedToolCallPart).textCursor;
+            return {
+              part,
+              index,
+              cursor:
+                typeof cursor === "number" && Number.isFinite(cursor)
+                  ? Math.min(Math.max(cursor, 0), rawText.length)
+                  : 0,
+            };
+          })
+          .sort((a, b) => a.cursor - b.cursor || a.index - b.index);
+
+        const assembled: Array<
+          ReturnType<typeof parseAssistantContent>[number] | ToolCallMessagePart
+        > = [];
+        let textCursor = 0;
+        let toolIndex = 0;
+
+        const appendTextThrough = (nextCursor: number) => {
+          if (nextCursor <= textCursor) return;
+          assembled.push(
+            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
+          );
+          textCursor = nextCursor;
+        };
+
+        while (toolIndex < positionedTools.length) {
+          const cursor = positionedTools[toolIndex].cursor;
+          appendTextThrough(cursor);
+          while (
+            toolIndex < positionedTools.length &&
+            positionedTools[toolIndex].cursor === cursor
+          ) {
+            assembled.push(positionedTools[toolIndex].part);
+            toolIndex += 1;
+          }
+        }
+        appendTextThrough(rawText.length);
+
+        return pinTextThoughtSignature(assembled);
+      };
+      const parseToolProvenance = (
+        value: unknown,
+      ): ToolCallProvenance | undefined => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return undefined;
+        }
+        return { ...(value as Record<string, unknown>) } as ToolCallProvenance;
+      };
+      const mergeToolProvenance = (
+        existing: ToolCallProvenance | undefined,
+        incoming: ToolCallProvenance | undefined,
+      ): ToolCallProvenance | undefined => {
+        if (!incoming) return existing;
+        if (!existing) return incoming;
+        const merged: ToolCallProvenance = { ...existing, ...incoming };
+        for (const key of [
+          "healed",
+          "forced",
+          "provisional",
+          "duplicate",
+        ] as const) {
+          if (existing[key] === true || incoming[key] === true) {
+            merged[key] = true;
+          }
+        }
+        return merged;
+      };
+      const closeReasoningContent = () => {
+        if (!reasoningContentOpen) return;
+        cumulativeText += "</think>";
+        reasoningContentOpen = false;
       };
       // Anthropic document_citations payload, converted to Sources-panel
       // parts at end-of-stream so inline [N] markers have matching entries.
@@ -2125,7 +2429,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -2134,6 +2438,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            // Opt into the trailing usage chunk so the context-usage bar
+            // and tok/s readout populate (backend gates it on include_usage).
+            stream_options: { include_usage: true },
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -2151,7 +2458,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? reasoningEnabled
                   ? { reasoning_effort: localReasoningEffort }
                   : {}
-                : { enable_thinking: reasoningEnabled }
+                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
@@ -2160,10 +2467,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat)
+              mcpEnabledForChat ||
+              ragEnabled ||
+              projectRagEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // First so retrieval is the primary tool when Docs is on.
+                    ...(ragEnabled || projectRagEnabled
+                      ? ["search_knowledge_base"]
+                      : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(renderHtmlToolEnabledForThisTurn
@@ -2171,6 +2484,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
+                  // Scope: thread_id = this thread's docs, kb_id = a KB,
+                  // project_id = the thread's project sources (auto-on whenever
+                  // the project has indexed sources, no Docs pill needed).
+                  ...(ragEnabled || projectRagEnabled
+                    ? {
+                        rag_scope: {
+                          ...(ragEnabled && ragSource.type === "kb"
+                            ? { kb_id: ragSource.kbId }
+                            : {
+                                ...(ragEnabled && resolvedThreadId
+                                  ? { thread_id: resolvedThreadId }
+                                  : {}),
+                                ...(projectRagEnabled && ragProjectId
+                                  ? { project_id: ragProjectId }
+                                  : {}),
+                              }),
+                          default_top_k: ragTopK,
+                          mode: ragMode,
+                          autoinject: resolveAutoInject(
+                            ragAutoInject,
+                            params.checkpoint,
+                          ),
+                          autoinject_min_score: ragAutoInjectMinScore,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:
@@ -2189,7 +2532,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           try {
             let requestPayload: OpenAIChatCompletionsRequest;
             try {
-              requestPayload = await buildRequestPayload(retriedWithRefreshedKey);
+              requestPayload = await buildRequestPayload(
+                retriedWithRefreshedKey,
+              );
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -2205,6 +2550,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               )._toolStatus;
               if (toolStatusText !== undefined) {
                 runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+
+              // Diffusion frame: a transient canvas snapshot. Route it to the transient
+              // store (the in-bubble renderer reads it) and skip it; it has no assistant
+              // text, so it never enters the transcript or the counters below.
+              const diffusionFrame = (
+                chunk as unknown as {
+                  _diffusionFrame?: {
+                    block?: number;
+                    step?: number;
+                    total?: number;
+                    text?: string;
+                  };
+                }
+              )._diffusionFrame;
+              if (diffusionFrame !== undefined) {
+                runtime.setActiveDiffusionCanvas({
+                  block: diffusionFrame.block ?? 0,
+                  step: diffusionFrame.step ?? 0,
+                  total: diffusionFrame.total ?? 0,
+                  text: diffusionFrame.text ?? "",
+                });
                 continue;
               }
 
@@ -2270,21 +2638,43 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                closeReasoningContent();
+                const toolProvenance = parseToolProvenance(
+                  toolEvent.provenance,
+                );
                 if (toolEvent.type === "tool_start") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvalId = (toolEvent.approval_id as string) || "";
+                  const awaitingConfirmation =
+                    toolEvent.awaiting_confirmation === true;
                   const id =
-                    (toolEvent.tool_call_id as string) ||
-                    `${toolEvent.tool_name}_${Date.now()}`;
+                    awaitingConfirmation && approvalId
+                      ? `${toolConfirmationScopeId}:${approvalId}`
+                      : backendToolCallId ||
+                        approvalId ||
+                        `${toolEvent.tool_name}_${Date.now()}`;
+                  if (awaitingConfirmation && backendToolCallId) {
+                    toolConfirmationIdsByBackendId.set(backendToolCallId, id);
+                  }
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
                   if (idx !== -1) {
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
-                      ...toolCallParts[idx],
+                      ...existing,
                       toolName: toolEvent.tool_name as string,
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
                     };
                   } else {
                     toolCallParts.push({
@@ -2293,13 +2683,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       toolName: toolEvent.tool_name as string,
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
-                    });
+                      textCursor: cumulativeText.length,
+                      ...(toolProvenance ? { provenance: toolProvenance } : {}),
+                    } as PositionedToolCallPart);
+                  }
+                  if (awaitingConfirmation) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolConfirmation(
+                        id,
+                        approvalId,
+                        sandboxSessionId ?? "",
+                        toolConfirmationScopeId,
+                      );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
                   const id =
-                    (toolEvent.tool_call_id as string) ||
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  if (backendToolCallId) {
+                    toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                  }
+                  useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -2437,21 +2848,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         native_part: { parts: mergedParts },
                       };
                     }
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
-                      ...toolCallParts[idx],
+                      ...existing,
                       args: mergedArgs,
                       argsText: JSON.stringify(mergedArgs ?? {}),
                       result: parsedResult,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
                     };
                   }
                 }
-                // Cumulative yield; orderAssistantContent puts search/code
-                // before text and generated images after.
-                const textParts = pinTextThoughtSignature(
-                  parseAssistantContent(cumulativeText),
-                );
                 yield {
-                  content: orderAssistantContent(textParts),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2504,10 +2917,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
-              if (
-                deltaExtraContent &&
-                typeof deltaExtraContent === "object"
-              ) {
+              if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const eGoogle = (deltaExtraContent as Record<string, unknown>)
                   .google;
                 if (eGoogle && typeof eGoogle === "object") {
@@ -2556,6 +2966,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 Array.isArray(rawDeltaToolCalls) &&
                 rawDeltaToolCalls.length > 0
               ) {
+                closeReasoningContent();
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -2575,20 +2986,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     : undefined;
                   if (!existing && idx !== undefined) {
                     existing = toolCallParts.find(
-                      (p) =>
-                        (
-                          p as ToolCallMessagePart & { _delta_index?: number }
-                        )._delta_index === idx,
+                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
                     );
                   }
                   const argsFragment = call.function?.arguments ?? "";
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
-                    const merged =
-                      (existing.argsText ?? "") + argsFragment;
-                    let parsedArgs:
-                      ToolCallMessagePart["args"] = existing.args ?? {};
+                    const merged = (existing.argsText ?? "") + argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] =
+                      existing.args ?? {};
                     if (merged) {
                       try {
                         parsedArgs = JSON.parse(
@@ -2600,24 +3007,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         } as ToolCallMessagePart["args"];
                       }
                     }
-                    const prevExtra = (
-                      existing as ToolCallMessagePart & {
-                        extra_content?: unknown;
-                      }
-                    ).extra_content;
-                    const updated: ToolCallMessagePart & {
-                      _delta_index?: number;
-                      extra_content?: unknown;
-                    } = {
-                      ...(existing as ToolCallMessagePart),
+                    const prevExtra = (existing as PositionedToolCallPart)
+                      .extra_content;
+                    const updated: PositionedToolCallPart = {
+                      ...(existing as PositionedToolCallPart),
                       toolName: nextName,
                       argsText: merged,
                       args: parsedArgs,
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : prevExtra !== undefined
-                        ? { extra_content: prevExtra }
-                        : {}),
+                          ? { extra_content: prevExtra }
+                          : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     const replaceIdx = toolCallParts.indexOf(existing);
@@ -2626,8 +3027,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     }
                   } else {
                     const callId =
-                      stableId ||
-                      `tool_call_${idx ?? toolCallParts.length}`;
+                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -2641,15 +3041,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         } as ToolCallMessagePart["args"];
                       }
                     }
-                    const fresh: ToolCallMessagePart & {
-                      _delta_index?: number;
-                      extra_content?: unknown;
-                    } = {
+                    const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
                       toolName: call.function?.name ?? "",
                       argsText,
                       args: parsedArgs,
+                      textCursor: cumulativeText.length,
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : {}),
@@ -2659,12 +3057,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                 }
                 yield {
-                  content: [
-                    ...toolCallParts,
-                    ...pinTextThoughtSignature(
-                      parseAssistantContent(cumulativeText),
-                    ),
-                  ],
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2695,13 +3088,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               if (delta) {
-                if (reasoningContentOpen) {
-                  cumulativeText += "</think>";
-                  reasoningContentOpen = false;
-                }
+                closeReasoningContent();
                 cumulativeText += delta;
               }
-              // Strip a trailing ${...} template-literal artifact from
+              // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(
@@ -2709,12 +3099,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   "",
                 );
               }
-              const parts = pinTextThoughtSignature(
-                parseAssistantContent(cumulativeText),
-              );
+              const textParts = parseAssistantContent(cumulativeText);
 
               if (
-                parts.some((part) => part.type === "reasoning") &&
+                textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
               ) {
                 reasoningStartAt = Date.now();
@@ -2729,9 +3117,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 );
               }
 
-              if (parts.length > 0 || toolCallParts.length > 0) {
+              if (textParts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: orderAssistantContent(parts),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2756,13 +3144,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             throw streamError;
           }
         }
-        // If the stream ended inside a delta.reasoning_content block
-        // (Kimi / DeepSeek), close the open <think> tag so the reasoning
-        // panel parses cleanly.
-        if (reasoningContentOpen) {
-          cumulativeText += "</think>";
-          reasoningContentOpen = false;
-        }
+        // If the stream ended while we were still inside a
+        // delta.reasoning_content block (Kimi / DeepSeek path), close
+        // the open <think> tag so the reasoning panel parses cleanly.
+        closeReasoningContent();
         settleFirstTokenOk();
 
         // Extract source parts from completed web_search and web_fetch
@@ -2826,9 +3211,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...orderAssistantContent(
-              pinTextThoughtSignature(parseAssistantContent(cumulativeText)),
-            ),
+            ...buildAssistantContent(cumulativeText),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -2879,8 +3262,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw err;
       } finally {
         abortSignal.removeEventListener("abort", onAbortCancel);
+        const confirmStore = useChatRuntimeStore.getState();
+        for (const part of toolCallParts) {
+          confirmStore.clearToolConfirmation(part.toolCallId);
+        }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Drop the transient denoising canvas so the finished bubble shows only
+        // the committed markdown answer (cancellation/error included).
+        runtime.setActiveDiffusionCanvas(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {

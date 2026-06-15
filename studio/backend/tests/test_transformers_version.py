@@ -32,8 +32,11 @@ sys.modules.setdefault("loggers", _loggers_stub)
 from utils.transformers_version import (
     _resolve_base_model,
     _check_tokenizer_config_needs_v5,
+    _check_config_needs_510,
     _check_config_needs_550,
+    _config_json_cache,
     _tokenizer_class_cache,
+    _config_needs_510_cache,
     _config_needs_550_cache,
     needs_transformers_5,
     get_transformers_tier,
@@ -205,6 +208,7 @@ class TestCheckConfigNeeds550:
     """Tests for _check_config_needs_550() local config.json checks."""
 
     def setup_method(self):
+        _config_json_cache.clear()
         _config_needs_550_cache.clear()
 
     def test_gemma4_architecture(self, tmp_path: Path):
@@ -259,6 +263,106 @@ class TestCheckConfigNeeds550:
 
 
 # ---------------------------------------------------------------------------
+# _check_config_needs_510 — config.json architecture/model_type check
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConfigNeeds510:
+    """Tests for _check_config_needs_510() local config.json checks."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+
+    def test_gemma4_unified_architecture(self, tmp_path: Path):
+        """config.json with Gemma4UnifiedForConditionalGeneration should return True."""
+        cfg = {
+            "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+            "model_type": "gemma4_unified",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_unified_model_type_only(self, tmp_path: Path):
+        """config.json with model_type=gemma4_unified should return True."""
+        cfg = {"model_type": "gemma4_unified"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_unified_assistant_architecture(self, tmp_path: Path):
+        """Assistant Gemma 4 Unified configs should return True."""
+        cfg = {
+            "architectures": ["Gemma4UnifiedAssistantForCausalLM"],
+            "model_type": "gemma4_unified_assistant",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_unified_assistant_model_type_only(self, tmp_path: Path):
+        """Assistant Gemma 4 Unified model_type should return True."""
+        cfg = {"model_type": "gemma4_unified_assistant"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_assistant_architecture(self, tmp_path: Path):
+        """Assistant Gemma 4 configs should return True."""
+        cfg = {
+            "architectures": ["Gemma4AssistantForCausalLM"],
+            "model_type": "gemma4_assistant",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_assistant_model_type_only(self, tmp_path: Path):
+        """Assistant Gemma 4 model_type should return True."""
+        cfg = {"model_type": "gemma4_assistant"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
+        """Older Gemma 4 config should stay on the 550 tier."""
+        cfg = {
+            "architectures": ["Gemma4ForConditionalGeneration"],
+            "model_type": "gemma4",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is False
+
+    def test_no_config_json(self, tmp_path: Path):
+        """Missing config.json should return False (fail-open)."""
+        # Patch network call to avoid real fetch
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = Exception("no network")
+            assert _check_config_needs_510(str(tmp_path)) is False
+
+    def test_result_is_cached(self, tmp_path: Path):
+        """Subsequent calls should use the cache."""
+        cfg = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        key = str(tmp_path)
+        _check_config_needs_510(key)
+        assert key in _config_needs_510_cache
+        assert _config_needs_510_cache[key] is True
+
+    def test_local_file_skips_network(self, tmp_path: Path):
+        """When local config.json exists, no network request should be made."""
+        cfg = {"architectures": ["LlamaForCausalLM"]}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            _check_config_needs_510(str(tmp_path))
+            mock_urlopen.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # get_transformers_tier — tier detection
 # ---------------------------------------------------------------------------
 
@@ -268,10 +372,18 @@ class TestGetTransformersTier:
 
     def setup_method(self):
         _tokenizer_class_cache.clear()
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
 
     def test_gemma4_substring_returns_550(self):
         assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+
+    def test_gemma4_12b_substring_returns_510(self):
+        assert get_transformers_tier("unsloth/gemma-4-12b-it") == "510"
+
+    def test_gemma4_assistant_substring_returns_510(self):
+        assert get_transformers_tier("google/gemma-4-E2B-it-assistant") == "510"
 
     def test_gemma4_alt_substring_returns_550(self):
         assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
@@ -286,17 +398,92 @@ class TestGetTransformersTier:
 
         assert get_transformers_tier(str(tmp_path)) == "550"
 
+    def test_gemma4_unified_config_json_returns_510(self, tmp_path: Path):
+        """Local checkpoint with Gemma4 Unified architecture → 510."""
+        cfg = {
+            "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+            "model_type": "gemma4_unified",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_gemma4_assistant_config_json_returns_510(self, tmp_path: Path):
+        """Local checkpoint with Gemma4 Assistant architecture → 510."""
+        cfg = {
+            "architectures": ["Gemma4AssistantForCausalLM"],
+            "model_type": "gemma4_assistant",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
+        """Local config.json should prevent false matches from parent directory names."""
+        model_dir = tmp_path / "gemma-4-12b-experiment" / "llama-checkpoint"
+        model_dir.mkdir(parents = True)
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["LlamaForCausalLM"],
+                    "model_type": "llama",
+                }
+            )
+        )
+        (model_dir / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "LlamaTokenizerFast"})
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert get_transformers_tier(str(model_dir)) == "default"
+            mock_urlopen.assert_not_called()
+
+    def test_remote_config_json_is_fetched_once_for_config_tiers(self):
+        """510 and 550 slow-path checks should share one config.json fetch."""
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "architectures": ["Gemma4ForConditionalGeneration"],
+                        "model_type": "gemma4",
+                    }
+                ).encode()
+
+        with patch("urllib.request.urlopen", return_value = _Response()) as mock_urlopen:
+            assert get_transformers_tier("org/no-fast-substring-model") == "550"
+
+        assert mock_urlopen.call_count == 1
+
     def test_qwen35_returns_530(self):
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
         ):
             assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
 
     def test_ministral_returns_530(self):
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
         ):
             assert get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
 
@@ -307,6 +494,10 @@ class TestGetTransformersTier:
                 return_value = False,
             ),
             patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
+            patch(
                 "utils.transformers_version._check_tokenizer_config_needs_v5",
                 return_value = False,
             ),
@@ -314,7 +505,7 @@ class TestGetTransformersTier:
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
 
     def test_550_checked_before_530(self):
-        """5.5.0 is checked first — a model matching both gets 550."""
+        """5.5.0 is checked before 5.3.0 - a model matching both gets 550."""
         assert get_transformers_tier("gemma-4-model") == "550"
 
     # ---- issue #6103: the tier decision must be traceable in the logs ----
@@ -341,6 +532,10 @@ class TestGetTransformersTier:
         caplog.set_level(logging.INFO)
         with (
             patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
+            patch(
                 "utils.transformers_version._check_config_needs_550",
                 return_value = False,
             ),
@@ -354,16 +549,27 @@ class TestGetTransformersTier:
         assert "default" in text, f"tier selection not logged: {text!r}"
 
     def test_needs_transformers_5_compat(self):
-        """needs_transformers_5 should return True for both 530 and 550 models."""
+        """needs_transformers_5 should return True for 510, 530, and 550 models."""
+        assert needs_transformers_5("unsloth/gemma-4-12b-it") is True
         assert needs_transformers_5("google/gemma-4-E2B-it") is True
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
         ):
             assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
         with (
             patch(
                 "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_510",
                 return_value = False,
             ),
             patch(

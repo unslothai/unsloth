@@ -8,6 +8,7 @@ Self-contained; can be moved to any directory.
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -231,6 +232,9 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     public internet. Synchronous so output lands between the banner URLs and the
     stop hint. Bounded at ~15s; failures swallowed (verifier failing != Studio
     failing). Only meaningful for a wildcard bind."""
+    global _public_reachable
+    # Reset to "unknown" each run; set True/False only when the probe decides.
+    _public_reachable = None
     import ipaddress
     import json
     import time
@@ -323,12 +327,14 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
         print("", flush = True)
         if ok_nodes:
+            _public_reachable = True
             print(
                 f"{ok_c}  Reachability check: {url}/ is reachable from the "
                 f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
                 flush = True,
             )
         elif err_nodes:
+            _public_reachable = False
             print(
                 f"{err_c}  Reachability check: {url}/ is NOT reachable from "
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
@@ -389,7 +395,23 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
-def _emit_startup_output(host: str, port: int, display_host: str) -> None:
+def _emit_secure_startup_output(port: int) -> None:
+    """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
+    print("")
+    print("🦥 Unsloth Studio is running (secure)")
+    print("─" * 52)
+    _print_cloudflare_line()
+    print(f"  On this machine only: http://127.0.0.1:{port}/")
+    print("─" * 52)
+    print_studio_stop_hint()
+
+
+def _emit_startup_output(
+    host: str,
+    port: int,
+    display_host: str,
+    secure: bool = False,
+) -> None:
     """Print the access banner plus any post-startup warnings.
 
     Extracted from ``_run`` so the banner/warning wiring is testable. The
@@ -398,6 +420,9 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
     non-127.0.0.1 bind, and wildcard binds are never 127.0.0.1), so the
     trailing stop hint is emitted exactly once.
     """
+    if secure:
+        _emit_secure_startup_output(port)
+        return
     wildcard_bind = host in ("0.0.0.0", "::")
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
     # For wildcard binds, run the reachability check between the URL
@@ -413,7 +438,29 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
         print_studio_stop_hint()
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
+        _print_cloudflare_line()
         print_studio_stop_hint()
+
+
+def _print_cloudflare_line() -> None:
+    """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
+
+    Reads the module-level URL set by ``run_server``. Prints nothing when the
+    tunnel is disabled or failed -- failures are silently ignored. When the public
+    reachability probe just failed (``_public_reachable is False``) but the tunnel
+    is up, reword to point the user at the Cloudflare link as the way in.
+    """
+    if not _cloudflare_url:
+        return
+    from startup_banner import stdout_supports_color
+
+    accent = "\033[38;5;150;1m"
+    reset = "\033[0m"
+    if _public_reachable is False:
+        line = f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}"
+    else:
+        line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
+    print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -517,6 +564,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 
 def _write_pid_file():
     """Write the current process PID to the studio PID file."""
@@ -583,6 +635,13 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
+    # 6. Stop the Cloudflare tunnel (if started).
+    try:
+        from cloudflare_tunnel import stop_studio_tunnel
+        stop_studio_tunnel()
+    except Exception as e:
+        logger.warning("Error stopping Cloudflare tunnel: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 
@@ -592,6 +651,16 @@ _server = None
 
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
+
+# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
+_cloudflare_url = None
+
+# Public reachability from the last _verify_global_reachability run, read by the
+# Cloudflare banner line. True when the public ip:port probe confirmed reachable,
+# False when it confirmed NOT reachable, None when the probe did not run or could
+# not decide (timeout, blocked, private address).
+_public_reachable = None
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -673,6 +742,113 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
     return None, attempted
 
 
+class _TeeStream:
+    """Mirror writes to the original stream and a session log file.
+
+    Console behavior is unchanged (writes/returns delegate to the original
+    stream; Tauri's structured-stdout protocol and isatty probes see exactly
+    what they saw before). The file copy is best-effort: a full disk or a
+    closed handle must never break the console."""
+
+    def __init__(self, stream, log_fh):
+        self._stream = stream
+        self._log_fh = log_fh
+
+    def write(self, data):
+        try:
+            self._log_fh.write(data)
+        except Exception:
+            pass
+        return self._stream.write(data)
+
+    def flush(self):
+        try:
+            self._log_fh.flush()
+        except Exception:
+            pass
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _setup_server_disk_logging():
+    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim
+    faulthandler at the same file so hard crashes (access violations /
+    SIGSEGV in the GPU runtime) leave a stack trace on disk.
+
+    Also exports PYTHONFAULTHANDLER=1 so child Python processes (training
+    workers) dump native-crash stacks to their captured stderr. Keeps the
+    newest 20 session logs. Opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1.
+    Returns the log path, or None when disabled/unavailable.
+    """
+    if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
+        return None
+    try:
+        from utils.paths import studio_root
+        log_dir = Path(studio_root()) / "logs" / "server"
+    except Exception:
+        home = (
+            os.environ.get("UNSLOTH_STUDIO_HOME")
+            or os.environ.get("STUDIO_HOME")
+            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
+        )
+        log_dir = Path(home) / "logs" / "server"
+    try:
+        log_dir.mkdir(parents = True, exist_ok = True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
+        # Line-buffered so the tail survives a hard kill; errors="replace"
+        # so a console encoding quirk can never take the server down.
+        log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
+    except Exception:
+        return None
+
+    import faulthandler
+
+    try:
+        faulthandler.enable(file = log_fh, all_threads = True)
+    except Exception:
+        pass
+    # Children (training workers) inherit: their native-crash stacks land on
+    # the stderr the server already captures.
+    os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+
+    sys.stdout = _TeeStream(sys.stdout, log_fh)
+    sys.stderr = _TeeStream(sys.stderr, log_fh)
+
+    # Best-effort retention: keep the newest 20 session logs.
+    try:
+        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
+        for old in logs[:-20]:
+            old.unlink(missing_ok = True)
+    except Exception:
+        pass
+    return log_path
+
+
+def _cloudflare_tunnel_should_start(
+    *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
+) -> bool:
+    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
+    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
+    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+
+
+def _apply_default_tool_policy(host: str, secure: bool) -> None:
+    """Force server-side tools off on network-reachable launches (0.0.0.0 or --secure)
+    so a public endpoint can't run code via a client's `enable_tools`. `unsloth studio
+    run` installs its own resolved policy and bypasses this."""
+    if not (secure or host == "0.0.0.0"):
+        return
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(False)
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -680,6 +856,8 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
+    cloudflare: bool = True,
+    secure: bool = False,
 ):
     """
     Start the FastAPI server.
@@ -698,12 +876,34 @@ def run_server(
     """
     global _server, _shutdown_event
 
+    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
+    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
+    if secure and not cloudflare:
+        raise SystemExit(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        )
+    if secure:
+        host = "127.0.0.1"
+
+    # `unsloth studio run` overrides this afterward with its resolved policy.
+    _apply_default_tool_policy(host, secure)
+
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
+
+    # Persist a session log + native-crash stacks BEFORE importing main, so
+    # even import-time failures leave evidence on disk. Field report: Studio
+    # "terminates without a warning" -- a native crash in the GPU runtime
+    # kills the process with no Python traceback, and a desktop-shortcut
+    # console closes before anything can be read. Console-only logging made
+    # that undiagnosable.
+    _session_log = _setup_server_disk_logging()
+    if _session_log is not None and not silent:
+        print(f"Session log: {_session_log}")
 
     # Set env var BEFORE importing main so CORS middleware picks it up.
     if api_only:
@@ -719,6 +919,13 @@ def run_server(
 
     from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
+
+    # Allow local stdio MCP servers on a loopback bind (the user's own machine),
+    # but never on Colab, which is a hosted VM reachable through its proxy. The
+    # gate reads the env var at request time, so this need not precede the import.
+    from utils.host_policy import apply_stdio_mcp_loopback_default
+
+    apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
 
     # Create all standard directories on startup.
     ensure_studio_directories()
@@ -819,6 +1026,13 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    if port and port > 0:
+        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        app.state.server_url = f"http://{_direct_host}:{port}"
+    else:
+        app.state.server_url = None
+    app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
     # Expose a shutdown callable before the server accepts requests so
@@ -874,8 +1088,44 @@ def run_server(
     if api_only:
         print(f"TAURI_PORT={port}", flush = True)
 
+    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # unreachable). Started pre-banner and even when silent so the CLI banner can
+    # read app.state.cloudflare_url; torn down by _graceful_shutdown.
+    global _cloudflare_url
+    _cloudflare_url = None
+    app.state.cloudflare_url = None
+    _cloudflare_enabled = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
+    if _cloudflare_enabled:
+        try:  # best-effort: any failure must not block startup
+            from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
+
+            _cloudflare_url = start_studio_tunnel(port)
+            app.state.cloudflare_url = _cloudflare_url
+            # Backstop: tear the tunnel down even on an abnormal exit that bypasses
+            # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
+            atexit.register(stop_studio_tunnel)
+        except Exception as e:
+            logger.debug("Cloudflare tunnel skipped: %s", e)
+
+    # --secure fails closed: no tunnel means no public link, so exit rather than
+    # silently fall back to a raw port.
+    if secure and not _cloudflare_url:
+        print(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            file = sys.stderr,
+            flush = True,
+        )
+        _graceful_shutdown(_server)
+        sys.exit(1)
+
     if not silent:
-        _emit_startup_output(host, port, display_host)
+        _emit_startup_output(host, port, display_host, secure = secure)
 
     return app
 
@@ -912,6 +1162,21 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    parser.add_argument(
+        "--cloudflare",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
+        "(default on; --no-cloudflare to disable)",
+    )
+    parser.add_argument(
+        "--secure",
+        action = argparse.BooleanOptionalAction,
+        default = False,
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network",
+    )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
@@ -931,6 +1196,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
+    if args.secure and not args.cloudflare:
+        parser.error(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
+        )
 
     kwargs = dict(
         host = args.host,
@@ -938,6 +1207,8 @@ if __name__ == "__main__":
         silent = args.silent,
         api_only = args.api_only,
         llama_parallel_slots = args.parallel,
+        cloudflare = args.cloudflare,
+        secure = args.secure,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

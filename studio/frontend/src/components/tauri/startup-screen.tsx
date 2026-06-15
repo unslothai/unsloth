@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
@@ -98,15 +99,6 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function TealSpinner({ size = 24 }: { size?: number }) {
-  return (
-    <span
-      className="inline-block animate-spin rounded-full border-2 border-primary border-t-transparent"
-      style={{ width: size, height: size, animationDuration: "0.8s" }}
-    />
-  );
-}
-
 function Logo() {
   return (
     <div className="flex flex-col items-center gap-4">
@@ -148,7 +140,7 @@ function CheckingContent() {
         <Logo />
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
-        <TealSpinner />
+        <Spinner className="size-6 text-primary" />
         <p className="text-sm text-muted-foreground">Checking...</p>
       </div>
     </div>
@@ -194,7 +186,7 @@ function InstallingContent({
         <Logo />
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
-        <TealSpinner />
+        <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">Installing...</p>
         <p className="text-sm font-bold text-muted-foreground">
           Please wait a few mins, then you can start training.
@@ -227,8 +219,8 @@ function RepairingContent({
         <Logo />
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
-        <TealSpinner />
-        <p className="text-sm font-bold text-foreground">Updating existing Studio install...</p>
+        <Spinner className="size-6 text-primary" />
+        <p className="text-sm font-bold text-foreground">Updating existing Unsloth install...</p>
         {latest && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{latest}</p>
         )}
@@ -325,7 +317,7 @@ function StartingContent() {
         <Logo />
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
-        <TealSpinner />
+        <Spinner className="size-6 text-primary" />
         <p className="text-sm text-muted-foreground">Starting server...</p>
       </div>
     </div>

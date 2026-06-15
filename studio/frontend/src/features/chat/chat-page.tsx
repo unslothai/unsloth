@@ -16,8 +16,8 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
   NativeModelChip,
   NativeModelDropOverlay,
@@ -31,8 +31,8 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
+  BubbleChatTemporaryIcon,
   Folder02Icon,
-  FolderAddIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -112,6 +112,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 type LoraCandidate = {
   id: string;
@@ -159,12 +160,6 @@ function pickBestLoraForBase(
     );
   });
   return partial ?? sorted[0] ?? null;
-}
-
-function isAssistantLocalThreadId(
-  threadId: string | null | undefined,
-): boolean {
-  return Boolean(threadId?.startsWith("__LOCALID_"));
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -523,7 +518,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
 
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
+
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -539,7 +539,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -548,6 +548,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <SharedComposer
           handlesRef={handlesRef}
           onExitCompare={onExitCompare}
+          model1ThreadId={baseThreadId}
+          model2ThreadId={loraThreadId}
         />
       }
     >
@@ -666,6 +668,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -690,6 +695,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -713,7 +719,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -724,6 +730,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           model1={model1}
           model2={model2}
           onExitCompare={onExitCompare}
+          model1ThreadId={model1ThreadId}
+          model2ThreadId={model2ThreadId}
         />
       }
     >
@@ -920,13 +928,16 @@ function ProjectLanding({
             } as CSSProperties
           }
         >
-          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
-            <div className="mb-12 flex items-center gap-3">
-              <HugeiconsIcon
-                icon={Folder02Icon}
-                strokeWidth={1.75}
-                className="size-9 shrink-0 text-foreground"
-              />
+          {/* 46rem matches the composer so every block shares the same edges. */}
+          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-4">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={1.75}
+                  className="size-6.5"
+                />
+              </span>
               <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
@@ -942,7 +953,7 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("chats")}
                 data-active={projectTab === "chats"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
@@ -950,35 +961,17 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
+                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
+                  New
+                </span>
               </button>
             </div>
 
             {projectTab === "sources" ? (
-              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
-                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-6"
-                  />
-                </span>
-                <div className="space-y-1">
-                  <p className="text-[15px] font-semibold text-foreground">
-                    Give this project context
-                  </p>
-                  <p className="max-w-sm text-sm text-muted-foreground">
-                    Upload PDFs, documents, or other text. The model can
-                    reference them in every chat in this project.
-                  </p>
-                </div>
-                <Button type="button" className="mt-1" disabled>
-                  Add sources
-                </Button>
-                <p className="text-[11px] text-muted-foreground">Coming soon</p>
-              </div>
+              <ProjectSourcesPanel projectId={projectId} />
             ) : (
             <div className="mt-8 flex flex-col gap-1">
               {items.map((item) => {
@@ -996,7 +989,7 @@ function ProjectLanding({
                             : { compare: item.id, project: projectId },
                       });
                     }}
-                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
@@ -1031,6 +1024,30 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
+  const incognitoLabel = incognito
+    ? "Turn off temporary chat"
+    : "Turn on temporary chat";
+  const toggleIncognito = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    store.setIncognito(!store.incognito);
+    // On an empty scratch chat there's nothing to abandon, so flip in
+    // place: navigating would remount the thread and bounce the composer
+    // (it docks to the bottom before the welcome state re-centers it).
+    // Otherwise start a clean chat so the temporary session can't inherit
+    // or leave behind a persisted thread (matches ChatGPT / Gemini).
+    const onEmptyScratchChat =
+      !search.thread &&
+      !search.compare &&
+      !search.project &&
+      store.activeThreadId == null;
+    if (onEmptyScratchChat) return;
+    // setActiveThreadId already clears contextUsage.
+    store.setActiveThreadId(null);
+    store.setActiveProjectId(null);
+    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
@@ -1444,6 +1461,17 @@ export function ChatPage(): ReactElement {
     currentProjectId,
   ]);
 
+  // Temporary chat only applies to a fresh single-view chat. Exit incognito
+  // when we land on anything else (compare, a project, or an existing thread
+  // via sidebar/deep link/back), so the toggle isn't stranded and the UI
+  // never implies a saved thread is temporary.
+  useEffect(() => {
+    const onFreshSingleChat = view.mode === "single" && !view.threadId;
+    if (incognito && !onFreshSingleChat) {
+      setIncognito(false);
+    }
+  }, [view, incognito, setIncognito]);
+
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
   const closeArtifactSurface = useChatArtifactsStore(
@@ -1465,7 +1493,7 @@ export function ChatPage(): ReactElement {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
     // view excludes __LOCALID_ threads (they fall through to mode:"single"
-    // with no threadId/nonce). Don't close an artifact whose thread is the
+    // with no threadId/nonce). Don't close a canvas whose thread is the
     // active local thread.
     if (
       selectedArtifact.threadId &&
@@ -2124,6 +2152,16 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
+            {incognito && view.mode === "single" && (
+              <div className="flex h-[34px] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+                <HugeiconsIcon
+                  icon={BubbleChatTemporaryIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+                <span>Temporary</span>
+              </div>
+            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
@@ -2199,6 +2237,37 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            {view.mode === "single" && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={toggleIncognito}
+                    className={cn(
+                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      incognito
+                        ? "bg-primary/10 text-primary hover:bg-primary/15"
+                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+                    )}
+                    aria-label={incognitoLabel}
+                    aria-pressed={incognito}
+                  >
+                    <HugeiconsIcon
+                      icon={BubbleChatTemporaryIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  {incognitoLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>

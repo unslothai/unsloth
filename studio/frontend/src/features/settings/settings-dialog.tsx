@@ -139,7 +139,7 @@ export function SettingsDialog() {
           {t("settings.dialog.description")}
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-border">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
             <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
               {t("settings.dialog.title")}
             </h2>
@@ -155,18 +155,18 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[32px] items-center gap-2.5 rounded-[11px] pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                      "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "max-sm:shrink-0",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
-                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white",
+                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white",
                     )}
                   >
                     {active && (
                       <motion.span
                         layoutId="settings-active-pill"
-                        className="absolute inset-0 rounded-[11px] bg-[#ececec] dark:bg-[#2d2f33]"
+                        className="absolute inset-0 rounded-full bg-[#ececec] dark:bg-[#3a3d43]"
                         transition={
                           reduced
                             ? { duration: 0 }
@@ -188,7 +188,7 @@ export function SettingsDialog() {
                       {t(tab.labelKey)}
                     </span>
                     {tab.badgeKey ? (
-                      <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      <span className="relative z-10 ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                         {t(tab.badgeKey)}
                       </span>
                     ) : null}
@@ -202,7 +202,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={t("settings.dialog.closeAriaLabel")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

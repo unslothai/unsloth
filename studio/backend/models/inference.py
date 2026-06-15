@@ -72,7 +72,7 @@ class LoadRequest(BaseModel):
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "still accepted. Ignored for non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -85,6 +85,15 @@ class LoadRequest(BaseModel):
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
             "quants). Only applied when speculative_type resolves to "
             "'mtp' or 'mtp+ngram'."
+        ),
+    )
+    tensor_parallel: bool = Field(
+        False,
+        description = (
+            "Split the model across GPUs by tensor (--split-mode tensor) "
+            "instead of by layer for GGUF models. Only affects multi-GPU "
+            "setups, where it can make generation significantly faster. "
+            "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
@@ -160,6 +169,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
@@ -171,7 +183,7 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -224,6 +236,10 @@ class LoadResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -273,6 +289,9 @@ class InferenceStatusResponse(BaseModel):
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
     is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
@@ -339,11 +358,26 @@ class InferenceStatusResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
     llama_cpp_supports_mtp: bool = Field(
         True,
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it. None when MTP engaged or was not "
+            "requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -382,7 +416,7 @@ class ImageUrl(BaseModel):
     """Image URL object — supports data URIs and remote URLs."""
 
     url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ImageContentPart(BaseModel):
@@ -495,7 +529,9 @@ class ChatMessage(BaseModel):
     ``role="tool"`` is resolved at the ``ChatCompletionRequest`` layer.
     """
 
-    role: Literal["system", "user", "assistant", "tool"] = Field(..., description = "Message role")
+    role: Literal["system", "user", "assistant", "tool", "developer"] = Field(
+        ..., description = "Message role"
+    )
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
@@ -531,8 +567,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -541,6 +579,16 @@ class ChatMessage(BaseModel):
             if self.content is None or self.content == []:
                 raise ValueError(f'role="{self.role}" messages require "content".')
         return self
+
+
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
 
 
 class ChatCompletionRequest(BaseModel):
@@ -590,6 +638,34 @@ class ChatCompletionRequest(BaseModel):
             "{'type': 'function', 'function': {'name': ...}}"
         ),
     )
+    max_completion_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "OpenAI upper bound on generated tokens (supersedes the deprecated max_tokens).",
+    )
+    n: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 128,
+        description = "Number of chat completion choices to generate.",
+    )
+    logprobs: Optional[bool] = Field(
+        None, description = "Whether to return log probabilities of the output tokens."
+    )
+    top_logprobs: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 20,
+        description = "Number of most likely tokens (0-20) to return per position; requires logprobs=true.",
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None, description = "Whether to enable parallel function calling during tool use."
+    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    stream_options: Optional[dict] = Field(
+        None,
+        description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
@@ -601,7 +677,8 @@ class ChatCompletionRequest(BaseModel):
         None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None,
+        description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
@@ -627,6 +704,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
     )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -646,9 +728,27 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
@@ -663,6 +763,16 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
+            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "autoinject_min_score?}. Candidate pools and the RRF constant come from "
+            "server config. The model never sees this; the server resolves which "
+            "documents to search."
+        ),
     )
     cancel_id: Optional[str] = Field(
         None,
@@ -861,6 +971,26 @@ class ChatCompletionRequest(BaseModel):
             msg.tool_call_id = picked
         return self
 
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
+
 
 # ── OpenAI shell-tool container management ─────────────────────
 
@@ -933,12 +1063,16 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
 
 
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
+
+
 class ChunkChoice(BaseModel):
     """A single choice in a streaming chunk."""
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length"]] = None
+    finish_reason: Optional[OpenAIFinishReason] = None
+    logprobs: Optional[dict] = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -961,6 +1095,7 @@ class CompletionMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: str
+    refusal: Optional[str] = None
 
 
 class CompletionChoice(BaseModel):
@@ -968,7 +1103,8 @@ class CompletionChoice(BaseModel):
 
     index: int = 0
     message: CompletionMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: OpenAIFinishReason = "stop"
+    logprobs: Optional[dict] = None
 
 
 class CompletionUsage(BaseModel):
@@ -977,6 +1113,17 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
+    )
+    completion_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        }
+    )
 
 
 class ChatCompletion(BaseModel):
@@ -988,6 +1135,7 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+    system_fingerprint: Optional[str] = None
 
 
 # =====================================================================
@@ -1010,7 +1158,7 @@ class ResponsesInputImagePart(BaseModel):
 
     type: Literal["input_image"]
     image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ResponsesOutputTextPart(BaseModel):
@@ -1222,6 +1370,23 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
@@ -1236,7 +1401,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):
@@ -1395,6 +1564,10 @@ class AnthropicMessagesRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
     model_config = {"extra": "allow"}
 
     @model_validator(mode = "before")
@@ -1434,6 +1607,8 @@ class AnthropicMessagesRequest(BaseModel):
 
 class AnthropicUsage(BaseModel):
     input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     output_tokens: int = 0
 
 

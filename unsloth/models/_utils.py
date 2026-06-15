@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.1"
+__version__ = "2026.6.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -69,6 +69,7 @@ __all__ = [
     "resolve_attention_implementation",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
+    "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -92,6 +93,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import copy
 import re
 from dataclasses import dataclass, field
 import functools
@@ -305,6 +307,28 @@ def _config_set(config, field_name, value):
         setattr(config, field_name, value)
 
 
+def set_task_config_attr(config, field_name, value):
+    _config_set(config, field_name, value)
+    text_config = None
+    if isinstance(config, dict):
+        text_config = config.get("text_config", None)
+    elif config is not None:
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = None
+        if text_config is None:
+            text_config = getattr(config, "text_config", None)
+    if (
+        text_config is not None
+        and text_config is not config
+        and (isinstance(text_config, dict) or hasattr(text_config, "__dict__"))
+    ):
+        _config_set(text_config, field_name, value)
+
+
 def _iter_attention_configs(config, seen = None):
     if config is None or (not isinstance(config, dict) and not hasattr(config, "__dict__")):
         return
@@ -470,6 +494,98 @@ def resolve_model_class(auto_model, config):
         if result is None:
             return None
     return result[0] if isinstance(result, (list, tuple)) else result
+
+
+def _is_family_text_decoder(parent_model_type, text_model_type):
+    # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
+    # reused decoder (llava -> llama) would load random weights, so keep the full model.
+    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+
+
+def _get_text_only_config(model_config, model_name):
+    # Text sub-config of a vision-language config so FastLanguageModel skips the vision tower (PR #5816).
+    text_config = None
+    if hasattr(model_config, "get_text_config"):
+        text_config = model_config.get_text_config()
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None:
+        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # Carry over quantization_config; copy first since get_text_config() shares the parent's object.
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config = copy.copy(text_config)
+        text_config.quantization_config = _remap_text_only_skip_modules(qc)
+    return text_config
+
+
+def _remap_text_only_skip_modules(qc):
+    # Remap llm_int8_skip_modules off the VLM wrapper prefix (language_model.model.* ->
+    # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
+    is_dict = isinstance(qc, dict)
+    skip = (
+        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    )
+    if not skip:
+        return qc
+    remapped = []
+    for name in skip:
+        for pref in (
+            "language_model.model.",
+            "model.language_model.",
+            "language_model.",
+        ):
+            if name.startswith(pref):
+                name = (
+                    ("model." + name[len(pref) :])
+                    if pref != "language_model."
+                    else name[len(pref) :]
+                )
+                break
+        if name.startswith(
+            (
+                "vision_tower",
+                "multi_modal_projector",
+                "audio_tower",
+                "modality_projection",
+            )
+        ):
+            continue
+        remapped.append(name)
+    remapped = list(dict.fromkeys(remapped))
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    if is_dict:
+        qc["llm_int8_skip_modules"] = remapped
+    else:
+        qc.llm_int8_skip_modules = remapped
+    return qc
+
+
+def _get_text_only_key_mapping(parent_config, text_config):
+    # transformers >=5 stopped auto-stripping the VLM wrapper prefix (base_model_prefix
+    # changed language_model -> model), so remap the text weights onto the decoder keys.
+    # None on tf <5 (still strips; a mapping would break the load) or non-family. See PR #5816.
+    if Version(transformers_version) < Version("5.0.0"):
+        return None
+    if not _is_family_text_decoder(
+        getattr(parent_config, "model_type", ""),
+        getattr(text_config, "model_type", ""),
+    ):
+        return None
+    return {
+        r"^language_model\.model\.": "model.",
+        r"^model\.language_model\.": "model.",
+        r"^language_model\.lm_head\.": "lm_head.",
+    }
+
+
+def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
+    # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
+    mapping = _get_text_only_key_mapping(parent_config, text_config)
+    if not mapping:
+        return
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
 def resolve_attention_implementation(
@@ -1171,6 +1287,18 @@ if is_openai_available():
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
+
+def _package_available(pkg_name: str) -> bool:
+    # transformers >= 5.x makes `_is_package_available` always return a
+    # `(exists, version)` tuple, which is truthy even when the package is
+    # absent; older versions returned a plain bool. Normalise to a bool so
+    # callers don't take "package present" branches for missing packages.
+    result = _is_package_available(pkg_name)
+    if isinstance(result, tuple):
+        return bool(result[0])
+    return bool(result)
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -1181,7 +1309,7 @@ if DEVICE_TYPE == "cuda":
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
-        if _is_package_available("flash_attn"):
+        if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
                 try:
@@ -1226,7 +1354,7 @@ if DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
+    if _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
             try:
@@ -1888,7 +2016,7 @@ def is_bfloat16_supported():
 
 
 def is_vLLM_available():
-    return _is_package_available("vllm")
+    return _package_available("vllm")
 
 
 # Patches models to add RoPE Scaling
@@ -2575,6 +2703,16 @@ class EmptyLogits:
     def __str__(self):
         return LOGITS_ERROR_STRING
 
+    def __reduce__(self):
+        # Stateless pickling so gather_object works on the sentinel
+        return (type(self), ())
+
+    def __eq__(self, other):
+        # Gathered copies must compare equal in accelerate debug mode
+        return type(other).__name__ == "EmptyLogits"
+
+    __hash__ = object.__hash__
+
 
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
@@ -2585,6 +2723,13 @@ for j, function in enumerate(functions):
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
             continue
+# The loop above stomps pickle hooks with stubs returning None, which breaks
+# gather_object on EMPTY_LOGITS in distributed runs. Restore default pickling.
+for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
+    try:
+        delattr(EMPTY_LOGITS, function)
+    except Exception:
+        pass
 
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):

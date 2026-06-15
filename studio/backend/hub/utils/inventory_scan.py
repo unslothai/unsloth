@@ -25,7 +25,12 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-from hub.utils.gguf import extract_quant_label, is_gguf_filename, is_mmproj_filename
+from hub.utils.gguf import (
+    extract_quant_label,
+    is_gguf_filename,
+    is_mmproj_filename,
+    is_mtp_drafter_path,
+)
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -137,13 +142,18 @@ def _compute_all_hf_cache_scans() -> list:
         logger.warning("Could not scan active HF cache: %s", exc)
 
     for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-        extra = extra_fn()
-        if extra.is_dir() and str(extra.resolve()) not in seen:
-            seen.add(str(extra.resolve()))
-            try:
-                scans.append(scan_cache_dir(cache_dir = str(extra)))
-            except Exception as exc:
-                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+        try:
+            extra = extra_fn()
+            # is_dir()/resolve() can raise on an inaccessible path; skip it.
+            if not extra.is_dir():
+                continue
+            resolved = str(extra.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            scans.append(scan_cache_dir(cache_dir = str(extra)))
+        except Exception as exc:
+            logger.warning("Could not scan HF cache %s: %s", extra_fn.__name__, exc)
     return scans
 
 
@@ -336,7 +346,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel):
+        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
         split = _GGUF_SPLIT_RE.search(path.name)

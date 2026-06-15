@@ -8,12 +8,13 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -75,7 +76,7 @@ function isRenderableRenderHtmlToolPart(part: unknown): boolean {
   }
   if (
     typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Rendered HTML artifact")
+    toolPart.result.startsWith("Rendered HTML canvas")
   ) {
     return true;
   }
@@ -284,9 +285,15 @@ function CodeBlockActions({
   );
 }
 
+// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
+// thread.tsx) and has the HTML canvas feature on by default, so a full-HTML answer
+// (e.g. a playable game) renders as an interactive card without the global toggle.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      state.artifactsEnabled ||
+      state.collapseHtmlArtifacts ||
+      state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
@@ -328,7 +335,7 @@ function StreamdownBlock(props: BlockProps) {
   ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading artifact preview...
+        Loading canvas preview...
       </div>
     );
   }
@@ -424,6 +431,22 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
   return text;
 }
 
+const safeImageUrl: UrlTransform = (url, _key, node) => {
+  // Only images are restricted; links/other nodes use the default transform.
+  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
+
+  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
+  // "\t//attacker.com" would otherwise slip past the guards below.
+  // eslint-disable-next-line no-control-regex
+  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
+  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
+  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
+  return normalized; // relative -> same-origin
+};
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   const displayText = useRafCoalescedText(text, status.type === "running");
@@ -444,6 +467,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
+        urlTransform={safeImageUrl}
         controls={{
           code: false,
           mermaid: {

@@ -3,12 +3,27 @@
 
 """Automatic transformers version switching.
 
-Some newer architectures need transformers>=5.3.0 (.venv_t5_530/); Gemma 4
-needs >=5.5.0 (.venv_t5_550/). Everything else uses the default 4.57.x. A
-custom-named LoRA adapter's base model is resolved from adapter_config.json.
+Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
+tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
+newer 5.x sidecar.  Everything else needs the default 4.57.x that ships with
+Unsloth.
 
-Training/inference run in subprocesses that activate the right version via
-sys.path; export (in-process) uses ensure_transformers_version() for the swap.
+Two separate target directories are maintained:
+  - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
+  - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
+  - .venv_t5_510/  — transformers 5.10.2 (Gemma 4 Unified / 12B)
+
+When loading a LoRA adapter with a custom name, we resolve the base model from
+``adapter_config.json`` and check *that* against the model list.
+
+Strategy:
+  Training and inference run in subprocesses that activate the correct version
+  via sys.path (prepending the appropriate .venv_t5_*/ directory). See:
+    - core/training/worker.py
+    - core/inference/worker.py
+
+  For export (still in-process), ensure_transformers_version() does a lightweight
+  sys.path swap using the same directories pre-installed by setup.sh.
 """
 
 import importlib
@@ -53,12 +68,31 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
-# Lowercase substrings for models that require transformers 5.5.0 (checked first).
+# Lowercase substrings for models that require transformers 5.10.x (checked first).
+TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
+    "gemma-4-12b",  # Gemma 4 Unified 12B
+    "gemma4-12b",
+)
+
+# Lowercase substrings for models that require the Gemma 4 transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
     "qwen3.6",
 )
+
+# Architecture classes / model_type values that require transformers 5.10.x.
+# Checked via config.json (local or HuggingFace).
+_TRANSFORMERS_510_ARCHITECTURES: set[str] = {
+    "Gemma4UnifiedForConditionalGeneration",
+    "Gemma4AssistantForCausalLM",
+    "Gemma4UnifiedAssistantForCausalLM",
+}
+_TRANSFORMERS_510_MODEL_TYPES: set[str] = {
+    "gemma4_unified",
+    "gemma4_assistant",
+    "gemma4_unified_assistant",
+}
 
 # Architecture classes / model_type values that require transformers 5.5.0.
 # Checked via config.json (local or HuggingFace).
@@ -78,21 +112,26 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 _tokenizer_class_cache: dict[str, bool] = {}
 
 # Cache for dynamic config.json lookups (architecture/model_type checks).
+_config_json_cache: dict[str, dict | None] = {}
+_config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
 
 # Versions
+TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
-# Backwards-compat alias — points to 5.5.0 (the highest 5.x tier).
-# Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
-TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
+# Backwards-compat alias — points to the highest 5.x tier.
+# Consumers should prefer TRANSFORMERS_510_VERSION / TRANSFORMERS_550_VERSION /
+# TRANSFORMERS_530_VERSION.
+TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
 # Pre-installed directories — created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
 _VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
+_VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
@@ -108,18 +147,36 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
 
-    if tier == "550":
+    if tier == "510":
+        if not _ensure_venv_t5_510_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers {TRANSFORMERS_510_VERSION}: "
+                f".venv_t5_510 missing at {_VENV_T5_510_DIR}"
+            )
+        if _VENV_T5_510_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_510_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_510_VERSION,
+            _VENV_T5_510_DIR,
+        )
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_510_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "550":
         if not _ensure_venv_t5_550_exists():
             raise RuntimeError(
-                f"Cannot activate transformers 5.5.0: "
+                f"Cannot activate transformers {TRANSFORMERS_550_VERSION}: "
                 f".venv_t5_550 missing at {_VENV_T5_550_DIR}"
             )
         if _VENV_T5_550_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_550_DIR)
         logger.info(
-            "Prepended transformers 5.5.0 venv to sys.path from %s "
+            "Prepended transformers %s venv to sys.path from %s "
             "(path only; the loaded version is confirmed later by "
             "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_550_VERSION,
             _VENV_T5_550_DIR,
         )
         _pp = os.environ.get("PYTHONPATH", "")
@@ -133,9 +190,10 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
         if _VENV_T5_530_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_530_DIR)
         logger.info(
-            "Prepended transformers 5.3.0 venv to sys.path from %s "
+            "Prepended transformers %s venv to sys.path from %s "
             "(path only; the loaded version is confirmed later by "
             "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_530_VERSION,
             _VENV_T5_530_DIR,
         )
         _pp = os.environ.get("PYTHONPATH", "")
@@ -270,6 +328,67 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
+def _load_config_json(model_name: str) -> dict | None:
+    """Return parsed ``config.json`` for *model_name*, checking local files first."""
+    if model_name in _config_json_cache:
+        return _config_json_cache[model_name]
+
+    local_cfg = Path(model_name) / "config.json"
+    if local_cfg.is_file():
+        try:
+            with open(local_cfg) as f:
+                cfg = json.load(f)
+            _config_json_cache[model_name] = cfg
+            return cfg
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_cfg, exc)
+            _config_json_cache[model_name] = None
+            return None
+
+    if _env_offline():
+        _config_json_cache[model_name] = None
+        return None
+
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    try:
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            cfg = json.loads(resp.read().decode())
+        _config_json_cache[model_name] = cfg
+        return cfg
+    except Exception as exc:
+        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        _config_json_cache[model_name] = None
+        return None
+
+
+def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
+    archs = cfg.get("architectures", [])
+    if any(a in architectures for a in archs):
+        return True
+    if cfg.get("model_type") in model_types:
+        return True
+    return False
+
+
+def _config_needs_550(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_550_ARCHITECTURES,
+        _TRANSFORMERS_550_MODEL_TYPES,
+    )
+
+
+def _config_needs_510(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_510_ARCHITECTURES,
+        _TRANSFORMERS_510_MODEL_TYPES,
+    )
+
+
 def _check_config_needs_550(model_name: str) -> bool:
     """True if ``config.json`` has architectures/model_type needing transformers
     5.5.0 (e.g. Gemma 4).
@@ -280,75 +399,90 @@ def _check_config_needs_550(model_name: str) -> bool:
     if model_name in _config_needs_550_cache:
         return _config_needs_550_cache[model_name]
 
-    def _check_cfg(cfg: dict) -> bool:
-        archs = cfg.get("architectures", [])
-        if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
-            return True
-        if cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES:
-            return True
-        return False
-
-    # --- Check local config.json first ------------------------------------
-    local_path = Path(model_name)
-    local_cfg = local_path / "config.json"
-    if local_cfg.is_file():
-        try:
-            with open(local_cfg) as f:
-                cfg = json.load(f)
-            result = _check_cfg(cfg)
-            if result:
-                logger.info(
-                    "Local config.json check: %s needs transformers 5.5.0 "
-                    "(architectures=%s, model_type=%s)",
-                    model_name,
-                    cfg.get("architectures", []),
-                    cfg.get("model_type"),
-                )
-            _config_needs_550_cache[model_name] = result
-            return result
-        except Exception as exc:
-            logger.debug("Could not read %s: %s", local_cfg, exc)
-
-    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
-    if _env_offline():
+    cfg = _load_config_json(model_name)
+    if cfg is None:
         _config_needs_550_cache[model_name] = False
         return False
 
-    # --- Fall back to fetching from HuggingFace ---------------------------
-    import urllib.request
+    result = _config_needs_550(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_550_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_550_cache[model_name] = result
+    return result
 
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
-    try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-        with urllib.request.urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
-        result = _check_cfg(cfg)
-        if result:
-            logger.info(
-                "Dynamic config.json check: %s needs transformers 5.5.0 "
-                "(architectures=%s, model_type=%s)",
-                model_name,
-                cfg.get("architectures", []),
-                cfg.get("model_type"),
-            )
-        _config_needs_550_cache[model_name] = result
-        return result
-    except Exception as exc:
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_needs_550_cache[model_name] = False
+
+def _check_config_needs_510(model_name: str) -> bool:
+    """Check ``config.json`` for Gemma 4 Unified / 12B architectures."""
+    if model_name in _config_needs_510_cache:
+        return _config_needs_510_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
+        _config_needs_510_cache[model_name] = False
         return False
+
+    result = _config_needs_510(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_510_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_510_cache[model_name] = result
+    return result
 
 
 def get_transformers_tier(model_name: str) -> str:
     """Return the transformers tier required for *model_name*.
 
-    ``"550"`` for transformers 5.5.0 (e.g. Gemma 4), ``"530"`` for 5.3.0
-    (e.g. Ministral-3, Qwen3 MoE), or ``"default"`` for everything else (4.57.x).
-    The 5.5.0 check runs first, then 5.3.0.
+    Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
+    ``"550"`` for models needing transformers 5.5.0 (Gemma 4),
+    ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
+    or ``"default"`` for everything else (4.57.x).
+
+    Higher 5.x tiers run first.
     """
     lowered = model_name.lower()
 
+    # Local checkpoint names can contain architecture substrings in their
+    # directory names (for example a pytest temp dir). If config.json exists,
+    # trust it before using name heuristics.
+    local_cfg = Path(model_name) / "config.json"
+    if local_cfg.is_file():
+        cfg = _load_config_json(model_name)
+        if cfg is not None and _config_needs_510(cfg):
+            return "510"
+        if cfg is not None and _config_needs_550(cfg):
+            return "550"
+        if cfg is not None:
+            local_tc = Path(model_name) / "tokenizer_config.json"
+            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+                return "530"
+            return "default"
+
     # --- Fast substring checks (no I/O) ------------------------------------
+    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+        logger.info(
+            "Transformers tier 510 selected for %s (gemma-4 assistant variant)",
+            model_name,
+        )
+        return "510"
+    match = next((sub for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 510 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
+        return "510"
     match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
     if match is not None:
         logger.info(
@@ -366,7 +500,10 @@ def get_transformers_tier(model_name: str) -> str:
         )
         return "530"
 
-    # --- Slow config fallbacks (local file first, then network) -----------
+    # --- Slow config fallbacks (network for HF IDs) ------------------------
+    if _check_config_needs_510(model_name):
+        logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
+        return "510"
     if _check_config_needs_550(model_name):
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
@@ -447,6 +584,13 @@ _VENV_T5_530_PACKAGES = (
     "tiktoken",
 )
 
+_VENV_T5_510_PACKAGES = (
+    f"transformers=={TRANSFORMERS_510_VERSION}",
+    "huggingface_hub==1.8.0",
+    "hf_xet==1.4.2",
+    "tiktoken",
+)
+
 _VENV_T5_550_PACKAGES = (
     f"transformers=={TRANSFORMERS_550_VERSION}",
     "huggingface_hub==1.8.0",
@@ -503,7 +647,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
 
 
 def _venv_t5_is_valid() -> bool:
-    """Backwards-compat: check the 5.5.0 venv."""
+    """Backwards-compat: check the Gemma 4 sidecar venv."""
     return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
@@ -583,11 +727,24 @@ def _ensure_venv_t5_530_exists() -> bool:
 
 def _ensure_venv_t5_550_exists() -> bool:
     """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
-    return _ensure_venv_dir(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0")
+    return _ensure_venv_dir(
+        _VENV_T5_550_DIR,
+        _VENV_T5_550_PACKAGES,
+        f"transformers {TRANSFORMERS_550_VERSION}",
+    )
+
+
+def _ensure_venv_t5_510_exists() -> bool:
+    """Ensure .venv_t5_510/ exists with transformers 5.10.x."""
+    return _ensure_venv_dir(
+        _VENV_T5_510_DIR,
+        _VENV_T5_510_PACKAGES,
+        f"transformers {TRANSFORMERS_510_VERSION}",
+    )
 
 
 def _ensure_venv_t5_exists() -> bool:
-    """Backwards-compat: ensure the 5.5.0 venv exists."""
+    """Backwards-compat: ensure the Gemma 4 5.5 sidecar venv exists."""
     return _ensure_venv_t5_550_exists()
 
 
@@ -607,7 +764,7 @@ def _activate_venv(venv_dir: str, label: str) -> None:
 
 def _deactivate_5x() -> None:
     """Remove all .venv_t5_*/ dirs from sys.path, purge stale modules, reimport."""
-    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR):
+    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR):
         while d in sys.path:
             sys.path.remove(d)
     logger.info("Removed venv_t5 dirs from sys.path")
@@ -623,7 +780,9 @@ def _deactivate_5x() -> None:
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
-    Uses sys.path with .venv_t5_530/ or .venv_t5_550/ (pre-installed by setup.sh):
+    Uses sys.path with .venv_t5_510/, .venv_t5_550/, or .venv_t5_530/
+    (pre-installed by setup.sh):
+      • Need 5.10.x → prepend .venv_t5_510/ to sys.path, purge modules.
       • Need 5.5.0 → prepend .venv_t5_550/ to sys.path, purge modules.
       • Need 5.3.0 → prepend .venv_t5_530/ to sys.path, purge modules.
       • Need 4.x  → remove all .venv_t5_*/ from sys.path, purge modules.
@@ -638,7 +797,11 @@ def ensure_transformers_version(model_name: str) -> None:
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
 
-    if tier == "550":
+    if tier == "510":
+        target_version = TRANSFORMERS_510_VERSION
+        venv_dir = _VENV_T5_510_DIR
+        ensure_fn = _ensure_venv_t5_510_exists
+    elif tier == "550":
         target_version = TRANSFORMERS_550_VERSION
         venv_dir = _VENV_T5_550_DIR
         ensure_fn = _ensure_venv_t5_550_exists
@@ -673,7 +836,7 @@ def ensure_transformers_version(model_name: str) -> None:
                 model_name,
             )
             return
-        # Different 5.x → must switch (e.g. 5.3.0 loaded but need 5.5.0).
+        # Different 5.x -> need to switch (e.g. 5.3.0 loaded but need 5.10.x).
         in_memory_major = int(in_memory.split(".")[0])
         if in_memory_major == target_major and venv_dir is None:
             # Both are default (4.x) — close enough.

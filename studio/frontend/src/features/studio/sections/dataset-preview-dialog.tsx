@@ -17,6 +17,7 @@ import { useTrainingActions, useTrainingConfigStore } from "@/features/training"
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import type { DatasetSource } from "@/types/training";
 import {
   AlertCircleIcon,
   CheckmarkCircle02Icon,
@@ -45,7 +46,7 @@ type DatasetPreviewDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   datasetName: string | null;
-  datasetSource?: "huggingface" | "upload";
+  datasetSource?: DatasetSource;
   hfToken: string | null;
   datasetSubset?: string | null;
   datasetSplit?: string | null;

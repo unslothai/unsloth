@@ -20,15 +20,15 @@ import {
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
-import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
+import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
 import {
   ggufVariantsMatch,
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
-  ArrowDown01Icon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
@@ -110,7 +110,7 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
-  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-[7px] border px-1.5 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
@@ -328,7 +328,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               onClick={handleDelete}
               aria-label={`Delete ${item.label}${item.partial && !item.downloaded ? " (partial)" : ""}`}
               className={cn(
-                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-[7px]",
+                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-full",
                 "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
                 "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                 "hover:text-destructive hover:ring-destructive/40",
@@ -666,7 +666,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
                 <QuantBadge
@@ -713,7 +713,7 @@ export function GgufDownloadCard({
                     </span>
                   )}
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.25}
                   className="ml-0.5 size-3.5 shrink-0"
                 />
@@ -723,7 +723,7 @@ export function GgufDownloadCard({
           <PopoverContent
             align="start"
             side="bottom"
-            sideOffset={8}
+            sideOffset={0}
             avoidCollisions={false}
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
@@ -794,8 +794,7 @@ export function GgufDownloadCard({
             downloadingThisVariant &&
               !cancelling &&
               "hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400",
-            // Hide post-download CTAs (Run / New Chat) for this PR.
-            !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE &&
+            !HUB_GGUF_RUN_ACTIONS_VISIBLE &&
               !downloadingThisVariant &&
               !cancelling &&
               !isLoadingThisModel &&
@@ -832,7 +831,11 @@ export function GgufDownloadCard({
             </>
           ) : selected?.downloaded ? (
             <>
-              <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+              <HugeiconsIcon
+                icon={PlayIcon}
+                strokeWidth={1.75}
+                className="translate-x-px"
+              />
               Run
             </>
           ) : (

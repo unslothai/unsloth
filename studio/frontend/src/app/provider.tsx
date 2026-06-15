@@ -11,6 +11,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { LlamaUpdateBanner } from "@/components/llama-update-banner";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
@@ -258,7 +259,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <>
         {children}
         <DownloadManagerPanel />
-        <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+          <WebUpdateBanner
+            positioned={false}
+            enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
+          />
+          <LlamaUpdateBanner
+            positioned={false}
+            enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
+          />
+        </div>
       </>
     );
   }
@@ -294,7 +304,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  if (!shouldUseCustomWindowTitlebar()) return content;
+  if (!shouldUseCustomWindowTitlebar()) {
+    // macOS desktop uses the native titlebar and returns here before the
+    // custom-titlebar branch, so mount the updater banner on this path too.
+    return (
+      <>
+        {content}
+        <LlamaUpdateBanner
+          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+        />
+      </>
+    );
+  }
 
   const showSidebarSurface =
     showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
@@ -305,6 +326,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {content}
       </div>
+      <LlamaUpdateBanner
+        enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+      />
     </div>
   );
 }

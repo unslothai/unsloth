@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
-
-Covers ChatMessage tool/assistant roles, ChatCompletionRequest tool fields and
-extra="allow", anthropic_tool_choice_to_openai, _build_passthrough_payload
-tool_choice propagation, and _friendly_error's httpx-to-"Lost connection"
-mapping. No server or GPU required.
-"""
+"""Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
 import sys
 import asyncio
+import json
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -25,13 +20,26 @@ from pydantic import ValidationError
 from models.inference import (
     ChatCompletionRequest,
     ChatMessage,
+    CompletionChoice,
+    CompletionMessage,
+    ResponsesRequest,
 )
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
+    _build_chat_request,
+    _build_openai_passthrough_body,
     _build_passthrough_payload,
+    _clamp_finish_reason,
+    _coalesce_consecutive_user_turns,
+    _drop_empty_assistant_sentinels,
+    _effective_max_tokens,
+    _extract_content_parts,
     _friendly_error,
+    _merge_user_content,
+    _openai_messages_for_gguf_chat,
+    _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
 )
@@ -158,10 +166,11 @@ class TestChatMessageToolRoles:
         with pytest.raises(ValidationError):
             ChatMessage(role = "user", content = [])
 
-    def test_tool_empty_content_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
-        assert "content" in str(exc_info.value)
+    def test_tool_empty_content_accepted(self):
+        # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
+        # OpenAI and llama-server both accept it, so Studio must not 400.
+        msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
+        assert msg.content == ""
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
         # Stop-button leaves an empty assistant turn; tolerate for replay.
@@ -271,17 +280,19 @@ class TestChatCompletionRequestToolFields:
         assert req.stop is None
 
     def test_extra_fields_accepted(self):
-        # `frequency_penalty`, `seed`, `response_format` aren't explicitly
-        # declared but must survive Pydantic parsing now that extra="allow".
+        # `frequency_penalty` and `response_format` are not yet explicitly
+        # declared but must survive Pydantic parsing now that extra="allow" is
+        # set. `seed` is declared and should land on the typed field instead.
         req = self._make(
             frequency_penalty = 0.5,
             seed = 42,
             response_format = {"type": "json_object"},
         )
+        assert req.seed == 42
         # Extras land in model_extra
         assert req.model_extra is not None
         assert req.model_extra.get("frequency_penalty") == 0.5
-        assert req.model_extra.get("seed") == 42
+        assert "seed" not in req.model_extra
         assert req.model_extra.get("response_format") == {"type": "json_object"}
 
     def test_unsloth_extensions_still_work(self):
@@ -336,6 +347,215 @@ class TestChatCompletionRequestToolFields:
         assert resp.headers["content-type"].startswith("application/json")
         assert "text/event-stream" not in resp.headers["content-type"]
         assert captured["stream"] is False
+
+    def _v1_client(
+        self,
+        monkeypatch,
+        llama_backend,
+        inference_backend = None,
+    ):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inference_route
+        from auth.authentication import get_current_subject
+        from utils.api_errors import install_api_error_handlers
+
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
+        if inference_backend is not None:
+            monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
+
+        app = FastAPI()
+        app.include_router(inference_route.router, prefix = "/v1")
+        install_api_error_handlers(app)
+        app.dependency_overrides[get_current_subject] = lambda: "test-user"
+        return TestClient(app)
+
+    def _assert_unsupported_param(self, response, param):
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"]["param"] == param
+        assert body["error"]["code"] == "unsupported_parameter"
+
+    def _assert_unsupported_n(self, response):
+        self._assert_unsupported_param(response, "n")
+
+    def test_n_allows_openai_chat_completion_range(self):
+        req = self._make(n = 128)
+        assert req.n == 128
+        with pytest.raises(ValidationError):
+            self._make(n = 129)
+
+    def test_n_rejected_for_external_provider_path(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_confirm_tool_calls_rejected_for_provider_tools(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "external_model": "gpt-4.1",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "only supported for local streaming tools" in body["error"]["message"]
+
+    def test_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "logprobs": True,
+            },
+        )
+        self._assert_unsupported_param(resp, "logprobs")
+
+    def test_top_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "top_logprobs": 3,
+            },
+        )
+        self._assert_unsupported_param(resp, "top_logprobs")
+
+    def test_n_rejected_for_gguf_streaming_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_gguf_tools_passthrough_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_non_gguf_path(self, monkeypatch):
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {}}
+
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {"chat_template_info": {"template": "chatml"}}}
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                raise AssertionError("tool loop should be rejected before starting")
+
+            def generate_chat_completion(self, **kwargs):
+                raise AssertionError("plain path should not be used")
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda backend, chat_template: {"supports_tools": True},
+        )
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert "requires stream=true" in body["error"]["message"]
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -449,16 +669,241 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
-    def test_stream_adds_include_usage(self):
+    def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
         args["stream"] = True
         body = _build_passthrough_payload(**args)
+        assert "stream_options" not in body
+
+    def test_stream_forwards_include_usage_when_client_requests_it(self):
+        args = self._args()
+        args["stream"] = True
+        body = _build_passthrough_payload(
+            **args,
+            stream_options = {"include_usage": True},
+        )
         assert body.get("stream_options") == {"include_usage": True}
+
+    def test_stream_forwards_include_usage_false_when_client_requests_it(self):
+        args = self._args()
+        args["stream"] = True
+        body = _build_passthrough_payload(
+            **args,
+            stream_options = {"include_usage": False},
+        )
+        assert body.get("stream_options") == {"include_usage": False}
 
     def test_repetition_penalty_renamed(self):
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+    def test_passthrough_body_merges_system_and_developer_messages(self):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools = self._args()["openai_tools"],
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert body["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+
+# =====================================================================
+# Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
+# preserve_thinking must reach llama-server via chat_template_kwargs,
+# gated on template capabilities like the non-passthrough paths.
+# =====================================================================
+
+
+def _reasoning_backend(
+    supports_reasoning = True,
+    reasoning_style = "enable_thinking",
+    reasoning_always_on = False,
+    supports_preserve_thinking = False,
+):
+    """Bare LlamaCppBackend with just the reasoning capability flags set,
+    so _build_openai_passthrough_body exercises the real
+    _request_reasoning_kwargs gating."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._supports_reasoning = supports_reasoning
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_always_on = reasoning_always_on
+    backend._supports_preserve_thinking = supports_preserve_thinking
+    return backend
+
+
+class TestPassthroughReasoningKwargs:
+    def _payload(self, **fields):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            **fields,
+        )
+
+    def test_enable_thinking_forwarded(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(),
+        )
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_preserve_thinking_forwarded_when_template_supports_it(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = True, preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
+        )
+        assert body["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "preserve_thinking": True,
+        }
+
+    def test_preserve_thinking_dropped_when_template_lacks_it(self):
+        body = _build_openai_passthrough_body(
+            self._payload(preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = False),
+        )
+        assert "chat_template_kwargs" not in body
+
+    def test_reasoning_effort_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(reasoning_effort = "high"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
+
+    def test_reasoning_effort_none_forwarded_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False, reasoning_effort = "none"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "none"}
+
+    def test_reasoning_effort_minimal_maps_to_low_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = True, reasoning_effort = "minimal"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
+    def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
+        )
+        assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
+    def test_always_on_reasoning_skips_thinking_kwargs(self):
+        body = _build_openai_passthrough_body(
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_always_on = True),
+        )
+        assert "chat_template_kwargs" not in body
+
+    def test_no_reasoning_fields_omits_chat_template_kwargs(self):
+        body = _build_openai_passthrough_body(
+            self._payload(),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
+        )
+        assert "chat_template_kwargs" not in body
+
+
+# =====================================================================
+# OpenAI API compatibility helpers — verified spec edge cases
+# =====================================================================
+
+
+class TestOpenAICompatibilityHelpers:
+    def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
+        payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
+        assert _effective_max_tokens(payload) == 64
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        ["stop", "length", "tool_calls", "content_filter", "function_call"],
+    )
+    def test_clamp_finish_reason_preserves_openai_finish_reasons(self, finish_reason):
+        assert _clamp_finish_reason(finish_reason) == finish_reason
+
+    def test_clamp_finish_reason_defaults_unknown_to_stop(self):
+        assert _clamp_finish_reason(None) == "stop"
+        assert _clamp_finish_reason("unexpected") == "stop"
+
+    def test_non_streaming_completion_choice_accepts_tool_calls_finish_reason(self):
+        choice = CompletionChoice(
+            index = 0,
+            message = CompletionMessage(content = ""),
+            finish_reason = "tool_calls",
+        )
+        assert choice.finish_reason == "tool_calls"
+
+    def test_stream_usage_chunk_requires_include_usage(self):
+        usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        payload = SimpleNamespace(stream_options = None)
+        assert (
+            _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
+        )
+
+        payload.stream_options = {"include_usage": True}
+        line = _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None)
+        assert line is not None
+        assert '"choices":[]' in line
+        assert '"usage"' in line
+
+    def test_stream_usage_chunk_coerces_nullable_counts(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        line = _openai_stream_usage_chunk(
+            payload,
+            "chatcmpl-test",
+            123,
+            "model",
+            {"prompt_tokens": None, "completion_tokens": 7, "total_tokens": None},
+            None,
+        )
+
+        assert line is not None
+        parsed = json.loads(line.removeprefix("data: "))
+        usage = parsed["usage"]
+        assert usage["prompt_tokens"] == 0
+        assert usage["completion_tokens"] == 7
+        assert usage["total_tokens"] == 7
+
+    def test_developer_message_preserves_existing_system_prompt(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        for message in payload.messages:
+            if message.role == "developer":
+                message.role = "system"
+
+        system_prompt, chat_messages, image_b64 = _extract_content_parts(payload.messages)
+
+        assert system_prompt == "original system\n\ndeveloper rules"
+        assert chat_messages == [{"role": "user", "content": "hi"}]
+        assert image_b64 is None
 
 
 # =====================================================================
@@ -467,12 +912,6 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 class TestFriendlyErrorHttpx:
-    """When llama-server is down, httpx RequestError strings lack the
-    "Lost connection to llama-server" substring the sync path keys off, so the
-    old substring-only `_friendly_error` returned a useless generic message.
-    These tests pin the new isinstance-based mapping.
-    """
-
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
@@ -490,7 +929,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "Lost connection" in _friendly_error(exc)
+        assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -800,3 +1239,381 @@ class TestGgufVisionToolRouting:
         assert tool_messages[0]["role"] == "system"
         assert tool_messages[1]["role"] == "user"
         assert tool_messages[1]["content"][1]["type"] == "image_url"
+
+    def test_parallel_tool_calls_false_reaches_gguf_tool_loop(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "done"}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            parallel_tool_calls = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            raise AssertionError("tool loop should be rejected before starting")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            confirm_tool_calls = True,
+            stream = False,
+            messages = [{"role": "user", "content": "search once"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+        assert exc.value.status_code == 400
+        assert "requires stream=true" in exc.value.detail["error"]["message"]
+
+    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            yield "done"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+
+        assert captured["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("seed", "expected"),
+        [
+            (41, [41, 42, 43]),
+            (-1, [-1, -1, -1]),
+        ],
+    )
+    def test_gguf_n_choices_vary_explicit_non_negative_seed(self, monkeypatch, seed, expected):
+        import routes.inference as inf_mod
+
+        seen_seeds = []
+
+        def _generate(**kwargs):
+            seen_seeds.append(kwargs.get("seed"))
+            yield f"choice-{len(seen_seeds)}"
+            yield {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 7,
+                    "total_tokens": 12,
+                },
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            n = 3,
+            seed = seed,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        body = json.loads(response.body)
+
+        assert seen_seeds == expected
+        assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+
+
+# =====================================================================
+# Responses API -> Chat Completions translation: chat_template_kwargs
+# (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
+# reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
+# otherwise /v1/responses silently ignores reasoning control (issue #6198).
+# =====================================================================
+
+
+class TestResponsesChatTemplateKwargs:
+    _messages = [ChatMessage(role = "user", content = "What is 100 - 67?")]
+
+    def test_enable_thinking_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "What is 100 - 67?",
+            chat_template_kwargs = {"enable_thinking": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is True
+
+    def test_enable_thinking_false_lifted_from_extra_body(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": False},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+        assert chat_req.enable_thinking is False
+
+    def test_no_chat_template_kwargs_leaves_enable_thinking_unset(self):
+        payload = ResponsesRequest(model = "qwen-local", input = "hi")
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None
+
+    def test_chat_template_kwargs_without_enable_thinking_is_ignored(self):
+        payload = ResponsesRequest(
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"some_other_flag": True},
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
+        assert chat_req.enable_thinking is None
+
+
+# =====================================================================
+# GGUF chat-template role alternation: coalesce orphaned user turns left
+# behind when an empty assistant turn is dropped, so strict templates
+# (Gemma 3, ...) do not 400 on a role-parity break.
+# =====================================================================
+
+
+class TestMergeUserContent:
+    def test_strings_join_with_blank_line(self):
+        assert _merge_user_content("hi", "again") == "hi\n\nagain"
+
+    def test_empty_sides_passthrough(self):
+        assert _merge_user_content("", "again") == "again"
+        assert _merge_user_content("hi", "") == "hi"
+
+    def test_multimodal_parts_concatenate(self):
+        img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        out = _merge_user_content([{"type": "text", "text": "look"}, img], "and this?")
+        assert out == [
+            {"type": "text", "text": "look"},
+            img,
+            {"type": "text", "text": "and this?"},
+        ]
+
+
+class TestCoalesceConsecutiveUserTurns:
+    def test_merges_two_string_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
+    def test_merges_three_consecutive_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "a\n\nb\n\nc"},
+        ]
+
+    def test_alternating_history_is_unchanged(self):
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == msgs
+
+    def test_assistant_and_tool_turns_untouched(self):
+        msgs = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == msgs
+
+    def test_multimodal_parts_survive_merge(self):
+        img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "look"}, img]},
+            {"role": "user", "content": "and this?"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert len(out) == 1
+        assert out[0]["content"] == [
+            {"type": "text", "text": "look"},
+            img,
+            {"type": "text", "text": "and this?"},
+        ]
+
+    def test_does_not_mutate_input(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        _coalesce_consecutive_user_turns(msgs)
+        assert msgs[0]["content"] == "hi"
+
+
+class TestGgufChatHistoryAlternation:
+    def test_empty_assistant_turn_dropped_then_users_coalesced(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        assert roles == ["user"]
+        assert out[0]["content"] == "hi\n\nagain"
+
+    def test_bare_stop_sentinel_also_coalesced(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant"),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+        assert roles == ["user"]
+
+    def test_system_prompt_preserved(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "system", content = "be brief"),
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m["role"] for m in out] == ["system", "user"]
+        assert out[1]["content"] == "hi\n\nagain"
+
+    def test_normal_history_unchanged(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = "hello"),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m["role"] for m in out] == ["user", "assistant", "user"]
+
+    def test_tool_path_rebuild_stays_alternating(self):
+        # Tool path rebuilds via _set_or_prepend_system_message over the coalesced
+        # history, so it stays alternating too.
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        rebuilt = _set_or_prepend_system_message(normalized, "You have access to tools.")
+        roles = [m["role"] for m in rebuilt]
+        assert roles == ["system", "user"]
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles

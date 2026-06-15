@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { CheckIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -215,7 +216,9 @@ export function McpComposerButton({
       }
     >
       <span className="truncate">{opts.label}</span>
-      {opts.enabled ? <CheckIcon className="ml-auto" /> : null}
+      {opts.enabled ? (
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      ) : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
           <TooltipTrigger asChild={true}>
@@ -244,14 +247,36 @@ export function McpComposerButton({
             <button
               type="button"
               className="composer-pill-btn"
+              data-pill-label="MCP"
               data-active={active ? "true" : "false"}
               aria-label="MCP servers"
             >
-              <HugeiconsIcon
-                icon={McpServerIcon}
-                className="size-[15px]"
-                strokeWidth={2}
-              />
+              {/* Icon doubles as an off switch: hover swaps to an X; clicking
+                  it turns MCP off without opening the menu. In compact
+                  icon-only mode the glyph is the whole button, so clicks fall
+                  through to the trigger and open the menu instead. */}
+              <span
+                role="button"
+                aria-label="Turn off MCP"
+                tabIndex={-1}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                  setMcpEnabledForChat(false);
+                }}
+                className="composer-pill-glyph cursor-pointer"
+              >
+                <HugeiconsIcon
+                  icon={McpServerIcon}
+                  className="size-[15px]"
+                  strokeWidth={2}
+                />
+                <XIcon className="composer-pill-x" />
+              </span>
               <span>MCP</span>
               <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
             </button>
@@ -259,7 +284,7 @@ export function McpComposerButton({
           <DropdownMenuContent
             side={side}
             align="start"
-            sideOffset={2}
+            sideOffset={0}
             avoidCollisions={true}
             className="unsloth-plus-menu mcp-menu w-[232px]"
           >

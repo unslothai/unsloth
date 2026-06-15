@@ -78,8 +78,7 @@ async def load_checkpoint(
                 for _ in range(60):  # up to 30s
                     if not trn.is_training_active():
                         break
-                    import time
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                 else:
                     logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
         except Exception as e:
@@ -155,19 +154,41 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         )
 
 
+def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+    """Best-effort registration so absolute exports show up in local scans."""
+    try:
+        from storage.studio_db import add_scan_folder
+        folder = add_scan_folder(str(path))
+        return True, str(folder.get("path") or path)
+    except Exception as exc:
+        logger.warning("Could not register export scan folder %s: %s", path, exc)
+        return False, None
+
+
 def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Return the export path relative to exports_root, hiding the install path."""
+    """Return relative export paths, keeping external absolute paths visible."""
     if not output_path:
         return None
     try:
         from utils.paths.storage_roots import exports_root
 
+        path = Path(output_path)
+        # If it's outside exports_root, return the full absolute path
+        # so users can find their files on a different drive.
+        if path.is_absolute():
+            try:
+                path.resolve().relative_to(exports_root().resolve())
+            except ValueError:
+                registered, registered_path = _try_register_external_export(path)
+                return {
+                    "output_path": str(path),
+                    "scan_folder_registered": registered,
+                    "scan_folder_path": registered_path,
+                }
         rel = os.path.relpath(output_path, exports_root())
-        if rel.startswith(".."):
-            rel = os.path.basename(output_path)
         return {"output_path": rel}
     except Exception:
-        return {"output_path": os.path.basename(output_path)}
+        return {"output_path": output_path}
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)

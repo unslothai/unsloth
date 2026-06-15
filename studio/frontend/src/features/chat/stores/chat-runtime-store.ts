@@ -34,8 +34,102 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
+export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
+export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
+  "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+
+// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
+// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
+// choice would silently no-op on models without an MTP head. Unknown -> auto.
+const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
+
+export type RagSource =
+  | { type: "thread" }
+  | { type: "kb"; kbId: string };
+
+export type RagMode = "hybrid" | "lexical" | "dense";
+
+export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+export const DEFAULT_RAG_MODE: RagMode = "hybrid";
+export const DEFAULT_RAG_TOP_K = 5;
+// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
+export type RagAutoInject = "auto" | "on" | "off";
+export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
+export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+
+function loadRagSource(): RagSource {
+  if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_SOURCE_KEY);
+    if (!raw) return DEFAULT_RAG_SOURCE;
+    const parsed = JSON.parse(raw) as RagSource;
+    if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
+      return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "thread") return { type: "thread" };
+    return DEFAULT_RAG_SOURCE;
+  } catch {
+    return DEFAULT_RAG_SOURCE;
+  }
+}
+
+function saveRagSource(value: RagSource): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+  } catch {
+  }
+}
+
+function loadRagMode(): RagMode {
+  const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
+  return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagAutoInject(): RagAutoInject {
+  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  // Legacy boolean migration: false -> Off, else Auto.
+  return raw === "false" ? "off" : "auto";
+}
+
+function loadRagTopK(): number {
+  if (typeof window === "undefined") return DEFAULT_RAG_TOP_K;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_TOP_K_KEY);
+    if (raw === null) return DEFAULT_RAG_TOP_K;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
+  } catch {
+    return DEFAULT_RAG_TOP_K;
+  }
+}
+
+// Preserves a stored 0 (score floors can legitimately be 0).
+function loadRagNumber(
+  key: string,
+  fallback: number,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = integer ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  } catch {
+    return fallback;
+  }
+}
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings omits `checkpoint`
@@ -72,6 +166,14 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+/** One live DiffusionGemma denoising snapshot: the current canvas text at a
+ *  given step of a given block (block/step are 0-based; total = steps in block). */
+export type DiffusionCanvasFrame = {
+  block: number;
+  step: number;
+  total: number;
+  text: string;
+};
 export type PendingImageEditReference = {
   threadId: string | null;
   openaiImageGenerationCallId: string;
@@ -232,6 +334,71 @@ function saveString(key: string, value: string): void {
   }
 }
 
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
+export function normalizeSpeculativeType(
+  v: string | null | undefined,
+): string | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
+    return "ngram";
+  }
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older backend echoes).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some(
+    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
+  );
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
+}
+
+export function resolveLoadedSpeculativeSettings(response: {
+  speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
+}): {
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+} {
+  const loadedSpeculativeType = normalizeSpeculativeType(
+    response.speculative_type,
+  );
+  const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  return {
+    speculativeType: loadedSpeculativeType,
+    loadedSpeculativeType,
+    specDraftNMax: loadedSpecDraftNMax,
+    loadedSpecDraftNMax,
+  };
+}
+
+// The user's standing preference, sanitized to the universal set.
+export function readPersistedSpeculativeType(): string {
+  const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
+  return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
+}
+
+// MTP / null / unknown values are left unwritten so they stay session-only.
+// Called from the load path so only an applied preference is persisted, not an
+// unapplied dropdown edit the user might Reset or abandon before Apply.
+export function saveSpeculativeType(value: string | null): void {
+  if (value && PERSISTED_SPEC_MODES.has(value)) {
+    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
+  }
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
@@ -309,6 +476,42 @@ type ChatRuntimeStore = {
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
+  ragEnabled: boolean;
+  ragSource: RagSource;
+  ragMode: RagMode;
+  ragTopK: number;
+  // autoInject = forced first-pass retrieval before answering.
+  ragAutoInject: RagAutoInject;
+  ragAutoInjectMinScore: number;
+  /**
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
+   */
+  confirmToolCalls: boolean;
+  /**
+   * Bypass Permissions: when on, tool calls run with no confirmation gate
+   * AND the python/terminal execution sandbox is disabled on the backend
+   * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   */
+  bypassPermissions: boolean;
+  /**
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
+   */
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -323,16 +526,39 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /**
+   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Mirrors InferenceStatusResponse.spec_fallback_reason.
+   */
+  specFallbackReason: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
+  tensorParallel: boolean;
+  /** Backend-reported tensor-parallel state; null until first hydrated. */
+  loadedTensorParallel: boolean | null;
   loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
+  /** Live denoising frame for the in-progress diffusion message. Transient: set
+   *  per step, cleared when the run ends, never persisted into the transcript. */
+  activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   activeProjectId: string | null;
+  /**
+   * Temporary / incognito chat toggle. When on, the active conversation
+   * lives only in assistant-ui's in-memory repository and is never
+   * persisted to studio.db -- so it stays out of history and vanishes on
+   * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
+   * backend settings, so a refresh always exits incognito.
+   */
+  incognito: boolean;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -365,6 +591,7 @@ type ChatRuntimeStore = {
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
+  setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -385,15 +612,33 @@ type ChatRuntimeStore = {
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
+  setConfirmToolCalls: (enabled: boolean) => void;
+  setBypassPermissions: (enabled: boolean) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+    autoAllowKey: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
+  setRagEnabled: (enabled: boolean) => void;
+  setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
+  setRagTopK: (topK: number) => void;
+  setRagAutoInject: (value: RagAutoInject) => void;
+  setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  setTensorParallel: (value: boolean) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -645,25 +890,49 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     false,
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  // Never restore Bypass Permissions from storage: it disables the sandbox and
+  // the confirmation gate, so it must be re-enabled (through the warning
+  // dialog) each session rather than silently reactivating on reload.
+  bypassPermissions: false,
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
+  // RAG is opt-in per session: always starts off, never restored from storage.
+  ragEnabled: false,
+  ragSource: loadRagSource(),
+  ragMode: loadRagMode(),
+  ragTopK: loadRagTopK(),
+  ragAutoInject: loadRagAutoInject(),
+  ragAutoInjectMinScore: loadRagNumber(
+    CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
+    { min: 0, max: 1 },
+  ),
   toolStatus: null,
   generatingStatus: null,
+  activeDiffusionCanvas: null,
   autoHealToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "auto",
+  speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
+  specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  tensorParallel: false,
+  loadedTensorParallel: null,
   loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
   activeProjectId: null,
+  incognito: false,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -824,6 +1093,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
@@ -860,14 +1130,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
+      // Only the per-session enable pill resets; source/mode/top_k persist.
+      ragEnabled: false,
       toolStatus: null,
+      activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "auto",
+      speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
+      specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      tensorParallel: false,
+      loadedTensorParallel: null,
       loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -955,12 +1232,81 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       return { mcpEnabledForChat };
     }),
+  setConfirmToolCalls: (confirmToolCalls) =>
+    set(() => {
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { confirmToolCalls };
+    }),
+  setBypassPermissions: (bypassPermissions) =>
+    // Deliberately not persisted (see init): a reload must not silently keep
+    // the sandbox/confirmation bypass active without re-accepting the warning.
+    set(() => ({ bypassPermissions })),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+      },
+    })),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
       return { webFetchToolsEnabled };
     }),
+  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagSource: (ragSource) =>
+    set(() => {
+      saveRagSource(ragSource);
+      return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set(() => {
+      saveString(CHAT_RAG_MODE_KEY, ragMode);
+      return { ragMode };
+    }),
+  setRagTopK: (ragTopK) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
+      return { ragTopK };
+    }),
+  setRagAutoInject: (ragAutoInject) =>
+    set(() => {
+      saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      return { ragAutoInject };
+    }),
+  setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
+    set(() => {
+      saveString(
+        CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+        String(ragAutoInjectMinScore),
+      );
+      return { ragAutoInjectMinScore };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
+    set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {
@@ -992,6 +1338,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
@@ -1005,3 +1352,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+export function resolveSpeculativeSettingsForLoad({
+  usePersistedPreference = false,
+}: {
+  usePersistedPreference?: boolean;
+} = {}): {
+  speculativeType: string | null;
+  specDraftNMax: number | null;
+} {
+  const state = useChatRuntimeStore.getState();
+  const speculativeType = usePersistedPreference
+    ? readPersistedSpeculativeType()
+    : state.speculativeType ?? readPersistedSpeculativeType();
+  return {
+    speculativeType,
+    specDraftNMax:
+      !usePersistedPreference &&
+      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+        ? state.specDraftNMax
+        : null,
+  };
+}
