@@ -2442,14 +2442,18 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# No unsloth.exe rename needed. The base-package upgrade routes through pip on
-# Windows (install_python_stack maps --upgrade-package -> pip), and pip tolerates
-# a running/locked console-script .exe: it moves the old unsloth.exe aside, then
-# writes the new one. uv could not -- it aborts trying to delete the locked .exe --
-# which is why this used to rename unsloth.exe out of the way first; but renaming
-# the running uv-trampoline launcher itself failed with a sharing violation
-# (WinError 32), so the trick never actually worked and only emitted a scary
-# warning on every Windows install/update.
+# No unsloth.exe rename needed -- the rename never worked anyway. setup.ps1 runs
+# *via* unsloth.exe, so renaming our own running uv-trampoline launcher always
+# failed with a sharing violation (WinError 32) and only printed a scary warning.
+#
+# It is not needed either. In the install.ps1 flow SKIP_STUDIO_BASE=1 means the
+# base packages are never reinstalled, so unsloth.exe is not rewritten. In the
+# 'studio update' flow install_python_stack upgrades unsloth via uv
+# (--upgrade-package); if uv cannot replace the locked launcher it falls back to
+# pip, but the pip fallback drops --upgrade-package and base.txt lists only bare
+# unsloth/unsloth-zoo, so pip finds them already satisfied and no-ops. Either way
+# unsloth.exe is left intact. (In-place self-upgrade of the running launcher is
+# unreliable on Windows; the supported upgrade path is the installer one-liner.)
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
