@@ -552,9 +552,12 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         _extract_quant_label = None
 
     if _extract_quant_label is not None:
-        exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
-        if exact:
-            return exact
+        try:
+            exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
+            if exact:
+                return exact
+        except Exception as e:
+            logger.warning("Failed to extract GGUF quant labels: %s", e)
 
     boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
     return sorted(f for f in main_files if boundary.search(f.lower()))

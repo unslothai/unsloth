@@ -1144,8 +1144,14 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|-)be(?:[.-]|$)/;
 
-function isAutoLoadableGgufVariant(variant: GgufVariantDetail): boolean {
+function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
+  if (!variant?.filename) {
+    return false;
+  }
   const filename = variant.filename.trim().toLowerCase();
+  if (!filename) {
+    return false;
+  }
   const separatorIndex = Math.max(
     filename.lastIndexOf("/"),
     filename.lastIndexOf("\\"),
