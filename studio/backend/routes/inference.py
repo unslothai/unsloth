@@ -1547,7 +1547,11 @@ def _estimate_gguf_kv_gb(gguf_path: str, max_seq_length: int) -> float:
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
             return 0.0
-        ctx = max_seq_length if max_seq_length and max_seq_length > 0 else (probe._context_length or 0)
+        ctx = (
+            max_seq_length
+            if max_seq_length and max_seq_length > 0
+            else (probe._context_length or 0)
+        )
         return probe._estimate_kv_cache_bytes(ctx) / (1024**3) if ctx > 0 else 0.0
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -1555,7 +1559,9 @@ def _estimate_gguf_kv_gb(gguf_path: str, max_seq_length: int) -> float:
 
 
 def _estimate_gguf_required_gb(
-    config: ModelConfig, hf_token: Optional[str] = None, max_seq_length: int = 0
+    config: ModelConfig,
+    hf_token: Optional[str] = None,
+    max_seq_length: int = 0,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB) from its on-disk quantized weights (the dominant
     term; the guard adds margin + floor). Local: the main GGUF incl. split shards

@@ -577,13 +577,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_local_adds_kv_cache(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
             cfg = SimpleNamespace(
-                gguf_file = str(p), gguf_mmproj_file = None, gguf_mtp_file = None,
-                gguf_hf_repo = None, gguf_variant = None,
+                gguf_file = str(p),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
             )
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
                 gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
@@ -591,7 +593,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "not-a.gguf"
             p.write_bytes(b"not a gguf")
