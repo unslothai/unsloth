@@ -506,7 +506,6 @@ function Install-UnslothStudio {
             }
             $appDir = $StudioDataDir
             $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
-            $launcherVbs = Join-Path $appDir "launch-studio.vbs"
             $desktopDir = [Environment]::GetFolderPath("Desktop")
             $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
                 Join-Path $desktopDir "Unsloth Studio.lnk"
@@ -799,19 +798,30 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
-            # shell.Run(cmd, 0, ...) already hides the window, so -WindowStyle Hidden
-            # is redundant; omitting it trims an AV-heuristic token (Kaspersky FP).
-            $vbsContent = @"
-Set shell = CreateObject("WScript.Shell")
-cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File ""$launcherPs1"""
-shell.Run cmd, 0, False
-"@
-            # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-            Set-Content -LiteralPath $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
+            # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
+            # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
+            # shortcuts instead point straight at powershell.exe running
+            # launch-studio.ps1 with a hidden window (selected below).
+
+            # Delete any launch-studio.vbs left by a pre-hardening install. New
+            # installs no longer generate it, but an upgrade that merely stopped
+            # generating it would leave the exact file AV flags on disk, so remove
+            # it explicitly. Covers default and env-mode installs (same $appDir).
+            $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
+            if (Test-Path -LiteralPath $legacyLauncherVbs) {
+                Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
+            }
 
             # Prefer bundled icon from local clone/dev installs.
             # If not available, best-effort download from raw GitHub.
             # We only attach the icon if the resulting file has a valid ICO header.
+            # Snapshot the existing icon first so we can tell whether it actually
+            # changed and gate the heavier icon-cache refresh on a real change.
+            $preIconHash = $null
+            if (Test-Path -LiteralPath $iconPath) {
+                try { $preIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash } catch {}
+            }
             $hasValidIcon = $false
             if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
                 try {
@@ -847,6 +857,24 @@ shell.Run cmd, 0, False
                 }
             }
 
+            # Did the icon content actually change vs the previous install?
+            # Only a real change (or a first/removed icon) should trigger the heavy
+            # refresh; a no-op reinstall with no icon at all must not.
+            $iconChanged = $false
+            if ($hasValidIcon) {
+                if (-not $preIconHash) {
+                    $iconChanged = $true
+                } else {
+                    try {
+                        $postIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash
+                        $iconChanged = ($postIconHash -ne $preIconHash)
+                    } catch { $iconChanged = $true }
+                }
+            } elseif ($preIconHash) {
+                # A previously present icon was removed or invalidated.
+                $iconChanged = $true
+            }
+
             # Env-mode: skip persistent Desktop / Start Menu .lnk shortcuts
             # that may point at a deleted workspace; launcher + icon stay.
             if ($StudioRedirectMode -eq 'env') {
@@ -854,8 +882,22 @@ shell.Run cmd, 0, False
                 return
             }
 
-            $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
-            $shortcutArgs = "//B //Nologo `"$launcherVbs`""
+            # Whether this is effectively a first install (no pre-existing .lnk).
+            # Used to gate the heavier icon-cache refresh below so a no-op reinstall
+            # does not repeatedly clear caches / restart StartMenuExperienceHost --
+            # a behavioral cluster AV heuristics can score as dropper-like.
+            $firstInstall = -not (
+                ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
+                ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
+            )
+
+            # Launch transport for the shortcuts: powershell.exe runs
+            # launch-studio.ps1 with a hidden window. We deliberately avoid a
+            # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
+            # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            $shortcutTarget = $powershellForLnk
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
@@ -865,9 +907,11 @@ shell.Run cmd, 0, False
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
                         $shortcut = $wshell.CreateShortcut($linkPath)
-                        $shortcut.TargetPath = $wscriptExe
+                        $shortcut.TargetPath = $shortcutTarget
                         $shortcut.Arguments = $shortcutArgs
                         $shortcut.WorkingDirectory = $appDir
+                        # Start minimized so the brief PowerShell console flash is muted.
+                        $shortcut.WindowStyle = 7
                         $shortcut.Description = "Launch Unsloth Studio"
                         if ($hasValidIcon) {
                             $shortcut.IconLocation = "$iconPath,0"
@@ -881,15 +925,13 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Force Explorer to re-read each new shortcut's icon so it renders
-                    # immediately instead of a stale/generic entry (a same-name .lnk
-                    # recreated across reinstalls keeps Explorer's cached per-item icon).
-                    # The reliable, non-disruptive fix (no explorer restart) is a per-item
-                    # SHChangeNotify SHCNE_UPDATEITEM + SHCNF_PATHW per .lnk; the global
-                    # SHCNE_ASSOCCHANGED broadcast alone does NOT recover a stale item.
-                    # Also clear the on-disk icon cache (covers heavier staleness).
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                    # Always do the cheap, non-disruptive per-item refresh so a
+                    # rewritten same-name .lnk renders with its new target/icon
+                    # immediately (a same-name .lnk recreated across reinstalls keeps
+                    # Explorer's cached per-item icon). The reliable fix (no explorer
+                    # restart) is a per-item SHChangeNotify SHCNE_UPDATEITEM +
+                    # SHCNF_PATHW per .lnk; the global SHCNE_ASSOCCHANGED broadcast
+                    # alone does NOT recover a stale item.
                     try {
                         Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
                         # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
@@ -899,21 +941,31 @@ shell.Run cmd, 0, False
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
-                    # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
-                    # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
-                    # invalidate, so a rewritten same-name shortcut shows the old tile
-                    # until the host restarts. Drop only the render caches (NEVER
-                    # start2.bin -- the pinned layout) and let the host rebuild.
-                    # Best-effort; Win10 has no such host (Test-Path skips it).
-                    try {
-                        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
-                        if (Test-Path -LiteralPath $smehTemp) {
-                            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
-                                Remove-Item -Force -ErrorAction SilentlyContinue
-                            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
-                            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
-                        }
-                    } catch {}
+                    # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile
+                    # rebuild only when the icon actually changed or this is a first
+                    # install. Running "clear icon cache + kill StartMenuExperienceHost"
+                    # on every no-op reinstall is a dropper-like behavioral cluster and
+                    # is unnecessary when the icon is unchanged (the per-item notify
+                    # above already refreshes the rewritten shortcut).
+                    if ($firstInstall -or $iconChanged) {
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                        # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
+                        # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
+                        # invalidate, so a rewritten same-name shortcut shows the old tile
+                        # until the host restarts. Drop only the render caches (NEVER
+                        # start2.bin -- the pinned layout) and let the host rebuild.
+                        # Best-effort; Win10 has no such host (Test-Path skips it).
+                        try {
+                            $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+                            if (Test-Path -LiteralPath $smehTemp) {
+                                Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                                    Remove-Item -Force -ErrorAction SilentlyContinue
+                                Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+                                Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+                            }
+                        } catch {}
+                    }
                 } else {
                     substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }

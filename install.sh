@@ -1227,6 +1227,10 @@ if (-not \$targetExe) { exit 1 }
 # native install if one exists) so the WSL shortcut shows the proper icon.
 \$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
 \$iconPath = Join-Path \$iconDir 'unsloth.ico'
+\$preIconHash = \$null
+if (Test-Path -LiteralPath \$iconPath) {
+    try { \$preIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash } catch {}
+}
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {
         New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
@@ -1242,9 +1246,11 @@ if (Test-Path -LiteralPath \$iconPath) {
     (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
 \$created = @()
+\$firstShortcut = \$false
 foreach (\$dir in \$locations) {
     if (-not \$dir -or -not (Test-Path \$dir)) { continue }
     \$linkPath = Join-Path \$dir '$_css_lnk_name_ps'
+    if (-not (Test-Path -LiteralPath \$linkPath)) { \$firstShortcut = \$true }
     \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
     \$shortcut.TargetPath = \$targetExe
     \$shortcut.Arguments = '$_css_sc_args_ps'
@@ -1253,27 +1259,43 @@ foreach (\$dir in \$locations) {
     \$shortcut.Save()
     \$created += \$linkPath
 }
-# Force Explorer to re-read EACH new shortcut's icon so it renders immediately
-# instead of a stale/blank (generic) icon. The reliable, NON-disruptive fix
-# (no explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM,
-# SHCNF_PATHW, <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a
-# stale item. Also clear the on-disk icon cache for heavier staleness.
-try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
-try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+\$iconChanged = \$false
+if (\$hasIcon) {
+    if (-not \$preIconHash) {
+        \$iconChanged = \$true
+    } else {
+        try {
+            \$postIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash
+            \$iconChanged = (\$postIconHash -ne \$preIconHash)
+        } catch { \$iconChanged = \$true }
+    }
+} elseif (\$preIconHash) {
+    \$iconChanged = \$true
+}
+# Per-item refresh always (cheap, non-disruptive) so the rewritten .lnk renders
+# immediately instead of a stale/blank (generic) icon. The reliable fix (no
+# explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
+# <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
 try {
     Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
     foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
     [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
 } catch {}
-# Win11 Start Menu keeps its own tile-icon cache (preserve start2.bin).
-try {
-    \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
-    if (Test-Path -LiteralPath \$smeh) {
-        Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
-    }
-} catch {}
+# Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
+# (preserve start2.bin) only on first install or a real icon change, so a no-op
+# WSL reinstall does not run a dropper-like clear-cache + kill cluster each time.
+if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
+    try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
+    try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+    try {
+        \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
+        if (Test-Path -LiteralPath \$smeh) {
+            Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
+            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 WSLPS1_EOF
 
             # Convert WSL path to Windows path for powershell.exe
