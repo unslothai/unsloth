@@ -68,9 +68,7 @@ def test_trainer_class_importable_path(tag: str):
     or src/transformers/trainer/__init__.py."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
     hit = first_match("huggingface/transformers", tag, candidates)
-    assert (
-        hit is not None
-    ), f"{tag}: src/transformers/trainer[.py|/__init__.py] both missing"
+    assert hit is not None, f"{tag}: src/transformers/trainer[.py|/__init__.py] both missing"
     _, src = hit
     assert has_def(src, "Trainer", "class"), f"{tag}: class Trainer missing"
 
@@ -165,9 +163,7 @@ def test_modeling_utils_exposes_checkpoint(tag: str):
     """unsloth-zoo#549: transformers 5.2+ uses `transformers.modeling_utils.checkpoint`
     (alias for torch.utils.checkpoint.checkpoint). Patch must replace
     the transformers reference, not just torch's."""
-    src = fetch_text(
-        "huggingface/transformers", tag, "src/transformers/modeling_utils.py"
-    )
+    src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
     # Either a direct import or local rebinding.
@@ -190,9 +186,7 @@ def test_modeling_utils_exposes_checkpoint(tag: str):
 def test_pushtohubmixin_create_repo_status(tag: str):
     """unsloth-zoo#393: transformers 5.x removed PushToHubMixin._create_repo.
     On 4.x present, on 5.x absent. Snapshot which side."""
-    src = fetch_text(
-        "huggingface/transformers", tag, "src/transformers/modeling_utils.py"
-    )
+    src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
     # Just record the presence; either is OK as long as we know.
@@ -274,9 +268,7 @@ def test_fp8linear_init_param_names(tag: str):
 def test_processing_utils_unpack_importable(tag: str):
     """unsloth-zoo#583/584: `from transformers.processing_utils import Unpack`
     must keep working."""
-    src = fetch_text(
-        "huggingface/transformers", tag, "src/transformers/processing_utils.py"
-    )
+    src = fetch_text("huggingface/transformers", tag, "src/transformers/processing_utils.py")
     if src is None:
         pytest.skip(f"{tag}: processing_utils.py missing")
     has_unpack = bool(re.search(r"^Unpack\b\s*=", src, re.MULTILINE) or "Unpack" in src)
@@ -300,9 +292,7 @@ def test_gemma3_attention_forward_present(tag: str):
     )
     if src is None:
         pytest.skip(f"{tag}: modeling_gemma3.py missing")
-    assert has_def(
-        src, "Gemma3Attention", "class"
-    ), f"{tag}: class Gemma3Attention missing"
+    assert has_def(src, "Gemma3Attention", "class"), f"{tag}: class Gemma3Attention missing"
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -410,9 +400,7 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     )
     if src is None:
         pytest.skip(f"{tag}: modeling_attn_mask_utils.py missing")
-    assert has_def(
-        src, "AttentionMaskConverter", "class"
-    ), f"{tag}: AttentionMaskConverter missing"
+    assert has_def(src, "AttentionMaskConverter", "class"), f"{tag}: AttentionMaskConverter missing"
     # _prepare_4d_attention_mask_for_sdpa is a function we hard-import.
     assert (
         has_def(src, "_prepare_4d_attention_mask_for_sdpa", "func")
@@ -427,16 +415,12 @@ def test_cache_utils_classes(tag: str):
         pytest.skip(f"{tag}: cache_utils.py missing")
     needed = ("Cache", "DynamicCache")
     for cls in needed:
-        assert has_def(
-            src, cls, "class"
-        ), f"{tag}: transformers.cache_utils.{cls} missing"
+        assert has_def(src, cls, "class"), f"{tag}: transformers.cache_utils.{cls} missing"
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_training_args_parallel_mode_importable(tag: str):
-    src = fetch_text(
-        "huggingface/transformers", tag, "src/transformers/training_args.py"
-    )
+    src = fetch_text("huggingface/transformers", tag, "src/transformers/training_args.py")
     if src is None:
         pytest.skip(f"{tag}: training_args.py missing")
     assert "ParallelMode" in src, (

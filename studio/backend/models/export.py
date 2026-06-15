@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Export API.
-"""
+"""Pydantic schemas for Export API."""
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal, Dict, Any
 
 
 def _validate_save_directory(value: str) -> str:
-    """Reject save_directory values that escape the export root."""
+    """Validate save_directory — allows absolute paths (user may want a different drive)."""
     if value is None:
         raise ValueError("save_directory is required")
     raw = str(value).strip()
@@ -22,15 +20,15 @@ def _validate_save_directory(value: str) -> str:
         raise ValueError("save_directory may not contain null bytes")
     if any(ch in raw for ch in ("\r", "\n")):
         raise ValueError("save_directory may not contain control characters")
-    if len(raw) > 255:
-        raise ValueError("save_directory must be <= 255 characters")
     path = Path(raw).expanduser()
-    if path.is_absolute():
-        raise ValueError(
-            "save_directory must be a name or relative path under the "
-            "export root; absolute paths are rejected"
-        )
-    if ".." in path.parts:
+    path_parts = (*path.parts, *PureWindowsPath(raw).parts, *raw.replace("\\", "/").split("/"))
+    if any(len(part) > 255 for part in path_parts if part not in ("", ".", "/", "\\")):
+        raise ValueError("save_directory path components must be <= 255 characters")
+    if (
+        ".." in path.parts
+        or ".." in PureWindowsPath(raw).parts
+        or ".." in raw.replace("\\", "/").split("/")
+    ):
         raise ValueError("save_directory may not contain '..' segments")
     return raw
 

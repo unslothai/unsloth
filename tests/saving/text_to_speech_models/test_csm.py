@@ -134,22 +134,18 @@ import torch
 
 output_audio_path = "csm_audio.wav"
 try:
-    text = (
-        "We just finished fine tuning a text to speech model... and it's pretty good!"
-    )
+    text = "We just finished fine tuning a text to speech model... and it's pretty good!"
     speaker_id = 0
     inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
     audio_values = model.generate(
         **inputs,
-        max_new_tokens = 125,  # 125 tokens is 10 seconds of audio, for longer speech increase this
-        # play with these parameters to get the best results
+        max_new_tokens = 125,  # 125 tokens ~= 10 seconds of audio
         depth_decoder_temperature = 0.6,
         depth_decoder_top_k = 0,
         depth_decoder_top_p = 0.9,
         temperature = 0.8,
         top_k = 50,
         top_p = 1.0,
-        #########################################################
         output_audio = True,
     )
     audio = audio_values[0].to(torch.float32).cpu().numpy()
@@ -158,8 +154,6 @@ try:
 except Exception as e:
     assert False, f"Inference failed with exception: {e}"
 
-
-## assert that transcribed_text contains The birch canoe slid on the smooth planks. Glued the sheet to the dark blue background. It's easy to tell the depth of a well. Four hours of steady work faced us.
 
 print("✅ All sections passed successfully!")
 

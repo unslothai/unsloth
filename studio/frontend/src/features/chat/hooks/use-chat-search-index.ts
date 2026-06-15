@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
-import { db } from "../db";
-import type { MessageRecord, ThreadRecord } from "../types";
+import { useEffect, useRef, useState } from "react";
+import { batchListChatMessages, CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import type { MessageRecord } from "../types";
+import {
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "../utils/chat-history-storage";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -11,10 +15,12 @@ export interface ChatSearchItem {
   title: string;
   preview: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 const THREAD_LIMIT = 200;
 const PREVIEW_MAX = 120;
+const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 
 function extractText(message: MessageRecord): string {
   const content = message.content;
@@ -23,7 +29,10 @@ function extractText(message: MessageRecord): string {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as { type?: string; text?: unknown };
-    if ((p.type === "text" || p.type === "reasoning") && typeof p.text === "string") {
+    if (
+      (p.type === "text" || p.type === "reasoning") &&
+      typeof p.text === "string"
+    ) {
       parts.push(p.text);
     }
   }
@@ -32,18 +41,13 @@ function extractText(message: MessageRecord): string {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return text.slice(0, max).trimEnd() + "…";
+  return `${text.slice(0, max).trimEnd()}…`;
 }
 
 async function buildIndex(): Promise<ChatSearchItem[]> {
-  // Fetch all threads newest-first, filter archived in JS, then take top N.
-  // `archived` is a boolean which Dexie does not index reliably, so we filter
-  // after the sort instead of using `.where("archived")`.
-  const all = (await db.threads
-    .orderBy("createdAt")
-    .reverse()
-    .toArray()) as ThreadRecord[];
-  const active = all.filter((t) => !t.archived).slice(0, THREAD_LIMIT);
+  const active = (
+    await listStoredChatThreads({ includeArchived: false })
+  ).slice(0, THREAD_LIMIT);
 
   const itemThreadIds = new Map<
     string,
@@ -65,6 +69,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.pairId,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });
@@ -75,34 +80,44 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.id,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });
     }
   }
 
-  // One query for all messages across all relevant threads, then group by
-  // threadId in memory. Avoids N sequential awaits.
   const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
     (e) => e.threadIds,
   );
-  const messages = (await db.messages
-    .where("threadId")
-    .anyOf(allThreadIds)
-    .toArray()) as MessageRecord[];
+  let messagesByThread = await batchListChatMessages(allThreadIds).catch(
+    () => new Map<string, MessageRecord[]>(),
+  );
 
-  const byThreadId = new Map<string, MessageRecord[]>();
-  for (const m of messages) {
-    const arr = byThreadId.get(m.threadId);
-    if (arr) arr.push(m);
-    else byThreadId.set(m.threadId, [m]);
+  // Legacy-only chats can exist before server-side history import finishes.
+  // Fill only the missing ids via the legacy path instead of one request per
+  // thread up front.
+  const missingThreadIds = allThreadIds.filter(
+    (threadId) => !messagesByThread.has(threadId),
+  );
+  if (missingThreadIds.length > 0) {
+    const legacyEntries = await Promise.all(
+      missingThreadIds.map(async (threadId) => [
+        threadId,
+        await listStoredChatMessages(threadId).catch(() => []),
+      ] as const),
+    );
+    messagesByThread = new Map(messagesByThread);
+    for (const [threadId, messages] of legacyEntries) {
+      messagesByThread.set(threadId, messages);
+    }
   }
 
   const results: ChatSearchItem[] = [];
   for (const { item, threadIds } of itemThreadIds.values()) {
     const merged: MessageRecord[] = [];
     for (const tid of threadIds) {
-      const arr = byThreadId.get(tid);
+      const arr = messagesByThread.get(tid);
       if (arr) merged.push(...arr);
     }
     if (merged.length === 0) {
@@ -131,27 +146,51 @@ export function useChatSearchIndex(enabled: boolean): {
 } {
   const [items, setItems] = useState<ChatSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const requestSeqRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
       // Clear stale results so the next open doesn't flash old items.
       setItems([]);
+      setLoading(false);
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    buildIndex()
-      .then((result) => {
-        if (!cancelled) setItems(result);
-      })
-      .catch(() => {
-        if (!cancelled) setItems([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const run = () => {
+      const seq = ++requestSeqRef.current;
+      setLoading(true);
+      buildIndex()
+        .then((result) => {
+          // Drop out-of-order responses so a slower rebuild can't clobber a fresher one.
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems(result);
+        })
+        .catch(() => {
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems([]);
+        })
+        .finally(() => {
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setLoading(false);
+        });
+    };
+
+    const scheduleRebuild = () => {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (!cancelled) run();
+      }, SEARCH_REBUILD_DEBOUNCE_MS);
+    };
+
+    run();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     return () => {
       cancelled = true;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
 

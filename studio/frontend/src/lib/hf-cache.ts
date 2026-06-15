@@ -19,8 +19,8 @@ const MAX_CONCURRENT = 3;
 
 // ── Cache & in-flight maps ──────────────────────────────────────
 
-// Extend ModelEntry with the additional fields we always request so callers
-// do not need unsafe casts to access safetensors/tags.
+// Extend ModelEntry with the fields we always request, so callers avoid
+// unsafe casts to access safetensors/tags.
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
   tags?: string[];
@@ -140,10 +140,9 @@ export async function cachedModelInfo(
       });
       const entry = { data: result as CachedResult, ts: Date.now() };
       cache.set(key, entry);
-      // For public (non-gated, non-private) models, also prime the anonymous
-      // cache slot so the VRAM hook (which reads without credentials) gets a
-      // cache hit. We skip gated/private models to avoid leaking auth-scoped
-      // metadata into the anonymous slot.
+      // For public models, also prime the anonymous cache slot so the VRAM
+      // hook (which reads without credentials) hits cache. Skip gated/private
+      // models to avoid leaking auth-scoped metadata into the anonymous slot.
       const r = result as CachedResult & { gated?: false | "auto" | "manual"; private?: boolean };
       if (token && !r.private && !r.gated) {
         const anonKey = cacheKey(params.name, undefined);

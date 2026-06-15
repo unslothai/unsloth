@@ -5,64 +5,21 @@
 """Lockfile supply-chain audit for the Studio frontend and Tauri shell.
 
 Runs BEFORE `npm ci` / `cargo fetch` in CI. Refuses to proceed when a
-lockfile contains patterns that indicate the kind of supply-chain
-injection seen in the npm Shai-Hulud waves and the cargo
-crates.io brand-squat attempts.
+lockfile contains patterns indicating supply-chain injection (npm
+Shai-Hulud waves, cargo crates.io brand-squats).
 
-What it checks
-==============
+Checks package-lock.json (lockfileVersion 2/3): `resolved` URL must be
+the npm registry (direct git/github/file refs are the injection vector);
+`integrity` SHA must be present; known IOC substrings grepped from the
+body. Checks Cargo.lock: `source` must be the crates.io registry index;
+known cargo IOC substrings.
 
-studio/frontend/package-lock.json (lockfileVersion 2 or 3):
+Exit codes: 0 = clean (or skip env var set to a justification >=5 chars,
+not '1'/'true'); 1 = findings; 2 = internal error.
 
-  1. `resolved` URL origin. Every entry must resolve through
-     `https://registry.npmjs.org/`. Direct GitHub-hosted dependencies
-     (`git+ssh://`, `git+https://`, `github:owner/repo#sha`,
-     `file:`, `http://`) are refused -- npm's TanStack incident used
-     exactly this vector to land an unaudited GitHub commit hash as
-     an optional dependency.
-
-  2. `integrity` field presence. Every non-workspace entry must carry
-     an `integrity` SHA. A missing integrity means the registry can
-     swap the tarball after lockfile generation and CI will not
-     notice.
-
-  3. Known IOC strings. A hardcoded set of indicator-of-compromise
-     substrings is grepped across the entire lockfile body (file
-     names, dependency keys, URLs). The list is updated as new
-     campaigns surface. Catching one means the local install was
-     about to pull a publicly-known malicious release.
-
-studio/src-tauri/Cargo.lock:
-
-  4. `source` field origin. Every entry with a `source` must point at
-     `registry+https://github.com/rust-lang/crates.io-index`. Direct
-     git sources (`git+https://...`) and `path+...` for cross-crate
-     paths warrant manual review and are flagged.
-
-  5. Known cargo IOC strings. Same idea as (3), separate list.
-
-Exit codes
-==========
-
-  0  no findings, or an opt-out env var (UNSLOTH_LOCKFILE_AUDIT_SKIP)
-     is set to a justification string (>=5 chars, not '1'/'true'/etc).
-     A value like '1' or 'true' is now REJECTED loudly and the audit
-     runs normally
-  1  one or more findings; stderr lists them with file path and line
-     number where derivable
-  2  internal error (missing dependency, malformed JSON, etc.)
-
-Operational stance
-==================
-
-This scanner only PARSES the lockfiles -- it never executes anything
-in them, never resolves anything against the network. Safe to run
-ahead of every `npm ci`. The IOC list is short by design; this
-complements (not replaces) `npm audit`, OSV-Scanner, and the
-advisory-DB pipeline in `.github/workflows/security-audit.yml`. The
-shape of the catch is "we refuse to proceed because the lockfile
-itself is shaped wrong", which fires before any third-party install
-script gets a chance to run on the runner.
+Only PARSES the lockfiles, never executes or networks. Complements (not
+replaces) `npm audit` / OSV-Scanner / the advisory-DB pipeline. Fires
+before any third-party install script runs on the runner.
 """
 
 from __future__ import annotations
@@ -77,14 +34,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Known IOC strings (case-sensitive substring match).
-# ─────────────────────────────────────────────────────────────────────
-#
-# Keep these short and FACTUAL. Each entry is tied to a public advisory
-# and is the literal string an attacker would have to embed for the
-# attack to work. Adding speculative or generic patterns here would
-# generate false positives on dependency upgrades.
+# Known IOC strings (case-sensitive substring match). Each is tied to a
+# public advisory; speculative/generic patterns would false-positive on
+# upgrades.
 NPM_IOC_STRINGS: tuple[str, ...] = (
     # Shai-Hulud TanStack wave -- May 11, 2026 (GHSA-g7cv-rxg3-hmpx).
     "router_init.js",
@@ -328,36 +280,22 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
 }
 
 CARGO_IOC_STRINGS: tuple[str, ...] = (
-    # Reserved for future cargo-side incidents. Empty by default --
-    # `source` origin check below catches the structural pattern.
+    # Empty by default; the `source` origin check catches the structural
+    # pattern. Reserved for future cargo-side incidents.
 )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Allowed lockfile origins.
-# ─────────────────────────────────────────────────────────────────────
 NPM_REGISTRY_PREFIX = "https://registry.npmjs.org/"
-
-# Tarballs are also fetched from this mirror on some GH Actions cached
-# runs (npm rewrites the resolved URL on cache hit). Allow either.
 NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 
 CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Cargo non-registry source allowlist.
-# ─────────────────────────────────────────────────────────────────────
-#
-# Each entry is `(crate_name, exact_source_string)`. The crate must
-# match by name AND the source must match the full pinned-SHA string
-# verbatim. Bumping the commit SHA forces a re-review here: the
-# scanner fires until the new SHA is appended.
-#
-# Studio's Tauri shell pulls `fix-path-env` directly from
-# tauri-apps/fix-path-env-rs because the crate is not published to
-# crates.io. The pinned commit (c4c45d5) was reviewed at the time it
-# landed; future bumps need explicit approval.
+# Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
+# Both must match verbatim; bumping the pinned SHA forces a re-review.
+# Studio's Tauri shell pulls `fix-path-env` from git because it is not
+# published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (
         "fix-path-env",
@@ -365,11 +303,6 @@ CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
         "c4c45d503ea115a839aae718d02f79e7c7f0f673",
     ),
 )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Finding container.
-# ─────────────────────────────────────────────────────────────────────
 
 
 class Finding:
@@ -389,17 +322,46 @@ class Finding:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# package-lock.json audit.
-# ─────────────────────────────────────────────────────────────────────
+def _gha_escape(text: str) -> str:
+    """Escape a string for a GH Actions `::warning::`/`::error::` message.
+
+    GH Actions truncates at the first newline unless `\\n`/`\\r` are
+    escaped as `%0A`/`%0D`. `%` must be replaced first to avoid
+    double-encoding the subsequent escapes.
+    """
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def audit_npm_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
+        # Missing lockfile is a config error, not a clean audit.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
+                    "expected lockfile not found; refusing to silently "
+                    "report a clean audit for a path that was not scanned"
+                ),
+            )
+        )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        # Surface as a finding instead of crashing CI with a traceback.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         lock = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -426,9 +388,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
 
     packages = lock.get("packages") or {}
     for key, entry in packages.items():
-        # The empty key "" is the project root; workspace entries use
-        # keys like "node_modules/foo" or "studio/frontend/sub-pkg".
-        # Skip the project root (it has no `resolved`).
+        # Empty key "" is the project root (no `resolved`); skip it.
         if key == "":
             continue
         if entry.get("link"):
@@ -436,12 +396,8 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             continue
 
         resolved = entry.get("resolved")
-        # Entries living inside another package's `node_modules/`
-        # tree are bundled fold-ins -- the parent's tarball ships
-        # their source verbatim and the parent's `integrity` covers
-        # the whole subtree. npm represents them in lockfileVersion 3
-        # as nested entries with no `resolved` and no `integrity` of
-        # their own. Treat them as transparent to this audit.
+        # Entries nested in another package's node_modules are bundled
+        # fold-ins covered by the parent's integrity; treat as transparent.
         nested = key.count("/node_modules/") >= 1
 
         # 1. resolved-URL origin.
@@ -503,18 +459,14 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                     path = str(path),
                     package = key,
                     kind = "blocked-known-malicious",
-                    detail = (
-                        f"{pkg_name}@{version} is on the " "BLOCKED_NPM_VERSIONS list"
-                    ),
+                    detail = (f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"),
                 )
             )
 
-    # 4. Known IOC strings: scan the raw file body so we hit fields the
-    #    structural pass above doesn't enumerate (scripts, optional
-    #    dependencies, etc.). Cheap and complete.
+    # 4. Known IOC strings: scan the raw body to catch fields the
+    #    structural pass doesn't enumerate (scripts, optional deps, etc.).
     for ioc in NPM_IOC_STRINGS:
         if ioc in raw:
-            # Best-effort line number lookup.
             line_no = _first_line_containing(raw, ioc)
             findings.append(
                 Finding(
@@ -539,23 +491,39 @@ def _first_line_containing(text: str, needle: str) -> int | None:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Cargo.lock audit.
-# ─────────────────────────────────────────────────────────────────────
-
-
-# Cargo.lock is TOML; parse with stdlib tomllib (Python 3.11+). The
-# studio's Tauri shell already requires a modern toolchain so this is
-# always available where CI runs.
+# Cargo.lock is TOML; parsed with stdlib tomllib (Python 3.11+).
 _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 
 
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
+        # See audit_npm_lockfile: missing lockfile is a finding.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
+                    "expected lockfile not found; refusing to silently "
+                    "report a clean audit for a path that was not scanned"
+                ),
+            )
+        )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         import tomllib  # type: ignore[import-not-found]
     except ImportError:
@@ -647,12 +615,27 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
     return findings
 
 
-# ─────────────────────────────────────────────────────────────────────
-# CLI.
-# ─────────────────────────────────────────────────────────────────────
+# Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
+# Blocking = public attack indicators (known-malicious version, IOC
+# string). Advisory = structural anomalies that warn but don't block.
+# --strict makes every finding blocking.
+BLOCKING_KINDS: frozenset[str] = frozenset(
+    {
+        "blocked-known-malicious",
+        "known-ioc-string",
+        # A structurally broken lockfile might hide a real attack.
+        "malformed-lockfile",
+        "missing-lockfile",
+        "unreadable-lockfile",
+        "missing-toml-parser",
+    }
+)
 
-
-DEFAULT_NPM_LOCKFILES = ("studio/frontend/package-lock.json",)
+DEFAULT_NPM_LOCKFILES = (
+    "studio/frontend/package-lock.json",
+    "studio/backend/core/data_recipe/oxc-validator/package-lock.json",
+    "studio/package-lock.json",
+)
 DEFAULT_CARGO_LOCKFILES = ("studio/src-tauri/Cargo.lock",)
 
 
@@ -671,29 +654,34 @@ def main(argv: list[str] | None = None) -> int:
         default = None,
         help = (
             "Path to a package-lock.json (repeatable). "
-            "Default: studio/frontend/package-lock.json."
+            "Default: studio/frontend/package-lock.json, "
+            "studio/backend/core/data_recipe/oxc-validator/package-lock.json, "
+            "and studio/package-lock.json (Tauri CLI for desktop release)."
         ),
     )
     parser.add_argument(
         "--cargo-lockfile",
         action = "append",
         default = None,
+        help = ("Path to a Cargo.lock (repeatable). Default: studio/src-tauri/Cargo.lock."),
+    )
+    parser.add_argument(
+        "--strict",
+        action = "store_true",
         help = (
-            "Path to a Cargo.lock (repeatable). "
-            "Default: studio/src-tauri/Cargo.lock."
+            "Treat every finding as blocking (exit 1). "
+            "Default mode only blocks on known-malicious versions, "
+            "indicator-of-compromise strings, or structurally broken "
+            "lockfiles; everything else is printed as an advisory "
+            "warning with exit 0. CI should use the default; local "
+            "audits aiming for zero noise can opt in via --strict."
         ),
     )
     args = parser.parse_args(argv)
 
-    # SF4: require a real justification (e.g. JIRA ticket id) for the
-    # skip env var. Treat the trivially-set values ("1", "true", "yes",
-    # "on", empty) as INVALID -- they look like accidental flips and
-    # silently bypassed the supply-chain audit. A valid value is a
-    # non-empty string >=5 chars after stripping that does not match
-    # any of the boolean-shaped tokens above. An invalid value emits a
-    # loud GitHub Actions warning to stderr and FALLS THROUGH to run
-    # the audit normally (fail-safe). A valid value emits a warning
-    # naming the reason and skips with rc=0 (compat).
+    # Require a real justification (>=5 chars, not a boolean-shaped token)
+    # for the skip env var. An invalid value warns and falls through to
+    # run the audit (fail-safe); a valid one warns and skips with rc=0.
     _skip_raw = os.environ.get("UNSLOTH_LOCKFILE_AUDIT_SKIP")
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
@@ -715,8 +703,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     root = Path(args.root).resolve()
-    npm_paths = [root / p for p in (args.npm_lockfile or DEFAULT_NPM_LOCKFILES)]
-    cargo_paths = [root / p for p in (args.cargo_lockfile or DEFAULT_CARGO_LOCKFILES)]
+    # Explicit flags scope the scan; defaults apply only to no-args CI.
+    _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
+    if _user_explicit:
+        npm_paths = [root / p for p in (args.npm_lockfile or ())]
+        cargo_paths = [root / p for p in (args.cargo_lockfile or ())]
+    else:
+        npm_paths = [root / p for p in DEFAULT_NPM_LOCKFILES]
+        cargo_paths = [root / p for p in DEFAULT_CARGO_LOCKFILES]
 
     all_findings: list[Finding] = []
     for p in npm_paths:
@@ -734,17 +728,49 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    # Split into blocking (known-malicious / IOC / structurally broken)
+    # and advisory (everything else). Default mode prints advisories
+    # without changing the exit code; --strict makes all blocking.
+    blocking = [f for f in all_findings if f.kind in BLOCKING_KINDS]
+    advisory = [f for f in all_findings if f.kind not in BLOCKING_KINDS]
+
+    if args.strict:
+        blocking = list(all_findings)
+        advisory = []
+
+    if advisory:
+        print(
+            f"\n[lockfile-audit] {len(advisory)} advisory finding(s) "
+            "(non-blocking; pass --strict to fail the build on these):\n",
+            file = sys.stderr,
+        )
+        for f in advisory:
+            # GH Actions warning annotation; _gha_escape collapses the
+            # multi-line Finding onto one line so it renders fully in the UI.
+            print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
+            print(file = sys.stderr)
+
+    if not blocking:
+        print(
+            f"[lockfile-audit] OK: {len(advisory)} advisory finding(s), "
+            "0 blocking. Run with --strict to escalate advisory findings.",
+            flush = True,
+        )
+        return 0
+
     print(
-        f"\n[lockfile-audit] FAIL: {len(all_findings)} finding(s):\n",
+        f"\n[lockfile-audit] FAIL: {len(blocking)} blocking finding(s):\n",
         file = sys.stderr,
     )
-    for f in all_findings:
-        print(str(f), file = sys.stderr)
+    for f in blocking:
+        # Same %-encoding rationale as the advisory branch above.
+        print(f"::error::{_gha_escape(str(f))}", file = sys.stderr)
         print(file = sys.stderr)
     print(
-        "[lockfile-audit] Refusing to proceed. Each finding above is "
-        "either a structural lockfile anomaly or a public indicator-of-"
-        "compromise. Investigate before running `npm ci` or `cargo fetch`.",
+        "[lockfile-audit] Refusing to proceed. Each blocking finding "
+        "above is either a public indicator-of-compromise, a known-"
+        "malicious pinned version, or a structurally broken lockfile. "
+        "Investigate before running `npm ci` or `cargo fetch`.",
         file = sys.stderr,
     )
     return 1

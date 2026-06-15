@@ -3,11 +3,9 @@
 
 """Backend contract for the GGUF reload duplicate-load guard.
 
-``LlamaCppBackend._already_in_target_state`` is the in-process
-short-circuit that prevents a serialised duplicate /load from killing
-the just-spawned llama-server. These tests pin the local-file
-identity, the HF-mode hf_variant fallback, and the ``extra_args``
-None-vs-[] inherit semantics so the guard cannot silently regress.
+``LlamaCppBackend._already_in_target_state`` short-circuits a duplicate /load so
+it cannot kill the just-spawned llama-server. Pins local-file identity, the
+HF-mode hf_variant fallback, and ``extra_args`` None-vs-[] inherit semantics.
 """
 
 from __future__ import annotations
@@ -78,6 +76,7 @@ def _loaded_backend(**overrides):
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
     backend._speculative_type = None
+    backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
     backend._extra_args = None

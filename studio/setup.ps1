@@ -50,6 +50,12 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
+# CUDA toolkit state, published by Resolve-CudaToolkit. Only the Phase 4 source
+# build consumes these; the prebuilt path leaves them at these defaults.
+$script:CudaToolkitReady = $false
+$script:NvccPath = $null
+$script:CudaToolkitRoot = $null
+$script:CudaArch = $null
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
@@ -214,14 +220,10 @@ function Get-InstalledLlamaPrebuiltRelease {
 function Find-Nvcc {
     param([string]$MaxVersion = "")
 
-    # If MaxVersion is set, we need to find a toolkit <= that version.
-    # CUDA toolkits install side-by-side under C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\
-
     $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
 
     if ($MaxVersion -and (Test-Path $toolkitBase)) {
         $drMajor = [int]$MaxVersion.Split('.')[0]
-        $drMinor = [int]$MaxVersion.Split('.')[1]
 
         # Get all installed CUDA dirs, sorted descending (highest first)
         $cudaDirs = Get-ChildItem -Directory $toolkitBase | Where-Object {
@@ -230,8 +232,8 @@ function Find-Nvcc {
 
         foreach ($dir in $cudaDirs) {
             if ($dir.Name -match '^v(\d+)\.(\d+)') {
-                $tkMajor = [int]$Matches[1]; $tkMinor = [int]$Matches[2]
-                $compatible = ($tkMajor -lt $drMajor) -or ($tkMajor -eq $drMajor -and $tkMinor -le $drMinor)
+                $tkMajor = [int]$Matches[1]
+                $compatible = ($tkMajor -le $drMajor)
                 if ($compatible) {
                     $nvcc = Join-Path $dir.FullName 'bin\nvcc.exe'
                     if (Test-Path $nvcc) {
@@ -272,6 +274,19 @@ function Find-Nvcc {
     return $null
 }
 
+function Write-CudaDriverToolkitMismatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolkitVersion,
+        [Parameter(Mandatory = $true)][string]$DriverMaxCuda,
+        [string]$Color = "Yellow"
+    )
+    $toolkitMajor = $ToolkitVersion.Split('.')[0]
+    $driverMajor = $DriverMaxCuda.Split('.')[0]
+    substep "CUDA Toolkit $ToolkitVersion is a major-version mismatch: toolkit major $toolkitMajor exceeds driver CUDA major $driverMajor ($DriverMaxCuda)." $Color
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, or install a CUDA $driverMajor.x toolkit." $Color
+    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
+}
+
 # Detect CUDA Compute Capability via nvidia-smi.
 # Returns e.g. "80" for A100 (8.0), "89" for RTX 4090 (8.9), etc.
 # Returns $null if detection fails.
@@ -284,7 +299,10 @@ function Get-CudaComputeCapability {
     if (-not $smiExe) { return $null }
 
     try {
-        $raw = & $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null
+        # Bounded: a wedged nvidia-smi must not hang setup after the initial
+        # -L probe succeeded (the helper merges stderr after stdout, so the
+        # first line is still the compute_cap value).
+        $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
         # nvidia-smi may return multiple GPUs; take the first one
@@ -348,11 +366,14 @@ function Get-PytorchCudaTag {
     if (-not $smiExe) { return "cu126" }
 
     try {
-        # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
-        # ErrorRecord objects leak into $output and break the -match.
-        $output = & $smiExe 2>&1 | Out-String
-        if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+        # Bounded: a wedged nvidia-smi must not hang setup. The helper merges
+        # stderr into the returned string, matching the old 2>&1 | Out-String
+        # shape (plain 2>$null leaks ErrorRecord objects in PS 5.1).
+        $output = Invoke-NvidiaSmiBounded $smiExe
+        # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+        # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+        # Accept both spellings so we don't fall through to the cu126 default.
+        if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
@@ -649,16 +670,58 @@ try {
 # ============================================
 # 1a. GPU detection
 # ============================================
+# ── Helper: run nvidia-smi under a timeout ──
+# A wedged NVIDIA driver can make nvidia-smi block during init or after a reset;
+# WaitForExit bounds it (mirrors Invoke-AmdSmiNoElevate below) so detection
+# cannot hang setup. No RunAsInvoker compat layer: nvidia-smi does not
+# auto-elevate. Returns combined stdout+stderr; "" on timeout/failure.
+function Invoke-NvidiaSmiBounded {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+        [int]$TimeoutSec = 10
+    )
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = ($SmiArgs -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            $global:LASTEXITCODE = 124
+            return ""
+        }
+        $global:LASTEXITCODE = $proc.ExitCode
+        return ($outTask.Result + "`n" + $errTask.Result)
+    } catch {
+        $global:LASTEXITCODE = 1
+        return ""
+    }
+}
+
+# ── Helper: nvidia-smi -L lists at least one real GPU ──
+# Exit code 0 alone is not enough: a stale/driverless nvidia-smi can exit 0
+# while listing no GPU, which would mark an AMD host NVIDIA and suppress ROCm
+# detection. Require a "GPU <n>:" data row.
+function Test-NvidiaSmiHasGpu {
+    param([Parameter(Mandatory = $true)][string]$Exe)
+    $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+    return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
+}
+
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
     $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if ($nvSmiCmd) {
-        & $nvSmiCmd.Source *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $HasNvidiaSmi = $true
-            $NvidiaSmiExe = $nvSmiCmd.Source
-        }
+    if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $nvSmiCmd.Source
     }
 } catch {}
 # Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
@@ -671,8 +734,7 @@ if (-not $HasNvidiaSmi) {
     foreach ($p in $nvSmiDefaults) {
         if (Test-Path $p) {
             try {
-                & $p *> $null
-                if ($LASTEXITCODE -eq 0) {
+                if (Test-NvidiaSmiHasGpu $p) {
                     $HasNvidiaSmi = $true
                     $NvidiaSmiExe = $p
                     Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
@@ -682,13 +744,303 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
+# ── Helper: run amd-smi without triggering a UAC elevation prompt ──
+# amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
+# DiskPart UAC prompt mid-install (Studio backend amd.py hits the same). RunAsInvoker
+# forces it (and helpers it spawns) to run un-elevated; on failure the WMI name ->
+# gfx fallback still resolves the arch.
+function Invoke-AmdSmiNoElevate {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+        [int]$TimeoutSec = 30
+    )
+    # RunAsInvoker blocks the auto-elevation/UAC prompt; the timeout bounds a flaky
+    # amd-smi that can otherwise spin for minutes (30s mirrors the backend amd.py).
+    $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
+    $env:__COMPAT_LAYER = 'RunAsInvoker'
+    try {
+        # [Process]::Start, NOT Start-Process -PassThru: the latter leaves .ExitCode
+        # $null after WaitForExit on PS 5.1, so $LASTEXITCODE (checked by callers)
+        # reads non-zero and kills detection. Async reads drain the pipes (no
+        # deadlock); amd-smi args have no spaces so a plain join is safe.
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = ($SmiArgs -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            $global:LASTEXITCODE = 124
+            return ""
+        }
+        $global:LASTEXITCODE = $proc.ExitCode
+        return ($outTask.Result + "`n" + $errTask.Result)
+    } catch {
+        $global:LASTEXITCODE = 1
+        return ""
+    } finally {
+        if ($null -eq $prevCompat) {
+            Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
+        } else {
+            $env:__COMPAT_LAYER = $prevCompat
+        }
+    }
+}
+
+# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+$HasROCm = $false
+$HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
+$ROCmGpuLabel = $null
+$script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
+    # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+    # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+    $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+    if (-not $hipinfoExe) {
+        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+        if ($hipRoot) {
+            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+            if (Test-Path $hipinfoCandidate) {
+                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            } else {
+                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
+                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        }
+    }
+    if ($hipinfoExe) {
+        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        try {
+            $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                $HasROCm = $true
+                $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
+                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                if ($_hipAllArches.Count -gt 0) {
+                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                } else {
+                    $ROCmGpuLabel = "AMD ROCm"
+                }
+            } elseif ($LASTEXITCODE -ne 0) {
+                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
+                substep "       $firstLine" "Yellow"
+                substep "       Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        } catch {}
+    }
+    # amd-smi fallback: HIP runtime present but hipinfo unavailable (no full HIP SDK).
+    # 'list' confirms GPU visibility, 'static --asic' extracts the gfx arch hipinfo
+    # would give. Critical for Strix Halo (gfx1151) and other HIP-runtime-only iGPUs.
+    #
+    # BUT on hosts without a working HIP runtime amd-smi elevates a child at runtime,
+    # popping a UAC/DiskPart prompt RunAsInvoker can't suppress (its manifest is
+    # asInvoker; even 'amd-smi version' hangs). So only probe when a HIP SDK is present
+    # (hipinfo found -> un-elevated) or the user opts in; else fall through to WMI name
+    # inference (enough to pick ROCm wheels + the ROCm llama.cpp prebuilt).
+    # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the HIP-SDK
+    # heuristic: a HIP SDK binary with a broken runtime can still pop the prompt, so
+    # $HipSdkInstalled must NOT silently re-enable it.
+    $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
+    $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
+    if (-not $HasROCm -and $amdSmiAllowed) {
+        $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+        if ($amdSmiExe) {
+            try {
+                $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
+                if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                    $HasROCm = $true
+                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                    # Collect ALL gfx tokens in output order so that on mixed-arch systems
+                    # we can honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES and pick the
+                    # arch for the *runtime-visible* GPU rather than always the first one.
+                    # Do NOT deduplicate: a dual same-arch system (e.g. two gfx1151 APUs)
+                    # must produce a 2-element array so HIP_VISIBLE_DEVICES=1 selects the
+                    # second GPU rather than triggering a false out-of-range warning.
+                    # Note: this mapping assumes amd-smi lists GPUs in the same order as
+                    # HIP enumerates them (both follow PCI bus order in practice); it may
+                    # give the wrong arch when GPU indices are non-contiguous (very rare).
+                    $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                        ForEach-Object { $_.Groups[1].Value.ToLower() })
+                    if ($allGfxArches.Count -gt 0) {
+                        # Resolve which GPU index is runtime-visible.  When a single
+                        # integer index is set, use it; fall back to index 0 otherwise
+                        # (comma-separated lists or unset → first GPU, same as before).
+                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
+                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
+                                  else { $null }
+                        $gpuIdx = 0
+                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
+                        if ($gpuIdx -ge $allGfxArches.Count) {
+                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+                            $gpuIdx = 0
+                        }
+                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    } else {
+                        # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                        # including the GFX target needed for wheel index selection.
+                        $smiAsicOut = ""
+                        try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
+                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                            $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                        } else {
+                            $ROCmGpuLabel = "AMD ROCm"
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    # WMI fallback: AMD GPU in device list but no HIP SDK → guide the user.
+    # WMI gives a marketing name (e.g. "AMD Radeon 890M") but never a gfx arch.
+    # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
+    # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
+    # so the name-based inference below can still attempt an arch lookup.
+    if (-not $HasROCm) {
+        try {
+            $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" } |
+                Select-Object -First 1
+            if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+        } catch {}
+    }
+    # ── Arch resolution: env-var override → name inference ──────────────────
+    # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
+    # the Adrenalin driver alone runs the per-gfx ROCm llama.cpp prebuilt (bundles its
+    # own runtime), and all it needs is the gfx arch, inferable from the WMI GPU name.
+    # Resolving it here lets setup.ps1 forward --rocm-gfx so a GPU llama.cpp is pulled
+    # instead of CPU. (PyTorch ROCm wheels still require a HIP SDK -- gated on $HasROCm
+    # below -- so this only affects llama.cpp / inference.)
+    if (-not $script:ROCmGfxArch) {
+        # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+        if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+            substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
+        }
+        # 2. Best-effort name → arch lookup (amd-smi / WMI). Most-specific first,
+        #    first match wins. Covers only arches the ROCm prebuilts support
+        #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
+        elseif ($ROCmGpuLabel) {
+            $nameArchTable = @(
+                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
+                @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (Radeon RX 9070 / 9060)
+                @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
+                @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
+                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
+                @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
+                @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
+                @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
+                @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+            )
+            foreach ($row in $nameArchTable) {
+                if ($ROCmGpuLabel -match $row.P) {
+                    $script:ROCmGfxArch = $row.A
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+                    break
+                }
+            }
+        }
+    }
+    # Capture ROCm version early for display and wheel selection.
+    # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+    # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+    if ($HasROCm -or $HipSdkInstalled) {
+        $script:ROCmVersion = $null
+        $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+        if (-not $hipConfigExe) {
+            $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            if ($hipRoot) {
+                $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                if (Test-Path $hipConfigCandidate) {
+                    $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                    substep "[WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" "Yellow"
+                    $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                }
+            }
+        }
+        if ($hipConfigExe) {
+            try {
+                $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0) {
+                    $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                    if ($hipVerLine -match '(\d+\.\d+)') {
+                        $script:ROCmVersion     = $Matches[1]
+                        $script:ROCmVersionFull = $hipVerLine
+                    }
+                }
+            } catch {}
+        }
+        if (-not $script:ROCmVersion -and $amdSmiAllowed) {
+            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiVer) {
+                try {
+                    $smiVerOut = Invoke-AmdSmiNoElevate $amdSmiVer.Source @('version')
+                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
+                } catch {}
+            }
+        }
+    }
+}
+
+if ($HasNvidiaSmi) {
+    step "gpu" "NVIDIA GPU detected"
+} elseif ($HasROCm) {
+    step "gpu" $ROCmGpuLabel
+    $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+    substep "HIP SDK: $hipSdkPath"
+    if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-Host ""
-    step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+    substep "       This is a driver issue, not an SDK issue." "Yellow"
+    substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+    substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+} elseif ($script:ROCmGfxArch) {
+    # Known arch: PyTorch comes from AMD's bundled-runtime ROCm wheels (repo.amd.com),
+    # which ship their own runtime -- HIP SDK optional (only adds the system toolchain).
+    Write-Host ""
+    step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
+    substep "Detected: $ROCmGpuLabel" "Cyan"
+    substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    Write-Host ""
+} elseif ($ROCmGpuLabel) {
+    Write-Host ""
+    step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "Could not determine the GPU arch (gfx...). Install the HIP SDK or set" "Yellow"
+    substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
+    substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     Write-Host ""
 } else {
-    step "gpu" "NVIDIA GPU detected"
+    Write-Host ""
+    step "gpu" "none (chat-only / GGUF)" "Yellow"
+    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+    Write-Host ""
 }
 
 # ============================================
@@ -832,17 +1184,29 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
-if ($HasNvidiaSmi) {
-# IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
-# NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
-# If we install a toolkit newer than the driver supports, llama-server will
-# fail at runtime with "ggml_cuda_init: failed to initialize CUDA: (null)".
+# Defined here but invoked lazily right before a Phase 4 source build; the
+# prebuilt llama.cpp path needs no local toolkit. With -RequireOrExit a source
+# build is committed, so hard-fail if no driver-compatible toolkit can be found
+# or installed. Without it, detection is best-effort and only sets the flag.
+function Resolve-CudaToolkit {
+    param([switch]$RequireOrExit)
+# Toolkit major must be <= the driver's max CUDA major (nvidia-smi "CUDA Version: X.Y");
+# a newer-major toolkit fails at runtime ("ggml_cuda_init: failed to initialize CUDA").
 
-# -- Detect max CUDA version the driver supports --
 $DriverMaxCuda = $null
 try {
-    $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
-    if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
+    # Bounded: source-build toolkit resolution must not hang on a wedged smi.
+    # test_resolve_cuda_toolkit.ps1 extracts this function alone into a child
+    # pwsh (no Invoke-NvidiaSmiBounded in scope) and stubs nvidia-smi with a
+    # .ps1 script, so fall back to direct invocation when the bounded runner
+    # is unavailable; production setup.ps1 always has it defined.
+    $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
+        Invoke-NvidiaSmiBounded $NvidiaSmiExe
+    } else {
+        & $NvidiaSmiExe 2>&1 | Out-String
+    }
+    # Newer drivers report "CUDA UMD Version: X.Y" instead of "CUDA Version: X.Y"; accept both.
+    if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         substep "driver supports up to CUDA $DriverMaxCuda"
     }
@@ -865,7 +1229,6 @@ $NvccPath = $null
 
 if ($DriverMaxCuda) {
     $drMajorCuda = [int]$DriverMaxCuda.Split('.')[0]
-    $drMinorCuda = [int]$DriverMaxCuda.Split('.')[1]
 
     # --- Step 1: Check existing CUDA_PATH first ---
     $existingCudaPath = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
@@ -877,7 +1240,7 @@ if ($DriverMaxCuda) {
         $verOut = & $candidateNvcc --version 2>&1 | Out-String
         if ($verOut -match 'release\s+(\d+)\.(\d+)') {
             $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
-            $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
+            $isCompat = ($tkMaj -le $drMajorCuda)
             if ($isCompat) {
                 # Also verify the toolkit supports our GPU architecture
                 $archOk = $true
@@ -893,7 +1256,7 @@ if ($DriverMaxCuda) {
                     substep "using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)"
                 }
             } else {
-                substep "CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" "Yellow"
+                substep "CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin with major $tkMaj, which exceeds driver CUDA major $drMajorCuda ($DriverMaxCuda)" "Yellow"
             }
         }
     }
@@ -910,12 +1273,19 @@ if ($DriverMaxCuda) {
                 }
             }
         } else {
-            # Check if there's an incompatible (too new) toolkit installed
+            # No side-by-side match: a major-compatible toolkit may still be on
+            # PATH/CUDA_PATH/a custom dir; use it, else record it as too-new.
             $AnyNvcc = Find-Nvcc
             if ($AnyNvcc) {
                 $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
-                if ($NvccOut -match "release\s+([\d]+\.[\d]+)") {
-                    $IncompatibleToolkit = $Matches[1]
+                if ($NvccOut -match "release\s+(\d+)\.(\d+)") {
+                    $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
+                    if ($tkMaj -le $drMajorCuda) {
+                        $NvccPath = $AnyNvcc
+                        substep "found compatible CUDA Toolkit (nvcc: $NvccPath)"
+                    } else {
+                        $IncompatibleToolkit = "$tkMaj.$tkMin"
+                    }
                 }
             }
         }
@@ -924,37 +1294,33 @@ if ($DriverMaxCuda) {
     $NvccPath = Find-Nvcc
 }
 
-# -- If incompatible toolkit is blocking, tell user to uninstall it --
+# A newer-major toolkit blocked by the driver: explain the mismatch.
 if (-not $NvccPath -and $IncompatibleToolkit) {
+    Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit -DriverMaxCuda $DriverMaxCuda
+    if (-not $RequireOrExit) {
+        $script:CudaToolkitReady = $false
+        return
+    }
+    # Reached only by a source build (forced, or after a prebuilt-install failure);
+    # with no compatible toolkit it must fail (setup.sh degrades to CPU instead).
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
-    Write-Host "[ERROR] CUDA Toolkit $IncompatibleToolkit is installed but INCOMPATIBLE" -ForegroundColor Red
-    Write-Host "        with your NVIDIA driver (which supports up to CUDA $DriverMaxCuda)." -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  This will cause 'failed to initialize CUDA' errors at runtime." -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  To fix:" -ForegroundColor Yellow
-    Write-Host "    1. Open Control Panel -> Programs -> Uninstall a program" -ForegroundColor Yellow
-    Write-Host "    2. Uninstall 'NVIDIA CUDA Toolkit $IncompatibleToolkit'" -ForegroundColor Yellow
-    Write-Host "    3. Re-run setup.bat (it will install CUDA $DriverMaxCuda automatically)" -ForegroundColor Yellow
-    Write-Host "" -ForegroundColor Yellow
-    Write-Host "  Alternatively, update your NVIDIA driver to one that supports CUDA $IncompatibleToolkit." -ForegroundColor Gray
+    Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     exit 1
 }
 
-# -- No toolkit at all: install via winget --
-if (-not $NvccPath) {
+# -- No toolkit at all: install via winget (only when a source build needs it) --
+if (-not $NvccPath -and $RequireOrExit) {
     Write-Host "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         if ($DriverMaxCuda) {
             # Query winget for available CUDA Toolkit versions
             $drMajor = [int]$DriverMaxCuda.Split('.')[0]
-            $drMinor = [int]$DriverMaxCuda.Split('.')[1]
             $AvailableVersions = @()
             try {
-                $rawOutput = winget show Nvidia.CUDA --versions --accept-source-agreements 2>&1 | Out-String
+                $rawOutput = winget show Nvidia.CUDA --versions --source winget --accept-source-agreements 2>&1 | Out-String
                 # Parse version lines (e.g. "12.6", "12.5", "11.8")
                 foreach ($line in $rawOutput -split "`n") {
                     $line = $line.Trim()
@@ -964,13 +1330,12 @@ if (-not $NvccPath) {
                 }
             } catch {}
 
-            # Filter to compatible versions (<= driver max) and pick the highest
+            # Filter to compatible major versions and pick the highest
             $BestVersion = $null
             foreach ($ver in $AvailableVersions) {
                 $parts = $ver.Split('.')
                 $vMajor = [int]$parts[0]
-                $vMinor = [int]$parts[1]
-                if ($vMajor -lt $drMajor -or ($vMajor -eq $drMajor -and $vMinor -le $drMinor)) {
+                if ($vMajor -le $drMajor) {
                     $BestVersion = $ver
                     break  # list is descending, first match is highest compatible
                 }
@@ -988,7 +1353,7 @@ if (-not $NvccPath) {
                     substep "CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)"
                 }
             } else {
-                substep "no compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" "Yellow"
+                substep "no compatible CUDA Toolkit version found in winget (need CUDA major <= $drMajor)" "Yellow"
             }
         } else {
             substep "Installing CUDA Toolkit (latest) via winget..."
@@ -1003,9 +1368,14 @@ if (-not $NvccPath) {
 }
 
 if (-not $NvccPath) {
+    if (-not $RequireOrExit) {
+        substep "no driver-compatible CUDA Toolkit found -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
+        $script:CudaToolkitReady = $false
+        return
+    }
     Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
     if ($DriverMaxCuda) {
-        Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
+        Write-Host "        Install a CUDA Toolkit with major version $($DriverMaxCuda.Split('.')[0]) from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
     } else {
         Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
     }
@@ -1093,8 +1463,22 @@ substep "CudaToolkitDir = $CudaToolkitRoot\"
 if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
-} else {
-    step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+# Publish the resolved toolkit to script scope for the Phase 4 build.
+$script:NvccPath = $NvccPath
+$script:CudaToolkitRoot = $CudaToolkitRoot
+$script:CudaArch = $CudaArch
+$script:CudaToolkitReady = $true
+}
+
+if ($HasROCm) {
+    $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
+    step "rocm" $rocmVerLabel
+} elseif ($script:ROCmGfxArch) {
+    # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
+    # the HIP SDK is optional (only the system ROCm toolchain).
+    step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
+} elseif ($ROCmGpuLabel) {
+    step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }
 
 # ============================================
@@ -1153,7 +1537,9 @@ if ($IsPipInstall) {
         substep "installing bun (faster frontend package installs)..."
         $prevEAP_bun = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        Invoke-SetupCommand { npm install -g bun } | Out-Null
+        # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
+        # postinstall fetches its binary; without it the install is a broken stub.
+        Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
         $ErrorActionPreference = $prevEAP_bun
         Refresh-Environment
         if (Get-Command bun -ErrorAction SilentlyContinue) {
@@ -1166,13 +1552,94 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# Conda CPython ships modified DLL search paths that break torch's c10.dll
+# loading on Windows; a venv made from conda Python inherits its base_prefix,
+# so check the executable path AND sys.base_prefix.
+$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+function Test-IsConda {
+    param([string]$Exe)
+    if ($Exe -match $CondaSkipPattern) { return $true }
+    try {
+        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+        if ($basePrefix -match $CondaSkipPattern) { return $true }
+    } catch { }
+    return $false
+}
+
+# 1g. Python (>= 3.11 and < 3.14). Prefer the interpreter install.ps1 already
+# resolved and built the venv with (UNSLOTH_SETUP_PYTHON), or the existing
+# venv python, before re-probing a system where a 3.14 or a WindowsApps stub
+# ahead on PATH would trip the gate. setup.ps1 only updates packages in that
+# venv, so the handoff is safe to reuse once validated.
+function Resolve-ReusedSetupPython {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_SETUP_PYTHON) -and
+        (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
+        return $env:UNSLOTH_SETUP_PYTHON
+    }
+    # Standalone `unsloth studio setup/update` (install.ps1 did not run): derive
+    # the venv python from the studio root, mirroring the resolver below.
+    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+    if ($root -eq "~") {
+        # Join-Path with an empty child throws on Windows PowerShell 5.1.
+        $root = $env:USERPROFILE
+    } elseif ($root -like "~/*" -or $root -like "~\*") {
+        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
+    }
+    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) { return $venvPy }
+    return $null
+}
+$ReusedSetupPython = Resolve-ReusedSetupPython
+
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
 $DetectedPyVer = $null
 
-if ($PyLauncher) {
+function Get-CompatiblePythonVersion {
+    param([string]$PythonExe)
+    try {
+        $out = & $PythonExe --version 2>&1 | Out-String
+        if ($out -match 'Python (3\.(11|12|13)(\.\d+)?)') {
+            return $Matches[1]
+        }
+    } catch { }
+    return $null
+}
+
+function Add-PythonDirToProcessPath {
+    param([string]$PythonExe)
+    try {
+        if ($PythonExe -and (Test-Path -LiteralPath $PythonExe)) {
+            $resolvedDir = Split-Path -Parent $PythonExe
+            $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+            if (-not $alreadyOnPath) {
+                $env:PATH = "$resolvedDir;$env:PATH"
+            }
+            $script:HasPython = $true
+        }
+    } catch { }
+}
+
+# Reuse the install.ps1 / venv interpreter before any system probe.
+if ($ReusedSetupPython) {
+    $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
+    if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
+        $DetectedPyVer = $_reusedVer
+        Add-PythonDirToProcessPath $ReusedSetupPython
+        $PythonOk = $true
+    }
+}
+
+# Fall back to every py.exe on PATH (all-users and per-user launchers can both
+# register). -All is required: Windows PowerShell 5.1 returns only the first
+# launcher without it, and the PowerShell 7 multi-match array breaks the call
+# operator if used directly.
+$PyLaunchers = if ($PythonOk) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
+
+foreach ($PyLauncher in $PyLaunchers) {
+    if ($PyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1184,12 +1651,7 @@ if ($PyLauncher) {
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
                     if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        $resolvedDir = Split-Path -Parent $resolvedExe
-                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
-                        if (-not $alreadyOnPath) {
-                            $env:PATH = "$resolvedDir;$env:PATH"
-                        }
-                        $HasPython = $true
+                        Add-PythonDirToProcessPath $resolvedExe
                     }
                 } catch { }
                 $PythonOk = $true
@@ -1197,6 +1659,7 @@ if ($PyLauncher) {
             }
         } catch { }
     }
+    if ($PythonOk) { break }
 }
 
 if (-not $PythonOk -and $HasPython) {
@@ -1429,36 +1892,33 @@ if (Test-Path $OxcValidatorDir) {
 Write-Host ""
 substep "setting up Python environment..."
 
-# Find Python -- skip Anaconda/Miniconda distributions.
-# Conda-bundled CPython ships modified DLL search paths that break
-# torch's c10.dll loading on Windows. Standalone CPython (python.org,
-# winget, uv) does not have this issue.
-# Uses Get-Command -All to look past conda entries that shadow a valid
-# standalone Python further down PATH, and probes py.exe (the Python
-# Launcher) which reliably finds python.org installs.
-#
-# NOTE: A venv created from conda Python inherits conda's base_prefix
-# even though the venv path itself does not contain "conda". We check
-# both the executable path AND sys.base_prefix to catch this case.
-$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+# Find Python -- skip Anaconda/Miniconda distributions ($CondaSkipPattern and
+# Test-IsConda are defined above the 1g gate). Standalone CPython (python.org,
+# winget, uv) does not have conda's torch c10.dll loading issue.
 $PythonCmd = $null
 
-# Helper: check if a Python executable is conda-based by inspecting
-# both the path and sys.base_prefix (catches venvs created from conda).
-function Test-IsConda {
-    param([string]$Exe)
-    if ($Exe -match $CondaSkipPattern) { return $true }
+# 0. Reuse the interpreter install.ps1 already resolved and built the venv with
+#    (UNSLOTH_SETUP_PYTHON, or the existing venv python) before probing the
+#    system -- it is already validated as supported and non-conda.
+if ($ReusedSetupPython) {
     try {
-        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
-        if ($basePrefix -match $CondaSkipPattern) { return $true }
+        $out = & $ReusedSetupPython --version 2>&1 | Out-String
+        if ($out -match 'Python 3\.(\d+)') {
+            $pyMinor = [int]$Matches[1]
+            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+                $PythonCmd = $ReusedSetupPython
+            }
+        }
     } catch { }
-    return $false
 }
 
 # 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
-#    py.exe is installed by python.org and resolves to standalone CPython.
-$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+#    Enumerate every launcher with -All (Windows PowerShell 5.1 returns only
+#    the first match without it) and search each for a supported, non-conda
+#    interpreter.
+$PyLaunchersResolve = if ($PythonCmd) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
+foreach ($pyLauncher in $PyLaunchersResolve) {
+    if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1476,6 +1936,7 @@ if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
             }
         } catch { }
     }
+    if ($PythonCmd) { break }
 }
 
 # 2. Fall back to scanning python3.x / python3 / python on PATH.
@@ -1511,7 +1972,7 @@ if (-not $PythonCmd) {
     exit 1
 }
 
-substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
+substep "Python found: $PythonCmd"
 
 # The venv must already exist (created by install.ps1); this script only
 # updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
@@ -1679,6 +2140,13 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     exit 1
 } else {
     substep "reusing existing virtual environment at $VenvDir"
+    $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-Path -LiteralPath $_venvPyExe) {
+        try {
+            $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
+            if ($_venvPyVer) { substep $_venvPyVer }
+        } catch {}
+    }
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).
@@ -1736,6 +2204,21 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
+        # (host predates ROCm-wheel support, or GPU added later): the fast "up to
+        # date" path would leave the user on CPU torch with Train/Export disabled.
+        # Force the dependency pass so the ROCm wheels get installed.
+        if ($script:ROCmGfxArch) {
+            $_torchIsCpu = $true
+            try {
+                & python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>$null
+                if ($LASTEXITCODE -eq 0) { $_torchIsCpu = $false }
+            } catch {}
+            if ($_torchIsCpu) {
+                substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {
@@ -1758,7 +2241,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 #     # the fresh .venv. Install it so run_install() can find its modules
 #     # and bundled requirements files.
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
-#     pip install unsloth-roland-test 2>&1 | Out-Null
+#     pip install unsloth 2>&1 | Out-Null
 # }
 
 if (-not $SkipPythonDeps) {
@@ -1790,9 +2273,97 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+# ── GPU arch → newest compatible Windows ROCm wheel release ──
+# Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+# not constrain which release to use.  Always picks the newest release that
+# supports the GPU architecture.
+# ── AMD Windows ROCm torch override ──────────────────────────────────────────
+# Uses AMD's arch-specific pip index (repo.amd.com/rocm/whl/{arch}/).
+# Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
+$ROCmGfxArch = $script:ROCmGfxArch
+$ROCmIndexUrl = $null
+# Install AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is known
+# (name-inferred on Adrenalin-only hosts). The per-arch wheels bundle the runtime
+# (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available() is True without a HIP
+# SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
+# Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
+# ROCm install still falls back to CPU below, so this is safe.
+if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
+    $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+    $archFamilyMap = @{
+        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
+        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
+        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
+    }
+    # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
+    # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
+    # the same floor and ceiling when pulling from AMD's per-arch index.
+    $torchFloorMap = @{
+        "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+        "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+    }
+    # Companion ranges for torchvision/torchaudio -- must stay in sync with the
+    # torch ceiling so pip can always find a consistent trio on AMD's per-arch
+    # index.  AMD publishes each package independently and may add a newer
+    # torchvision (e.g. 0.27 for torch 2.12) before removing 0.26, which would
+    # cause pip to resolve an ABI-incompatible set if these are left bare.
+    # Matches _ROCM_TORCH_PKG_SPECS["rocm7.2"] in install_python_stack.py.
+    # Bump all three ceilings together when torch 2.12.x is validated.
+    $torchvisionFloorMap = @{
+        "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+    }
+    $torchaudioFloorMap = @{
+        "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
+    }
+    $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+    $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
+    $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
+    $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
+    if ($archFamily) {
+        $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+    } elseif ($ROCmGfxArch) {
+        # GPU arch detected but not in the supported wheel map — warn explicitly
+        # so the user knows why they are getting CPU PyTorch instead of ROCm.
+        substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+    } else {
+        # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
+        # readable — warn rather than silently falling back to CPU PyTorch.
+        substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
+    }
+}
+
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-if ($CuTag -eq "cpu") {
+if ($ROCmIndexUrl) {
+    substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
+    if ($ROCmTorchSpec -ne "torch") {
+        substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
+    }
+    if ($script:UnslothVerbose) {
+        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor Yellow
+        $ROCmIndexUrl = $null
+    } else {
+        # Tell install_python_stack.py to skip probe + suppress manual-install warning.
+        $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+    }
+}
+
+if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
@@ -1807,7 +2378,7 @@ if ($CuTag -eq "cpu") {
         Write-Host $output -ForegroundColor Red
         exit 1
     }
-} else {
+} elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
@@ -1842,6 +2413,21 @@ if ($CuTag -eq "cpu") {
     }
 }
 
+# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
+$VenvScriptsDir = Join-Path $VenvDir "Scripts"
+$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
+if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
+    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
+    if (Test-Path -LiteralPath $StaleUnslothExe) {
+        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
+    } catch {
+        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
+    }
+}
+
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
@@ -1851,6 +2437,28 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
+    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
+    # stale-but-working copy in .deleteme.
+    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
+        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
+        if (-not $needRestore) {
+            try {
+                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
+            } catch { $needRestore = $true }
+        }
+        if ($needRestore) {
+            try {
+                if (Test-Path -LiteralPath $RunningUnslothExe) {
+                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
+                }
+                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
+                substep "restored unsloth.exe after failed install"
+            } catch {
+                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
+            }
+        }
+    }
     exit 1
 }
 
@@ -1860,13 +2468,34 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
 $VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
 $VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
+$VenvT5_510Dir = Join-Path $StudioHome ".venv_t5_510"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
+
+function Test-TargetPackageVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+    if (-not (Test-Path -LiteralPath $TargetDir -PathType Container)) { return $false }
+    $packageNorm = $PackageName.Replace("-", "_")
+    foreach ($pattern in @("$packageNorm-*.dist-info", "$PackageName-*.dist-info")) {
+        foreach ($distInfo in @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter $pattern -ErrorAction SilentlyContinue)) {
+            $metadata = Join-Path $distInfo.FullName "METADATA"
+            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { continue }
+            foreach ($line in (Get-Content -LiteralPath $metadata -ErrorAction SilentlyContinue)) {
+                if ($line -eq "Version: $ExpectedVersion") { return $true }
+            }
+        }
+    }
+    return $false
+}
 
 $_NeedT5Install = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
@@ -1876,6 +2505,10 @@ if (Test-Path -LiteralPath $VenvT5Legacy) {
 }
 if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
 if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_510Dir)) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_530Dir -PackageName "transformers" -ExpectedVersion "5.3.0")) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_550Dir -PackageName "transformers" -ExpectedVersion "5.5.0")) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_510Dir -PackageName "transformers" -ExpectedVersion "5.10.2")) { $_NeedT5Install = $true }
 # Also reinstall when python deps were updated
 if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
 
@@ -1953,8 +2586,43 @@ if ($script:UnslothVerbose) {
 if ($tiktokenInstallExit -ne 0) {
     substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
 }
-$ErrorActionPreference = $prevEAP_t5
 step "transformers" "5.5.0 pre-installed"
+
+# --- .venv_t5_510 (transformers 5.10.2) ---
+substep "pre-installing transformers 5.10.2 for Gemma 4 Unified support..."
+Assert-StudioOwnedOrAbsent -Path $VenvT5_510Dir -Label "transformers 5.10 sidecar venv"
+if (Test-Path -LiteralPath $VenvT5_510Dir) { Remove-Item -LiteralPath $VenvT5_510Dir -Recurse -Force }
+[System.IO.Directory]::CreateDirectory($VenvT5_510Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_510Dir
+foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_510Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_510Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_510Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_510Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_510/ -- Qwen tokenizers may fail" "Yellow"
+}
+$ErrorActionPreference = $prevEAP_t5
+step "transformers" "5.10.2 pre-installed"
 
 } # end $_NeedT5Install
 
@@ -1974,7 +2642,12 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-$HelperReleaseRepo = "ggml-org/llama.cpp"
+# GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
+# on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
+# A resolved gfx arch counts as a GPU host even when $HasROCm is false (Adrenalin
+# driver only, no HIP runtime): the fork's per-gfx bundle ships its own runtime,
+# so route there instead of ggml-org / a CPU build.
+$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
@@ -2070,10 +2743,36 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
-    substep "installing prebuilt llama.cpp bundle (preferred path)..."
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
+        # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
+        # machine that should have windows-rocm), remove it so the installer is
+        # forced to download the correct variant rather than skipping on tag match.
+        $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
+        if (Test-Path $existingMetaPath) {
+            try {
+                $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
+                $existingKind = $existingMeta.install_kind
+                # A ROCm host may legitimately carry the fork's windows-rocm bundle
+                # or the upstream windows-hip fallback, so accept either and never
+                # treat a valid ROCm install as mismatched. A name-inferred gfx
+                # arch (Adrenalin-only, no confirmed runtime) still counts as
+                # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
+                # mirroring the --rocm-gfx forward below. NOTE: this block is
+                # currently inert -- write_prebuilt_metadata does not persist an
+                # install_kind key, so $existingKind is always null. If that changes,
+                # add the remaining host kinds (e.g. windows-arm64) before relying on it.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu") }
+                if ($existingKind -and ($existingKind -notin $expectedKinds)) {
+                    substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
+                    Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+                }
+            } catch {
+                # unreadable metadata -- let the installer handle it
+            }
+        }
     }
+    substep "installing prebuilt llama.cpp bundle (preferred path)..."
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $env:UNSLOTH_STUDIO_HOME\llama.cpp before the source-build
     # ownership check below ever runs.
@@ -2084,9 +2783,19 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
             "--llama-tag", $RequestedLlamaTag,
-            "--published-repo", $HelperReleaseRepo,
-            "--simple-policy"
+            "--published-repo", $HelperReleaseRepo
         )
+        if ($HasROCm) {
+            $prebuiltArgs += "--has-rocm"
+        }
+        # Forward the resolved gfx arch so the per-gfx ROCm prebuilt is picked even
+        # when the installer's probe can't confirm the runtime (amd-smi-only /
+        # Adrenalin-only, name-inferred arch). --rocm-gfx is authoritative and
+        # implies ROCm in install_llama_prebuilt.py, so the GPU prebuilt is selected
+        # even with $HasROCm false. Gating on $HasROCm gave Strix Halo / 8060S CPU.
+        if ($script:ROCmGfxArch) {
+            $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+        }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
@@ -2180,7 +2889,7 @@ if ($NeedLlamaSourceBuild) {
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
-            winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
+            winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements
             # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
@@ -2208,7 +2917,8 @@ if ($NeedLlamaSourceBuild) {
 # We build:
 #   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
-# Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
+# Prerequisites git, cmake, VS Build Tools were installed in Phase 1; the CUDA
+# Toolkit is resolved lazily just below via Resolve-CudaToolkit (source build only).
 $OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -2254,9 +2964,25 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
+    # A source build is committed here. The CUDA toolkit is only needed now, so
+    # resolve (and winget-install if needed) it lazily, failing fast if no
+    # driver-compatible toolkit exists. The prebuilt path never reaches this.
+    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
+    } elseif ($HasROCm -or $script:ROCmGfxArch) {
+        # AMD GPU present but in the CPU-only source-build fallback: a HIP source
+        # build needs the full HIP SDK + ROCm clang toolchain. AMD GPU acceleration
+        # comes from the per-gfx ROCm prebuilt (bundles the runtime, no SDK) -- reaching
+        # here means it couldn't be installed. Warn loudly, don't ship a slow CPU build.
+        $_amdArch = if ($script:ROCmGfxArch) { $script:ROCmGfxArch } else { "ROCm" }
+        substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated ROCm" "Yellow"
+        substep "       llama.cpp prebuilt could not be installed -- falling back to a CPU build." "Yellow"
+        substep "       The prebuilt is the AMD GPU path (no HIP SDK required). To restore GPU" "Yellow"
+        substep "       acceleration: re-run the installer (check your network / proxy), or set" "Yellow"
+        substep "       UNSLOTH_LLAMA_RELEASE_TAG to a tag with a gfx prebuilt for your GPU." "Yellow"
+        substep "building llama.cpp (CPU-only fallback)..." "Yellow"
     } else {
         substep "building llama.cpp (CPU-only, no NVIDIA GPU detected)..."
     }
@@ -2547,6 +3273,17 @@ if (-not $NeedLlamaSourceBuild) {
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
             $CmakeArgs += '-DGGML_CUDA=ON'
+            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+            # (covers the configure probe + build), after Refresh-Environment, idempotent.
+            $nvccAllowFlag = '-allow-unsupported-compiler'
+            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+            }
+            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
             $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
             $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
             $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
@@ -2616,6 +3353,13 @@ if (-not $NeedLlamaSourceBuild) {
             substep "llama-quantize build failed (GGUF export may be unavailable)" "Yellow"
             Write-LlamaFailureLog -Output $output
         }
+    }
+
+    # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
+    # An example target present on llama.cpp PR #24423; lets Studio serve
+    # DiffusionGemma GGUFs without DG_VISUAL_BIN. No-op when not configured.
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
     # Swap temp build dir into final location (only if we built in a temp dir)

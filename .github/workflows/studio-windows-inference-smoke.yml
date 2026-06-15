@@ -13,7 +13,7 @@
 #   2. Tool calling Tests
 #        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
 #   3. JSON, images
-#        gemma-4-E2B-it UD-Q4_K_XL + mmproj-F16 (~3.4 GiB total).
+#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total).
 #        Within the 14 GB windows-latest SSD budget.
 
 name: Windows Studio GGUF CI
@@ -65,6 +65,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # Fast GPU-free gate: parse setup.ps1 and run the Resolve-CudaToolkit unit
+      # test (deferred Windows CUDA Toolkit check) before the heavy GGUF smoke.
+      - name: setup.ps1 unit test (Resolve-CudaToolkit)
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path studio/setup.ps1).Path, [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+          Write-Host "setup.ps1 parsed with no errors"
+          pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
@@ -89,7 +101,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -102,6 +114,7 @@ jobs:
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }}
         # Only write a fresh cache entry when we actually rebuilt the
@@ -111,7 +124,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -148,6 +161,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -189,20 +203,6 @@ jobs:
             exit 1
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -345,7 +345,14 @@ jobs:
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
                   assert a, f"{label}: empty turn {i} response"
-                  assert a == b, (
+                  # Compare on stripped content: llama-server can vary
+                  # trailing whitespace (specifically a final '\n') between
+                  # otherwise-identical greedy runs depending on the
+                  # batch-flush boundary at which the stream is closed. The
+                  # generated tokens are identical; only the trailing
+                  # whitespace differs. Keep the raw repr in the failure
+                  # message so a real divergence is still legible.
+                  assert a.strip() == b.strip(), (
                       f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
                       f"  run1: {a!r}\n  run2: {b!r}"
                   )
@@ -367,6 +374,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -380,6 +390,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-openai-anthropic-log
@@ -494,6 +506,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -535,20 +548,6 @@ jobs:
             exit 1
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
 
       - name: Reset auth + boot Studio (API-only, default tool policy)
         run: |
@@ -809,6 +808,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -822,6 +824,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-tool-calling-log
@@ -842,9 +846,9 @@ jobs:
       run:
         shell: bash
     env:
-      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-4-E2B-it-UD-Q4_K_XL.gguf
+      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      GGUF_VARIANT: UD-IQ2_XXS
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18899'
       HF_HOME: ${{ github.workspace }}/hf-cache
@@ -878,7 +882,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf
@@ -890,13 +894,14 @@ jobs:
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -933,6 +938,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -974,20 +980,6 @@ jobs:
             exit 1
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -1136,7 +1128,7 @@ jobs:
           )
           data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
 
-          # On Windows + the gemma-4-E2B mmproj, llama.cpp's vision
+          # On Windows + the Qwen3-VL mmproj, llama.cpp's vision
           # path runs on CPU (no Metal involvement). The wrapper is
           # kept for resilience but the vision path is expected to
           # work on Windows; an exception here is a real regression.
@@ -1221,6 +1213,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -1234,6 +1229,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-json-images-log

@@ -32,12 +32,9 @@ export interface FolderBrowserProps {
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Distinguish path styles BEFORE normalizing separators. On POSIX
-  // backslashes are valid filename characters, so we cannot blindly
-  // rewrite ``\`` -> ``/`` -- doing so would mangle directory names
-  // like ``my\backup`` into ``my/backup`` and produce breadcrumb
-  // values that 404 on the server. Only Windows-style absolute paths
-  // (drive letter, or UNC ``\\server\share``) get the conversion.
+  // Detect path style BEFORE normalizing: on POSIX, `\` is a valid filename
+  // char, so blindly rewriting `\` -> `/` mangles names like `my\backup` into
+  // 404ing breadcrumbs. Only Windows-style paths (drive letter, or UNC) convert.
   const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
   const isWindows = isWindowsDrive || isUnc;
@@ -57,11 +54,9 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows-ish drive path (C:, D:): first segment is the drive. Use
-  // ``C:/`` (drive-absolute) as the crumb value so clicking the drive
-  // root navigates to the root of the drive rather than the
-  // drive-relative current working directory on that drive (``C:``
-  // alone resolves to ``CWD-on-C``, not ``C:\``).
+  // Windows drive path (C:, D:): first segment is the drive. Use `C:/` as the
+  // crumb value so clicking the drive root navigates to the drive root, not the
+  // drive-relative CWD (`C:` alone resolves to CWD-on-C, not `C:\`).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -102,8 +97,8 @@ export function FolderBrowser({
       abortRef.current = ctrl;
       setLoading(true);
       setError(null);
-      // Forward the signal so cancelled navigation actually cancels the
-      // backend enumeration instead of just discarding the response.
+      // Forward the signal so cancelled navigation aborts the backend
+      // enumeration, not just the response.
       browseFolders(target, hidden, ctrl.signal)
         .then((res) => {
           if (ctrl.signal.aborted) return;
@@ -112,17 +107,13 @@ export function FolderBrowser({
         })
         .catch((err) => {
           if (ctrl.signal.aborted) return;
-          // Surface the error, but if the very first request (typically
-          // a typo'd or denylisted ``initialPath``) fails AND the
-          // browser is empty (no ``data`` to render against), fall
-          // back to the user's HOME so the modal is navigable instead
-          // of an irrecoverable dead end.
+          // Surface the error; if the first request (e.g. a bad initialPath)
+          // fails, fall back to HOME so the modal stays navigable.
           const message = err instanceof Error ? err.message : String(err);
           setError(message);
           if (opts?.fallbackOnError && target !== undefined) {
             // Re-issue without a target -> backend defaults to HOME.
-            // Don't recurse if HOME itself fails (paranoia: shouldn't
-            // happen since the sandbox allowlist always includes HOME).
+            // Don't recurse if HOME itself fails (allowlist always has HOME).
             queueMicrotask(() => navigate(undefined, hidden));
           }
         })
@@ -133,15 +124,13 @@ export function FolderBrowser({
     [],
   );
 
-  // Fetch when the dialog opens.  Only re-run when the dialog transitions
-  // closed -> open; subsequent navigation is driven by `navigate()` so we
-  // don't want `path` in the dependency list here.
+  // Fetch only on closed -> open; later navigation is driven by `navigate()`,
+  // so `path` is deliberately kept out of the dependency list.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
-    // ``fallbackOnError``: if the user-supplied ``initialPath`` is bad
-    // (typo, denylisted, deleted) we recover into HOME instead of
-    // showing an empty modal with no breadcrumbs/entries.
+    // fallbackOnError: recover into HOME if initialPath is bad, rather than
+    // showing an empty modal.
     navigate(initialPath, showHidden, { fallbackOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

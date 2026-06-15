@@ -7,9 +7,38 @@ instead of torch/transformers for model loading and generation.
 
 import threading
 from typing import Optional, Generator
+from core.inference.runtime_context import runtime_context_length
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
+    """Map mlx stream stats onto the usage/timings shape llama-server emits."""
+    prompt_n = int(prompt_n or 0)
+    gen_n = int(gen_n or 0)
+    prompt_tps = float(prompt_tps or 0.0)
+    gen_tps = float(gen_tps or 0.0)
+    prompt_ms = (prompt_n / prompt_tps * 1000.0) if prompt_tps > 0 else 0.0
+    predicted_ms = (gen_n / gen_tps * 1000.0) if gen_tps > 0 else 0.0
+    return {
+        "usage": {
+            "prompt_tokens": prompt_n,
+            "completion_tokens": gen_n,
+            "total_tokens": prompt_n + gen_n,
+        },
+        "timings": {
+            "prompt_n": prompt_n,
+            "prompt_ms": prompt_ms,
+            "prompt_per_token_ms": (prompt_ms / prompt_n) if prompt_n > 0 else 0.0,
+            "prompt_per_second": prompt_tps,
+            "predicted_n": gen_n,
+            "predicted_ms": predicted_ms,
+            "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
+            "predicted_per_second": gen_tps,
+            "cache_n": 0,
+        },
+    }
 
 
 class MLXInferenceBackend:
@@ -20,8 +49,9 @@ class MLXInferenceBackend:
         self.loaded_local_models = []
         self.device = "mlx"
         self._generation_lock = threading.Lock()
+        # usage/timings of the latest generation; shipped on gen_done.
+        self.last_generation_stats = None
 
-        # MLX state
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -34,10 +64,9 @@ class MLXInferenceBackend:
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
 
-        Mirrors MLXTrainer._configure_memory_limits's defaults:
-        memory_limit = 85% of recommended working-set,
-        wired_limit = min(recommended, memory_limit). Recorded so unload
-        can lower wired_limit back to release pinned RAM.
+        memory_limit = 85% of recommended working-set;
+        wired_limit = min(recommended, memory_limit). Recorded so unload can
+        lower wired_limit back to release pinned RAM.
         """
         import mlx.core as mx
 
@@ -78,18 +107,10 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
-        # GGUF guard. GGUF models are served via llama-server in the
-        # parent process, NOT via mlx-lm in this MLX subprocess. The
-        # route at studio/backend/routes/inference.py:592 (`if config.
-        # is_gguf:`) is responsible for sending GGUF traffic to the
-        # llama-server backend before reaching the MLX orchestrator.
-        # If we end up here with is_gguf=True, the route's
-        # `detect_gguf_model_remote` returned None on its first call
-        # (transient HF Hub flake) but the subprocess re-detection
-        # succeeded. The subprocess cannot reach into the parent's
-        # llama-server, so all we can do is raise loudly so the caller
-        # gets a clear error instead of a cryptic
-        # "config.json does not exist" from mlx_lm.utils.load_model.
+        # GGUF guard. GGUF models are served by llama-server in the parent
+        # process, not mlx-lm here. Reaching this with is_gguf=True means the
+        # route's first detection flaked (transient HF Hub) but the subprocess
+        # re-detected GGUF; raise loudly instead of a cryptic mlx_lm error.
         if getattr(config, "is_gguf", False):
             raise RuntimeError(
                 f"MLXInferenceBackend cannot load GGUF model '{model_name}': "
@@ -102,7 +123,6 @@ class MLXInferenceBackend:
 
         if hf_token:
             import os
-
             os.environ["HF_TOKEN"] = hf_token
         self._configure_memory_limits()
 
@@ -156,10 +176,57 @@ class MLXInferenceBackend:
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
+            "context_length": runtime_context_length(self._model, max_seq_length),
         }
+        # Capture chat_template_info so the worker IPC reply ships it back and
+        # the route layer classifies capabilities like the other paths.
+        self._populate_chat_template_info(model_name)
 
         logger.info("Model %s loaded successfully", model_name)
         return True
+
+    def _populate_chat_template_info(self, model_name: str) -> None:
+        """Mirror InferenceBackend._load_chat_template_info for MLX.
+
+        Stores ``chat_template_info`` on ``self.models[model_name]`` with the
+        resolved ``tokenizer.chat_template``."""
+        entry = self.models.get(model_name)
+        if not entry:
+            return
+        tok = entry.get("tokenizer")
+        if tok is None:
+            proc = entry.get("processor")
+            tok = getattr(proc, "tokenizer", None) if proc else None
+        info = {
+            "has_template": False,
+            "template": None,
+            "format_type": "generic",
+            "special_tokens": {},
+            "template_name": None,
+        }
+        try:
+            tpl = getattr(tok, "chat_template", None)
+            if tpl:
+                info["has_template"] = True
+                info["template"] = tpl
+                lower = tpl.lower()
+                if "start_header_id" in lower and "end_header_id" in lower:
+                    info["format_type"] = "llama3"
+                elif "[inst]" in lower and "[/inst]" in lower:
+                    info["format_type"] = "mistral"
+                elif "<|im_start|>" in lower and "<|im_end|>" in lower:
+                    info["format_type"] = "chatml"
+                else:
+                    info["format_type"] = "custom"
+                special = {}
+                for attr in ("bos_token", "eos_token", "pad_token"):
+                    val = getattr(tok, attr, None)
+                    if val:
+                        special[attr] = val
+                info["special_tokens"] = special
+        except Exception as exc:
+            logger.warning("MLX chat_template_info capture failed: %s", exc)
+        entry["chat_template_info"] = info
 
     def unload_model(self, model_name: str) -> bool:
         import mlx.core as mx
@@ -197,9 +264,18 @@ class MLXInferenceBackend:
         max_new_tokens = 256,
         repetition_penalty = 1.0,
         cancel_event = None,
+        # Reasoning / tool kwargs forwarded by the route + worker; rendered via
+        # apply_chat_template_for_generation like the transformers path.
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
+
+        # Reset so a failed run cannot surface stale stats.
+        self.last_generation_stats = None
 
         # Build messages with system prompt
         full_messages = []
@@ -218,11 +294,9 @@ class MLXInferenceBackend:
                             {"type": "text", "text": content},
                         ]
                     elif isinstance(content, list):
-                        # Prepend image if not already there
+                        # Prepend image if not already present
                         has_image = any(
-                            p.get("type") == "image"
-                            for p in content
-                            if isinstance(p, dict)
+                            p.get("type") == "image" for p in content if isinstance(p, dict)
                         )
                         if not has_image:
                             content.insert(0, {"type": "image"})
@@ -239,6 +313,10 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
         else:
             yield from self._generate_text(
@@ -250,6 +328,10 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
 
     def _generate_text(
@@ -262,19 +344,29 @@ class MLXInferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
-        prompt = self._tokenizer.apply_chat_template(
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+
+        prompt = apply_chat_template_for_generation(
+            self._tokenizer,
             messages,
-            tokenize = False,
-            add_generation_prompt = True,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
         if prompt is None:
-            raise RuntimeError(
-                "apply_chat_template returned None — tokenizer may be incompatible"
-            )
+            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
         sampler = make_sampler(
             temp = temperature,
@@ -283,8 +375,7 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Only build a logits processor when we actually have a non-trivial
-        # repetition penalty (1.0 is the no-op value).
+        # Only build a logits processor for a non-trivial repetition penalty.
         logits_processors = None
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
@@ -303,6 +394,7 @@ class MLXInferenceBackend:
             type(self._tokenizer).__name__,
         )
         with self._generation_lock:
+            final_response = None
             try:
                 gen_kwargs = dict(
                     prompt = prompt,
@@ -316,8 +408,9 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     **gen_kwargs,
                 ):
+                    final_response = response
                     token_ids.append(response.token)
-                    # Decode full sequence with skip_special_tokens — same as GPU
+                    # Decode full sequence with skip_special_tokens
                     cumulative = self._tokenizer.decode(
                         token_ids,
                         skip_special_tokens = True,
@@ -328,9 +421,17 @@ class MLXInferenceBackend:
                         break
             except Exception as e:
                 import traceback
-
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
+            finally:
+                # Latch final cumulative stats for the usage/timings chunk.
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def _generate_vlm(
         self,
@@ -343,23 +444,39 @@ class MLXInferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        # Apply chat template
-        chat_fn = getattr(self._processor, "apply_chat_template", None)
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+
+        # Pick the chat-template-aware caller: processors with their own
+        # apply_chat_template + chat_template (e.g. Qwen2.5-VL) use it
+        # directly; else fall back to the nested tokenizer.
+        chat_target = self._processor
         if (
-            chat_fn is None
+            getattr(self._processor, "apply_chat_template", None) is None
             or not hasattr(self._processor, "chat_template")
             or self._processor.chat_template is None
         ):
-            tok = getattr(self._processor, "tokenizer", self._processor)
-            chat_fn = tok.apply_chat_template
+            chat_target = getattr(self._processor, "tokenizer", self._processor)
 
-        prompt = chat_fn(messages, tokenize = False, add_generation_prompt = True)
+        prompt = apply_chat_template_for_generation(
+            chat_target,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
 
-        # For VLM: always use mlx_vlm's stream_generate which handles
-        # pixel_values properly (passes None for text-only, image for VLM)
+        # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
 
         cumulative = ""
@@ -369,11 +486,9 @@ class MLXInferenceBackend:
             image is not None,
         )
         # mlx_vlm.stream_generate forwards **kwargs into generate_step, which
-        # accepts temp/top_p/top_k/repetition_penalty (and builds the sampler
-        # + logits_processors internally). Pass them through.
-        # NOTE: mlx_vlm.generate_step expects ``temperature=`` (long form) —
-        # passing ``temp=`` silently falls into **kwargs and is ignored,
-        # leaving generation stuck at the default 0.0 (greedy).
+        # builds the sampler + logits_processors internally.
+        # GOTCHA: generate_step expects ``temperature=`` (long form); ``temp=``
+        # silently falls into **kwargs and is ignored, stuck at greedy 0.0.
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
             temperature = temperature,
@@ -388,23 +503,36 @@ class MLXInferenceBackend:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         with self._generation_lock:
-            for response in vlm_stream(
-                self._model,
-                self._processor,
-                prompt,
-                images,
-                **vlm_kwargs,
-            ):
-                token_text = (
-                    response.text if hasattr(response, "text") else str(response)
-                )
-                cumulative += token_text
-                yield cumulative
-                if cancel_event and cancel_event.is_set():
-                    break
+            final_response = None
+            try:
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    images,
+                    **vlm_kwargs,
+                ):
+                    final_response = response
+                    token_text = response.text if hasattr(response, "text") else str(response)
+                    cumulative += token_text
+                    yield cumulative
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                # mlx_vlm exposes the same stats fields as mlx_lm.
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def generate_with_adapter_control(
-        self, use_adapter = None, cancel_event = None, **gen_kwargs
+        self,
+        use_adapter = None,
+        cancel_event = None,
+        **gen_kwargs,
     ) -> Generator[str, None, None]:
         # MLX LoRA adapter toggling not yet supported — generate normally
         yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
