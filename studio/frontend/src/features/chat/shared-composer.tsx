@@ -356,6 +356,10 @@ export function SharedComposer({
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
   );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -950,6 +954,20 @@ export function SharedComposer({
                 <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
               </TooltipIconButton>
             </>
+          )}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass Permissions"
+              title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <XIcon className="size-3" />
+              <span>Bypass Permissions</span>
+            </button>
           )}
           {showReasoningControl ? (
             effectiveReasoningStyle === "reasoning_effort" ? (
