@@ -665,7 +665,8 @@ def studio_default(
         False,
         "--secure/--not-secure",
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start (--not-secure keeps the raw 0.0.0.0 link).",
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
 ):
     """Launch the Unsloth Studio server."""
@@ -977,7 +978,8 @@ def run(
         False,
         "--secure/--not-secure",
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start (--not-secure keeps the raw 0.0.0.0 link).",
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
     tensor_parallel: bool = typer.Option(
         False,

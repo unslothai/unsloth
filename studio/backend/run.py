@@ -1179,7 +1179,8 @@ if __name__ == "__main__":
         action = argparse.BooleanOptionalAction,
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start (--not-secure keeps the raw 0.0.0.0 link)",
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network",
     )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
