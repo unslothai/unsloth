@@ -399,6 +399,79 @@ def test_bypass_env_keeps_noncredential_proxy_and_index_urls(monkeypatch, tmp_pa
     assert "PIP_EXTRA_INDEX_URL" not in env  # this one carries credentials
 
 
+# ── AWS IMDS-disable hardening flag is kept (regression) ────────────
+
+
+def test_aws_imds_disable_flag_is_kept_but_creds_stripped(monkeypatch, tmp_path):
+    # AWS_EC2_METADATA_DISABLED is a non-secret opt-out: dropping it would let a
+    # bypassed boto/AWS-CLI call fall back to the instance role via IMDS even
+    # though the operator disabled that path. Keep it; drop the real creds.
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "shhh")
+    assert _is_secret_env_name("AWS_EC2_METADATA_DISABLED") is False
+    assert _is_secret_env_name("AWS_ACCESS_KEY_ID") is True
+    env = _build_bypass_env(str(tmp_path))
+    assert env.get("AWS_EC2_METADATA_DISABLED") == "true"
+    assert "AWS_ACCESS_KEY_ID" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+# ── connection-string env vars are stripped (regression) ────────────
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SQLCONNSTR_DB",  # Azure App Service injected connection strings
+        "MYSQLCONNSTR_DB",
+        "SQLAZURECONNSTR_DB",
+        "POSTGRESQLCONNSTR_DB",
+        "CUSTOMCONNSTR_CACHE",
+        "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+    ],
+)
+def test_connection_string_names_are_flagged(name):
+    assert _is_secret_env_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Server=tcp:db;Database=app;User ID=u;Password=p@ss;",  # ADO.NET
+        "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=abc123==;",  # storage
+        "Endpoint=sb://x;SharedAccessKeyName=n;SharedAccessKey=zzz=",  # Service Bus
+    ],
+)
+def test_connection_string_values_are_flagged(value):
+    assert _is_secret_env_value(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Server=tcp:db;Database=app;User ID=u;",  # no password field
+        "Endpoint=sb://x;SharedAccessKeyName=n",  # key NAME only, no secret
+        "AccountName=x;EndpointSuffix=core.windows.net",  # no AccountKey
+    ],
+)
+def test_connection_string_noncredential_values_are_not_flagged(value):
+    assert _is_secret_env_value(value) is False
+
+
+def test_connection_string_value_stripped_even_with_benign_name(monkeypatch, tmp_path):
+    # NAME dodges the classifier, but the VALUE is a credentialed conn string.
+    monkeypatch.setenv(
+        "APP_DB", "Server=tcp:db;Database=app;User ID=u;Password=p@ss;"
+    )
+    monkeypatch.setenv(
+        "SQLCONNSTR_DB", "DefaultEndpointsProtocol=https;AccountKey=abc=="
+    )
+    env = _build_bypass_env(str(tmp_path))
+    assert "APP_DB" not in env  # value-based catch
+    assert "SQLCONNSTR_DB" not in env  # name-based catch
+
+
 # ── temp dirs repointed on every platform (regression) ──────────────
 
 

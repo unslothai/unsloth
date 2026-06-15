@@ -367,6 +367,20 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "CREDENTIAL",
     "PRIVATE_KEY",
     "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
+    # Azure App Service connection strings: SQLCONNSTR_/CUSTOMCONNSTR_/... and
+    # WEBSITE_CONTENTAZUREFILECONNECTIONSTRING carry DB/storage credentials.
+    "CONNSTR",
+    "CONNECTIONSTRING",
+)
+# Non-secret hardening flags that match a secret prefix/marker but must be KEPT
+# so bypass mode does not silently undo an operator's opt-out. AWS_EC2_METADATA_
+# DISABLED tells the AWS SDK/CLI not to pull instance-role creds from IMDS;
+# dropping it would re-open that path for a bypassed tool.
+_BYPASS_ENV_KEEP_NAMES = frozenset(
+    {
+        "AWS_EC2_METADATA_DISABLED",
+        "AWS_EC2_METADATA_V1_DISABLED",
+    }
 )
 # Matches a URL that embeds userinfo before the host, covering both
 # "scheme://user:pass@host" and token-only "scheme://token@host" (and
@@ -374,6 +388,12 @@ _BYPASS_ENV_SECRET_MARKERS = (
 # in a path or query does not false-positive. Used to scrub credential-bearing
 # URL values regardless of the variable's name.
 _URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
+# Connection-string credential fields (ADO.NET / Azure storage / Service Bus):
+# "...;Password=...", "...;AccountKey=...", "...;SharedAccessKey=...". Catches
+# credential-bearing values whose names dodge the name classifier. "accesskey"
+# also covers Shared/Secret AccessKey via substring; the Name fields (e.g.
+# SharedAccessKeyName=) do not match since "=" must follow the keyword.
+_SECRET_VALUE_RE = re.compile(r"(?i)(?:password|pwd|accountkey|accesskey)\s*=\s*[^\s;]")
 
 # Names that hold no secret value but point SDKs at the operator's real
 # home/cache/config (cached tokens, cred files), defeating the HOME repoint.
@@ -430,6 +450,8 @@ _BYPASS_ENV_WINDOWS_PROFILE_VARS = ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
 def _is_secret_env_name(name: str) -> bool:
     """True if an env var name looks like it carries a credential."""
     upper = name.upper()
+    if upper in _BYPASS_ENV_KEEP_NAMES:
+        return False  # non-secret hardening flag; keep it
     if upper in _BYPASS_ENV_SECRET_NAMES:
         return True
     if any(upper.startswith(p) for p in _BYPASS_ENV_SECRET_PREFIXES):
@@ -443,12 +465,19 @@ def _is_cred_location_env_name(name: str) -> bool:
 
 
 def _is_secret_env_value(value: str) -> bool:
-    """True if a value embeds credentials (URL userinfo) regardless of its name.
+    """True if a value embeds credentials regardless of its name.
 
-    Catches things like DATABASE_URL / PIP_INDEX_URL / HTTP_PROXY that carry
-    ``scheme://user:token@host`` but whose names dodge the name classifier.
+    Catches URL userinfo (``scheme://user:token@host`` in DATABASE_URL /
+    PIP_INDEX_URL / HTTP_PROXY) and connection-string credential fields
+    (``...;Password=...`` / ``...;AccountKey=...``) whose names dodge the name
+    classifier.
     """
-    return bool(value) and _URL_USERINFO_RE.search(value) is not None
+    if not value:
+        return False
+    return (
+        _URL_USERINFO_RE.search(value) is not None
+        or _SECRET_VALUE_RE.search(value) is not None
+    )
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
