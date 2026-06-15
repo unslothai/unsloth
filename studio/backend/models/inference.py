@@ -581,6 +581,16 @@ class ChatMessage(BaseModel):
         return self
 
 
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -693,6 +703,11 @@ class ChatCompletionRequest(BaseModel):
     preserve_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
     )
     enable_tools: Optional[bool] = Field(
         None,
@@ -950,6 +965,20 @@ class ChatCompletionRequest(BaseModel):
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
+        return self
+
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
         return self
 
 
