@@ -1112,6 +1112,14 @@ export function SharedComposer({
     // On macOS, switching input methods without composing can leave composingRef
     // pinned; clear it immediately on the first non-IME keystroke.
     if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
       setCompositionState(false);
     }
     if (e.key === "Enter" && !e.shiftKey) {

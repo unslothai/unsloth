@@ -686,7 +686,64 @@ with sync_playwright() as p:
     info("Mac IME switch onKeyDown recovery PASS")
     clear()
 
-    # 6f. Mac input-method switch - onBlur immediate recovery.
+    # 6f. Candidate-confirming Enter must not unblock submit.
+    #     Some IMEs/browsers report the candidate-confirming Enter as
+    #     isComposing=false with keyCode=13 while composingRef is still pinned.
+    #     That Enter must be swallowed and keep Send disabled; otherwise it can
+    #     become a form submit before the candidate is committed.
+    step("BUG REPRO: Mac IME switch - Enter must not unblock submit")
+    clear()
+    composer.click()
+    set_value_via_setter("hello")
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+        }"""
+    )
+    page.wait_for_timeout(200)
+    send_btn_mac_enter = page.locator('button[aria-label="Send message"]')
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, cancelable: true, key: 'Enter', code: 'Enter',
+                keyCode: 13, isComposing: false,
+            }));
+        }"""
+    )
+    try:
+        expect(send_btn_mac_enter).to_be_disabled(timeout = 500)
+        info("Enter while composingRef is stuck kept Send disabled")
+    except Exception:
+        shoot("06f-mac-ime-enter-guard-FAIL")
+        fail(
+            "Enter cleared a stuck composingRef immediately; candidate-confirming "
+            "Enter can fall through to submit."
+        )
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, key: 'a', code: 'KeyA', keyCode: 65,
+                isComposing: false,
+            }));
+        }"""
+    )
+    try:
+        expect(send_btn_mac_enter).not_to_be_disabled(timeout = 1_500)
+        info("non-Enter key after Enter guard still recovers immediately")
+    except Exception:
+        shoot("06f-mac-ime-enter-guard-recovery-FAIL")
+        fail(
+            "After guarding Enter, a later non-IME key did not clear "
+            "composingRef immediately."
+        )
+    shoot("06f-mac-ime-enter-guard")
+    info("Mac IME switch Enter guard PASS")
+    clear()
+
+    # 6g. Mac input-method switch - onBlur immediate recovery.
     #     Some Mac IME switches steal focus from the textarea (e.g. clicking
     #     the menu-bar language icon). The onBlur handler added for this bug
     #     resets composingRef unconditionally when the textarea loses focus.
@@ -731,7 +788,7 @@ with sync_playwright() as p:
                 "textarea blur; the onBlur handler did not reset composingRef "
                 "(expected recovery in < 1500ms)."
             )
-    shoot("06f-mac-ime-blur")
+    shoot("06g-mac-ime-blur")
     info("Mac IME switch onBlur recovery PASS")
     clear()
 
@@ -777,7 +834,8 @@ with sync_playwright() as p:
         f"normal_composition=OK stuck_recovery=OK "
         f"compositionend_watchdog=OK keydown_repin=OK "
         f"keydown_repin_rearm=OK "
-        f"mac_ime_switch_keydown=OK mac_ime_switch_blur=OK"
+        f"mac_ime_switch_keydown=OK mac_ime_switch_enter_guard=OK "
+        f"mac_ime_switch_blur=OK"
     )
     _watchdog.cancel()
     browser.close()

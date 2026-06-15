@@ -1413,6 +1413,14 @@ function useImeComposerInputHandlers() {
         composingRef.current = true;
         refreshStuckTimer();
       } else if (composingRef.current) {
+        // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+        if (e.key === "Enter") {
+          if (!e.shiftKey) {
+            e.preventDefault();
+          }
+          refreshStuckTimer();
+          return;
+        }
         // Non-IME key while composingRef is stuck; the input method was likely
         // switched away on macOS without firing compositionend (issue #5546
         // pattern, but triggered by input-method switch rather than WSL).
