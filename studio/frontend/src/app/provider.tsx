@@ -332,6 +332,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   if (!usesCustomTitlebar) {
     // macOS desktop uses the native titlebar and returns here before the
@@ -339,12 +340,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (usesNativeMacTitlebar) {
       return (
         <div
-          className="relative h-dvh min-h-0 overflow-hidden bg-background"
+          className={
+            hidesTitlebarSidebar
+              ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
+              : "relative h-dvh min-h-0 overflow-hidden bg-background"
+          }
           style={MAC_NATIVE_CHROME_STYLE}
         >
           {content}
           <LlamaUpdateBanner
-            enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+            enabled={showApp && !hidesTitlebarSidebar}
           />
         </div>
       );
@@ -365,7 +370,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   }
 
   const showSidebarSurface =
-    showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+    showApp && !hidesTitlebarSidebar;
 
   return (
     <div

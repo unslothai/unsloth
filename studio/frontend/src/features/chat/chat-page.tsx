@@ -646,12 +646,15 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const { pinned } = useSidebar();
   return (
     <div
       className={cn(
         "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
-          ? "pl-12 pr-3 md:pl-2"
+          ? pinned
+            ? "pl-12 pr-3 md:pl-2"
+            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
           : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
