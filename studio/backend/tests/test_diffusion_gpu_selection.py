@@ -116,6 +116,20 @@ def test_child_gpu_pin_clears_rocr_when_hip_is_forced(backend_cls):
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+def test_child_gpu_pin_detects_rocm_from_torch_version(monkeypatch, backend_cls):
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0+rocm6.4"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    env = {"ROCR_VISIBLE_DEVICES": "1"}
+
+    backend_cls._pin_child_gpu_env(env, "1")
+
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
 def test_requested_gpu_filter_rejects_partial_visibility(backend_cls):
     assert backend_cls._filter_requested_gpus([(0, 1024), (1, 2048)], [1]) == [(1, 2048)]
 

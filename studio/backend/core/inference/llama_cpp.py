@@ -1539,7 +1539,8 @@ class LlamaCppBackend:
             return
         try:
             import torch as _torch
-            if getattr(_torch.version, "hip", None) is not None:
+            torch_version = getattr(_torch, "__version__", "")
+            if getattr(_torch.version, "hip", None) is not None or "rocm" in torch_version.lower():
                 env["HIP_VISIBLE_DEVICES"] = pinned
                 env.pop("ROCR_VISIBLE_DEVICES", None)
         except Exception as e:
