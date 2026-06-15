@@ -668,14 +668,15 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      // pl-3 (12px) plus the content's pl-1 (4px) lines the title up with the
-      // Recents label text at 16px.
+      // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
+      // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
         ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
         : isPinned
-          ? // Pinned rows show an extra unpin button on hover, so reserve more room.
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6"
+          ? // Pinned rows show an extra unpin button on hover, so reserve more room
+            // (pr-8 when the menu is open keeps the unpin button clear of the title).
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
           : // Hover room for the kebab only; title keeps one more character.
             "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
     );

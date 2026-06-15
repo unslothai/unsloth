@@ -474,7 +474,8 @@ function RecipeGraphNodeBase({
       )}
     >
       {runtimeState === "running" && config?.kind === "llm" && (
-        <div className="pointer-events-none absolute -top-7 right-2 z-20">
+        // rounded-full bg-background masks grid lines behind the floating spinner
+        <div className="pointer-events-none absolute -top-7 right-2 z-20 rounded-full bg-background">
           <Spinner className="size-6 text-primary/90" />
         </div>
       )}
