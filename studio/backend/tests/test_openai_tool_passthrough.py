@@ -1509,6 +1509,125 @@ class TestApiMonitorAudioInput:
 
         asyncio.run(_run())
 
+    def test_non_gguf_tts_auto_route_records_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class DummyTtsBackend:
+                active_model_name = "tts-model"
+                models = {
+                    "tts-model": {
+                        "is_audio": True,
+                        "audio_type": "snac",
+                    }
+                }
+
+            async def fake_generate_audio(_payload, _request, current_subject = None):
+                return inf_mod.JSONResponse(
+                    content = {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "[Generated audio]",
+                                }
+                            }
+                        ]
+                    }
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = False),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
+            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            response = await inf_mod.openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+
+            assert json.loads(response.body)["choices"][0]["message"]["content"] == (
+                "[Generated audio]"
+            )
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["model"] == "tts-model"
+            assert entry["reply"] == "[Generated audio]"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_tts_auto_route_records_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_generate_audio(_payload, _request, current_subject = None):
+                return inf_mod.JSONResponse(
+                    content = {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "[Generated audio]",
+                                }
+                            }
+                        ]
+                    }
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    _is_audio = True,
+                    model_identifier = "gguf-tts",
+                    context_length = 2048,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            await inf_mod.openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["model"] == "gguf-tts"
+            assert entry["context_length"] == 2048
+            assert entry["reply"] == "[Generated audio]"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
 
 # =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs

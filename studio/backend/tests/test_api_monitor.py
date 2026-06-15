@@ -40,7 +40,7 @@ def test_api_monitor_keeps_bounded_recent_history():
         model = "m",
         prompt = "first",
     )
-    monitor.start(
+    second = monitor.start(
         endpoint = "/v1/chat/completions",
         method = "POST",
         model = "m",
@@ -52,13 +52,46 @@ def test_api_monitor_keeps_bounded_recent_history():
         model = "m",
         prompt = "third",
     )
+    monitor.finish(first)
+    monitor.finish(second)
+    monitor.finish(third)
 
     entries = monitor.snapshot()
     ids = [entry["id"] for entry in entries]
     assert ids[0] == third
     assert [entry["prompt"] for entry in entries] == ["third", "second"]
     assert first not in ids
-    assert monitor.active_count() == 2
+    assert monitor.active_count() == 0
+
+
+def test_api_monitor_keeps_running_entries_beyond_history_limit():
+    monitor = ApiMonitor(max_entries = 1)
+
+    running = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "running",
+    )
+    for prompt in ("done-1", "done-2", "done-3"):
+        entry_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = prompt,
+        )
+        monitor.finish(entry_id)
+
+    entries = monitor.snapshot()
+    ids = [entry["id"] for entry in entries]
+    assert running in ids
+    assert monitor.active_count() == 1
+
+    monitor.finish(running)
+    [entry] = monitor.snapshot()
+    assert entry["id"] == running
+    assert entry["status"] == "completed"
+    assert monitor.active_count() == 0
 
 
 def test_api_monitor_finish_is_idempotent():

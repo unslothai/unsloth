@@ -3773,12 +3773,47 @@ async def openai_chat_completions(
     # Single-model server: any model name serves the loaded model (drop-in
     # OpenAI compat), so payload.model is only a fallback label here.
     monitor_id = None
+
+    async def _monitored_generate_audio(
+        model_label: str,
+        context_length: Optional[int] = None,
+    ):
+        tts_monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            tts_monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                model = model_label,
+                prompt = _monitor_prompt_from_messages(payload.messages),
+                context_length = context_length,
+            )
+        try:
+            response = await generate_audio(payload, request)
+        except Exception as e:
+            api_monitor.fail(tts_monitor_id, _friendly_error(e))
+            raise
+        if isinstance(response, JSONResponse):
+            try:
+                body = json.loads(response.body.decode())
+                choices = body.get("choices") or []
+                message = (choices[0].get("message") or {}) if choices else {}
+                content = message.get("content")
+                if isinstance(content, str):
+                    api_monitor.set_reply(tts_monitor_id, content)
+            except Exception:
+                pass
+        api_monitor.finish(tts_monitor_id)
+        return response
+
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
-            return await generate_audio(payload, request)
+            return await _monitored_generate_audio(
+                model_name,
+                context_length = llama_backend.context_length,
+            )
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
@@ -3794,7 +3829,7 @@ async def openai_chat_completions(
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
-            return await generate_audio(payload, request)
+            return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
         if model_info.get("audio_type") == "whisper" and not payload.audio_base64:
@@ -6407,9 +6442,11 @@ async def _responses_stream(
             try:
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
                 if resp is None:
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 yield _sse(
                     "response.failed",
                     {
@@ -6435,6 +6472,7 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
+                api_monitor.fail(monitor_id, err_text[:500])
                 yield _sse(
                     "response.failed",
                     {
@@ -6486,6 +6524,11 @@ async def _responses_stream(
                     if usage:
                         input_tokens = usage.get("prompt_tokens", input_tokens)
                         output_tokens = usage.get("completion_tokens", output_tokens)
+                        _monitor_usage(
+                            monitor_id,
+                            usage,
+                            llama_backend.context_length,
+                        )
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
@@ -8452,7 +8495,6 @@ async def _openai_passthrough_stream(
                 resp.status_code,
                 err_text[:500],
             )
-            api_monitor.fail(monitor_id, err_text[:500])
             upstream_status = resp.status_code
             try:
                 await resp.aclose()
@@ -8470,6 +8512,7 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            api_monitor.fail(monitor_id, err_text[:500])
             raise _openai_passthrough_error(upstream_status, err_text)
 
         async def _stream():

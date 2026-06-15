@@ -85,7 +85,8 @@ class ApiMonitorEntry:
 
 class ApiMonitor:
     def __init__(self, max_entries: int = _MAX_ENTRIES):
-        self._entries: deque[ApiMonitorEntry] = deque(maxlen = max_entries)
+        self._entries: deque[ApiMonitorEntry] = deque()
+        self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
 
     def start(
@@ -112,6 +113,7 @@ class ApiMonitor:
         )
         with self._lock:
             self._entries.appendleft(entry)
+            self._trim_terminal_locked()
         return entry.id
 
     def append_reply(self, entry_id: Optional[str], text: str) -> None:
@@ -185,6 +187,9 @@ class ApiMonitor:
             entry.updated_at = now
             entry.finished_at = now
             entry.finished_monotonic = time.monotonic()
+            self._entries.remove(entry)
+            self._entries.appendleft(entry)
+            self._trim_terminal_locked()
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
@@ -204,6 +209,9 @@ class ApiMonitor:
             entry.updated_at = now
             entry.finished_at = now
             entry.finished_monotonic = time.monotonic()
+            self._entries.remove(entry)
+            self._entries.appendleft(entry)
+            self._trim_terminal_locked()
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -222,6 +230,18 @@ class ApiMonitor:
             if entry.id == entry_id:
                 return entry
         return None
+
+    def _trim_terminal_locked(self) -> None:
+        terminal_seen = 0
+        kept: deque[ApiMonitorEntry] = deque()
+        for entry in self._entries:
+            if entry.status == "running":
+                kept.append(entry)
+                continue
+            if terminal_seen < self._max_entries:
+                kept.append(entry)
+                terminal_seen += 1
+        self._entries = kept
 
 
 api_monitor = ApiMonitor()
