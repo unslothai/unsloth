@@ -668,15 +668,17 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      // pl-3 (12px) plus the content's pl-1 (4px) lines the title up with the
-      // Recents label text at 16px.
+      // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
+      // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
+        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
         : isPinned
-          ? // Pinned rows show an extra unpin button on hover, so reserve more room.
+          ? // Pinned rows show an extra unpin button on hover, so reserve more room
+            // (pr-8 when the menu is open keeps the unpin button clear of the title).
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
-          : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
+          : // Hover room for the kebab only; title keeps one more character.
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
     );
 
     const isRenamingThis =
@@ -962,7 +964,8 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 pt-[9px] pb-px shrink-0">
+      {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -1002,7 +1005,7 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 py-0 shrink-0">
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -1074,7 +1077,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-1.5">
+              <SidebarGroupContent className="pl-1.5 pr-2">
                 <SidebarMenu>
                   <NavItem
                     icon={TestTubeOutlineIcon}
@@ -1124,7 +1127,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1 pr-1.5">
+                <SidebarGroupContent className="pl-1.5 pr-2">
                   <SidebarMenu>
                     {pinnedChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -1146,7 +1149,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1 pr-1.5">
+                <SidebarGroupContent className="pl-1.5 pr-2">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),

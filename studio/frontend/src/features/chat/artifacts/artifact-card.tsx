@@ -127,7 +127,7 @@ export function ArtifactCard({
             {artifact.title}
           </span>
           <span className="truncate text-[11px] leading-none text-muted-foreground">
-            HTML artifact
+            HTML canvas
           </span>
         </span>
         {isStreaming ? (
