@@ -582,9 +582,15 @@ _MTP_VRAM_RESERVE_FRAC = 0.05
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     """Bytes per KV-cache element for a llama.cpp cache type (f16 default)."""
     return {
-        "f32": 4.0, "f16": 2.0, "bf16": 2.0,
-        "q8_0": 34 / 32, "q5_1": 0.75, "q5_0": 0.6875,
-        "q4_1": 0.625, "q4_0": 0.5625, "iq4_nl": 0.5625,
+        "f32": 4.0,
+        "f16": 2.0,
+        "bf16": 2.0,
+        "q8_0": 34 / 32,
+        "q5_1": 0.75,
+        "q5_0": 0.6875,
+        "q4_1": 0.625,
+        "q4_0": 0.5625,
+        "iq4_nl": 0.5625,
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
@@ -689,8 +695,14 @@ def _extra_args_draft_cache_type(extra_args: Optional[Iterable[str]]) -> Optiona
     if not extra_args:
         return None
     args = [str(a) for a in extra_args]
-    flags = {"--cache-type-k-draft", "--spec-draft-type-k", "-ctkd",
-             "--cache-type-v-draft", "--spec-draft-type-v", "-ctvd"}
+    flags = {
+        "--cache-type-k-draft",
+        "--spec-draft-type-k",
+        "-ctkd",
+        "--cache-type-v-draft",
+        "--spec-draft-type-v",
+        "-ctvd",
+    }
     found: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
@@ -2141,12 +2153,24 @@ class LlamaCppBackend:
         try:
             db = LlamaCppBackend.__new__(LlamaCppBackend)
             for attr in (
-                "_context_length", "_n_layers", "_n_kv_heads", "_n_heads",
-                "_embedding_length", "_kv_key_length", "_kv_value_length",
-                "_kv_lora_rank", "_sliding_window", "_sliding_window_pattern",
-                "_ssm_inner_size", "_full_attention_interval", "_key_length_mla",
-                "_n_kv_heads_by_layer", "_kv_key_length_swa", "_kv_value_length_swa",
-                "_shared_kv_layers", "_nextn_predict_layers",
+                "_context_length",
+                "_n_layers",
+                "_n_kv_heads",
+                "_n_heads",
+                "_embedding_length",
+                "_kv_key_length",
+                "_kv_value_length",
+                "_kv_lora_rank",
+                "_sliding_window",
+                "_sliding_window_pattern",
+                "_ssm_inner_size",
+                "_full_attention_interval",
+                "_key_length_mla",
+                "_n_kv_heads_by_layer",
+                "_kv_key_length_swa",
+                "_kv_value_length_swa",
+                "_shared_kv_layers",
+                "_nextn_predict_layers",
             ):
                 setattr(db, attr, None)
             db._model_identifier = "mtp-draft"
@@ -2254,8 +2278,8 @@ class LlamaCppBackend:
             return 0
         ub = max(1, int(n_ubatch if n_ubatch else self._DEFAULT_N_UBATCH))
         par = max(1, int(n_parallel))
-        out_buffer = n_vocab * ub * 4          # f32 output/logits buffer
-        act_scratch = 4 * n_embd * ub * 4      # a few resident hidden-width buffers
+        out_buffer = n_vocab * ub * 4  # f32 output/logits buffer
+        act_scratch = 4 * n_embd * ub * 4  # a few resident hidden-width buffers
         if per_device_tensor:
             # Output + comm/staging materialized on every device, every slot.
             compute = 2 * act_scratch + out_buffer * par
@@ -4270,7 +4294,9 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (1024 * 1024)
+                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (
+                                    1024 * 1024
+                                )
                                 if footprint_mib <= _pool_budget_mib(
                                     pool_mib, pool_total, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
                                 ):
@@ -4295,7 +4321,9 @@ class LlamaCppBackend:
                                 + _mtp_bytes(effective_ctx)
                             )
                             gpu_indices, use_fit = self._select_gpus(
-                                requested_total, gpus, usable_fraction = _pin_fraction,
+                                requested_total,
+                                gpus,
+                                usable_fraction = _pin_fraction,
                                 total_by_idx = total_by_idx,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
@@ -4321,8 +4349,12 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (1024 * 1024)
-                                if footprint_mib <= _pool_budget_mib(pool_mib, pool_total, pin_fraction):
+                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (
+                                    1024 * 1024
+                                )
+                                if footprint_mib <= _pool_budget_mib(
+                                    pool_mib, pool_total, pin_fraction
+                                ):
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
@@ -4366,7 +4398,9 @@ class LlamaCppBackend:
                             self._context_length or effective_ctx or 4096
                         )
                         gpu_indices, use_fit = self._select_gpus(
-                            _fs_total, gpus, usable_fraction = _pin_fraction,
+                            _fs_total,
+                            gpus,
+                            usable_fraction = _pin_fraction,
                             total_by_idx = total_by_idx,
                         )
                         if use_fit and not explicit_ctx:

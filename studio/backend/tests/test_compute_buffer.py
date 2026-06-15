@@ -58,7 +58,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 MIB = 1024 * 1024
 
 
-def _backend(vocab=248320, embd=5120):
+def _backend(vocab = 248320, embd = 5120):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._vocab_size = vocab
@@ -76,70 +76,66 @@ class TestSafeUpperBound:
 
     @pytest.mark.parametrize("parallel,measured", sorted(_PIPELINE_MEASURED.items()))
     def test_pipeline_upper_bounds_measured(self, parallel, measured):
-        est = _backend()._estimate_compute_buffer_bytes(n_parallel=parallel) / MIB
+        est = _backend()._estimate_compute_buffer_bytes(n_parallel = parallel) / MIB
         assert est >= measured, f"under-reserved at parallel={parallel}: {est:.0f} < {measured}"
 
     @pytest.mark.parametrize("parallel,measured", sorted(_PIPELINE_MEASURED.items()))
     def test_pipeline_not_wildly_over(self, parallel, measured):
         # Stay within ~2x of measured so we don't waste context (the point of
         # replacing the flat reserve). parallel=1 is tiny in absolute terms.
-        est = _backend()._estimate_compute_buffer_bytes(n_parallel=parallel) / MIB
+        est = _backend()._estimate_compute_buffer_bytes(n_parallel = parallel) / MIB
         assert est <= max(measured * 2.0, 128)
 
     def test_tensor_upper_bounds_measured(self):
-        est = _backend()._estimate_compute_buffer_bytes(
-            n_parallel=1, per_device_tensor=True
-        ) / MIB
+        est = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, per_device_tensor = True) / MIB
         assert est >= _TENSOR_MEASURED_PER_DEVICE
 
     def test_tensor_far_below_old_flat_reserve(self):
         # The whole point: deterministic estimate << flat 5120 for this model.
-        est = _backend()._estimate_compute_buffer_bytes(
-            n_parallel=1, per_device_tensor=True
-        ) / MIB
+        est = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, per_device_tensor = True) / MIB
         assert est < LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
 
 
 class TestScaling:
     def test_grows_with_serving_slots(self):
         b = _backend()
-        vals = [b._estimate_compute_buffer_bytes(n_parallel=p) for p in (1, 2, 4, 8)]
+        vals = [b._estimate_compute_buffer_bytes(n_parallel = p) for p in (1, 2, 4, 8)]
         assert vals == sorted(vals) and vals[0] < vals[-1]
 
     def test_parallel_1_is_small(self):
         # Single-token decode: a few tens of MiB, not gigabytes.
-        est = _backend()._estimate_compute_buffer_bytes(n_parallel=1) / MIB
+        est = _backend()._estimate_compute_buffer_bytes(n_parallel = 1) / MIB
         assert est < 128
 
     def test_tensor_exceeds_pipeline_at_same_parallel(self):
         b = _backend()
-        pipe = b._estimate_compute_buffer_bytes(n_parallel=1)
-        tens = b._estimate_compute_buffer_bytes(n_parallel=1, per_device_tensor=True)
+        pipe = b._estimate_compute_buffer_bytes(n_parallel = 1)
+        tens = b._estimate_compute_buffer_bytes(n_parallel = 1, per_device_tensor = True)
         assert tens > pipe
 
     def test_scales_with_vocab(self):
-        small = _backend(vocab=32000)._estimate_compute_buffer_bytes(n_parallel=4)
-        big = _backend(vocab=256000)._estimate_compute_buffer_bytes(n_parallel=4)
+        small = _backend(vocab = 32000)._estimate_compute_buffer_bytes(n_parallel = 4)
+        big = _backend(vocab = 256000)._estimate_compute_buffer_bytes(n_parallel = 4)
         assert big > small
 
     def test_scales_with_ubatch(self):
         b = _backend()
-        lo = b._estimate_compute_buffer_bytes(n_parallel=4, n_ubatch=256)
-        hi = b._estimate_compute_buffer_bytes(n_parallel=4, n_ubatch=1024)
+        lo = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 256)
+        hi = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 1024)
         assert hi > lo
 
 
 class TestFallback:
     def test_zero_when_vocab_missing(self):
-        assert _backend(vocab=None)._estimate_compute_buffer_bytes(n_parallel=4) == 0
+        assert _backend(vocab = None)._estimate_compute_buffer_bytes(n_parallel = 4) == 0
 
     def test_zero_when_embd_missing(self):
-        assert _backend(embd=None)._estimate_compute_buffer_bytes(n_parallel=4) == 0
+        assert _backend(embd = None)._estimate_compute_buffer_bytes(n_parallel = 4) == 0
 
     def test_zero_lets_tensor_plan_use_flat_fallback(self):
         # When dims are missing, _plan_tensor_parallel must fall back to the flat
         # reserve (defense-in-depth) rather than reserving 0 and OOMing.
-        b = _backend(vocab=None, embd=None)
+        b = _backend(vocab = None, embd = None)
         b._n_layers = None  # can't estimate KV -> floors ctx, still returns a plan
         ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, 48000)], 8 * 1024**3, 8192)
         assert gi == [0, 1]  # both GPUs usable under the flat fallback
