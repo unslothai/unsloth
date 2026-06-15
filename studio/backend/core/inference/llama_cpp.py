@@ -4267,6 +4267,11 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # Omitting --threads relies on llama.cpp's physical-core default, so
+                # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
+                # arg handler and silently force hardware_concurrency(). #5692
+                if "--threads" not in cmd:
+                    env.pop("LLAMA_ARG_THREADS", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
