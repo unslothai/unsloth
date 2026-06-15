@@ -33,9 +33,11 @@ from routes.inference import (
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
+    _cmpl_stream_event_out,
     _effective_max_tokens,
     _extract_content_parts,
     _friendly_error,
+    _monitor_openai_sse_event,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
     openai_chat_completions,
@@ -457,6 +459,7 @@ class TestChatCompletionRequestToolFields:
             supports_tools = False
             is_vision = False
             _is_audio = False
+            context_length = 4096
 
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
@@ -476,6 +479,7 @@ class TestChatCompletionRequestToolFields:
             supports_tools = True
             is_vision = False
             _is_audio = False
+            context_length = 4096
 
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
@@ -884,6 +888,35 @@ class TestOpenAICompatibilityHelpers:
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
 
+    def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+            context_length = 100,
+        )
+        event = (
+            b'data: {"id":"chatcmpl-test","choices":[{"text":"done","finish_reason":"stop"}],'
+            b'"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}\n'
+        )
+
+        _monitor_openai_sse_event(monitor_id, event, context_length = 100)
+        out = _cmpl_stream_event_out(event, include_usage = False)
+
+        assert out is not None
+        assert b'"usage"' not in out
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "done"
+        assert entry["prompt_tokens"] == 4
+        assert entry["completion_tokens"] == 6
+        assert entry["total_tokens"] == 10
+        assert entry["context_usage"] == 0.1
+
     def test_developer_message_preserves_existing_system_prompt(self):
         payload = ChatCompletionRequest(
             messages = [
@@ -1165,6 +1198,10 @@ class TestGgufVisionMessages:
 
 class TestGgufVisionToolRouting:
     class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+
         async def is_disconnected(self):
             return False
 
@@ -1200,6 +1237,7 @@ class TestGgufVisionToolRouting:
             is_vision = True,
             supports_tools = True,
             model_identifier = "gemma-4-12b-it-GGUF",
+            context_length = 4096,
             generate_chat_completion = _plain,
             generate_chat_completion_with_tools = _tools,
         )
@@ -1255,6 +1293,7 @@ class TestGgufVisionToolRouting:
             is_vision = False,
             supports_tools = True,
             model_identifier = "test-gguf",
+            context_length = 4096,
             generate_chat_completion = _plain,
             generate_chat_completion_with_tools = _tools,
         )
@@ -1289,6 +1328,7 @@ class TestGgufVisionToolRouting:
             is_vision = False,
             supports_tools = True,
             model_identifier = "test-gguf",
+            context_length = 4096,
             generate_chat_completion = _plain,
             generate_chat_completion_with_tools = _tools,
         )
@@ -1333,6 +1373,7 @@ class TestGgufVisionToolRouting:
             is_vision = False,
             supports_tools = False,
             model_identifier = "test-gguf",
+            context_length = 4096,
             generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -1366,6 +1407,8 @@ class TestGgufVisionToolRouting:
         import routes.inference as inf_mod
 
         seen_seeds = []
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
         def _generate(**kwargs):
             seen_seeds.append(kwargs.get("seed"))
@@ -1385,6 +1428,7 @@ class TestGgufVisionToolRouting:
             is_vision = False,
             supports_tools = False,
             model_identifier = "test-gguf",
+            context_length = 4096,
             generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -1403,6 +1447,12 @@ class TestGgufVisionToolRouting:
 
         assert seen_seeds == expected
         assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+        assert body["usage"]["prompt_tokens"] == 5
+        assert body["usage"]["completion_tokens"] == 21
+        [entry] = monitor.snapshot()
+        assert entry["prompt_tokens"] == 5
+        assert entry["completion_tokens"] == 21
+        assert entry["total_tokens"] == 26
 
 
 class TestApiMonitorAudioInput:

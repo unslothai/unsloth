@@ -1429,6 +1429,15 @@ def _monitor_openai_sse_line(
     return None
 
 
+def _monitor_openai_sse_event(
+    monitor_id: Optional[str],
+    event: bytes,
+    context_length = None,
+) -> None:
+    for line in event.decode("utf-8", errors = "ignore").splitlines():
+        _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+
+
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
@@ -4614,7 +4623,15 @@ async def openai_chat_completions(
                     ),
                 )
                 api_monitor.set_reply(monitor_id, full_text)
-                _monitor_usage(monitor_id, completion_usage, llama_backend.context_length)
+                _monitor_usage(
+                    monitor_id,
+                    {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _sum_completion,
+                        "total_tokens": _prompt_tokens + _sum_completion,
+                    },
+                    llama_backend.context_length,
+                )
                 api_monitor.finish(monitor_id)
                 return JSONResponse(content = response.model_dump())
 
@@ -5490,20 +5507,22 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
+                        _monitor_openai_sse_event(
+                            monitor_id,
+                            event,
+                            llama_backend.context_length,
+                        )
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
-                            for line in out.decode("utf-8", errors = "ignore").splitlines():
-                                _monitor_openai_sse_line(
-                                    monitor_id, line.strip(), llama_backend.context_length
-                                )
                             yield out + b"\n\n"
                 if not disconnect_event.is_set() and buffer:
+                    _monitor_openai_sse_event(
+                        monitor_id,
+                        buffer,
+                        llama_backend.context_length,
+                    )
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
-                        for line in out.decode("utf-8", errors = "ignore").splitlines():
-                            _monitor_openai_sse_line(
-                                monitor_id, line.strip(), llama_backend.context_length
-                            )
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
