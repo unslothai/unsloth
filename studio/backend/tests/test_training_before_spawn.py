@@ -102,6 +102,62 @@ class TestBeforeSpawnHook(unittest.TestCase):
         hook.assert_not_called()
         process_mock.assert_not_called()
 
+    def test_auto_placement_runs_after_hook(self):
+        # Auto-selection ranks GPUs by free VRAM, so it must run AFTER the hook
+        # frees export/chat -- otherwise training could be pinned onto a freed GPU
+        # (or onto a GPU holding a chat model the probe decided to keep).
+        order = []
+        backend = TrainingBackend()
+        hook = MagicMock(side_effect = lambda: order.append("hook"))
+
+        def _placement(gpu_ids, **kwargs):
+            order.append("placement")
+            return ([0], {})
+
+        with (
+            patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
+            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
+            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
+            patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
+            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+        ):
+            ok = backend.start_training(
+                job_id = "before-spawn-test",
+                before_spawn = hook,
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+            )  # gpu_ids omitted -> auto mode
+        self.assertTrue(ok)
+        self.assertEqual(order, ["hook", "placement"])
+
+    def test_explicit_placement_validated_before_hook(self):
+        # Explicit gpu_ids are validated before the hook (so an invalid set 400s
+        # without teardown); explicit placement is VRAM-independent.
+        order = []
+        backend = TrainingBackend()
+        hook = MagicMock(side_effect = lambda: order.append("hook"))
+
+        def _placement(gpu_ids, **kwargs):
+            order.append("placement")
+            return (list(gpu_ids), {})
+
+        with (
+            patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
+            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
+            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
+            patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
+            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+        ):
+            ok = backend.start_training(
+                job_id = "before-spawn-test",
+                before_spawn = hook,
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                gpu_ids = [5],
+            )
+        self.assertTrue(ok)
+        self.assertEqual(order, ["placement", "hook"])
+
 
 if __name__ == "__main__":
     unittest.main()
