@@ -51,15 +51,15 @@ const TABS: TabDef[] = [
   },
   { id: "chat", labelKey: "settings.tabs.chat", icon: Message01Icon },
   {
-    id: "connections",
-    labelKey: "settings.tabs.connections",
-    icon: CloudIcon,
-    badgeKey: "common.new",
-  },
-  {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
     icon: Globe02Icon,
+    badgeKey: "common.new",
+  },
+  {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
     badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
