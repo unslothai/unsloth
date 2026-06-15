@@ -125,6 +125,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetImage",
   "isDatasetAudio",
   "modelRequiresTrustRemoteCode",
+  "trustRemoteCode",
   "trainOnCompletions",
   "maxPositionEmbeddings",
   "s3Config",
@@ -812,7 +813,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 10,
+      version: 11,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -858,6 +859,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
             s.learningRate = LR_DEFAULT_CPT;
           }
+        }
+        if (version < 11) {
+          delete s.trustRemoteCode;
         }
         return s as unknown as TrainingConfigStore;
       },

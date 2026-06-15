@@ -211,14 +211,15 @@ export function useTrainingActions() {
       } as TrainingStartRequest;
 
       runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
+      const savedPayloadTrustsRemoteCode = payload.trust_remote_code === true;
+      const requiresTrustRemoteCode =
+        savedPayloadTrustsRemoteCode ||
+        (await resumePayloadRequiresTrustRemoteCode(payload, config));
       if (
         !(await confirmTrustRemoteCodeIfNeeded({
           modelName: payload.model_name,
-          requiresTrustRemoteCode: await resumePayloadRequiresTrustRemoteCode(
-            payload,
-            config,
-          ),
-          trustRemoteCode: payload.trust_remote_code === true,
+          requiresTrustRemoteCode,
+          trustRemoteCode: false,
           onConfirm: () => {
             payload.trust_remote_code = true;
           },
