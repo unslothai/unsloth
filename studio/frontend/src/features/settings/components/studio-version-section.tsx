@@ -35,8 +35,14 @@ async function fetchStudioVersions(): Promise<{
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About.
-export function StudioVersionSection() {
+// Shared "Unsloth" version block, shown in both General and About. The About
+// tab passes llamaCppVersion to surface the installed llama.cpp build alongside
+// the version rows; General omits it, so the row only shows on About.
+export function StudioVersionSection({
+  llamaCppVersion,
+}: {
+  llamaCppVersion?: string | null;
+} = {}) {
   const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
   const [studioVersion, setStudioVersion] = useState("dev");
@@ -65,6 +71,13 @@ export function StudioVersionSection() {
           {packageVersion}
         </code>
       </SettingsRow>
+      {llamaCppVersion ? (
+        <SettingsRow label={t("settings.about.llamaCppVersion")}>
+          <code className="font-mono text-xs text-muted-foreground">
+            {llamaCppVersion}
+          </code>
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

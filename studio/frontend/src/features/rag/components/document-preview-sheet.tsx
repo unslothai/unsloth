@@ -9,10 +9,10 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   FileTextIcon,
-  LoaderIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 
 import {
   Sheet,
@@ -209,7 +209,7 @@ function PdfPreview({
           onLoadError={(e) => setError(e.message)}
           loading={
             <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-              <LoaderIcon className="size-3.5 animate-spin" /> Loading PDF…
+              <Spinner className="size-3.5" /> Loading PDF…
             </div>
           }
         >
@@ -444,7 +444,7 @@ export function DocumentPreviewSheet() {
         <div className="min-h-0 flex-1">
           {loading ? (
             <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-              <LoaderIcon className="size-3.5 animate-spin" /> Resolving source…
+              <Spinner className="size-3.5" /> Resolving source…
             </div>
           ) : error ? (
             <div className="p-6 text-sm text-muted-foreground">
