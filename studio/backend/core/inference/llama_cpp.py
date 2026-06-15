@@ -533,6 +533,37 @@ def _is_companion_gguf_path(path: str) -> bool:
     return name.startswith("mtp-") or "/mtp/" in f"/{p}"
 
 
+def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
+    """Return main GGUF files matching a requested variant.
+
+    Prefer exact quant-label matches over loose substring matches so a request
+    for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
+    """
+    variant_key = variant.strip().lower()
+    main_files = [
+        f for f in files if f.lower().endswith(".gguf") and not _is_companion_gguf_path(f)
+    ]
+    if not variant_key:
+        return sorted(main_files)
+
+    try:
+        from utils.models.model_config import _extract_quant_label
+    except Exception:
+        _extract_quant_label = None
+
+    if _extract_quant_label is not None:
+        exact = sorted(
+            f for f in main_files if _extract_quant_label(f).lower() == variant_key
+        )
+        if exact:
+            return exact
+
+    boundary = re.compile(
+        r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])"
+    )
+    return sorted(f for f in main_files if boundary.search(f.lower()))
+
+
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
@@ -2819,17 +2850,7 @@ class LlamaCppBackend:
                 from huggingface_hub import list_repo_files
 
                 files = list_repo_files(hf_repo, token = hf_token)
-                variant_lower = hf_variant.lower()
-                boundary = re.compile(
-                    r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
-                )
-                gguf_files = sorted(
-                    f
-                    for f in files
-                    if f.endswith(".gguf")
-                    and boundary.search(f.lower())
-                    and not _is_companion_gguf_path(f)
-                )
+                gguf_files = _gguf_files_for_variant(files, hf_variant)
                 if gguf_files:
                     gguf_filename = gguf_files[0]
                     m = _SHARD_FULL_RE.match(gguf_filename)
@@ -2851,16 +2872,13 @@ class LlamaCppBackend:
             if not gguf_filename:
                 try:
                     from utils.models.model_config import _iter_hf_cache_snapshots
-                    boundary = re.compile(
-                        r"(?<![a-zA-Z0-9])" + re.escape(hf_variant.lower()) + r"(?![a-zA-Z0-9])"
-                    )
+
                     for snap in _iter_hf_cache_snapshots(hf_repo):
-                        matches = sorted(
+                        cached_files = (
                             p.relative_to(snap).as_posix()
                             for p in snap.rglob("*.gguf")
-                            if not _is_companion_gguf_path(p.relative_to(snap).as_posix())
-                            and boundary.search(p.relative_to(snap).as_posix().lower())
                         )
+                        matches = _gguf_files_for_variant(cached_files, hf_variant)
                         if not matches:
                             continue
                         gguf_filename = matches[0]

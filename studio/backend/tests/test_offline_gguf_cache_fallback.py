@@ -79,6 +79,7 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _gguf_files_for_variant,
     _hf_offline_if_dns_dead,
     _probe_dns_dead,
 )
@@ -128,6 +129,56 @@ def clean_offline_env(monkeypatch):
     """Strip ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE`` for the test."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+
+class TestGgufVariantFileResolution:
+    def test_prefers_exact_unknown_variant_over_big_endian_sibling(self):
+        files = [
+            "tinyllamas/stories260K-be.gguf",
+            "tinyllamas/stories260K-infill.gguf",
+            "tinyllamas/stories260K.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "stories260K") == [
+            "tinyllamas/stories260K.gguf"
+        ]
+
+    def test_download_uses_exact_variant_label(self, monkeypatch, tmp_path):
+        backend = LlamaCppBackend()
+        downloaded: list[str] = []
+
+        def fake_get_paths_info(_repo_id, paths, token = None):
+            return [
+                _types.SimpleNamespace(path = path, size = 1)
+                for path in paths
+                if path is not None
+            ]
+
+        def fake_download(*, repo_id, filename, token = None):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        with (
+            patch(
+                "huggingface_hub.list_repo_files",
+                lambda *_a, **_k: [
+                    "tinyllamas/stories260K-be.gguf",
+                    "tinyllamas/stories260K-infill.gguf",
+                    "tinyllamas/stories260K.gguf",
+                ],
+            ),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("huggingface_hub.hf_hub_download", fake_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = "ggml-org/models",
+                hf_variant = "stories260K",
+            )
+
+        assert downloaded == ["tinyllamas/stories260K.gguf"]
+        assert out == "/fake/ggml-org/models/tinyllamas/stories260K.gguf"
 
 
 def _siblings(items: dict[str, int]):

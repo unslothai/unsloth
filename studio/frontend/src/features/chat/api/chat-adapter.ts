@@ -46,6 +46,7 @@ import {
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
+  GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
   OpenAIMessageContent,
@@ -1141,6 +1142,18 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|-)be(?:[.-]|$)/;
+
+function isAutoLoadableGgufVariant(variant: GgufVariantDetail): boolean {
+  const filename = variant.filename.trim().toLowerCase();
+  const separatorIndex = Math.max(
+    filename.lastIndexOf("/"),
+    filename.lastIndexOf("\\"),
+  );
+  const basename =
+    separatorIndex >= 0 ? filename.slice(separatorIndex + 1) : filename;
+  return !BIG_ENDIAN_GGUF_FILENAME_RE.test(basename);
+}
 
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
@@ -1195,7 +1208,7 @@ async function autoLoadSmallestModel(): Promise<{
         try {
           const variants = await listGgufVariants(repo.repo_id);
           const downloaded = variants.variants
-            .filter((v) => v.downloaded)
+            .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
