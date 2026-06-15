@@ -2424,9 +2424,7 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
 
 
 @studio_router.get("/monitor/{entry_id}")
-async def get_api_monitor_entry(
-    entry_id: str, current_subject: str = Depends(get_current_subject)
-):
+async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
     entry = api_monitor.get(entry_id)
     if entry is None:
