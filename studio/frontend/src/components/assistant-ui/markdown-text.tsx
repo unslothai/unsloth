@@ -76,7 +76,7 @@ function isRenderableRenderHtmlToolPart(part: unknown): boolean {
   }
   if (
     typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Rendered HTML artifact")
+    toolPart.result.startsWith("Rendered HTML canvas")
   ) {
     return true;
   }
@@ -286,7 +286,7 @@ function CodeBlockActions({
 }
 
 // DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
-// thread.tsx) and has the artifacts canvas on by default, so a full-HTML answer
+// thread.tsx) and has the HTML canvas feature on by default, so a full-HTML answer
 // (e.g. a playable game) renders as an interactive card without the global toggle.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
@@ -335,7 +335,7 @@ function StreamdownBlock(props: BlockProps) {
   ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading artifact preview...
+        Loading canvas preview...
       </div>
     );
   }

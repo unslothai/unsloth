@@ -155,8 +155,7 @@ def _extract_block(
 def test_main_composer_keydown_rearms_watchdog():
     """After the keydown re-pin sets composingRef=true the watchdog must
     be re-armed; otherwise the WSL+Chrome no-compositionend path this PR
-    targets would lock Send permanently after any IME keypress
-    (Codex P1 on commit 597af0d0)."""
+    targets would lock Send permanently after any IME keypress."""
     src = THREAD_TSX.read_text()
     block = _extract_block(src, "const onKeyDown = useCallback")
     assert "refreshStuckTimer" in block, (
@@ -168,7 +167,7 @@ def test_main_composer_keydown_rearms_watchdog():
         "clearStuckTimer,", ""
     ), (
         "main composer keydown gate must not leave the watchdog only "
-        "cleared — that's the Codex P1 regression"
+        "cleared; that would regress the stuck-compositionend path"
     )
 
 
@@ -180,3 +179,37 @@ def test_compare_composer_keydown_rearms_watchdog():
         "compare composer keydown gate must call refreshStuckImeTimer "
         "after re-pinning composingRef"
     )
+
+
+def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str) -> None:
+    enter_idx = block.find('e.key === "Enter"')
+    recovery_idx = block.find("setCompositionState(false)")
+    assert enter_idx != -1, "keydown handler is missing an Enter guard"
+    assert recovery_idx != -1, "keydown handler is missing immediate recovery"
+    assert enter_idx < recovery_idx, (
+        "stuck-composition recovery must guard Enter before clearing "
+        "composingRef; candidate-confirming Enter must not submit"
+    )
+    guard_block = block[enter_idx:recovery_idx]
+    assert "preventDefault()" in guard_block, (
+        "Enter while composingRef is stuck must prevent the same key from "
+        "falling through to submit"
+    )
+    assert (
+        refresh_call in guard_block
+    ), "Enter while composingRef is stuck must keep the watchdog armed"
+    assert (
+        "return;" in guard_block
+    ), "Enter while composingRef is stuck must not reach immediate recovery"
+
+
+def test_main_composer_stuck_enter_does_not_clear_before_submit():
+    src = THREAD_TSX.read_text()
+    block = _extract_block(src, "const onKeyDown = useCallback")
+    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckTimer")
+
+
+def test_compare_composer_stuck_enter_does_not_clear_before_submit():
+    src = SHARED_TSX.read_text()
+    block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
+    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckImeTimer")
