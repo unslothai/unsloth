@@ -1509,16 +1509,14 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
         return False
     if training_method == "qlora":
         return True
-    if (
-        not training_method
-        and config.base_model
-        and "-bnb-4bit" not in config.base_model.lower()
-    ):
+    if not training_method and config.base_model and "-bnb-4bit" not in config.base_model.lower():
         return False
     return load_in_4bit
 
 
-def _remote_gguf_companion_bytes(repo: str, *, hf_token: Optional[str], include_mmproj: bool) -> int:
+def _remote_gguf_companion_bytes(
+    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+) -> int:
     """Sum the repo's MTP-drafter and (for vision repos) mmproj companion GGUFs,
     which llama-server auto-downloads beside the main weights. Best-effort: 0 on
     any error so it can only add headroom, never refuse a load by itself."""
@@ -1527,7 +1525,7 @@ def _remote_gguf_companion_bytes(repo: str, *, hf_token: Optional[str], include_
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
-        for sibling in (info.siblings or []):
+        for sibling in info.siblings or []:
             base = Path(sibling.rfilename or "").name.lower()
             if not base.endswith(".gguf"):
                 continue
@@ -1539,7 +1537,9 @@ def _remote_gguf_companion_bytes(repo: str, *, hf_token: Optional[str], include_
         return 0
 
 
-def _estimate_gguf_required_gb(config: ModelConfig, hf_token: Optional[str] = None) -> Optional[float]:
+def _estimate_gguf_required_gb(
+    config: ModelConfig, hf_token: Optional[str] = None
+) -> Optional[float]:
     """Approximate GGUF VRAM (GB) from its on-disk quantized weights (the dominant
     term; the guard adds margin + floor). Local: the main GGUF incl. split shards
     (reusing the loader's own sizer) + mmproj/MTP companions. Remote: the selected
@@ -1606,7 +1606,9 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    required_override_gb = _estimate_gguf_required_gb(config, hf_token = hf_token) if is_gguf else None
+    required_override_gb = (
+        _estimate_gguf_required_gb(config, hf_token = hf_token) if is_gguf else None
+    )
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,

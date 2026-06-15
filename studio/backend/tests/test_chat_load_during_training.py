@@ -64,8 +64,12 @@ class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.auto_select_gpu_ids", return_value = ([0], meta)) as auto_mock,
         ):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "unsloth/Qwen3-1.7B", hf_token = None, load_in_4bit = True,
-                max_seq_length = 0, requested_gpu_ids = None, is_gguf = False,
+                model_name = "unsloth/Qwen3-1.7B",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
+                requested_gpu_ids = None,
+                is_gguf = False,
             )
         return ok, info, auto_mock
 
@@ -92,7 +96,15 @@ class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, *, required, devices, gpu_ids, resolved = None, resolve_side_effect = None):
+    def _run(
+        self,
+        *,
+        required,
+        devices,
+        gpu_ids,
+        resolved = None,
+        resolve_side_effect = None,
+    ):
         resolve_kwargs = (
             {"side_effect": resolve_side_effect}
             if resolve_side_effect
@@ -106,8 +118,12 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
         ):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "m", hf_token = None, load_in_4bit = True, max_seq_length = 0,
-                requested_gpu_ids = gpu_ids, is_gguf = False,
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
+                requested_gpu_ids = gpu_ids,
+                is_gguf = False,
             )
         return ok, info, auto_mock
 
@@ -120,13 +136,17 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
     def test_per_gpu_floor_blocks_uneven_split(self):
         # free [45, 10]; aggregate 45 + 10*0.85 = 53.5 >= needed 27, but the 10 GB
         # GPU is below the even-share floor 27/2 = 13.5 -> refuse (would OOM it).
-        ok, info, _ = self._run(required = 20.0, devices = _devices((0, 80, 35), (1, 80, 70)), gpu_ids = [0, 1])
+        ok, info, _ = self._run(
+            required = 20.0, devices = _devices((0, 80, 35), (1, 80, 70)), gpu_ids = [0, 1]
+        )
         self.assertFalse(ok)
         self.assertAlmostEqual(info["min_free_gb"], 10.0, places = 3)
 
     def test_per_gpu_floor_passes_when_even(self):
         # free [30, 30]; both clear the 13.5 even-share floor -> allow.
-        ok, _, _ = self._run(required = 20.0, devices = _devices((0, 80, 50), (1, 80, 50)), gpu_ids = [0, 1])
+        ok, _, _ = self._run(
+            required = 20.0, devices = _devices((0, 80, 50), (1, 80, 50)), gpu_ids = [0, 1]
+        )
         self.assertTrue(ok)
 
     def test_missing_gpu_counts_as_zero(self):
@@ -135,7 +155,9 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_invalid_ids_does_not_block(self):
         ok, info, _ = self._run(
-            required = 5.0, devices = [], gpu_ids = [99],
+            required = 5.0,
+            devices = [],
+            gpu_ids = [99],
             resolve_side_effect = ValueError("Invalid gpu_ids [99]"),
         )
         self.assertTrue(ok)
@@ -146,7 +168,13 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, *, devices, required_override = None, estimate = None):
+    def _run(
+        self,
+        *,
+        devices,
+        required_override = None,
+        estimate = None,
+    ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.estimate_required_model_memory_gb", return_value = (estimate, {})),
@@ -154,8 +182,12 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
         ):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "unsloth/gemma-GGUF", hf_token = None, load_in_4bit = True,
-                max_seq_length = 0, requested_gpu_ids = None, is_gguf = True,
+                model_name = "unsloth/gemma-GGUF",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
+                requested_gpu_ids = None,
+                is_gguf = True,
                 required_override_gb = required_override,
             )
         return ok, info, auto_mock
@@ -187,7 +219,10 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
     def test_non_cuda_allows(self):
         with patch("utils.hardware.get_device", return_value = DeviceType.MLX):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "m", hf_token = None, load_in_4bit = True, max_seq_length = 0,
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
                 requested_gpu_ids = None,
             )
         self.assertTrue(ok)
@@ -201,8 +236,13 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.auto_select_gpu_ids"),
         ):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "m", hf_token = None, load_in_4bit = True, max_seq_length = 0,
-                requested_gpu_ids = None, is_gguf = True, required_override_gb = 8.0,
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
+                requested_gpu_ids = None,
+                is_gguf = True,
+                required_override_gb = 8.0,
             )
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "no_visible_gpus")
@@ -210,7 +250,10 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
     def test_probe_exception_refuses(self):
         with patch("utils.hardware.get_device", side_effect = RuntimeError("boom")):
             ok, info = tv.can_load_chat_during_training(
-                model_name = "m", hf_token = None, load_in_4bit = True, max_seq_length = 0,
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
                 requested_gpu_ids = None,
             )
         self.assertFalse(ok)
@@ -229,14 +272,21 @@ def _load_inference_route():
     return module
 
 
-def _stub_guard_deps(*, training_active, decision, captured = None):
+def _stub_guard_deps(
+    *,
+    training_active,
+    decision,
+    captured = None,
+):
     """Inject the guard's two lazy imports: core.training.get_training_backend and
     routes.training_vram.can_load_chat_during_training. `captured` (a list) records
     the can_load kwargs for assertions."""
     core_training = types.ModuleType("core.training")
     if isinstance(training_active, Exception):
+
         def _raise():
             raise training_active
+
         core_training.get_training_backend = _raise
     else:
         core_training.get_training_backend = lambda: SimpleNamespace(
@@ -260,9 +310,18 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
-    def _guard(self, *, config = None, captured = None, training_active, decision):
+    def _guard(
+        self,
+        *,
+        config = None,
+        captured = None,
+        training_active,
+        decision,
+    ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
-        with _stub_guard_deps(training_active = training_active, decision = decision, captured = captured):
+        with _stub_guard_deps(
+            training_active = training_active, decision = decision, captured = captured
+        ):
             self.route._guard_chat_load_against_training(
                 config,
                 model_identifier = "unsloth/Qwen3-1.7B",
@@ -302,8 +361,10 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         config = SimpleNamespace(is_gguf = True)
         with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5):
             self._guard(
-                config = config, captured = captured,
-                training_active = True, decision = (True, {}),
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {}),
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
@@ -353,19 +414,32 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
-    def _validate(self, *, training_active, decision, captured = None, load_in_4bit = True):
+    def _validate(
+        self,
+        *,
+        training_active,
+        decision,
+        captured = None,
+        load_in_4bit = True,
+    ):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
             model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
         )
         cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B",
-            is_gguf = False, is_lora = False, is_vision = False, path = None, base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+            display_name = "Qwen3-1.7B",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
         )
         with (
             patch.object(
-                self.route, "_resolve_model_identifier_for_request",
+                self.route,
+                "_resolve_model_identifier_for_request",
                 return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
@@ -400,13 +474,19 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 
         request = ValidateModelRequest(model_path = "x.gguf", gpu_ids = [0])
         cfg = SimpleNamespace(
-            identifier = "x.gguf", display_name = "x", is_gguf = True,
-            is_lora = False, is_vision = False, path = None, base_model = None,
+            identifier = "x.gguf",
+            display_name = "x",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
         )
         captured = []
         with (
             patch.object(
-                self.route, "_resolve_model_identifier_for_request",
+                self.route,
+                "_resolve_model_identifier_for_request",
                 return_value = ("x.gguf", "x.gguf", False),
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
@@ -430,15 +510,16 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_local_sums_split_shards(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             (p / "model-00001-of-00002.gguf").write_bytes(b"x" * 1000)
             (p / "model-00002-of-00002.gguf").write_bytes(b"y" * 2000)
             cfg = SimpleNamespace(
                 gguf_file = str(p / "model-00001-of-00002.gguf"),
-                gguf_mmproj_file = None, gguf_mtp_file = None,
-                gguf_hf_repo = None, gguf_variant = None,
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
             )
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
@@ -447,8 +528,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         import utils.models.model_config as mc
 
         cfg = SimpleNamespace(
-            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_hf_repo = "org/repo", gguf_variant = "Q4_K_M",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
         )
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
         captured = {}
@@ -459,7 +543,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         with (
             patch.object(mc, "list_gguf_variants", fake_list),
-            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3) as comp,
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
+            ) as comp,
         ):
             gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
@@ -468,13 +554,16 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
-
         cfg = SimpleNamespace(
-            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_hf_repo = "org/repo", gguf_variant = "Q8_0",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q8_0",
         )
         with patch.object(
-            mc, "list_gguf_variants",
+            mc,
+            "list_gguf_variants",
             return_value = ([SimpleNamespace(quant = "Q4_K_M", size_bytes = 1)], False),
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
@@ -496,9 +585,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf = SimpleNamespace(active_model_name = None)
         inf.unload_model = MagicMock()
         inf._shutdown_subprocess = MagicMock()
-        llama = SimpleNamespace(
-            is_loaded = False, model_identifier = None, hf_variant = None
-        )
+        llama = SimpleNamespace(is_loaded = False, model_identifier = None, hf_variant = None)
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(is_gguf = False, is_lora = False, path = None, base_model = None)
         request = LoadRequest(model_path = "unsloth/Qwen3-1.7B")
@@ -507,12 +594,11 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         with (
             patch.object(self.route, "validate_extra_args", return_value = None),
             patch.object(
-                self.route, "_resolve_model_identifier_for_request",
+                self.route,
+                "_resolve_model_identifier_for_request",
                 return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
             ),
-            patch.object(
-                self.route, "resolve_effective_chat_template_override", return_value = None
-            ),
+            patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
@@ -521,9 +607,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc:
                 asyncio.run(
-                    self.route.load_model(
-                        request, fastapi_request = MagicMock(), current_subject = "u"
-                    )
+                    self.route.load_model(request, fastapi_request = MagicMock(), current_subject = "u")
                 )
 
         self.assertEqual(exc.exception.status_code, 409)
