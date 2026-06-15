@@ -208,6 +208,7 @@ class FakeExecuteTool:
         timeout = None,
         session_id = None,
         rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
