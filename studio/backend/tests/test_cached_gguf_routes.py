@@ -371,3 +371,156 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "cache_path": str(vision_repo.repo_path),
         }
     ]
+
+
+def _gfile(name: str, size: int, mtime: float) -> SimpleNamespace:
+    """A cached file carrying a Hugging Face ``blob_last_modified`` timestamp."""
+    return SimpleNamespace(
+        file_name = name,
+        size_on_disk = size,
+        blob_path = None,
+        blob_last_modified = mtime,
+    )
+
+
+def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_path):
+    """An unreadable auxiliary cache (e.g. an inaccessible
+    ``~/.cache/huggingface/hub``) must be skipped, not abort the scan.
+    Regression guard for ``extra.is_dir()`` raising and wiping the response.
+    """
+    import huggingface_hub
+    import utils.paths as paths_mod
+
+    active = SimpleNamespace(
+        repos = [_repo("Org/Active", [_file("Q4_K_M.gguf", 5_000)], tmp_path / "active")]
+    )
+
+    def _fake_scan(cache_dir = None):
+        if cache_dir is None:
+            return active
+        raise AssertionError("auxiliary scan should have been skipped")
+
+    class _Boom:
+        def is_dir(self):
+            raise PermissionError(13, "Permission denied")
+
+        def resolve(self):
+            raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _fake_scan)
+    monkeypatch.setattr(paths_mod, "legacy_hf_cache_dir", lambda: _Boom())
+    monkeypatch.setattr(paths_mod, "hf_default_cache_dir", lambda: _Boom())
+
+    scans = models_route._all_hf_cache_scans()
+    assert scans == [active]
+
+    # End-to-end: the endpoint still returns the active cache's repo.
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [active])
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/Active",
+            "size_bytes": 5_000,
+            "cache_path": str(tmp_path / "active"),
+        }
+    ]
+
+
+def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatch, tmp_path):
+    """Downloaded is ordered newest-first, and a multi-quant repo is placed by
+    its most recently downloaded quant (``last_modified`` = newest quant)."""
+    older = _repo(
+        "Org/Older",
+        [_gfile("Older-Q4_K_M.gguf", 5_000, 1_000.0)],
+        tmp_path / "models--Org--Older",
+    )
+    newer = _repo(
+        "Org/Newer",
+        [
+            _gfile("Newer-Q4_K_M.gguf", 5_000, 2_000.0),
+            _gfile("Newer-Q8_0.gguf", 9_000, 3_000.0),  # newest quant in the repo
+        ],
+        tmp_path / "models--Org--Newer",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [older, newer])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert [c["repo_id"] for c in result["cached"]] == ["Org/Newer", "Org/Older"]
+    assert result["cached"][0]["last_modified"] == 3_000.0
+    assert result["cached"][1]["last_modified"] == 1_000.0
+
+
+def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
+    """Same repo in two caches with equal size keeps the newest last_modified,
+    regardless of scan order."""
+    older = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 1_000.0)], tmp_path / "a")
+    newer = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 9_000.0)], tmp_path / "b")
+    for scans in ([older, newer], [newer, older]):  # both orders
+        monkeypatch.setattr(
+            models_route,
+            "_all_hf_cache_scans",
+            lambda s = scans: [SimpleNamespace(repos = [s[0]]), SimpleNamespace(repos = [s[1]])],
+        )
+        result = asyncio.run(models_route.list_cached_gguf(current_subject = "t"))
+        assert len(result["cached"]) == 1
+        assert result["cached"][0]["last_modified"] == 9_000.0
+
+
+def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_path):
+    """The per-quant 'downloaded' flag is driven by the real weight file in a
+    single snapshot; an mmproj vision adapter (matching a quant label) must
+    not make that quant appear downloaded."""
+    import huggingface_hub.constants as hf_constants
+
+    variants = [
+        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10_000),
+        SimpleNamespace(filename = "model-F16.gguf", quant = "F16", size_bytes = 20_000),
+    ]
+    monkeypatch.setattr(
+        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, True)
+    )
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo", hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    flags = {v.quant: v.downloaded for v in result.variants}
+    assert flags["Q4_K_M"] is True
+    assert flags["F16"] is False
+
+
+def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
+    """A cached mmproj adapter must not count toward a same-label main
+    variant's download progress (mmproj-F16 vs an F16 weight)."""
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # only the adapter on disk
+
+    result = asyncio.run(
+        models_route.get_gguf_download_progress(
+            repo_id = "org/repo",
+            variant = "F16",
+            expected_bytes = 20_000,
+            current_subject = "test-user",
+        )
+    )
+
+    assert result["downloaded_bytes"] == 0
+    assert result["progress"] == 0

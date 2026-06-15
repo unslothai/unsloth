@@ -50,8 +50,8 @@ export function ModelLoadDescription({
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
-      <div className="min-w-0 flex-1">
-        {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
             <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">

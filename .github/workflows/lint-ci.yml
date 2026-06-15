@@ -105,29 +105,37 @@ jobs:
         # exactly where a hoist refactor lives, and it skips brand-new
         # files whose re-export imports would otherwise look "unused".
         #
-        # actions/checkout uses fetch-depth: 1, so the base branch is not
-        # present locally. Fetch the single base commit with an explicit
-        # refspec so origin/<base> is reliably created (a bare
-        # `git fetch origin <ref>` only updates FETCH_HEAD in some
-        # configs). Two-dot diff avoids needing a merge-base on a shallow
-        # clone.
+        # Diff against the true merge-base, not the base tip. A two-dot
+        # diff against the tip re-lints every file the base branch
+        # changed after the PR branched, comparing newer base code
+        # (BEFORE) against the PR's older snapshot (AFTER) - a
+        # time-reversed comparison that flags the base branch's own
+        # refactors as blockers on PRs that never touched those files.
+        # The compare API returns the merge-base without needing local
+        # history, and fetching that single commit by SHA keeps the
+        # shallow (fetch-depth: 1) clone.
         if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --no-tags --depth=1 origin \
-            "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          MERGE_BASE=$(gh api \
+            "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            --jq .merge_base_commit.sha)
+          git fetch --no-tags --depth=1 origin "$MERGE_BASE"
           mapfile -t CHANGED < <(
             git diff --name-only --diff-filter=M \
-              "origin/${{ github.base_ref }}" HEAD -- '*.py' \
+              "$MERGE_BASE" HEAD -- '*.py' \
               | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )
           if [ "${#CHANGED[@]}" -eq 0 ]; then
             echo "no in-place-modified Python files to check"
             exit 0
           fi
+          printf 'merge base: %s\n' "$MERGE_BASE"
           printf 'checking %d file(s):\n' "${#CHANGED[@]}"
           printf '  %s\n' "${CHANGED[@]}"
           python scripts/verify_import_hoist.py \
-            --before "origin/${{ github.base_ref }}" --after HEAD "${CHANGED[@]}"
+            --before "$MERGE_BASE" --after HEAD "${CHANGED[@]}"
 
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
@@ -74,6 +75,7 @@ export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
+  const hw = useHardwareInfo();
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
@@ -96,7 +98,7 @@ export function AboutTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.about.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
@@ -104,7 +106,9 @@ export function AboutTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* llama.cpp row lives in the shared version section so it sits with the
+          Unsloth/Package rows; the prop keeps it About-only (General passes none). */}
+      <StudioVersionSection llamaCppVersion={hw.llamaCpp} />
 
       <SettingsSection title={t("settings.about.updates")}>
         <div className="py-2">
@@ -115,6 +119,40 @@ export function AboutTab() {
           />
         </div>
       </SettingsSection>
+
+      {hw.gpus.length > 0 || hw.cuda || hw.rocm ? (
+        <SettingsSection title={t("settings.about.hardware")}>
+          {hw.gpus.map((gpu, i) => (
+            <SettingsRow
+              // Index key: device order from the backend is stable per request.
+              key={i}
+              label={
+                hw.gpus.length > 1
+                  ? `${t("settings.about.gpu")} ${i}`
+                  : t("settings.about.gpu")
+              }
+            >
+              <code className="font-mono text-xs text-muted-foreground">
+                {gpu.name ?? "—"}
+                {gpu.vramTotalGb != null
+                  ? ` · ${Math.round(gpu.vramTotalGb)} GB`
+                  : ""}
+              </code>
+            </SettingsRow>
+          ))}
+          {hw.cuda || hw.rocm ? (
+            <SettingsRow
+              label={
+                hw.cuda ? t("settings.about.cuda") : t("settings.about.rocm")
+              }
+            >
+              <code className="font-mono text-xs text-muted-foreground">
+                {hw.cuda ?? hw.rocm}
+              </code>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>
@@ -153,6 +191,37 @@ export function AboutTab() {
               className="size-3.5"
             />
             {t("settings.about.reportIssue")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.about.license.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.about.license.studioLabel")}
+          description={t("settings.about.license.studioDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.studioLicense")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.about.license.libraryLabel")}
+          description={t("settings.about.license.libraryDescription")}
+        >
+          <a
+            href="https://github.com/unslothai/unsloth/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t("settings.about.license.libraryLicense")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>

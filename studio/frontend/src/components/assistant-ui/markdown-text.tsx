@@ -8,7 +8,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -75,7 +76,7 @@ function isRenderableRenderHtmlToolPart(part: unknown): boolean {
   }
   if (
     typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Rendered HTML artifact")
+    toolPart.result.startsWith("Rendered HTML canvas")
   ) {
     return true;
   }
@@ -284,9 +285,15 @@ function CodeBlockActions({
   );
 }
 
+// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
+// thread.tsx) and has the HTML canvas feature on by default, so a full-HTML answer
+// (e.g. a playable game) renders as an interactive card without the global toggle.
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      state.artifactsEnabled ||
+      state.collapseHtmlArtifacts ||
+      state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
@@ -328,7 +335,7 @@ function StreamdownBlock(props: BlockProps) {
   ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading artifact preview...
+        Loading canvas preview...
       </div>
     );
   }

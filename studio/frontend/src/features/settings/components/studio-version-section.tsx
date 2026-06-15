@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth";
+import { getAuthToken, refreshSession } from "@/features/auth";
+import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
@@ -18,66 +19,89 @@ const EMPTY_VERSIONS: StudioVersions = {
   studioVersion: null,
 };
 
+function parseStudioVersions(data: ApiObject): StudioVersions {
+  const packageVersion = data["version"];
+  const studioVersion = data["studio_version"];
+  return {
+    packageVersion:
+      typeof packageVersion === "string" ? packageVersion : null,
+    studioVersion: typeof studioVersion === "string" ? studioVersion : null,
+  };
+}
+
+async function requestStudioVersions(
+  token: string | null,
+): Promise<StudioVersions> {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(apiUrl("/api/health"), { headers });
+  if (!res.ok) {
+    return EMPTY_VERSIONS;
+  }
+  const data = (await res.json()) as ApiObject;
+  return parseStudioVersions(data);
+}
+
 async function fetchStudioVersions(): Promise<StudioVersions> {
   try {
     const token = getAuthToken();
-    const headers = new Headers();
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
+    const versions = await requestStudioVersions(token);
+    if (!token || (versions.packageVersion && versions.studioVersion)) {
+      return versions;
     }
-    const res = await fetch(apiUrl("/api/health"), { headers });
-    if (!res.ok) {
-      return EMPTY_VERSIONS;
+
+    if (await refreshSession()) {
+      return requestStudioVersions(getAuthToken());
     }
-    const data = (await res.json()) as ApiObject;
-    const packageVersion = data.version;
-    const studioVersion = data.studio_version;
-    return {
-      packageVersion:
-        typeof packageVersion === "string" ? packageVersion : null,
-      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-    };
+    return versions;
   } catch {
     return EMPTY_VERSIONS;
   }
 }
 
-export function StudioVersionSection() {
+// Shared "Unsloth" version block, shown in both General and About. The About
+// tab passes llamaCppVersion to surface the installed llama.cpp build alongside
+// the version rows; General omits it, so the row only shows on About.
+export function StudioVersionSection({
+  llamaCppVersion,
+}: {
+  llamaCppVersion?: string | null;
+} = {}) {
+  const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
   const [studioVersion, setStudioVersion] = useState("dev");
 
   useEffect(() => {
     let canceled = false;
-
-    fetchStudioVersions().then((nextVersions) => {
-      if (canceled) {
-        return;
-      }
-      if (nextVersions.packageVersion) {
-        setPackageVersion(nextVersions.packageVersion);
-      }
-      if (nextVersions.studioVersion) {
-        setStudioVersion(nextVersions.studioVersion);
-      }
+    fetchStudioVersions().then((next) => {
+      if (canceled) return;
+      if (next.packageVersion) setPackageVersion(next.packageVersion);
+      if (next.studioVersion) setStudioVersion(next.studioVersion);
     });
-
     return () => {
       canceled = true;
     };
   }, []);
 
   return (
-    <SettingsSection title="Studio">
-      <SettingsRow label="Studio Version">
+    <SettingsSection title="Unsloth">
+      <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}
         </code>
       </SettingsRow>
-      <SettingsRow label="Package Version">
+      <SettingsRow label={t("settings.about.packageVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {packageVersion}
         </code>
       </SettingsRow>
+      {llamaCppVersion ? (
+        <SettingsRow label={t("settings.about.llamaCppVersion")}>
+          <code className="font-mono text-xs text-muted-foreground">
+            {llamaCppVersion}
+          </code>
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

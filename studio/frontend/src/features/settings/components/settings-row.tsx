@@ -7,12 +7,14 @@ import type { ReactNode } from "react";
 export function SettingsRow({
   label,
   description,
+  icon,
   children,
   destructive,
   className,
 }: {
   label: string;
   description?: string;
+  icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
@@ -25,13 +27,20 @@ export function SettingsRow({
         className,
       )}
     >
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm font-medium text-foreground">{label}</span>
-        {description ? (
-          <span className="text-xs text-muted-foreground leading-snug">
-            {description}
+      <div className="flex min-w-0 items-center gap-2.5">
+        {icon ? (
+          <span className="flex shrink-0 items-center text-foreground">
+            {icon}
           </span>
         ) : null}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-sm font-medium text-foreground">{label}</span>
+          {description ? (
+            <span className="text-xs text-muted-foreground leading-snug">
+              {description}
+            </span>
+          ) : null}
+        </div>
       </div>
       {children ? <div className="flex shrink-0 items-center">{children}</div> : null}
     </div>

@@ -21,6 +21,8 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.llama_cpp import LlamaCppBackend
+from state import tool_approvals
+from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
 
 def _sse(delta: dict) -> str:
@@ -50,11 +52,16 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         payload,
         _cancel_event,
         headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
@@ -70,6 +77,27 @@ def _tool_names(payload: dict) -> list[str]:
     ]
 
 
+def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list[str]:
+    return [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+
+
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 
@@ -78,7 +106,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     tool_call_id = "call_render_late"
     first_stream = [
-        _sse({"content": "Here is the artifact.\n\n"}),
+        _sse({"content": "Here is the canvas.\n\n"}),
         _sse(
             {
                 "tool_calls": [
@@ -112,7 +140,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: Simple Red Square."
+        return "Rendered HTML canvas: Simple Red Square."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -140,7 +168,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     )
 
     content_events = [e for e in events if e.get("type") == "content"]
-    assert content_events[0]["text"] == "Here is the artifact.\n\n"
+    assert content_events[0]["text"] == "Here is the canvas.\n\n"
 
     first_content_index = next(
         i for i, event in enumerate(events) if event.get("type") == "content"
@@ -167,7 +195,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     # plus the structured tool call, preserving OpenAI-compatible ordering.
     assert len(payloads) == 2
     assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
-    assert assistant_messages[-1]["content"] == "Here is the artifact.\n\n"
+    assert assistant_messages[-1]["content"] == "Here is the canvas.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
 
@@ -229,7 +257,7 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: First."
+        return "Rendered HTML canvas: First."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -318,7 +346,7 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
 
     def fake_execute_tool(name, arguments, **_kwargs):
-        return "Rendered HTML artifact: Done."
+        return "Rendered HTML canvas: Done."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -755,7 +783,7 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: One."
+        return "Rendered HTML canvas: One."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -841,7 +869,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     The post-tool model pass can say it will use render_html again without
     emitting a tool call. That should be accepted as a final model mistake,
-    not turned into repeated internal re-prompts after the artifact already
+    not turned into repeated internal re-prompts after the canvas already
     exists.
     """
 
@@ -879,7 +907,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: First."
+        return "Rendered HTML canvas: First."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1118,7 +1146,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         calls.append((name, arguments))
-        return "Rendered HTML artifact: Forced."
+        return "Rendered HTML canvas: Forced."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1149,3 +1177,151 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
     assert len(payloads) == 3
+
+
+def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
+    streams = [
+        _structured_tool_call("python", {"code": "print(1)"}, "call_py"),
+        [_sse({"content": "Done."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.begin_tool_decision",
+        lambda *_a, **_k: object(),
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            session_id = "sess",
+        )
+    )
+
+    starts = [event for event in events if event.get("type") == "tool_start"]
+    assert len(starts) == 1
+    assert starts[0]["approval_id"]
+    assert starts[0]["awaiting_confirmation"] is True
+    assert calls == [("python", {"code": "print(1)"})]
+    assert any(event.get("type") == "tool_end" and event.get("result") == "OK" for event in events)
+
+
+def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
+    approval_id = "approval-close"
+    streams = [_structured_tool_call("python", {"code": "print(1)"}, "call_py")]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("tool should not run")),
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: approval_id)
+
+    with tool_approvals._lock:
+        tool_approvals._pending.clear()
+
+    gen = backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "run python"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = 1,
+        confirm_tool_calls = True,
+        session_id = "sess",
+    )
+    try:
+        assert next(gen)["type"] == "status"
+        start = next(gen)
+        assert start["type"] == "tool_start"
+        assert start["approval_id"] == approval_id
+        with tool_approvals._lock:
+            assert approval_id in tool_approvals._pending
+    finally:
+        gen.close()
+
+    with tool_approvals._lock:
+        assert approval_id not in tool_approvals._pending
+    assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
+
+
+def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("RAG autoinject must not run before approval")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "use docs"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            session_id = "sess",
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
+def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
+    same_call = _structured_tool_call("python", {"code": "print(1)"}, "call_py")
+    streams = [
+        same_call,
+        _structured_tool_call("python", {"code": "print(1)"}, "call_py_retry"),
+        [_sse({"content": "Done."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    decisions = iter(["deny", "allow"])
+    approvals = iter(["approval-1", "approval-2"])
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: next(approvals))
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.begin_tool_decision",
+        lambda *_a, **_k: object(),
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.wait_tool_decision",
+        lambda *_a, **_k: next(decisions),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 2,
+            confirm_tool_calls = True,
+            session_id = "sess",
+        )
+    )
+
+    starts = [event for event in events if event.get("type") == "tool_start"]
+    ends = [event for event in events if event.get("type") == "tool_end"]
+    assert len(starts) == 2
+    assert [event["result"] for event in ends] == [TOOL_REJECTED_MESSAGE, "OK"]
+    assert calls == [("python", {"code": "print(1)"})]
