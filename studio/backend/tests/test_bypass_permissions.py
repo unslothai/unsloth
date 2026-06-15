@@ -281,8 +281,15 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
 def test_loop_bypass_overrides_confirm_for_direct_callers():
     # Even if a direct internal caller passes confirm_tool_calls=True, bypass
     # must suppress the confirm gate at the loop level (not only at the route).
-    def fake_exec(name, arguments, *, cancel_event = None, timeout = None,
-                  session_id = None, disable_sandbox = False):
+    def fake_exec(
+        name,
+        arguments,
+        *,
+        cancel_event = None,
+        timeout = None,
+        session_id = None,
+        disable_sandbox = False,
+    ):
         return f"RAN[{name}]"
 
     events = list(
