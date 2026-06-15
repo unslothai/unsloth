@@ -478,12 +478,23 @@ _smart_apt_install() {
         echo "    If you accept, we'll run sudo now, and it'll prompt your password."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
+        # Detect non-interactive contexts (curl | sh, docker run -i without -t,
+        # CI runners). Without a TTY we cannot prompt for a sudo password, and
+        # sudo without -n would block forever waiting for stdin that never arrives.
+        if [ ! -r /dev/tty ] || [ ! -t 1 ]; then
+            if sudo -n true >/dev/null 2>&1; then
+                # Passwordless sudo configured; safe to escalate non-interactively.
+                sudo apt-get update -y </dev/null
+                sudo apt-get install -y $_STILL_MISSING </dev/null
+                return 0
+            fi
+            echo "    No TTY available and sudo would require a password."
+            echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+            echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+            exit 1
         fi
+        printf "    Accept? [Y/n] "
+        read -r REPLY </dev/tty || REPLY="y"
         case "$REPLY" in
             [nN]*)
                 echo ""
@@ -1412,6 +1423,14 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
+        # bubblewrap provides the OS-level sandbox the studio backend wraps
+        # python/bash tool execution in. If missing, tool execution falls
+        # back to the existing AST/blocklist/env-whitelist defences and the
+        # startup banner warns the operator (set UNSLOTH_STUDIO_SANDBOX_STRICT=1
+        # to refuse instead of falling back). On Ubuntu 23.10+ bwrap still
+        # needs apparmor_restrict_unprivileged_userns=0; that hint is in
+        # the banner too.
+        command -v bwrap >/dev/null 2>&1 || MISSING="$MISSING bubblewrap"
         ;;
 esac
 
@@ -1442,9 +1461,9 @@ if [ -n "$MISSING" ]; then
                 echo "    $MISSING"
                 echo ""
                 echo "    Examples:"
-                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
-                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
-                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
+                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel bubblewrap"
+                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl bubblewrap"
+                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel bubblewrap"
                 exit 1
             fi
             ;;
