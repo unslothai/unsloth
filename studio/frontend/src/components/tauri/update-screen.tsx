@@ -4,6 +4,7 @@
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
+import { Spinner } from "@/components/ui/spinner";
 import { useEffect, useRef, useState } from "react";
 
 interface UpdateScreenProps {
@@ -17,15 +18,6 @@ interface UpdateScreenProps {
 }
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
-
-function Spinner({ size = 24 }: { size?: number }) {
-  return (
-    <span
-      className="inline-block animate-spin rounded-full border-2 border-primary border-t-transparent"
-      style={{ width: size, height: size, animationDuration: "0.8s" }}
-    />
-  );
-}
 
 function Logo() {
   return (
@@ -135,7 +127,7 @@ export function UpdateScreen({
         <Logo />
 
         <div className="mt-8 flex flex-col items-center gap-2">
-          {!isError && <Spinner />}
+          {!isError && <Spinner className="size-6 text-primary" />}
           <p className="text-sm font-semibold text-foreground">
             {statusLabel(status)}
           </p>
