@@ -144,7 +144,7 @@ export function validateUsedProviders(
       );
     } else if (!isSupportedModelProviderType(providerType)) {
       errors.push(
-        `Model provider ${provider.name}: provider_type '${providerType}' is not supported. Use openai or anthropic.`,
+        `Model provider ${provider.name}: provider_type '${providerType}' is not supported by Data Designer. Use openai for OpenAI-compatible providers or anthropic for native Anthropic.`,
       );
     }
   }
