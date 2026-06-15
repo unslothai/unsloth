@@ -446,12 +446,38 @@ def test_bypass_env_drops_credential_config_path_vars(monkeypatch, tmp_path):
     # NETRC / BOTO_CONFIG / PIP_CONFIG_FILE point clients at real credential
     # files before $HOME, so they must not survive into the bypassed child.
     monkeypatch.setenv("NETRC", "/home/op/.netrc")
+    monkeypatch.setenv("PGPASSFILE", "/home/op/.pgpass")
     monkeypatch.setenv("BOTO_CONFIG", "/home/op/.boto")
     monkeypatch.setenv("PIP_CONFIG_FILE", "/home/op/.pip/pip.conf")
     env = _build_bypass_env(str(tmp_path))
     assert "NETRC" not in env
+    assert "PGPASSFILE" not in env
     assert "BOTO_CONFIG" not in env
     assert "PIP_CONFIG_FILE" not in env
+
+
+def test_bypass_env_strips_npm_auth_and_mysql_pwd(monkeypatch, tmp_path):
+    # NPM_CONFIG__AUTH (npm _auth, base64) and MYSQL_PWD dodge the URL-value
+    # check and the PASSWD marker, but must still be dropped.
+    monkeypatch.setenv("NPM_CONFIG__AUTH", "aGVsbG86c2VjcmV0")
+    monkeypatch.setenv("MYSQL_PWD", "db-password")
+    assert _is_secret_env_name("NPM_CONFIG__AUTH") is True
+    assert _is_secret_env_name("MYSQL_PWD") is True
+    env = _build_bypass_env(str(tmp_path))
+    assert "NPM_CONFIG__AUTH" not in env
+    assert "MYSQL_PWD" not in env
+
+
+@_POSIX_ONLY
+def test_bash_bypass_does_not_source_bash_env(monkeypatch, tmp_path):
+    # bash -c sources $BASH_ENV for non-interactive shells; an operator startup
+    # file could re-export stripped secrets, so a real bypass call must not see it.
+    startup = tmp_path / "startup.sh"
+    startup.write_text("export RECOVERED=leaked\n")
+    monkeypatch.setenv("BASH_ENV", str(startup))
+    out = _bash_exec("echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True)
+    assert "R=leaked" not in out  # BASH_ENV dropped -> startup not sourced
+    assert "R=" in out
 
 
 def test_bypass_env_repoints_windows_profile_vars(monkeypatch, tmp_path):

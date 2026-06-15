@@ -355,6 +355,7 @@ _BYPASS_ENV_SECRET_NAMES = frozenset(
         "MISTRAL_API_KEY",
         "NGC_API_KEY",
         "KAGGLE_KEY",
+        "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
         "LD_PRELOAD",
         # Auth brokers / capability handles: not secrets by value, but they
         # hand the child the operator's live agent (ssh/gpg), kube config, or
@@ -381,6 +382,7 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "PASSWD",
     "CREDENTIAL",
     "PRIVATE_KEY",
+    "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
 )
 # Matches a URL that embeds userinfo before the host, covering both
 # "scheme://user:pass@host" and token-only "scheme://token@host" (and
@@ -409,6 +411,7 @@ _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
         "XDG_DATA_HOME",
         # explicit cred/config file pointers honoured before $HOME
         "NETRC",
+        "PGPASSFILE",
         "BOTO_CONFIG",
         "PIP_CONFIG_FILE",
         "CLOUDSDK_CONFIG",
@@ -417,6 +420,8 @@ _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
         "WANDB_DIR",
         "WANDB_CONFIG_DIR",
         "WANDB_CACHE_DIR",
+        # shell startup hook: bash -c sources $BASH_ENV (can re-export secrets)
+        "BASH_ENV",
         # Windows: HOMEDRIVE+HOMEPATH compose a home that bypasses HOME
         "HOMEDRIVE",
         "HOMEPATH",
