@@ -67,7 +67,7 @@ _httpx_stub.Client = type(
 )
 sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
@@ -171,7 +171,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * 0.90:
+                if total_mib <= pool_mib * _CTX_FIT_VRAM_FRACTION:
                     best_cap = max(best_cap, capped)
             if best_cap > 0:
                 max_available_ctx = best_cap

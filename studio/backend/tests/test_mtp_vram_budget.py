@@ -1,20 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the byte-accurate MTP VRAM reserve used by load-time auto-fit.
+"""Tests for the deterministic MTP VRAM reserve used by load-time auto-fit.
 
 Guards the regression where Studio advertised a context (e.g. 110k for the
-Qwen3.6-27B MTP GGUF) that fit on paper but OOMed mid-generation: the MTP draft
-path's VRAM (its own attention KV cache, which grows with context, plus a verify
-compute buffer that grows with --spec-draft-n-max) was reserved as a flat 5% of
-total VRAM instead of the real, context-aware amount.
+Qwen3.6-27B MTP GGUF) that fit on paper but OOMed mid-generation. The reserve is
+computed straight from GGUF dims, with no tuned per-architecture constant:
 
-Coefficients are calibrated against real llama-server measurements
-(Qwen3.6-27B-MTP UD-Q2_K_XL, llama.cpp b9625, B200) -- see
-scripts/mtp_vram_calib.py and outputs/mtp_vram_calib.csv. The anchors below assert
-the model stays conservative (predicted >= measured) at those points.
+  overhead(ctx) = draft_KV(ctx, draft_cache_type) + separate_drafter_weights
 
-Pure: no GPU, network, subprocess, or GGUF I/O.
+where draft_KV is, for an embedded head (Qwen), ``nextn_predict_layers``
+attention layers sized from the main model's dims; and for a separate drafter
+(Gemma), the drafter GGUF's own KV via the same architecture-aware estimator.
+The speculative compute/verify buffer (which does NOT grow with context) is left
+to ride in the ctx-fit headroom, like the main model's compute buffer -- so it
+needs no magic constant.
+
+Deterministic anchors are checked against real llama-server measurements
+(Qwen3.5/3.6 + Gemma-4, llama.cpp b9625, B200) -- see scripts/maxctx_bench.py and
+outputs/maxctx/. Pure: no GPU, network, subprocess, or GGUF I/O.
 """
 
 from __future__ import annotations
@@ -62,10 +66,13 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import (  # noqa: E402
+    _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
+    _extra_args_draft_cache_type,
     _extra_args_mtp_draft_path,
     _extra_args_requests_mtp,
     _extra_args_spec_draft_n_max,
+    _kv_bytes_per_elem,
 )
 
 MIB = 1024 * 1024
@@ -79,16 +86,16 @@ GIB = 1024**3
 
 def _make_backend(
     *,
-    nextn = 1,
-    n_kv_heads = 4,
-    n_heads = 24,
-    kv_key_length = 256,
-    kv_value_length = 256,
-    embedding_length = 5120,
-    n_layers = 65,
-    native_ctx = 262144,
+    nextn=1,
+    n_kv_heads=4,
+    n_heads=24,
+    kv_key_length=256,
+    kv_value_length=256,
+    embedding_length=5120,
+    n_layers=65,
+    native_ctx=262144,
 ):
-    """Qwen3.6-27B-MTP-class backend with only the dims the MTP math reads."""
+    """Qwen3.6-27B-MTP-class backend (embedded head) with the MTP-math dims."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._nextn_predict_layers = nextn
     b._n_kv_heads = n_kv_heads
@@ -109,15 +116,30 @@ def _make_backend(
     b._n_kv_heads_by_layer = None
     b._kv_key_length_swa = None
     b._kv_value_length_swa = None
+    b._draft_backend_cache = None
     return b
 
 
+class _StubDrafter:
+    """Stand-in for a separate drafter backend (no GGUF I/O)."""
+
+    def __init__(self, kv_per_token):
+        self._kv_per_token = kv_per_token
+
+    def _can_estimate_kv(self):
+        return True
+
+    def _estimate_kv_cache_bytes(self, n_ctx, cache_type=None, **_k):
+        bpe = _kv_bytes_per_elem(cache_type)
+        return 0 if n_ctx <= 0 else int(n_ctx * self._kv_per_token * bpe / 2.0)
+
+
 # ---------------------------------------------------------------------------
-# Draft KV term: scales with context, sized from nextn head dims, f16
+# Embedded draft KV: deterministic from nextn dims, scales with ctx + draft type
 # ---------------------------------------------------------------------------
 
 
-class TestDraftKvBytes:
+class TestEmbeddedDraftKv:
     def test_scales_linearly_with_context(self):
         b = _make_backend()
         kv_8k = b._mtp_draft_kv_bytes(8192)
@@ -128,100 +150,105 @@ class TestDraftKvBytes:
         assert kv_64k == pytest.approx(8 * kv_8k)
 
     def test_value_matches_dim_formula_f16(self):
-        # SAFETY(1.25) * nextn(1) * n_kv(4) * (256+256) * 2(f16) * ctx
+        # nextn(1) * n_kv(4) * (256+256) * 2(f16) * ctx -- no magic safety factor.
         b = _make_backend()
         ctx = 131072
-        expected = int(1.25 * 1 * 4 * 512 * 2 * ctx)
+        expected = int(1 * 4 * 512 * 2.0 * ctx)
         assert b._mtp_draft_kv_bytes(ctx) == expected
+        # And that is 512 MiB, matching the measured 27B draft-KV slope (~4 MiB/1k).
+        assert b._mtp_draft_kv_bytes(ctx) / MIB == pytest.approx(512, abs=1)
 
     def test_scales_with_nextn_predict_layers(self):
-        one = _make_backend(nextn = 1)._mtp_draft_kv_bytes(65536)
-        two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
+        one = _make_backend(nextn=1)._mtp_draft_kv_bytes(65536)
+        two = _make_backend(nextn=2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
+    def test_draft_cache_type_changes_bytes(self):
+        b = _make_backend()
+        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type="f16")
+        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type="q8_0")
+        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type="q4_0")
+        assert q8 < f16 and q4 < q8
+        assert q8 == pytest.approx(f16 * (34 / 32) / 2.0)
+        assert q4 == pytest.approx(f16 * 0.5625 / 2.0)
+
     def test_none_when_dims_missing(self):
-        assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
-        assert _make_backend(kv_key_length = None)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(nextn=0)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(kv_key_length=None)._mtp_draft_kv_bytes(65536) is None
         assert _make_backend()._mtp_draft_kv_bytes(0) is None
 
-    def test_independent_of_main_cache_type(self):
-        # The draft KV is always f16 (llama.cpp default for the MTP draft
-        # context), so it does not take a main cache_type_kv argument at all.
-        b = _make_backend()
-        assert b._mtp_draft_kv_bytes(65536) > 0
-
 
 # ---------------------------------------------------------------------------
-# Verify term: scales with n_max, NOT with context
+# Separate drafter (Gemma): sized from the drafter GGUF's own dims + weights
 # ---------------------------------------------------------------------------
 
 
-class TestVerifyBytes:
-    def test_scales_with_n_max(self):
-        b = _make_backend()
-        v2 = b._mtp_verify_bytes(2)
-        v4 = b._mtp_verify_bytes(4)
-        assert v4 > v2
-        # Per-n_max term is linear after removing the fixed base.
-        from core.inference.llama_cpp import _MTP_FIXED_OVERHEAD_BYTES
-
-        assert (v4 - _MTP_FIXED_OVERHEAD_BYTES) == pytest.approx(
-            2 * (v2 - _MTP_FIXED_OVERHEAD_BYTES)
+class TestSeparateDrafter:
+    def test_uses_drafter_kv_and_weights(self, monkeypatch):
+        b = _make_backend(nextn=None)  # main has no embedded head
+        stub = _StubDrafter(kv_per_token=2000)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+        ctx = 65536
+        kv = b._mtp_draft_kv_bytes(ctx, drafter_path="/m/draft.gguf")
+        assert kv == stub._estimate_kv_cache_bytes(ctx)
+        total = b._estimate_mtp_overhead_bytes(
+            ctx, drafter_path="/m/draft.gguf", draft_weights_bytes=GIB
         )
+        assert total == kv + GIB
 
-    def test_per_embd_value(self):
-        # 32768 bytes * n_embd * n_max + fixed base
-        from core.inference.llama_cpp import (
-            _MTP_FIXED_OVERHEAD_BYTES,
-            _MTP_VERIFY_BYTES_PER_EMBD,
-        )
-        b = _make_backend(embedding_length = 5120)
+    def test_drafter_kv_scales_with_context(self, monkeypatch):
+        b = _make_backend(nextn=None)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: _StubDrafter(2000))
+        a = b._mtp_draft_kv_bytes(16384, drafter_path="/m/d.gguf")
+        c = b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf")
+        assert c == pytest.approx(4 * a)
+
+    def test_none_when_drafter_unreadable(self, monkeypatch):
+        b = _make_backend(nextn=None)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: None)
+        assert b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf") is None
         assert (
-            b._mtp_verify_bytes(3)
-            == _MTP_VERIFY_BYTES_PER_EMBD * 5120 * 3 + _MTP_FIXED_OVERHEAD_BYTES
+            b._estimate_mtp_overhead_bytes(65536, drafter_path="/m/d.gguf") is None
         )
-
-    def test_fixed_floor_when_embd_unknown(self):
-        from core.inference.llama_cpp import _MTP_FIXED_OVERHEAD_BYTES
-        b = _make_backend(embedding_length = 0)
-        assert b._mtp_verify_bytes(6) == _MTP_FIXED_OVERHEAD_BYTES
 
 
 # ---------------------------------------------------------------------------
-# Total overhead + conservativeness vs real measurements
+# Total overhead = draft KV (+ separate drafter weights); no verify constant
 # ---------------------------------------------------------------------------
 
 
 class TestOverheadTotal:
+    def test_equals_draft_kv_for_embedded(self):
+        b = _make_backend()
+        for ctx in (16384, 65536, 131072):
+            assert b._estimate_mtp_overhead_bytes(ctx) == b._mtp_draft_kv_bytes(ctx)
+
+    def test_does_not_depend_on_n_max(self):
+        # The verify buffer (the only n_max-dependent term) rides in headroom now.
+        b = _make_backend()
+        assert b._estimate_mtp_overhead_bytes(
+            65536, spec_draft_n_max=2
+        ) == b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max=6)
+
     def test_none_when_draft_kv_unsizable(self):
-        assert (
-            _make_backend(nextn = 0)._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2) is None
-        )
+        assert _make_backend(nextn=0)._estimate_mtp_overhead_bytes(65536) is None
 
     def test_includes_separate_drafter_weights(self):
         b = _make_backend()
-        base = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2)
-        with_w = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 2, draft_weights_bytes = GIB)
+        base = b._estimate_mtp_overhead_bytes(65536)
+        with_w = b._estimate_mtp_overhead_bytes(65536, draft_weights_bytes=GIB)
         assert with_w - base == GIB
 
-    # (ctx, n_max) -> measured overhead in MiB (B200, b9625, UD-Q2_K_XL).
     @pytest.mark.parametrize(
-        "ctx,n_max,measured_mib",
-        [
-            (8192, 2, 466),
-            (65536, 2, 692),
-            (131072, 2, 1012),
-            (262144, 2, 1652),
-            (8192, 6, 1100),
-            (131072, 6, 1646),
-            (262144, 6, 2286),
-        ],
+        "ctx,measured_draft_kv_mib",
+        # Measured 27B MTP delta minus the (headroom-covered) ~500 MiB verify
+        # buffer leaves the draft KV; the deterministic estimate must match it.
+        [(16384, 64), (65536, 256), (131072, 512)],
     )
-    def test_conservative_vs_measured(self, ctx, n_max, measured_mib):
+    def test_draft_kv_matches_measured(self, ctx, measured_draft_kv_mib):
         b = _make_backend()
-        pred_mib = b._estimate_mtp_overhead_bytes(ctx, spec_draft_n_max = n_max) / MIB
-        # Never under-reserve; never waste more than ~150 MiB over measured.
-        assert measured_mib <= pred_mib <= measured_mib + 150
+        pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
+        assert pred == pytest.approx(measured_draft_kv_mib, abs=2)
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +257,10 @@ class TestOverheadTotal:
 
 
 class TestFitContextWithMtp:
-    def _fit_backend(self, kv_per_token = 325_000):
+    def _fit_backend(self, kv_per_token=325_000):
         b = _make_backend()
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else n * kv_per_token)
+        b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else n * kv_per_token)
         return b
 
     def test_overhead_fn_lowers_context(self):
@@ -245,49 +272,42 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0,
+            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
         )
         assert 0 < with_mtp < without
 
-    def test_bigger_n_max_lowers_context_further(self):
+    def test_quantized_draft_kv_allows_more_context(self):
+        # q4_0 draft KV is smaller than f16 -> fit can keep a larger context.
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
-        n2 = b._fit_context_to_vram(
-            131072,
-            avail_mib,
-            model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0,
+        f16 = b._fit_context_to_vram(
+            131072, avail_mib, model,
+            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, draft_cache_type="f16") or 0,
         )
-        n6 = b._fit_context_to_vram(
-            131072,
-            avail_mib,
-            model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 6) or 0,
+        q4 = b._fit_context_to_vram(
+            131072, avail_mib, model,
+            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c, draft_cache_type="q4_0") or 0,
         )
-        assert 0 < n6 <= n2
+        assert 0 < f16 <= q4
 
     def test_no_mtp_unchanged(self):
-        # mtp_overhead_fn=None and mtp_engaged=False -> identical to legacy.
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
         a = b._fit_context_to_vram(131072, avail_mib, model)
-        bb = b._fit_context_to_vram(
-            131072, avail_mib, model, mtp_engaged = False, mtp_overhead_fn = None
-        )
+        bb = b._fit_context_to_vram(131072, avail_mib, model, mtp_engaged=False, mtp_overhead_fn=None)
         assert a == bb
 
     def test_chosen_context_actually_fits_budget(self):
-        # The returned ctx must satisfy weights + KV + MTP <= 90% budget.
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
-        fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 2) or 0  # noqa: E731
-        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn = fn)
-        budget = avail_mib * MIB * 0.90
+        fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0  # noqa: E731
+        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn=fn)
+        budget = avail_mib * MIB * _CTX_FIT_VRAM_FRACTION
         assert model + b._estimate_kv_cache_bytes(ctx) + fn(ctx) <= budget
 
 
 # ---------------------------------------------------------------------------
-# extra_args parsing: detect user-enabled MTP + draft depth
+# extra_args parsing: detect user-enabled MTP + draft depth + draft KV type
 # ---------------------------------------------------------------------------
 
 
@@ -319,11 +339,10 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-n-max", "notanint"], None),
             (["-c", "4096"], None),
             (None, None),
-            # Legacy --draft-max alias (older llama.cpp builds).
             (["--draft-max", "6"], 6),
             (["--draft-max=4"], 4),
             (["--spec-type", "draft-mtp", "--draft-max", "6"], 6),
-            (["--spec-draft-n-max", "2", "--draft-max", "5"], 5),  # last wins across aliases
+            (["--spec-draft-n-max", "2", "--draft-max", "5"], 5),
         ],
     )
     def test_spec_draft_n_max(self, args, expected):
@@ -336,13 +355,29 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-model", "/m/draft.gguf"], "/m/draft.gguf"),
             (["-md", "/m/draft.gguf"], "/m/draft.gguf"),
             (["--model-draft=/m/draft.gguf"], "/m/draft.gguf"),
-            (["--model-draft", "--spec-type"], None),  # next token is a flag
+            (["--model-draft", "--spec-type"], None),
             (["-c", "4096"], None),
             (None, None),
         ],
     )
     def test_mtp_draft_path(self, args, expected):
         assert _extra_args_mtp_draft_path(args) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (["--cache-type-k-draft", "q8_0"], "q8_0"),
+            (["--spec-draft-type-k", "q4_0"], "q4_0"),
+            (["-ctkd", "q8_0"], "q8_0"),
+            (["--cache-type-v-draft", "q4_0"], "q4_0"),
+            (["--cache-type-k-draft=q8_0"], "q8_0"),
+            (["--cache-type-k", "q8_0"], None),  # main type, not draft
+            (["-c", "4096"], None),
+            (None, None),
+        ],
+    )
+    def test_draft_cache_type(self, args, expected):
+        assert _extra_args_draft_cache_type(args) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -355,15 +390,12 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
     strictly lower one once the MTP draft reserve is accounted for."""
     b = _make_backend()
     b._can_estimate_kv = lambda: True
-    # Real-ish hybrid KV slope so KV grows with ctx like the actual model.
-    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else int(n * 66_000))
+    b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else int(n * 66_000))
     avail_mib = 24_000
     model = int(17.9 * GIB)  # UD-Q4_K_XL weights
     no_mtp = b._fit_context_to_vram(262144, avail_mib, model)
     with_mtp = b._fit_context_to_vram(
-        262144,
-        avail_mib,
-        model,
-        mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, spec_draft_n_max = 6) or 0,
+        262144, avail_mib, model,
+        mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
     )
     assert 0 < with_mtp < no_mtp
