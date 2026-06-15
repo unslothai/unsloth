@@ -62,7 +62,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
 from core.inference.llama_server_args import resolve_tensor_parallel
 from core.inference.tensor_fallback import load_with_tensor_fallback
 from models.inference import (
@@ -576,3 +576,37 @@ def test_tensor_fallback_propagates_non_tensor_crash():
                 _always_raise, requested_tensor = False, extra_args = None, label = "m"
             )
         )
+
+
+# ── _plan_tensor_parallel: total-based headroom + ubatch (review fixes) ──
+
+
+def test_tensor_caps_context_to_total_vram_budget():
+    # Partly-used 80 GB cards: 20 GB free each. With total_by_idx the planner must
+    # cap occupancy at 0.95*total (not spend the cushion the layer-split paths keep).
+    b = _kv_seeded_backend()
+    gpus = [(0, 20000), (1, 20000)]
+    totals = {0: 81920, 1: 81920}
+    model = int(18 * _GB)
+    with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = totals)
+    without, *_ = b._plan_tensor_parallel(gpus, model, 131072)
+    assert with_total < without  # total cap tightens the chosen context
+
+    MIB = 1024 * 1024
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB  # flat (no vocab dims)
+    pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
+    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
+    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
+    assert foot_total <= pool_usable + 2          # fix: fits the total-based budget
+    assert foot_free > pool_usable                # old behavior over-spent the cushion
+
+
+def test_tensor_reserve_scales_with_ubatch():
+    # A user --ubatch override must enlarge the per-device reserve -> less ctx room.
+    b = _kv_seeded_backend()
+    b._vocab_size = 152064  # enable the deterministic compute-buffer estimate
+    gpus = [(0, 16000), (1, 16000)]
+    model = int(18 * _GB)
+    small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 512)
+    big_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 4096)
+    assert big_ub < small_ub

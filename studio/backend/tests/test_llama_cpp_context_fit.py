@@ -557,3 +557,14 @@ class TestClassifyGpuOffload:
             ]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+
+def test_select_gpus_ranks_by_usable_not_raw_free():
+    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4
+    # GB usable). A 27 GB model fits the 32 GB card alone; raw-free ranking would
+    # try the 80 GB card first and split across both. Usable ranking picks [1].
+    gpus = [(0, 30000), (1, 29000)]
+    totals = {0: 81920, 1: 32607}
+    model = int(27000 * 1024 * 1024)
+    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
+    assert idxs == [1] and use_fit is False

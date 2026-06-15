@@ -642,27 +642,50 @@ def _extra_args_mtp_draft_path(extra_args: Optional[Iterable[str]]) -> Optional[
     return found
 
 
-def _extra_args_draft_cache_type(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Draft KV cache type from extras (``--cache-type-k-draft`` etc.), else None (llama.cpp uses f16)."""
+def _extra_args_draft_cache_types(
+    extra_args: Optional[Iterable[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Draft KV cache types from extras as ``(k_type, v_type)``, each None when
+    unset (llama.cpp uses f16). K and V are independent axes -- a one-sided
+    override must not be applied to both, or the budget under-reserves the f16 axis."""
+    if not extra_args:
+        return None, None
+    args = [str(a) for a in extra_args]
+    k_flags = {"--cache-type-k-draft", "--spec-draft-type-k", "-ctkd"}
+    v_flags = {"--cache-type-v-draft", "--spec-draft-type-v", "-ctvd"}
+    k_type: Optional[str] = None
+    v_type: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag not in k_flags and flag not in v_flags:
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if not value or value.startswith("-"):
+            continue
+        if flag in k_flags:
+            k_type = value
+        else:
+            v_type = value
+    return k_type, v_type
+
+
+def _extra_args_n_ubatch(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """Physical micro-batch from extras (``--ubatch``/``--ubatch-size``/``-ub``),
+    else None. It drives the compute-graph buffer size, so an override must reach
+    the VRAM reserve or it under-budgets."""
     if not extra_args:
         return None
     args = [str(a) for a in extra_args]
-    flags = {
-        "--cache-type-k-draft",
-        "--spec-draft-type-k",
-        "-ctkd",
-        "--cache-type-v-draft",
-        "--spec-draft-type-v",
-        "-ctvd",
-    }
-    found: Optional[str] = None
+    found: Optional[int] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
-        if flag not in flags:
+        if flag not in ("--ubatch", "--ubatch-size", "-ub"):
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        if value and not value.startswith("-"):
-            found = value
+        try:
+            found = int(value)
+        except (TypeError, ValueError):
+            continue
     return found
 
 
@@ -1892,8 +1915,9 @@ class LlamaCppBackend:
                 return max(0.0, free_mib - (1.0 - usable_fraction) * total_by_idx[idx])
             return free_mib * usable_fraction
 
-        # Sort GPUs by free memory descending
-        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+        # Rank by usable budget (free - reserve), not raw free: a more-used large
+        # card can have less usable room than a less-used small one.
+        ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
 
         # Try 1 GPU at the usable-VRAM threshold.
         if _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
@@ -2124,19 +2148,25 @@ class LlamaCppBackend:
         n_ctx: int,
         *,
         drafter_path: Optional[str] = None,
-        draft_cache_type: Optional[str] = None,
+        draft_cache_type_k: Optional[str] = None,
+        draft_cache_type_v: Optional[str] = None,
     ) -> Optional[int]:
-        """Draft KV cache bytes at ``n_ctx``, sized from GGUF dims. Separate
-        drafter (Gemma): the drafter's own KV via _estimate_kv_cache_bytes.
-        Embedded head (Qwen): nextn_predict_layers attention layers from the main
-        model's dims. None when dims are missing (caller keeps the flat fallback)."""
+        """Draft KV cache bytes at ``n_ctx``, sized from GGUF dims. K and V cache
+        types are independent. Separate drafter (Gemma): the drafter's own KV via
+        _estimate_kv_cache_bytes, using the heavier of the two types (it takes one
+        type, so this never under-reserves an asymmetric split). Embedded head
+        (Qwen): nextn_predict_layers attention layers from the main model's dims,
+        sized per axis. None when dims are missing (caller keeps the flat fallback)."""
         if n_ctx <= 0:
             return None
+        bpe_k = _kv_bytes_per_elem(draft_cache_type_k)
+        bpe_v = _kv_bytes_per_elem(draft_cache_type_v)
         if drafter_path:
             db = self._draft_backend_for(drafter_path)
             if db is None or not db._can_estimate_kv():
                 return None
-            kv = db._estimate_kv_cache_bytes(n_ctx, draft_cache_type)
+            heavier = draft_cache_type_k if bpe_k >= bpe_v else draft_cache_type_v
+            kv = db._estimate_kv_cache_bytes(n_ctx, heavier)
             return kv or None
         nextn = self._nextn_predict_layers or 0
         n_kv = self._n_kv_heads or self._n_heads
@@ -2144,15 +2174,15 @@ class LlamaCppBackend:
         v_len = self._kv_value_length
         if not (nextn and n_kv and k_len and v_len):
             return None
-        bpe = _kv_bytes_per_elem(draft_cache_type)
-        return int(nextn * n_kv * (k_len + v_len) * bpe * n_ctx)
+        return int(nextn * n_kv * (k_len * bpe_k + v_len * bpe_v) * n_ctx)
 
     def _estimate_mtp_overhead_bytes(
         self,
         n_ctx: int,
         *,
         spec_draft_n_max: int = 0,
-        draft_cache_type: Optional[str] = None,
+        draft_cache_type_k: Optional[str] = None,
+        draft_cache_type_v: Optional[str] = None,
         drafter_path: Optional[str] = None,
         draft_weights_bytes: int = 0,
     ) -> Optional[int]:
@@ -2161,7 +2191,10 @@ class LlamaCppBackend:
         constant). None when the draft KV can't be sized (caller keeps the flat
         fallback). ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
         draft_kv = self._mtp_draft_kv_bytes(
-            n_ctx, drafter_path = drafter_path, draft_cache_type = draft_cache_type
+            n_ctx,
+            drafter_path = drafter_path,
+            draft_cache_type_k = draft_cache_type_k,
+            draft_cache_type_v = draft_cache_type_v,
         )
         if draft_kv is None:
             return None
@@ -3400,6 +3433,8 @@ class LlamaCppBackend:
         mtp_engaged: bool = False,
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         max_target_ctx: Optional[int] = None,
+        total_by_idx: Optional[dict[int, int]] = None,
+        n_ubatch: Optional[int] = None,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
@@ -3419,15 +3454,16 @@ class LlamaCppBackend:
           0.80 whole-pool heuristic, which over-reserves and leaves VRAM unused.
         - ``tensor_split`` is None (llama.cpp's even default, safe for every arch
           incl. Gemma 3n which GGML_ASSERTs on a weighted split) when an even
-          share fits the smallest GPU; otherwise it is weighted by
-          ``(free - buffer)`` so the roomier GPU absorbs more weight and the
-          smallest GPU keeps room for KV.
+          share fits the smallest GPU; otherwise it is weighted by usable budget
+          so the roomier GPU absorbs more weight and the smallest keeps room for KV.
+        ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
+        the compute buffer.
         """
         # Drop GPUs that can't hold the per-device compute-graph buffer; they'd
         # OOM in tensor mode. Defense-in-depth (load_model also filters) that keeps
         # this pure and unit-testable. Derived per-device reserve; flat fallback.
         _reserve_bytes = self._estimate_compute_buffer_bytes(
-            n_parallel = n_parallel, per_device_tensor = True
+            n_ubatch = n_ubatch, n_parallel = n_parallel, per_device_tensor = True
         )
         reserve_mib = (
             _reserve_bytes // (1024 * 1024)
@@ -3446,7 +3482,19 @@ class LlamaCppBackend:
                 None,
             )
         free_by_idx = {idx: free for idx, free in usable_gpus}
-        pool_mib = sum(free_by_idx.values())
+
+        # Per-GPU usable budget caps occupancy at _CTX_FIT_VRAM_FRACTION of the
+        # card (free - (1-frac)*total), mirroring the layer-split paths; raw free
+        # when total is unknown. Without this, tensor mode spent the safety cushion
+        # the rest of the fit protects on a partly-used GPU.
+        def _usable(idx: int, free_mib: int) -> float:
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            if t > 0:
+                return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
+            return float(free_mib)
+
+        usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
+        pool_mib = sum(usable_by_idx.values())
         kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
         # MTP reserve: byte-accurate per-ctx inside _fit_ctx when available, else a
         # flat 2 GiB here.
@@ -3497,7 +3545,7 @@ class LlamaCppBackend:
         max_available_ctx = _fit_ctx(max_ctx_target)
         effective_ctx = min(_fit_ctx(target_ctx), max_available_ctx)
 
-        min_free_mib = min(free_by_idx.values())
+        min_usable_mib = min(usable_by_idx.values())
         kv_bytes = (
             self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel)
             if (self._can_estimate_kv() and effective_ctx > 0)
@@ -3509,8 +3557,8 @@ class LlamaCppBackend:
             mtp_bytes = 2 * 1024**3
         even_share_mib = (model_size + kv_bytes + mtp_bytes) / len(gpu_indices) / (1024 * 1024)
         tensor_split: Optional[list[int]] = None
-        if even_share_mib > (min_free_mib - reserve_mib):
-            adj = [max(0, int(free_by_idx[i] - reserve_mib)) for i in gpu_indices]
+        if even_share_mib > (min_usable_mib - reserve_mib):
+            adj = [max(0, int(usable_by_idx[i] - reserve_mib)) for i in gpu_indices]
             if sum(adj) > 0:
                 tensor_split = adj
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
@@ -3910,6 +3958,15 @@ class LlamaCppBackend:
                     def _pool_total(subset):
                         return sum(total_by_idx.get(idx, 0) for idx, _ in subset)
 
+                    def _gpu_usable(g):
+                        # Per-GPU usable budget for ranking: free - (1-frac)*total
+                        # (a more-used big card can rank below a less-used small one).
+                        idx, free = g
+                        t = total_by_idx.get(idx, 0)
+                        if t > 0:
+                            return free - (1.0 - _CTX_FIT_VRAM_FRACTION) * t
+                        return free * _CTX_FIT_VRAM_FRACTION
+
                     def _pool_budget_mib(pool_free, pool_total, frac):
                         # Cap pooled occupancy at ``frac`` of pooled total when
                         # totals are known; else fall back to a fraction of free.
@@ -3993,8 +4050,8 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _mtp_draft_weights = 0
-                    # Draft KV type (f16 by default; an extras override recomputes it).
-                    _mtp_draft_cache_type = _extra_args_draft_cache_type(extra_args)
+                    # Draft K/V types (f16 by default; independent extras overrides).
+                    _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
 
                     # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
@@ -4006,7 +4063,8 @@ class LlamaCppBackend:
                             self._estimate_mtp_overhead_bytes(
                                 _probe_ctx,
                                 spec_draft_n_max = _mtp_eff_n_max,
-                                draft_cache_type = _mtp_draft_cache_type,
+                                draft_cache_type_k = _mtp_draft_ck,
+                                draft_cache_type_v = _mtp_draft_cv,
                                 drafter_path = _mtp_draft_for_budget,
                                 draft_weights_bytes = _mtp_draft_weights,
                             )
@@ -4016,14 +4074,16 @@ class LlamaCppBackend:
                             def mtp_overhead_fn(
                                 ctx: int,
                                 _n: int = _mtp_eff_n_max,
-                                _ct: Optional[str] = _mtp_draft_cache_type,
+                                _ck: Optional[str] = _mtp_draft_ck,
+                                _cv: Optional[str] = _mtp_draft_cv,
                                 _dp: Optional[str] = _mtp_draft_for_budget,
                                 _w: int = _mtp_draft_weights,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
                                     spec_draft_n_max = _n,
-                                    draft_cache_type = _ct,
+                                    draft_cache_type_k = _ck,
+                                    draft_cache_type_v = _cv,
                                     drafter_path = _dp,
                                     draft_weights_bytes = _w,
                                 )
@@ -4032,11 +4092,16 @@ class LlamaCppBackend:
                     def _mtp_bytes(ctx: int) -> int:
                         return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
 
+                    # Effective micro-batch (a user --ubatch override scales the
+                    # compute buffer); None -> the 512 default in the estimate.
+                    _effective_ubatch = _extra_args_n_ubatch(extra_args)
+
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
                     # fold it into the model footprint for the branches below.
                     _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
-                        n_parallel = n_parallel, per_device_tensor = False
+                        n_ubatch = _effective_ubatch, n_parallel = n_parallel,
+                        per_device_tensor = False,
                     )
                     model_size_fit = model_size + _compute_buffer_pipeline
 
@@ -4076,7 +4141,8 @@ class LlamaCppBackend:
                         # every device in tensor mode); flat fallback when dims
                         # are unavailable. _plan_tensor_parallel uses the same.
                         _tp_reserve_bytes = self._estimate_compute_buffer_bytes(
-                            n_parallel = n_parallel, per_device_tensor = True
+                            n_ubatch = _effective_ubatch, n_parallel = n_parallel,
+                            per_device_tensor = True,
                         )
                         reserve_mib = (
                             _tp_reserve_bytes // (1024 * 1024)
@@ -4130,6 +4196,8 @@ class LlamaCppBackend:
                             # Report the UI ceiling from native ctx, not the
                             # explicit small request.
                             max_target_ctx = self._context_length or target_ctx,
+                            total_by_idx = total_by_idx,
+                            n_ubatch = _effective_ubatch,
                         )
                         use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
@@ -4138,7 +4206,7 @@ class LlamaCppBackend:
                         # bounds), independent of the currently requested context.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         if native_ctx_for_cap > 0:
-                            ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+                            ranked_for_cap = sorted(gpus, key = _gpu_usable, reverse = True)
                             best_cap = 0
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
                                 subset = ranked_for_cap[:n_gpus]
@@ -4193,7 +4261,7 @@ class LlamaCppBackend:
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
                             # headroom threshold as _select_gpus (#5106).
-                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                            ranked = sorted(gpus, key = _gpu_usable, reverse = True)
                             pin_fraction = _pin_fraction
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]

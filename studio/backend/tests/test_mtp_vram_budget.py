@@ -55,8 +55,9 @@ sys.modules.setdefault("httpx", _httpx_stub)
 from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
-    _extra_args_draft_cache_type,
+    _extra_args_draft_cache_types,
     _extra_args_mtp_draft_path,
+    _extra_args_n_ubatch,
     _extra_args_requests_mtp,
     _extra_args_spec_draft_n_max,
     _kv_bytes_per_elem,
@@ -157,12 +158,20 @@ class TestEmbeddedDraftKv:
 
     def test_draft_cache_type_changes_bytes(self):
         b = _make_backend()
-        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type = "f16")
-        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type = "q8_0")
-        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type = "q4_0")
+        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
+        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q8_0", draft_cache_type_v = "q8_0")
+        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
         assert q8 < f16 and q4 < q8
         assert q8 == pytest.approx(f16 * (34 / 32) / 2.0)
         assert q4 == pytest.approx(f16 * 0.5625 / 2.0)
+
+    def test_draft_kv_split_axes_no_under_reserve(self):
+        # One-sided q4_0 (V left f16) must NOT be applied to both axes.
+        b = _make_backend()
+        both_q4 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
+        k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
+        both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
+        assert both_q4 < k_only < both_f16  # split sits between, never collapses to q4_0
 
     def test_none_when_dims_missing(self):
         assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
@@ -274,14 +283,18 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, draft_cache_type = "f16")
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
+                c, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
+            )
             or 0,
         )
         q4 = b._fit_context_to_vram(
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c, draft_cache_type = "q4_0")
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
+                c, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
+            )
             or 0,
         )
         assert 0 < f16 <= q4
@@ -364,18 +377,33 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
-            (["--cache-type-k-draft", "q8_0"], "q8_0"),
-            (["--spec-draft-type-k", "q4_0"], "q4_0"),
-            (["-ctkd", "q8_0"], "q8_0"),
-            (["--cache-type-v-draft", "q4_0"], "q4_0"),
-            (["--cache-type-k-draft=q8_0"], "q8_0"),
-            (["--cache-type-k", "q8_0"], None),  # main type, not draft
+            (["--cache-type-k-draft", "q8_0"], ("q8_0", None)),
+            (["--spec-draft-type-k", "q4_0"], ("q4_0", None)),
+            (["-ctkd", "q8_0"], ("q8_0", None)),
+            (["--cache-type-v-draft", "q4_0"], (None, "q4_0")),  # K stays f16, V only
+            (["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q8_0"], ("q4_0", "q8_0")),
+            (["--cache-type-k-draft=q8_0"], ("q8_0", None)),
+            (["--cache-type-k", "q8_0"], (None, None)),  # main type, not draft
+            (["-c", "4096"], (None, None)),
+            (None, (None, None)),
+        ],
+    )
+    def test_draft_cache_types(self, args, expected):
+        assert _extra_args_draft_cache_types(args) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (["--ubatch", "2048"], 2048),
+            (["--ubatch-size", "1024"], 1024),
+            (["-ub", "4096"], 4096),
+            (["--ubatch=512"], 512),
             (["-c", "4096"], None),
             (None, None),
         ],
     )
-    def test_draft_cache_type(self, args, expected):
-        assert _extra_args_draft_cache_type(args) == expected
+    def test_n_ubatch(self, args, expected):
+        assert _extra_args_n_ubatch(args) == expected
 
 
 # ---------------------------------------------------------------------------
