@@ -1614,6 +1614,47 @@ class LlamaCppBackend:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
 
+    @staticmethod
+    def _available_system_memory_mib() -> Optional[int]:
+        """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
+        neither is readable. On a unified-memory APU this, not the ROCm-reported
+        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        try:
+            import psutil
+
+            return int(psutil.virtual_memory().available // (1024 * 1024))
+        except Exception:
+            pass
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024  # kB -> MiB
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _apu_ram_shortfall_message(
+        model_size_bytes: int, avail_mib: Optional[int], headroom_mib: int = 2048
+    ) -> Optional[str]:
+        """On a unified-memory APU, return a user-facing refusal when the weights
+        cannot fit in available system RAM (else None). Weights only: KV/context
+        auto-reduce, so counting them too would refuse loads that would succeed.
+        None avail (unknown RAM) never refuses."""
+        if avail_mib is None:
+            return None
+        need_mib = model_size_bytes / (1024 * 1024)
+        if need_mib <= avail_mib - headroom_mib:
+            return None
+        return (
+            f"This model needs about {need_mib / 1024:.0f} GB but only about "
+            f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
+            "APU the weights load into system RAM, so a larger model is stopped by "
+            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
+            "(on WSL, raise the memory limit in .wslconfig)."
+        )
+
     # Skip the wait when the last kill is older than this; the driver has
     # already reclaimed the prior process's allocations.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
@@ -3669,6 +3710,7 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                model_size = None  # set in the fit try; used by the APU RAM guard
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -3930,6 +3972,17 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+
+                # Unified-memory APUs load weights into shared system RAM, so when
+                # the weights exceed available RAM (e.g. under WSL, where the VM's
+                # cap is the real ceiling, not the ROCm-reported APU budget) the OS
+                # kills the load mid-flight (a silent "Terminated"). Refuse first.
+                if model_size is not None and self._amd_apu_wants_unified_memory():
+                    _ram_msg = self._apu_ram_shortfall_message(
+                        model_size, self._available_system_memory_mib()
+                    )
+                    if _ram_msg:
+                        raise RuntimeError(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.

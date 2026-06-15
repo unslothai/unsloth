@@ -55,3 +55,39 @@ def test_cpu_no_cuda_returns_false(monkeypatch):
 def test_missing_torch_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", None)
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is False
+
+
+_GB = 1024**3
+_MIB_PER_GB = 1024
+# Module-level (not a class attr) so it stays a plain function, not a bound method.
+_shortfall = LlamaCppBackend._apu_ram_shortfall_message
+
+
+class TestApuRamShortfall:
+    """On a unified-memory APU the weights load into system RAM, so a model
+    larger than available RAM (the field case: a 64.6 GB GGUF on a WSL VM capped
+    well below the ROCm-reported APU budget) must be refused before spawning,
+    not left to OOM-kill the Studio process."""
+
+    def test_field_case_wsl_cap_refuses(self):
+        # 64.6 GB weights, ~46 GB available (WSL VM): refuse with guidance.
+        msg = _shortfall(int(64.6 * _GB), 46 * _MIB_PER_GB)
+        assert msg is not None
+        assert "65 GB" in msg and "46 GB" in msg
+        assert ".wslconfig" in msg
+
+    def test_bare_metal_fits_allows(self):
+        # Same model, ~92 GB available (no WSL cap): allow.
+        assert _shortfall(int(64.6 * _GB), 92 * _MIB_PER_GB) is None
+
+    def test_unknown_available_never_refuses(self):
+        assert _shortfall(int(64.6 * _GB), None) is None
+
+    def test_boundary_at_headroom(self):
+        # 20 GB weights, headroom 2 GB. avail 23 GB -> fits; 21 GB -> refuse.
+        assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
+        assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
+
+    def test_available_system_memory_is_int_or_none(self):
+        v = LlamaCppBackend._available_system_memory_mib()
+        assert v is None or (isinstance(v, int) and v > 0)
