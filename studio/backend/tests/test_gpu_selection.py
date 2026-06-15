@@ -62,6 +62,20 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
+    def test_parent_visibility_uses_rocm_masks_on_rocm(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "1"},
+                clear = True,
+            ),
+            patch.object(_hw_module, "IS_ROCM", True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 2),
+        ):
+            self.assertEqual(resolve_requested_gpu_ids([1]), [1])
+            with self.assertRaisesRegex(ValueError, r"outside the parent-visible set \[1\]"):
+                resolve_requested_gpu_ids([0])
+
     def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
@@ -743,6 +757,7 @@ class TestRouteErrors(unittest.TestCase):
                 "from_identifier",
                 return_value = model_config,
             ),
+            patch.object(inference_route.hardware_utils, "get_device", return_value = DeviceType.CUDA),
             patch.object(inference_route, "resolve_requested_gpu_ids", return_value = [0, 1]),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
             patch.object(
@@ -766,6 +781,46 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(response.status, "loaded")
         self.assertEqual(llama_backend.load_model.call_args.kwargs["gpu_ids"], [0, 1])
+
+    def test_inference_route_rejects_gguf_gpu_ids_on_non_cuda_backend(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_gguf_non_cuda_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0])
+        model_config = SimpleNamespace(is_gguf = True)
+        llama_backend = SimpleNamespace(
+            is_loaded = False,
+            hf_variant = None,
+        )
+
+        with (
+            patch.object(
+                inference_route.ModelConfig,
+                "from_identifier",
+                return_value = model_config,
+            ),
+            patch.object(inference_route.hardware_utils, "get_device", return_value = DeviceType.MLX),
+            patch.object(inference_route, "resolve_requested_gpu_ids") as mock_resolve,
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route.load_model(
+                        request,
+                        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+                        current_subject = "test-user",
+                    )
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("CUDA/ROCm", exc_info.exception.detail)
+        mock_resolve.assert_not_called()
 
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(

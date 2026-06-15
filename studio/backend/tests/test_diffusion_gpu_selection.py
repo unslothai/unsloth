@@ -8,6 +8,8 @@ import types as _types
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -65,6 +67,24 @@ def test_diffusion_server_pins_requested_gpu_as_visible_ordinal_zero(monkeypatch
     assert "ROCR_VISIBLE_DEVICES" not in captured["env"]
     assert captured["env"]["DG_GPU"] == "0"
     assert backend.tensor_parallel is False
+
+
+def test_diffusion_server_rejects_multi_gpu_pins():
+    backend = _make_backend()
+
+    with pytest.raises(ValueError, match = "support one gpu_id"):
+        backend._start_diffusion_server(
+            model_path = "/models/diffusiongemma.gguf",
+            gguf_path = "/models/diffusiongemma.gguf",
+            hf_repo = None,
+            hf_variant = None,
+            model_identifier = "local/diffusiongemma",
+            n_ctx = 0,
+            extra_args = None,
+            gpu_ids = [0, 1],
+        )
+
+    backend._find_diffusion_assets.assert_not_called()
 
 
 def test_child_gpu_pin_clears_rocr_when_hip_is_forced():

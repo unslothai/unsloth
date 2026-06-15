@@ -623,6 +623,7 @@ try:
         detect_mtp_file,
         load_model_defaults,
     )
+    import utils.hardware as hardware_utils
     from utils.hardware import resolve_requested_gpu_ids
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -658,6 +659,7 @@ except ImportError:
         detect_mtp_file,
         load_model_defaults,
     )
+    import utils.hardware as hardware_utils
     from utils.hardware import resolve_requested_gpu_ids
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -1680,6 +1682,17 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
+            if effective_gpu_ids is not None:
+                device = hardware_utils.get_device()
+                if device != hardware_utils.DeviceType.CUDA:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"gpu_ids {list(effective_gpu_ids)} is only supported for GGUF "
+                            "loads on CUDA/ROCm backends, but the current backend "
+                            f"is '{device.value}'."
+                        ),
+                    )
             resolved_gpu_ids = (
                 resolve_requested_gpu_ids(effective_gpu_ids)
                 if effective_gpu_ids is not None
