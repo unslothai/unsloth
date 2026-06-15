@@ -82,6 +82,12 @@ RUN apt-get update \
 # repeated below for the Studio venv's own bundled libnvrtc (the base's
 # arm64 layer already installed cuda-nvrtc-13-0, so the cu13 .so exists).
 #
+# UNSLOTH_PYTHON=3.12 pins the Studio venv to the SAME Python minor as the base
+# venv (install.sh defaults Linux to 3.13). Matching minors makes the two venvs'
+# nvidia-*-cu12 CUDA wheels byte-identical, which lets the dedup RUN further down
+# replace the Studio venv's ~3.7GB of CUDA .so with symlinks into the base venv's
+# copies (cudnn/cublas/nccl/... are plain C libs, Python-minor independent).
+#
 # fetch+checkout FETCH_HEAD instead of `clone --branch` because the CI
 # pipeline passes a commit SHA as the ref (clone --branch only accepts
 # branch/tag names).
@@ -100,20 +106,23 @@ RUN set -eux \
  && git checkout -q FETCH_HEAD \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
+    UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
     # Fail loud if the Studio venv torch missed the pinned CUDA family (an
     # install.sh that ignores UNSLOTH_TORCH_INDEX_FAMILY falls back to
     # nvidia-smi probing, which cannot work at build time and lands on cu126
     # wheels with no sm_100/sm_120 kernels). metadata check only: importing
     # torch needs native libs, which QEMU arm64 builds cannot load.
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "from importlib.metadata import version; v = version('torch'); assert v.endswith('+${TORCH_FAMILY}'), 'Studio venv torch ' + v + ' does not match ${TORCH_FAMILY}'; print('Studio venv torch', v)" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v.endswith('+${TORCH_FAMILY}'), 'Studio venv torch ' + v + ' does not match ${TORCH_FAMILY}'; print('Studio venv python %d.%d' % sys.version_info[:2], 'torch', v)" \
     # setup.sh may relink the root llama-quantize into build/bin; prove the
     # relinked quantizer still resolves its libraries, or GGUF export breaks
     # at runtime with "No working quantizer found". Content check, not rc:
     # llama-quantize exits nonzero on --help, while a loader failure prints
     # "error while loading shared libraries" and no usage text.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
- && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache \
+ && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
+          "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
+          /root/.cache \
  && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
             if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
@@ -121,6 +130,28 @@ RUN set -eux \
                 ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
             fi; \
         done; \
+    fi \
+ && BASE_NV=/opt/unsloth-venv/lib/python3.12/site-packages/nvidia \
+ && STU_NV="${UNSLOTH_STUDIO_HOME}/unsloth_studio/lib/python3.12/site-packages/nvidia" \
+ && if [ ! -d "${STU_NV}" ] || [ ! -d "${BASE_NV}" ]; then \
+        echo ">> nvidia dir missing (STU=${STU_NV} BASE=${BASE_NV}); skipping CUDA dedup"; \
+    else \
+        find "${UNSLOTH_STUDIO_HOME}/unsloth_studio" -name '*.a' -delete; \
+        rm -f "${STU_NV}/nvshmem/lib/libnvshmem_device.bc"; \
+        for c in cudnn cublas cusparselt nccl cusolver cusparse cufft curand nvjitlink cuda_cupti nvshmem npp; do \
+            b="${BASE_NV}/${c}/lib"; s="${STU_NV}/${c}/lib"; \
+            { [ -d "$b" ] && [ -d "$s" ]; } || { echo ">> skip ${c} (dir missing)"; continue; }; \
+            if [ "${c}" = "npp" ]; then \
+                rm -rf "$s" && ln -s "$b" "$s" && readlink -e "$s" >/dev/null; \
+                echo ">> deduped npp -> base (pruned)"; \
+            elif [ "$(cd "$s" && ls | sort | tr '\n' ' ')" = "$(cd "$b" && ls | sort | tr '\n' ' ')" ]; then \
+                rm -rf "$s" && ln -s "$b" "$s" && readlink -e "$s" >/dev/null; \
+                echo ">> deduped ${c} -> base"; \
+            else \
+                echo ">> skip ${c} (file set differs base vs studio)"; \
+            fi; \
+        done; \
+        echo "studio venv size after dedup:"; du -sh "${UNSLOTH_STUDIO_HOME}/unsloth_studio"; \
     fi
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf

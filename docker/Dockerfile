@@ -282,10 +282,20 @@ RUN set -eux \
 #   langid  DeepSeek-R1 GRPO reward's language-id check
 #   easydict  some vision trust_remote_code modeling files
 #   protobuf  slow->fast tokenizer conversion for sentencepiece models
+#   omegaconf  TTS families + both NeMo-Gym RL notebooks' config objects
+#   einx  TTS codec tensor-rearrange (Llasa / Oute / Spark TTS)
+#   librosa  Whisper audio feature extraction (pairs with soundfile + torchcodec)
+#   decord  ERNIE-VL vision notebook video decode
+#   ftfy  Oute TTS text normalisation
+# librosa pulls numba/soxr/audioread; numba is already pinned >=0.65 (numpy 2.4
+# compatible) by the vLLM pass, so the resolve must NOT move torch/numpy/numba --
+# the assertion below fails the build loudly if it did.
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         jupyterlab notebook ipywidgets matplotlib \
-        soundfile evaluate jiwer tensorboard langid easydict protobuf
+        soundfile evaluate jiwer tensorboard langid easydict protobuf \
+        omegaconf einx librosa decord ftfy \
+ && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.10.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:
@@ -307,6 +317,40 @@ RUN set -eux \
    && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; } \
  || echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"
 
+# Coherent transformers SIDECARS for per-notebook version activation (see
+# docker/unsloth_nb_compat.py). unslothai/notebooks pin many transformers
+# versions in their install cells; the base venv ships one (newest 5.x). Each
+# sidecar is `transformers==X` + its matched huggingface_hub/tokenizers/
+# safetensors, installed --no-deps into its own --target dir under
+# ${VENV}/tf-sidecars (rides along in the COPY to runtime). Activating one
+# (prepend to sys.path before any ML import) swaps transformers for a model
+# WITHOUT touching the cu128 torch/vLLM/unsloth base stack -- verified: base
+# unsloth loads + generates under both a 4.57.6 and a 5.5.0 sidecar on B200.
+# Versions mirror Unsloth Studio's tiers (4.57.6 default + 5.3.0/5.5.0/5.10.2).
+# The companion versions are RESOLVED at build time (not hardcoded) so they
+# always satisfy each transformers' hard requirements. ~300MB total after the
+# __pycache__/tests strip in the cleanup RUN below. Fail-soft per arch/wheel.
+RUN set -eux \
+ && for TFV in 4.57.6 5.3.0 5.5.0 5.10.2; do \
+        SCRATCH="$(mktemp -d)"; \
+        if ! ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
+                --target "$SCRATCH" "transformers==${TFV}" >/dev/null 2>&1; then \
+            echo ">> sidecar resolve failed for ${TFV}; skipping"; rm -rf "$SCRATCH"; continue; \
+        fi; \
+        pin() { ls -d "$SCRATCH/$1"-*.dist-info 2>/dev/null \
+            | sed -E "s@.*/$1-([0-9][0-9A-Za-z.]*)\.dist-info@\1@" | head -1; }; \
+        HFV="$(pin huggingface_hub)"; TKV="$(pin tokenizers)"; SFV="$(pin safetensors)"; \
+        rm -rf "$SCRATCH"; \
+        DEST="${VENV}/tf-sidecars/t_$(echo "${TFV}" | tr . _)"; \
+        ${VENV}/bin/uv pip install --python ${VENV}/bin/python --target "$DEST" --no-deps \
+            "transformers==${TFV}" \
+            ${HFV:+"huggingface_hub==${HFV}"} \
+            ${TKV:+"tokenizers==${TKV}"} \
+            ${SFV:+"safetensors==${SFV}"}; \
+        echo ">> sidecar transformers==${TFV} (hf_hub=${HFV} tokenizers=${TKV} safetensors=${SFV})"; \
+    done \
+ && { du -sh ${VENV}/tf-sidecars || true; }
+
 # 5) Emit an informational pin record so downstream consumers can see exactly
 #    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
 #    captures version strings but not wheel hashes, and several deps (unsloth,
@@ -325,13 +369,33 @@ RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
 # same `from numpy._core.tests._natype import pd_NA` ImportError on the
 # deployed image. Exclude numpy's tests directories explicitly so the
 # upgrade fix stays in effect; keep stripping the rest.
-RUN find ${VENV} -depth -type d -name __pycache__ -exec rm -rf {} + \
+# Also (size reductions, all verified runtime-safe):
+#   * npp: torchcodec dlopens only libnppicc + libnppc; the other ~10 npp libs
+#     (libnppif 163M, libnppist, libnppig, ...) are dead weight (~388MB). Nothing
+#     else in the venv links them.
+#   * static .a archives (~143MB): xgrammar/triton-cupti/nvperf/nvshmem ship .a
+#     alongside the .so they actually load at runtime; .a are link-time only and
+#     nothing in the image links venv archives (nvcc JIT links /usr/local/cuda).
+#   * nvshmem device-side bitcode (~30MB): host .so kept; .bc is device-relink only.
+# We deliberately do NOT strip headers (torch/include etc.): the leave-to-pip
+# kernels causal-conv1d / mamba-ssm build against torch headers at notebook time
+# with --no-build-isolation, so torch/include must survive.
+RUN set -eux \
+ && find ${VENV} -depth -type d -name __pycache__ -exec rm -rf {} + \
  && find ${VENV} -depth -type d -name tests \
         ! -path "*numpy/_core/tests*" \
         ! -path "*numpy/tests*" \
         ! -path "*numpy/ma/tests*" \
         -exec rm -rf {} + \
- && rm -rf /root/.cache/pip /root/.cache/uv
+ && rm -rf /root/.cache/pip /root/.cache/uv \
+ && SP=${VENV}/lib/python${PYTHON_VERSION}/site-packages \
+ && if [ -d "$SP/nvidia/npp/lib" ]; then \
+        find "$SP/nvidia/npp/lib" -maxdepth 1 -name 'libnpp*.so.*' \
+            ! -name 'libnppicc.so.*' ! -name 'libnppc.so.*' -delete; \
+    fi \
+ && find ${VENV} -name '*.a' -delete \
+ && rm -f "$SP"/nvidia/nvshmem/lib/libnvshmem_device.bc \
+ && echo "venv size after prune:" && du -sh ${VENV}
 
 # Build-time verification.
 #
@@ -563,6 +627,34 @@ ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
 
 WORKDIR /workspace
 RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
+
+# ---------------------------------------------------------------------------
+# Per-notebook transformers version activation -- run unslothai/notebooks
+# UNCHANGED. See docker/unsloth_nb_compat.py for the full rationale. Pieces:
+#   * unsloth_nb_compat.py -> site-packages (importable everywhere): tier
+#     detection + sidecar resolution + activation + the IPython hook.
+#   * pip/uv shim on a PATH dir AHEAD of the venv bin: a notebook's
+#     `!pip install ...` / `!uv pip install ...` cell becomes SAFE + idempotent
+#     (keeps the baked torch/vLLM stack; records the requested transformers so
+#     its sidecar is activated for the model cells).
+#   * IPython startup hook: activates the right sidecar before the first model
+#     cell in manual JupyterLab.
+#   * unsloth-run: headless `unsloth-run <notebook|url>` that auto-picks the
+#     sidecar and executes every cell -- the robust driven path.
+# ---------------------------------------------------------------------------
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py /opt/unsloth-nb/
+RUN set -eux \
+ && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
+ && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py \
+ && mkdir -p /opt/unsloth-nb/bin \
+ && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
+ && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
+ && mkdir -p /root/.ipython/profile_default/startup \
+ && cp /opt/unsloth-nb/unsloth_ipython_startup.py /root/.ipython/profile_default/startup/00-unsloth-nb.py \
+ && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
+# Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
+ENV PATH=/opt/unsloth-nb/bin:${PATH}
 
 # JupyterLab lives in the venv (see builder stage). Persistent notebooks
 # should be bind-mounted onto /workspace.

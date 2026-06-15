@@ -5,3 +5,7 @@
 !fetch_llama_prebuilt.py
 !supervisord.conf
 !studio_launch.sh
+!unsloth_nb_compat.py
+!unsloth_pip_shim.py
+!unsloth_ipython_startup.py
+!unsloth_run.py
