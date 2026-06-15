@@ -117,10 +117,25 @@ def join_stdio_command(parts: list[str]) -> str:
 
 def stdio_mcp_enabled() -> bool:
     """stdio MCP servers spawn local processes as the backend user (bypassing the
-    sandbox), so allowed only when the host is the user's own machine. The Tauri
-    app sets UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1; localhost/self-hosted users can opt
-    in with the same var. Off for Colab and any network (0.0.0.0) bind."""
-    return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
+    sandbox), so allowed only when the host is the user's own machine. On startup
+    a loopback bind defaults UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see
+    utils.host_policy.apply_stdio_mcp_loopback_default, called from run.py); the
+    Tauri app does the same. Off for Colab and any network (0.0.0.0) bind unless
+    an operator sets the var out-of-band; set it to 0 to force-disable.
+
+    When stdio is on only because of that loopback auto-default, an explicit
+    `unsloth studio run --disable-tools` turns it back off (a local stdio command
+    is server-side code execution). An explicit operator opt-in via the env var
+    still wins -- including the documented `=1` network opt-in, where the process
+    tool policy is False merely by the external-host default, not by choice."""
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
+        return False
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active
+
+    if loopback_default_active() and get_tool_policy() is False:
+        return False
+    return True
 
 
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for
