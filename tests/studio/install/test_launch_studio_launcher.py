@@ -55,9 +55,9 @@ def test_shortcut_target_is_not_wscript():
 def test_launcher_is_windowless_powershell():
     # The shortcut runs powershell.exe with a hidden window over launch-studio.ps1.
     text = _text()
-    assert re.search(r"-WindowStyle\s+Hidden", text), (
-        "the launcher must run powershell.exe with -WindowStyle Hidden over launch-studio.ps1."
-    )
+    assert re.search(
+        r"-WindowStyle\s+Hidden", text
+    ), "the launcher must run powershell.exe with -WindowStyle Hidden over launch-studio.ps1."
     assert "launch-studio.ps1" in text
 
 
