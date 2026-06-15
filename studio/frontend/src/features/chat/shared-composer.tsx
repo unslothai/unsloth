@@ -61,6 +61,7 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
@@ -621,6 +622,10 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
+  );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -1635,6 +1640,7 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -2202,6 +2208,20 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass Permissions"
+              title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <XIcon className="size-3" />
+              <span>Bypass Permissions</span>
+            </button>
+          )}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}

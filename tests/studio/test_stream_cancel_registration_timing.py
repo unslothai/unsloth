@@ -83,6 +83,21 @@ def _finalbody_has_tracker_exit(finalbody) -> bool:
     return False
 
 
+def _async_function(name: str) -> ast.AsyncFunctionDef:
+    for node in ast.walk(_TREE):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} handler missing")
+
+
+def _calls_name(node: ast.AST, name: str) -> bool:
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+            if sub.func.id == name:
+                return True
+    return False
+
+
 # ── Structural tests ─────────────────────────────────────────
 
 
@@ -166,6 +181,25 @@ def test_streaming_responses_have_no_background_task():
             "`background=` -- cleanup now lives in the generator's finally "
             "block; a BackgroundTask would be skipped on abrupt disconnect"
         )
+
+
+def test_direct_llama_server_streams_install_disconnect_watcher():
+    required = {
+        "openai_completions",
+        "_responses_stream",
+        "_anthropic_passthrough_stream",
+        "_openai_passthrough_stream",
+    }
+    missing = [
+        name
+        for name in sorted(required)
+        if not _calls_name(_async_function(name), "_await_disconnect_then_close")
+    ]
+    assert not missing, (
+        "Direct httpx streams to llama-server must close the upstream response "
+        "when the downstream client disconnects during prefill. Missing in: "
+        f"{missing}"
+    )
 
 
 # ── Behavioral helpers ───────────────────────────────────────

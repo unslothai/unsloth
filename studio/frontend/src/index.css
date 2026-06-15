@@ -1046,6 +1046,11 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Bypass Permissions badge: red, always-visible active warning. */
+	.composer-pill-btn[data-variant="danger"] {
+		@apply bg-destructive/10 hover:bg-destructive/15;
+		color: var(--destructive);
+	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
 	   Compare keeps its label via data-keep-label. */

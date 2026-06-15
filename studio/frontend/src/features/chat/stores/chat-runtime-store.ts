@@ -43,6 +43,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -665,6 +666,12 @@ type ChatRuntimeStore = {
    */
   confirmToolCalls: boolean;
   /**
+   * Bypass Permissions: when on, tool calls run with no confirmation gate
+   * AND the python/terminal execution sandbox is disabled on the backend
+   * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   */
+  bypassPermissions: boolean;
+  /**
    * Per-chat set of tool names the user chose to auto-approve via "Always
    * allow". Keyed by UI confirmation scope, not necessarily the backend
    * sandbox session id. Not persisted across reloads.
@@ -721,6 +728,14 @@ type ChatRuntimeStore = {
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   activeProjectId: string | null;
+  /**
+   * Temporary / incognito chat toggle. When on, the active conversation
+   * lives only in assistant-ui's in-memory repository and is never
+   * persisted to studio.db -- so it stays out of history and vanishes on
+   * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
+   * backend settings, so a refresh always exits incognito.
+   */
+  incognito: boolean;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -757,6 +772,7 @@ type ChatRuntimeStore = {
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
+  setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -778,6 +794,7 @@ type ChatRuntimeStore = {
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
+  setBypassPermissions: (enabled: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
     toolCallId: string,
@@ -1055,6 +1072,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  // Never restore Bypass Permissions from storage: it disables the sandbox and
+  // the confirmation gate, so it must be re-enabled (through the warning
+  // dialog) each session rather than silently reactivating on reload.
+  bypassPermissions: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
@@ -1092,6 +1113,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedChatTemplateOverride: null,
   activeThreadId: null,
   activeProjectId: null,
+  incognito: false,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -1270,6 +1292,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     invalidateDocumentSupportCache();
@@ -1414,6 +1437,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
       return { confirmToolCalls };
     }),
+  setBypassPermissions: (bypassPermissions) =>
+    // Deliberately not persisted (see init): a reload must not silently keep
+    // the sandbox/confirmation bypass active without re-accepting the warning.
+    set(() => ({ bypassPermissions })),
   allowToolAlways: (sessionId, toolName) =>
     set((state) => {
       const current = state.alwaysAllowToolsBySession.get(sessionId);
