@@ -1484,7 +1484,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     assert kwargs["stream"] is False
                     yield json.dumps(
                         {
-                            "choices": [{"message": {"content": "provider reply"}}],
+                            "choices": [{"message": {"content": "provider [DONE] reply"}}],
                             "usage": {
                                 "prompt_tokens": 3,
                                 "completion_tokens": 4,
@@ -1515,7 +1515,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert chunks[-1] == "data: [DONE]\n\n"
             [entry] = monitor.snapshot()
             assert entry["status"] == "completed"
-            assert entry["reply"] == "provider reply"
+            assert entry["reply"] == "provider [DONE] reply"
             assert entry["prompt_tokens"] == 3
             assert entry["completion_tokens"] == 4
             assert entry["total_tokens"] == 7

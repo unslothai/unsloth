@@ -3475,7 +3475,7 @@ async def _proxy_to_external_provider(
                 if monitor_event == "error":
                     stream_failed = True
                 yield f"{line}\n\n"
-                if "[DONE]" in line:
+                if monitor_event == "done":
                     sent_done = True
             if not sent_done:
                 if not stream_failed:
@@ -6155,76 +6155,112 @@ async def _responses_non_streaming(
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
-    result = await openai_chat_completions(chat_req, request)
-
-    # openai_chat_completions returns a JSONResponse for non-streaming.
-    if isinstance(result, JSONResponse):
-        body = json.loads(result.body.decode())
-    elif isinstance(result, Response):
-        body = json.loads(result.body.decode())
-    else:
-        body = result
-
-    choices = body.get("choices", [])
-    text = ""
-    reasoning_text = ""
-    tool_calls: list[dict] = []
-    if choices:
-        msg = choices[0].get("message", {}) or {}
-        raw_content = msg.get("content", "") or ""
-        raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
-        llama_backend = get_llama_cpp_backend()
-        reasoning_text, text = _extract_responses_reasoning(
-            raw_text,
-            msg.get("reasoning_content"),
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
-        )
-        tool_calls = msg.get("tool_calls") or []
-
-    usage_data = body.get("usage", {})
-    input_tokens = usage_data.get("prompt_tokens", 0)
-    output_tokens = usage_data.get("completion_tokens", 0)
-
-    resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-
-    # Responses API emits each tool call as its own top-level output item,
-    # plus an optional assistant text message. Emit the text message only when
-    # the model produced content, so clients expecting a pure tool-call turn
-    # (finish_reason="tool_calls") don't see a spurious empty message item.
-    output_items: list[dict] = []
-    if reasoning_text and not text and not tool_calls:
-        text = reasoning_text
-    if reasoning_text:
-        output_items.append(_responses_reasoning_output_item(reasoning_text))
-    if text:
-        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-        output_items.append(
-            ResponsesOutputMessage(
-                id = msg_id,
-                status = "completed",
-                role = "assistant",
-                content = [ResponsesOutputTextContent(text = text)],
-            ).model_dump()
-        )
-    output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
-
-    response = ResponsesResponse(
-        id = resp_id,
-        created_at = int(time.time()),
-        status = "completed",
-        model = body.get("model", payload.model),
-        output = output_items,
-        usage = ResponsesUsage(
-            input_tokens = input_tokens,
-            output_tokens = output_tokens,
-            total_tokens = input_tokens + output_tokens,
-        ),
-        temperature = payload.temperature,
-        top_p = payload.top_p,
-        max_output_tokens = payload.max_output_tokens,
-        instructions = payload.instructions,
+    request_state = getattr(request, "state", None)
+    if request_state is None:
+        request_state = type("_RequestState", (), {})()
+        try:
+            setattr(request, "state", request_state)
+        except Exception:
+            request_state = None
+    previous_skip_monitor = (
+        bool(getattr(request_state, "skip_api_monitor", False))
+        if request_state is not None
+        else False
     )
-    return JSONResponse(content = response.model_dump())
+    monitor_id = None
+    if not previous_skip_monitor:
+        monitor_id = api_monitor.start(
+            endpoint = getattr(getattr(request, "url", None), "path", "/v1/responses"),
+            method = getattr(request, "method", "POST"),
+            model = payload.model,
+            prompt = _monitor_prompt_from_messages(messages),
+            context_length = _monitor_context_length(),
+        )
+    if request_state is not None:
+        request_state.skip_api_monitor = True
+
+    try:
+        result = await openai_chat_completions(chat_req, request)
+
+        # openai_chat_completions returns a JSONResponse for non-streaming.
+        if isinstance(result, JSONResponse):
+            body = json.loads(result.body.decode())
+        elif isinstance(result, Response):
+            body = json.loads(result.body.decode())
+        else:
+            body = result
+
+        choices = body.get("choices", [])
+        text = ""
+        reasoning_text = ""
+        tool_calls: list[dict] = []
+        if choices:
+            msg = choices[0].get("message", {}) or {}
+            raw_content = msg.get("content", "") or ""
+            raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+            llama_backend = get_llama_cpp_backend()
+            reasoning_text, text = _extract_responses_reasoning(
+                raw_text,
+                msg.get("reasoning_content"),
+                parse_think_markers = _responses_should_parse_think_markers(
+                    chat_req, llama_backend
+                ),
+            )
+            tool_calls = msg.get("tool_calls") or []
+
+        usage_data = body.get("usage", {})
+        input_tokens = usage_data.get("prompt_tokens", 0)
+        output_tokens = usage_data.get("completion_tokens", 0)
+
+        resp_id = f"resp_{uuid.uuid4().hex[:12]}"
+
+        # Responses API emits each tool call as its own top-level output item,
+        # plus an optional assistant text message. Emit the text message only when
+        # the model produced content, so clients expecting a pure tool-call turn
+        # (finish_reason="tool_calls") don't see a spurious empty message item.
+        output_items: list[dict] = []
+        if reasoning_text and not text and not tool_calls:
+            text = reasoning_text
+        if reasoning_text:
+            output_items.append(_responses_reasoning_output_item(reasoning_text))
+        if text:
+            msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+            output_items.append(
+                ResponsesOutputMessage(
+                    id = msg_id,
+                    status = "completed",
+                    role = "assistant",
+                    content = [ResponsesOutputTextContent(text = text)],
+                ).model_dump()
+            )
+        output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
+
+        response = ResponsesResponse(
+            id = resp_id,
+            created_at = int(time.time()),
+            status = "completed",
+            model = body.get("model", payload.model),
+            output = output_items,
+            usage = ResponsesUsage(
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                total_tokens = input_tokens + output_tokens,
+            ),
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_output_tokens = payload.max_output_tokens,
+            instructions = payload.instructions,
+        )
+        api_monitor.set_reply(monitor_id, text)
+        _monitor_usage(monitor_id, usage_data, _monitor_context_length())
+        api_monitor.finish(monitor_id)
+        return JSONResponse(content = response.model_dump())
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    finally:
+        if request_state is not None:
+            request_state.skip_api_monitor = previous_skip_monitor
 
 
 async def _responses_stream(

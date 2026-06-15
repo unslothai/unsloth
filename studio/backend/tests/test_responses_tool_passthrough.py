@@ -782,6 +782,47 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_monitor_records_translated_visible_text(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [
+                        {"message": {"content": "<think>plan</think>answer"}}
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, request)
+            return json.loads(response.body.decode())
+
+        body = asyncio.run(run())
+
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "answer"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 3
+        assert request.state.skip_api_monitor is False
+
     def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
         body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
 
