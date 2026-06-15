@@ -318,9 +318,7 @@ def test_gguf_loop_confirm_gate_respects_bypass():
 
     llama_cpp = pytest.importorskip("core.inference.llama_cpp")
     src = textwrap.dedent(
-        inspect.getsource(
-            llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools
-        )
+        inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
     )
     gates = [
         node
@@ -329,9 +327,7 @@ def test_gguf_loop_confirm_gate_respects_bypass():
         and any(getattr(t, "id", None) == "_needs_confirm" for t in node.targets)
     ]
     assert gates, "could not find the _needs_confirm gate in the GGUF loop"
-    names = {
-        n.id for g in gates for n in ast.walk(g.value) if isinstance(n, ast.Name)
-    }
+    names = {n.id for g in gates for n in ast.walk(g.value) if isinstance(n, ast.Name)}
     assert "confirm_tool_calls" in names
     assert "bypass_permissions" in names  # bypass must suppress the GGUF gate
 
