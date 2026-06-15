@@ -1175,7 +1175,7 @@ STUB_EOF
         fi
         _css_created=1
 
-    elif [ "$_css_os" = "wsl" ]; then
+    elif [ "$_css_os" = "wsl" ] && [ "${UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT:-0}" != "1" ]; then
         # ── WSL: create Windows Desktop and Start Menu shortcuts ──
         # Detect current WSL distro for targeted shortcut
         _css_distro="${WSL_DISTRO_NAME:-}"
@@ -1223,9 +1223,11 @@ STUB_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
-# Best-effort: fetch the Unsloth icon to a stable Windows path (shared with a
-# native install if one exists) so the WSL shortcut shows the proper icon.
-\$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
+# Best-effort: fetch the Unsloth icon to a stable Windows path so the shortcut
+# shows the proper icon. Use %USERPROFILE%\.unsloth, NOT %LOCALAPPDATA%: on
+# Windows-on-ARM the sandboxed icon broker can't read a standalone .ico under
+# AppData\Local (renders blank); a profile-path icon renders everywhere.
+\$iconDir = Join-Path \$env:USERPROFILE '.unsloth'
 \$iconPath = Join-Path \$iconDir 'unsloth.ico'
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {

@@ -1936,6 +1936,10 @@ shell.Run cmd, 0, False
         # Forward a user Python pin (install.sh reads UNSLOTH_PYTHON, but Windows env vars don't cross
         # into WSL unless bridged). Numeric-only guard (e.g. 3.12) prevents injection.
         if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^[0-9][0-9.]*$')) { $_fwdEnv += "export UNSLOTH_PYTHON=$($env:UNSLOTH_PYTHON); " }
+        # install.ps1 owns the WoA shortcut (one canonical "Unsloth Studio.lnk" with a
+        # %USERPROFILE%\.unsloth icon that renders on WoA). Tell install.sh to skip its own
+        # WSL .lnk so we don't get a duplicate whose %LOCALAPPDATA% icon renders blank.
+        $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; '
         if ($_instRef -eq 'main') {
             $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
         } else {
