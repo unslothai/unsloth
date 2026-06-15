@@ -330,16 +330,21 @@ def _plan(
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
+    # No totals here, so usable is the legacy free*frac (keeps the 5% cushion).
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    return (sum(f for _, f in gpus) - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
+    usable = sum(f * _CTX_FIT_VRAM_FRACTION for _, f in gpus)
+    return (usable - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
 
 
 def test_tp_plan_weighted_split_on_asymmetric_big_model():
     b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
-    # split weighted by (free - buffer), not raw free
-    assert ts == [48000 - reserve, 24000 - reserve]
+    # split weighted by (usable - buffer); with no totals usable is free*frac
+    assert ts == [
+        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve),
+        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve),
+    ]
     assert ec < 131072  # capped below native
 
 
@@ -599,6 +604,23 @@ def test_tensor_caps_context_to_total_vram_budget():
     foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
     assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
     assert foot_free > pool_usable  # old behavior over-spent the cushion
+
+
+def test_tensor_unknown_total_keeps_fraction_cushion():
+    # A two-column nvidia-smi probe yields total 0. The planner must fall back to
+    # free*frac (keep the 5% cushion), like _select_gpus/_gpu_usable, not raw free,
+    # or it over-advertises context exactly where the PR is hardening the budget.
+    b = _kv_seeded_backend()
+    gpus = [(0, 20000), (1, 20000)]
+    MIB = 1024 * 1024
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    model = int(18 * _GB)
+    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
+    ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
+    assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
+    pool_free = sum(f for _, f in gpus)
+    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(gpus) * reserve
+    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2  # within free*frac, not raw free
 
 
 def test_tensor_reserve_scales_with_ubatch():

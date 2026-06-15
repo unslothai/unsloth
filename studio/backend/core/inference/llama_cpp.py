@@ -3491,13 +3491,14 @@ class LlamaCppBackend:
         the compute buffer.
         """
 
-        # Per-GPU usable budget: free - (1-frac)*total (raw free when total is
-        # unknown), the same headroom the layer-split paths enforce.
+        # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
+        # two-column probe) the legacy free*frac. Mirrors _select_gpus and
+        # _gpu_usable so the 5% cushion is kept on every path, not dropped here.
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             if t > 0:
                 return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
-            return float(free_mib)
+            return max(0.0, free_mib * _CTX_FIT_VRAM_FRACTION)
 
         # Drop GPUs whose usable budget can't hold the per-device compute-graph
         # buffer; they'd OOM in tensor mode. Admitting on raw free would let a
