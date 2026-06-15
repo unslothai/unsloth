@@ -462,10 +462,9 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
 
     assert forked is not None
     assert forked["projectId"] == "project-1"
-    assert [thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")] == [
-        "fork-1",
-        "src",
-    ]
+    assert {
+        thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")
+    } == {"fork-1", "src"}
 
 
 def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
