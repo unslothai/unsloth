@@ -964,8 +964,7 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 @app.get("/api/system/hardware")
 def get_hardware_info(
-    include_details: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
+    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     """Return GPU name, total VRAM, and key ML package versions.
 
