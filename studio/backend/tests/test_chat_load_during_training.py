@@ -619,7 +619,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
             # --ctx-size override above max_seq_length -> override wins
-            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0)
+            self.assertAlmostEqual(
+                r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0
+            )
             self.assertEqual(seen["ctx"], 131072)
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)

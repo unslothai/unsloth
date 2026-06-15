@@ -1540,7 +1540,9 @@ def _remote_gguf_companion_bytes(
 
 
 def _estimate_gguf_kv_gb(
-    gguf_path: str, max_seq_length: int, llama_extra_args: Optional[list[str]] = None
+    gguf_path: str,
+    max_seq_length: int,
+    llama_extra_args: Optional[list[str]] = None,
 ) -> float:
     """KV-cache VRAM (GB) llama.cpp allocates for this GGUF at the requested
     context, via the loader's own estimator. 0 if the metadata is unreadable.
