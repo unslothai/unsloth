@@ -597,8 +597,8 @@ def test_tensor_caps_context_to_total_vram_budget():
     pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
     foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
     foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
-    assert foot_total <= pool_usable + 2          # fix: fits the total-based budget
-    assert foot_free > pool_usable                # old behavior over-spent the cushion
+    assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
+    assert foot_free > pool_usable  # old behavior over-spent the cushion
 
 
 def test_tensor_reserve_scales_with_ubatch():

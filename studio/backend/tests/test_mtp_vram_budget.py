@@ -168,7 +168,9 @@ class TestEmbeddedDraftKv:
     def test_draft_kv_split_axes_no_under_reserve(self):
         # One-sided q4_0 (V left f16) must NOT be applied to both axes.
         b = _make_backend()
-        both_q4 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
+        both_q4 = b._mtp_draft_kv_bytes(
+            131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
+        )
         k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
         both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
         assert both_q4 < k_only < both_f16  # split sits between, never collapses to q4_0

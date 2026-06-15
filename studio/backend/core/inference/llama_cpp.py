@@ -4125,7 +4125,8 @@ class LlamaCppBackend:
                     # per device in _plan_tensor_parallel). Context-independent, so
                     # fold it into the model footprint for the branches below.
                     _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
-                        n_ubatch = _effective_ubatch, n_parallel = n_parallel,
+                        n_ubatch = _effective_ubatch,
+                        n_parallel = n_parallel,
                         per_device_tensor = False,
                     )
                     model_size_fit = model_size + _compute_buffer_pipeline
@@ -4166,7 +4167,8 @@ class LlamaCppBackend:
                         # every device in tensor mode); flat fallback when dims
                         # are unavailable. _plan_tensor_parallel uses the same.
                         _tp_reserve_bytes = self._estimate_compute_buffer_bytes(
-                            n_ubatch = _effective_ubatch, n_parallel = n_parallel,
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
                             per_device_tensor = True,
                         )
                         reserve_mib = (
