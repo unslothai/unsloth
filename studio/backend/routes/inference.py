@@ -3505,7 +3505,9 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
-        if payload.confirm_tool_calls and (
+        # Bypass Permissions suppresses the confirm gate, so do not reject a
+        # request that sets both flags (effective confirm is then False).
+        if payload.confirm_tool_calls and not payload.bypass_permissions and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
             or bool(payload.tools)
@@ -3892,7 +3894,13 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
-            if payload.confirm_tool_calls and not payload.stream:
+            # Bypass Permissions suppresses confirm, so the stream requirement
+            # (the gate needs streaming to prompt) no longer applies.
+            if (
+                payload.confirm_tool_calls
+                and not payload.bypass_permissions
+                and not payload.stream
+            ):
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -4441,7 +4449,13 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        if payload.confirm_tool_calls and not payload.stream:
+        # Bypass Permissions suppresses confirm, so the stream requirement
+        # (the gate needs streaming to prompt) no longer applies.
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and not payload.stream
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
@@ -6868,7 +6882,10 @@ async def anthropic_messages(
         )
 
     if server_tools:
-        if bool(getattr(payload, "confirm_tool_calls", False)):
+        # Bypass Permissions suppresses confirm, so both flags together is fine.
+        if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
+            getattr(payload, "bypass_permissions", False)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
