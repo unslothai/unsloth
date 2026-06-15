@@ -67,6 +67,7 @@ import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
+import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
@@ -1223,6 +1224,9 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
+          {/* Active-mode badge: always visible when bypass is on, even while
+              the pill row is collapsed (returns null when off). */}
+          <BypassPermissionsToggle />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -1931,6 +1935,30 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
+// Red pill shown while Bypass Permissions is on; click to turn it off.
+// Mirror of shared-composer's badge so both composers surface the state.
+const BypassPermissionsToggle: FC = () => {
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
+  if (!bypassPermissions) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setBypassPermissions(false)}
+      className="composer-pill-btn"
+      data-active="true"
+      data-variant="danger"
+      aria-label="Disable Bypass Permissions"
+      title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+    >
+      <XIcon className="size-3" />
+      <span>Bypass Permissions</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -2276,6 +2304,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         ) : null}
       </DropdownMenuItem>
     ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
